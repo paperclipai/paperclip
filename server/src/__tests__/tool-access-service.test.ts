@@ -15248,8 +15248,8 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_ID", "m2m-client-id");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_SECRET", "m2m-client-secret");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_EXAMPLE_TEST_CLIENT_ID", "m2m-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_EXAMPLE_TEST_CLIENT_SECRET", "m2m-client-secret");
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connection = await service.createConnection(company.id, connectionInput({
@@ -15258,7 +15258,7 @@ describeEmbeddedPostgres("tool access service", () => {
       config: {
         url: "https://m2m.example.test/mcp",
         oauth: {
-          provider: "m2m",
+          provider: "m2m_example_test",
           tokenUrl: "https://m2m.example.test/oauth/token",
           grantType: "client_credentials",
           scopes: ["tools.read"],

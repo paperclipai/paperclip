@@ -421,6 +421,7 @@ function canRegisterOAuthClientDynamically(
     const configured = configuredOAuthClientForConnection(
       input.connection,
       input.endpoints.provider,
+      input.endpoints.tokenUrl,
     );
     if (configured.clientId) {
       return {
@@ -462,6 +463,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           bound,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: storedOAuthClientRegistrationSource(bound),
@@ -511,6 +513,7 @@ function canRegisterOAuthClientDynamically(
       const latestConfigured = configuredOAuthClientForConnection(
         latest,
         input.endpoints.provider,
+        input.endpoints.tokenUrl,
       );
       if (latestConfigured.clientId) {
         return {
@@ -537,6 +540,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             bound,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: storedOAuthClientRegistrationSource(bound),
@@ -557,6 +561,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             adopted,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: "cimd" as const,
@@ -580,6 +585,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           registered,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: "dcr" as const,

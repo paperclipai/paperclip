@@ -1,0 +1,113 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { toolConnections } from "@paperclipai/db";
+import { configuredOAuthClientForConnection } from "./client-settings.js";
+
+type Connection = typeof toolConnections.$inferSelect;
+
+function connection(config: Record<string, unknown>): Connection {
+  return {
+    id: "connection-1",
+    companyId: "company-1",
+    transport: "mcp_remote",
+    config,
+    transportConfig: {},
+    credentialSecretRefs: [],
+  } as unknown as Connection;
+}
+
+const slack = (oauth: Record<string, unknown> = {}) =>
+  connection({ sourceTemplateKey: "slack", connectionMethodKey: "mcp-oauth", oauth });
+const generic = (oauth: Record<string, unknown> = {}) =>
+  connection({ url: "https://mcp.example.test/mcp", oauth });
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("instance OAuth clients", () => {
+  it("uses the instance client only at the token endpoint its app definition fixes", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "instance-slack-secret");
+
+    expect(configuredOAuthClientForConnection(slack(), "slack", "https://slack.com/api/oauth.v2.access")).toMatchObject({
+      clientId: "instance-slack-id",
+      clientSecret: "instance-slack-secret",
+    });
+  });
+
+  it.each([
+    ["a different host", "https://attacker.example/token"],
+    ["a lookalike path on the vendor host", "https://slack.com/api/oauth.v2.access/../../collect"],
+    ["plain http on the vendor host", "http://slack.com/api/oauth.v2.access"],
+    ["a vendor subdomain", "https://evil.slack.com/api/oauth.v2.access"],
+    ["no token endpoint", null],
+  ])("never returns the instance secret for %s", (_label, tokenUrl) => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "instance-slack-secret");
+
+    const client = configuredOAuthClientForConnection(slack({ tokenUrl }), "slack", tokenUrl);
+    expect(client.clientId).toBeNull();
+    expect(client.clientSecret).toBeNull();
+  });
+
+  it("never gives a custom connection the instance client of a provider it names", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "instance-slack-secret");
+
+    const client = configuredOAuthClientForConnection(
+      generic({ provider: "slack", tokenUrl: "https://attacker.example/token" }),
+      "slack",
+      "https://attacker.example/token",
+    );
+    expect(client.clientId).toBeNull();
+    expect(client.clientSecret).toBeNull();
+  });
+
+  it("never gives a custom connection the unsuffixed instance client", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "instance-generic-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "instance-generic-secret");
+
+    const client = configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://mcp.example.test/token");
+    expect(client.clientId).toBeNull();
+    expect(client.clientSecret).toBeNull();
+  });
+
+  it("uses a host-named instance client only at that same host for a custom server", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_ID", "instance-host-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_SECRET", "instance-host-secret");
+
+    expect(configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://mcp.example.test/oauth/token")).toMatchObject({
+      clientId: "instance-host-id",
+      clientSecret: "instance-host-secret",
+    });
+    expect(configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://attacker.example/token").clientId).toBeNull();
+    expect(configuredOAuthClientForConnection(
+      generic({ provider: "mcp_example_test" }),
+      "mcp_example_test",
+      "https://auth.example.test/token",
+    ).clientId).toBeNull();
+  });
+
+  it("never uses one app's instance client for a connection that claims another provider", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GMAIL_CLIENT_ID", "instance-gmail-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GMAIL_CLIENT_SECRET", "instance-gmail-secret");
+
+    const client = configuredOAuthClientForConnection(
+      slack({ provider: "gmail" }),
+      "gmail",
+      "https://oauth2.googleapis.com/token",
+    );
+    expect(client.clientId).toBeNull();
+    expect(client.clientSecret).toBeNull();
+  });
+
+  it("allows a discovered token endpoint on the app's own site when the definition fixes no token endpoint", () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "instance-notion-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "instance-notion-secret");
+    const notion = connection({ sourceTemplateKey: "notion", connectionMethodKey: "mcp-oauth" });
+
+    expect(configuredOAuthClientForConnection(notion, "notion", "https://mcp.notion.com/token").clientId).toBe("instance-notion-id");
+    expect(configuredOAuthClientForConnection(notion, "notion", "https://api.notion.com/v1/oauth/token").clientId).toBe("instance-notion-id");
+    expect(configuredOAuthClientForConnection(notion, "notion", "https://attacker.example/token").clientId).toBeNull();
+  });
+});

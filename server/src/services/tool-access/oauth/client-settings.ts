@@ -1,6 +1,6 @@
 import type { ActorInfo } from "../types.js";
-import { oauthConfig, isSmokeLabOAuthFixture } from "./metadata.js";
-import { connectionMethodForConnection } from "../connection-methods.js";
+import { oauthConfig, oauthProviderForConnection, isSmokeLabOAuthFixture } from "./metadata.js";
+import { connectionMethodForConnection, remoteEndpoint } from "../connection-methods.js";
 import { stableHash } from "../../tool-catalog-hash.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
@@ -37,9 +37,67 @@ export function oauthClientConfig(provider: string) {
   };
 }
 
+function httpsUrl(value: string | null | undefined): URL | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function siteOf(host: string): string {
+  return host.toLowerCase().split(".").slice(-2).join(".");
+}
+
+function instanceClientTokenUrlAllowed(
+  connection: typeof toolConnections.$inferSelect,
+  provider: string,
+  tokenUrl: string | null | undefined,
+): boolean {
+  const sourceTemplateKey =
+    typeof connection.config.sourceTemplateKey === "string"
+      ? connection.config.sourceTemplateKey.trim()
+      : "";
+  const target = httpsUrl(tokenUrl);
+  if (!target) return false;
+  if (!sourceTemplateKey) {
+    let server: URL | null;
+    try {
+      server = httpsUrl(remoteEndpoint(connection.config));
+    } catch {
+      server = null;
+    }
+    return Boolean(server)
+      && provider === oauthProviderForConnection({ config: { url: server!.href } })
+      && target.hostname.toLowerCase() === server!.hostname.toLowerCase();
+  }
+  if (provider !== sourceTemplateKey) return false;
+  const app = getConnectableAppDefinition(sourceTemplateKey);
+  if (!app) return false;
+  let method: ReturnType<typeof connectionMethodForConnection>;
+  try {
+    method = connectionMethodForConnection(app, connection);
+  } catch {
+    return false;
+  }
+  if (method.auth !== "oauth" || !method.ownershipModes.includes("customer")) return false;
+  const defaults = method.defaults ?? {};
+  if (defaults.tokenEndpoint) {
+    return httpsUrl(defaults.tokenEndpoint)?.href === target.href;
+  }
+  const fixedSites = [defaults.serverUrl, defaults.discoveryUrl, defaults.metadataUrl, defaults.authorizationEndpoint]
+    .map((value) => httpsUrl(value))
+    .filter((url): url is URL => url !== null)
+    .map((url) => siteOf(url.hostname));
+  return fixedSites.includes(siteOf(target.hostname));
+}
+
 export function configuredOAuthClientForConnection(
   connection: typeof toolConnections.$inferSelect,
   provider: string,
+  tokenUrl: string | null | undefined,
 ) {
   if (isSmokeLabOAuthFixture(connection) && provider === "smoke_lab") {
     return {
@@ -49,7 +107,16 @@ export function configuredOAuthClientForConnection(
       clientSecret: null,
     };
   }
-  return oauthClientConfig(provider);
+  const configured = oauthClientConfig(provider);
+  if (!instanceClientTokenUrlAllowed(connection, provider, tokenUrl)) {
+    return { ...configured, clientId: null, clientSecret: null };
+  }
+  if (typeof connection.config.sourceTemplateKey === "string") return configured;
+  return {
+    ...configured,
+    clientId: process.env[configured.clientIdEnv] ?? null,
+    clientSecret: process.env[configured.clientSecretEnv] ?? null,
+  };
 }
 
 export function credentialScope(
