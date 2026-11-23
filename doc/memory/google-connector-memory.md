@@ -313,8 +313,10 @@ Task and company deletion are hard deletes. A task deletion queues an
 `issue_connection_content_deletions` job that records the task's runs
 (including runs still working), calls and call events, including calls made
 without a run, before the task row goes, and runs the same steps as "Delete data". It
-waits for runs and approvals that are still open, rechecking every one to
-five minutes for up to a day, and then finishes on its own. It writes
+waits for runs and approvals that are still open, and finishes on its own. While
+it waits it only rechecks open work, every one to five minutes for up to a day;
+it then runs the content steps once more. A task whose only trace is an audit
+entry also gets a job. It writes
 `issue.connection_content_deleted` only when it deleted something, and
 `issue.connection_content_deletion_incomplete` when it stopped waiting with
 items still open. The ledger lives in `stored-object-deletion.ts` and the task
