@@ -3408,6 +3408,36 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
     expect(prompt).toContain("Be skeptical of QA done-claims.");
   });
 
+  it.each([true, false])("reserves summary space for parents and leaves (parents first: %s)", (parentsFirst) => {
+    const parents = Array.from({ length: 30 }, (_, index) => ({
+      id: `parent-${index}`,
+      title: `Parent ${index}`,
+      status: "blocked",
+      role: "parent",
+    }));
+    const leaves = Array.from({ length: 30 }, (_, index) => ({
+      id: `leaf-${index}`,
+      title: `Leaf ${index}`,
+      status: "done",
+    }));
+    const serialized = stringifyPaperclipWakePayload({
+      ...baseWatchdogPayload,
+      taskWatchdog: {
+        watchedIssueId: "watched-issue-1",
+        terminalLeafSummaries: parentsFirst ? [...parents, ...leaves] : [...leaves, ...parents],
+      },
+    });
+    const parsed = JSON.parse(serialized ?? "{}");
+    const summaries = parsed.taskWatchdog.terminalLeafSummaries;
+    expect(summaries.filter((entry: { role: string | null }) => entry.role === "parent")).toHaveLength(25);
+    expect(summaries.filter((entry: { role: string | null }) => entry.role !== "parent")).toHaveLength(25);
+    const prompt = renderPaperclipWakePrompt(parsed);
+    expect(prompt).toContain("Parent 24");
+    expect(prompt).toContain("Leaf 24");
+    expect(prompt).not.toContain("Parent 25");
+    expect(prompt).not.toContain("Leaf 25");
+  });
+
   it("truncates oversized custom instructions and caps terminal leaf summaries", () => {
     const longInstructions = "x".repeat(8_000);
     const manyLeaves = Array.from({ length: 50 }, (_, idx) => ({

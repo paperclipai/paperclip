@@ -1418,6 +1418,7 @@ function normalizePaperclipWakeExecutionPrincipal(
 
 const MAX_WATCHDOG_INSTRUCTIONS_CHARS = 4_000;
 const MAX_WATCHDOG_LEAF_SUMMARIES = 25;
+const MAX_WATCHDOG_PARENT_SUMMARIES = 25;
 const MAX_WATCHDOG_CAPABILITY_ITEMS = 50;
 
 function normalizePaperclipWakeTaskWatchdogLeaf(
@@ -1511,14 +1512,27 @@ function normalizePaperclipWakeTaskWatchdog(
       ? customInstructionsTrimmed.slice(0, MAX_WATCHDOG_INSTRUCTIONS_CHARS)
       : customInstructionsTrimmed
     : null;
-  const terminalLeafSummaries = Array.isArray(watchdog.terminalLeafSummaries)
-    ? watchdog.terminalLeafSummaries
-        .slice(0, MAX_WATCHDOG_LEAF_SUMMARIES)
-        .map((entry) => normalizePaperclipWakeTaskWatchdogLeaf(entry))
-        .filter((entry): entry is PaperclipWakeTaskWatchdogLeaf =>
-          Boolean(entry),
-        )
-    : [];
+  const terminalLeafSummaries: PaperclipWakeTaskWatchdogLeaf[] = [];
+  let parentCount = 0;
+  let leafCount = 0;
+  if (Array.isArray(watchdog.terminalLeafSummaries)) {
+    for (const value of watchdog.terminalLeafSummaries) {
+      const entry = normalizePaperclipWakeTaskWatchdogLeaf(value);
+      if (!entry) continue;
+      if (entry.role === "parent") {
+        if (parentCount >= MAX_WATCHDOG_PARENT_SUMMARIES) continue;
+        parentCount += 1;
+      } else {
+        if (leafCount >= MAX_WATCHDOG_LEAF_SUMMARIES) continue;
+        leafCount += 1;
+      }
+      terminalLeafSummaries.push(entry);
+      if (
+        parentCount === MAX_WATCHDOG_PARENT_SUMMARIES &&
+        leafCount === MAX_WATCHDOG_LEAF_SUMMARIES
+      ) break;
+    }
+  }
   const capabilities = normalizePaperclipWakeTaskWatchdogCapabilities(
     watchdog.capabilities,
   );
