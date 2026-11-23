@@ -13,7 +13,6 @@ interface NewIssueDefaults {
   parentTitle?: string;
   executionWorkspaceId?: string;
   executionWorkspaceMode?: string;
-  parentExecutionWorkspaceLabel?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
   title?: string;

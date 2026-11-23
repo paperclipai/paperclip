@@ -32,7 +32,12 @@ export async function seedWorkspaceBootstrap(base, persistent = false) {
   await api(`/projects/${project.id}/workspaces`, "POST", { name: "Source copy", cwd: source, repoUrl: pathToFileURL(source).href, isPrimary: false });
   const agent = await api(`/companies/${company.id}/agents`, "POST", {
     name: `${persistent ? "Persistent failure worker" : "Recovery worker"} ${suffix}`, role: "engineer", adapterType: "process",
-    adapterConfig: { command: process.execPath, args: [path.resolve(import.meta.dirname, "worker.mjs")], cwd: source },
+    adapterConfig: { command: process.execPath, args: [path.resolve(import.meta.dirname, "worker.mjs")], cwd: source,
+      workspaceRuntime: { services: [{ name: "fixture-web", lifecycle: "ephemeral", stopPolicy: { type: "on_run_finish" },
+        command: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve(import.meta.dirname, "runtime-service.mjs"))}`,
+        port: { type: "auto" }, readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
+      }] },
+    },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
   });
   return { base, companyId: company.id, prefix: company.issuePrefix, projectId: project.id, agentId: agent.id, agentName: agent.name, projectName: project.name, source };
