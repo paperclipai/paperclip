@@ -71,6 +71,8 @@ export function agentSetupProgressBoardRoutes(db: Db) {
   async function assertCanSetUpSubject(req: Request, companyId: string, body: CreateAgentSetupProgress) {
     if (body.purpose !== "aws_connection") return;
     if (!body.subjectId) throw unprocessable("Name the connection being set up.", { code: "agent_setup_progress_subject_required" });
+    // A connection id is a UUID; anything else is simply not a connection (and must not reach the uuid column).
+    if (!idSchema.safeParse(body.subjectId).success) throw notFound("Tool connection not found");
     const [connection] = await db.select({ createdByUserId: toolConnections.createdByUserId }).from(toolConnections)
       .where(and(eq(toolConnections.id, body.subjectId), eq(toolConnections.companyId, companyId)));
     if (!connection) throw notFound("Tool connection not found");

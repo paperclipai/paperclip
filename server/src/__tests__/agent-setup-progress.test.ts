@@ -210,5 +210,7 @@ describe("agent setup progress", () => {
     // A checklist always names a real connection of this company.
     await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(422);
     await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: outsider.connectionId }).expect(404);
+    // A malformed id is a clean not-found, never a server error.
+    await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: "abc" }).expect(404);
   });
 });
