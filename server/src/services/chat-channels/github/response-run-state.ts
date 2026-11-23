@@ -1,5 +1,5 @@
-import { and, eq, sql, type SQL } from "drizzle-orm";
-import { chatMessageLinks, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { chatMessageLinks, heartbeatRuns, runIdentityContexts, type Db } from "@paperclipai/db";
 import type { HttpError } from "../../../errors.js";
 import { chatRunSourceMessageId, chatRunSourceMessageIds } from "../run-origin.js";
 
@@ -54,9 +54,10 @@ export type GitHubResponseRunInput = {
   deliveryId: string; sourceMessageId: string | null;
 };
 type RunRow = Omit<Awaited<ReturnType<typeof readRunRows>>[number], "ordinal">;
-export type GitHubResponseRunState = { latestRun: Omit<RunRow, "wokeForRequest" | "requestRunId"> | undefined; ownsLatestRequest: boolean;
+type ResponseRun = Omit<RunRow, "wokeForRequest" | "requestRunId">;
+export type GitHubResponseRunState = { latestRun: ResponseRun | undefined; ownsLatestRequest: boolean;
   /** The latest finished run that woke for this request, which can differ from the latest run. */
-  finishedRequestRunId: string | null };
+  finishedRequestRun: ResponseRun | null };
 /** The state of one request of a batch, or the 403 that its single read throws. */
 export type GitHubResponseRunRead = GitHubResponseRunState | { forbidden: HttpError };
 
@@ -85,7 +86,8 @@ const wokeForRequest = (of: Of) => sql<boolean>`exists (select 1 from ${chatMess
     and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
       or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))`;
 
-/** The latest finished run that woke for the request. A newer run woken by
+/** The latest finished run that woke for the request, by a wake comment or by
+ * an accepted identity context for the request's comment. A newer run woken by
  * another request can follow it within seconds, so the task's latest run alone
  * cannot say how this request ended. */
 const finishedRequestRunId = (of: Of) => sql<string | null>`(select q.id from ${heartbeatRuns} q
@@ -96,7 +98,9 @@ const finishedRequestRunId = (of: Of) => sql<string | null>`(select q.id from ${
       where l.company_id = ${of.companyId}::uuid and l.endpoint_id = ${of.endpointId}::uuid
         and l.delivery_id = ${of.deliveryId}::uuid and l.direction = 'inbound'
         and (l.comment_id::text = q.context_snapshot->>'wakeCommentId'
-          or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))
+          or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text
+          or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
+            and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = l.comment_id)))
   order by q.created_at desc, q.id desc limit 1)`;
 
 const request = sql.identifier("github_response_request");
@@ -118,32 +122,36 @@ async function readRunRows(db: Db, inputs: Array<GitHubResponseRunInput & { issu
       sql`${heartbeatRuns.companyId} = ${column("company_id")}`));
 }
 
-function ownership(input: GitHubResponseRunInput, row: RunRow | undefined, originMessageId: string | null): GitHubResponseRunState {
-  if (!row) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRunId: null };
+function ownership(input: GitHubResponseRunInput, row: RunRow | undefined, originMessageId: string | null,
+  finished: Map<string, ResponseRun>): GitHubResponseRunState {
+  if (!row) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRun: null };
   const { wokeForRequest: requestRunIsLatest, requestRunId, ...latestRun } = row;
   const ownsLatestRequest = requestRunIsLatest ||
     (!!input.sourceMessageId && originMessageId === input.sourceMessageId);
-  return { latestRun, ownsLatestRequest, finishedRequestRunId: requestRunId ?? null };
+  return { latestRun, ownsLatestRequest,
+    finishedRequestRun: !requestRunId ? null : requestRunId === latestRun.id ? latestRun : finished.get(requestRunId) ?? null };
+}
+
+/** The response columns of the earlier finished runs of the rows, in one statement. */
+async function readFinishedRuns(db: Db, rows: RunRow[]) {
+  const ids = [...new Set(rows.flatMap(row => row.requestRunId && row.requestRunId !== row.id ? [row.requestRunId] : []))];
+  const found = new Map<string, ResponseRun>();
+  if (!ids.length) return found;
+  for (const run of await db.select(responseRunColumns).from(heartbeatRuns).where(inArray(heartbeatRuns.id, ids))) found.set(run.id, run);
+  return found;
 }
 
 /** Shared request ownership and presentation state for delivery and recovery. */
 export async function readGitHubResponseRun(db: Db, input: GitHubResponseRunInput): Promise<GitHubResponseRunState> {
   const { issueId } = input;
-  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRunId: null };
+  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRun: null };
   const of = { ...input, issueId };
   const [row] = await db.select({ ...responseRunColumns, wokeForRequest: wokeForRequest(of),
     requestRunId: finishedRequestRunId(of) }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.companyId), sql`${heartbeatRuns.id} = ${latestRunId(of)}`));
   const originMessageId = row?.activeIdentityContextId ? await chatRunSourceMessageId(db, row,
     { allowLegacyWakeComment: true, provider: "github" }) : null;
-  return ownership(input, row, originMessageId);
-}
-
-/** One run's response columns, read only when a request settles from it. */
-export async function readResponseRunById(db: Db, companyId: string, runId: string) {
-  const [row] = await db.select(responseRunColumns).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
-  return row;
+  return ownership(input, row, originMessageId, await readFinishedRuns(db, row ? [row] : []));
 }
 
 /** `readGitHubResponseRun` for a page of requests: one latest-run read for the
@@ -158,11 +166,12 @@ export async function readGitHubResponseRuns(db: Db, inputs: GitHubResponseRunIn
   }
   const runs = [...new Map([...found.values()].filter(row => row.activeIdentityContextId).map(row => [row.id, row])).values()];
   const checked = await chatRunSourceMessageIds(db, runs, { allowLegacyWakeComment: true, provider: "github" });
+  const finished = await readFinishedRuns(db, [...found.values()]);
   const origins = new Map(runs.map((run, index) => [run.id, checked[index]!]));
   return inputs.map((input, index) => {
     const row = found.get(index);
     const origin = row ? origins.get(row.id) : undefined;
     if (origin && "forbidden" in origin) return { forbidden: origin.forbidden };
-    return ownership(input, row, origin?.messageId ?? null);
+    return ownership(input, row, origin?.messageId ?? null, finished);
   });
 }

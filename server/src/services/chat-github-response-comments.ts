@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions, chatConversations, chatDeliveries, chatEndpoints,
-  chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues,
+  chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues, runIdentityContexts,
   fastResponseRequests, chatPublications,
   type Db,
 } from "@paperclipai/db";
@@ -452,7 +452,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
               and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound'
               -- The run that woke for this request; a newer run may follow it.
               and (l.comment_id::text = q.context_snapshot->>'wakeCommentId'
-                or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))))`,
+                or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text
+                or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
+                  and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = l.comment_id)))))`,
       )).orderBy(asc(chatActions.updatedAt)).limit(limit);
     for (const row of stopped) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
     return stopped.length;

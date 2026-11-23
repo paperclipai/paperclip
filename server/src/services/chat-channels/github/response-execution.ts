@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { githubRunReplyState } from "../../chat-run-publications.js";
-import { readGitHubResponseRun, readResponseRunById, type GitHubResponseRunRead } from "./response-run-state.js";
+import { readGitHubResponseRun, type GitHubResponseRunRead, type GitHubResponseRunState } from "./response-run-state.js";
 export { responseRunColumns as githubResponseRunColumns } from "./response-run-state.js";
 
 export type GitHubResponseExecutionInput = {
@@ -14,17 +14,25 @@ export type GitHubResponseExecutionInput = {
   deliveryCreatedAt: Date;
 };
 
+const finishedStatuses = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"];
+
+/** Whether the task is idle and this request settles from the earlier run that
+ * woke for it, because the latest run belongs to another request. */
+export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus: string) {
+  return !!state.latestRun && finishedStatuses.includes(state.latestRun.status) && !state.ownsLatestRequest &&
+    issueStatus !== "blocked" && !!state.finishedRequestRun;
+}
+
 /** `read` is this request's state from a batched page read, if the caller has it. */
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
   if ("forbidden" in state) throw state.forbidden;
-  const { latestRun, ownsLatestRequest, finishedRequestRunId } = state;
+  const { latestRun, ownsLatestRequest, finishedRequestRun } = state;
   const requestRunning = ownsLatestRequest && latestRun?.status === "running";
   const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
   // Once the task is idle, a request whose own run finished earlier settles
   // from that run; otherwise its placeholder would wait for a run that never comes.
-  const requestRun = terminal && !ownsLatestRequest && input.issueStatus !== "blocked" && finishedRequestRunId
-    ? await readResponseRunById(db, input.companyId, finishedRequestRunId) ?? null : null;
+  const requestRun = settlesFromRequestRun(state, input.issueStatus) ? finishedRequestRun : null;
   const run = requestRun ?? (terminal && (ownsLatestRequest || input.issueStatus === "blocked") ? latestRun : null);
   const answersRequest = ownsLatestRequest || !!requestRun;
 
