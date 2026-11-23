@@ -104,7 +104,7 @@ test("macOS ARM and both Linux closures are pinned; macOS Intel remains inventor
   for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "x64"], ["linux", "arm64"]]) {
     const pin = await antigravityDistribution(platform, architecture);
     assert.equal(pin.version, "1.5.2");
-    assert.equal(pin.patchVersion, "1.5.2-paperclip.1");
+    assert.equal(pin.patchVersion, "1.5.2-paperclip.2");
     assert.deepEqual(pin.entries.map(entry => entry.path), files.map(entry => entry.path));
     assert.deepEqual(pin.vendorEntries.map(entry => entry.path), files.map(entry => entry.path));
     assert.equal(hash(JSON.stringify(pin.entries)), pin.closureSha256);
