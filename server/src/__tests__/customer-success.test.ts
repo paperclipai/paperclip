@@ -22,7 +22,11 @@ import {
   readCustomerSuccessResource,
   inspectionReaders,
 } from "../services/customer-success-inspection.js";
-import { customerSuccessRoutes, verifyInspectionPermit } from "../routes/customer-success.js";
+import {
+  customerSuccessRoutes,
+  fitInspectionResponse,
+  verifyInspectionPermit,
+} from "../routes/customer-success.js";
 import { agentIdentityService } from "../services/agent-identity.js";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -460,6 +464,85 @@ describe("customer-success read authority", () => {
       ),
     ).toThrow();
   });
+  it("fits an oversized list page to the response limit and points nextOffset at the first omitted row", async () => {
+    vi.stubEnv("PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_ENABLED", "true");
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "fixture-stack");
+    vi.stubEnv("PAPERCLIP_CUSTOMER_SUCCESS_CLOUD_ORIGIN", "https://cloud.example.test");
+    const keys = generateKeyPairSync("ed25519");
+    vi.stubEnv(
+      "PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_JWKS",
+      JSON.stringify({ keys: [{ ...keys.publicKey.export({ format: "jwk" }), kid: "cloud" }] }),
+    );
+    const [bulky] = await db
+      .insert(schema.companies)
+      .values({ name: "Bulky", issuePrefix: "BLK" })
+      .returning();
+    await db.insert(schema.issues).values(
+      Array.from({ length: 25 }, (_, index) => ({
+        companyId: bulky.id,
+        title: `Large task ${index}`,
+        description: "x".repeat(200 * 1024),
+      })),
+    );
+    const query: InspectionQuery = {
+      operation: "list",
+      resource: "tasks",
+      companyId: bulky.id,
+      limit: 25,
+      offset: 5,
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const claims: InspectionPermit = {
+      v: 1,
+      iss: "paperclip-cloud",
+      aud: INSPECTION_AUDIENCE,
+      sub: "fixture-stack",
+      iat: now,
+      exp: now + 60,
+      jti: randomUUID(),
+      bindingVersion: 1,
+      grantId: randomUUID(),
+      requestId: randomUUID(),
+      agentId,
+      keyId: "sha256:fixture",
+      runId,
+      query,
+    };
+    const header = Buffer.from(
+      JSON.stringify({ alg: "EdDSA", typ: INSPECTION_PERMIT_TYPE, kid: "cloud" }),
+    ).toString("base64url");
+    const input = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
+    const permit = `${input}.${sign(null, Buffer.from(input), keys.privateKey).toString("base64url")}`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ consumed: true })));
+    const app = express();
+    app.use(express.json());
+    app.use("/api/customer-success/v1", customerSuccessRoutes(db, storage));
+    app.use(errorHandler);
+    const response = await request(app)
+      .post("/api/customer-success/v1/read")
+      .set(INSPECTION_HEADER, permit)
+      .send(query);
+    expect(response.status).toEqual(200);
+    expect(Buffer.byteLength(response.text)).toBeLessThanOrEqual(2 * 1024 * 1024);
+    const count = response.body.items.length;
+    expect(count).toBeGreaterThan(0);
+    expect(count).toBeLessThan(20);
+    expect(response.body.nextOffset).toEqual(5 + count);
+    vi.unstubAllGlobals();
+  });
+
+  it("returns null only when a single item cannot fit", () => {
+    const small = { items: [1, 2, 3], nextOffset: null };
+    expect(fitInspectionResponse(small, 0, 1024)).toEqual(JSON.stringify(small));
+    const big = { items: ["a".repeat(40), "b".repeat(40), "c".repeat(40)], nextOffset: 3 };
+    expect(JSON.parse(fitInspectionResponse(big, 10, 120)!)).toEqual({
+      items: ["a".repeat(40), "b".repeat(40)],
+      nextOffset: 12,
+    });
+    expect(fitInspectionResponse({ items: ["a".repeat(200), "b"], nextOffset: null }, 0, 100)).toBeNull();
+    expect(fitInspectionResponse({ content: "a".repeat(200) }, 0, 100)).toBeNull();
+  });
+
   it("reads assigned repository URLs, snapshotted skill files, and workspace downloads with existing file restrictions", async () => {
     const root = await mkdtemp(join(directory, "workspace-"));
     await writeFile(join(root, "result.bin"), Buffer.alloc(2 * 1024 * 1024, 7));
