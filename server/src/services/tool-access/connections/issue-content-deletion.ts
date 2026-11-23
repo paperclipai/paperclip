@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issueConnectionContentDeletions, toolAccessAuditEvents, toolCallEvents, toolInvocations, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueConnectionContentDeletions, issues, toolAccessAuditEvents, toolCallEvents, toolInvocations, type Db } from "@paperclipai/db";
 import { initialContentDeletionProgress, runUsedToolsSql, settledRunSql, uuidList } from "./content-deletion.js";
 import { requestIssueAttachmentObjectDeletion } from "./stored-object-deletion.js";
 
@@ -8,6 +8,7 @@ export async function requestIssueConnectionContentDeletion(
   input: { companyId: string; issueId: string; actorAgentId?: string | null },
 ) {
   await requestIssueAttachmentObjectDeletion(tx, input);
+  const [issue] = await tx.select({ createdAt: issues.createdAt }).from(issues).where(eq(issues.id, input.issueId));
   const runs = await tx
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
@@ -60,7 +61,7 @@ export async function requestIssueConnectionContentDeletion(
       updatedAt: now,
       companyId: input.companyId,
       issueId: input.issueId,
-      scope: { runIds, invocationIds, eventIds },
+      scope: { runIds, invocationIds, eventIds, createdAfter: issue?.createdAt.toISOString() ?? null },
       requestedByActorType: input.actorAgentId ? "agent" : "system",
       requestedByActorId: input.actorAgentId ?? null,
       progress: initialContentDeletionProgress() as unknown as Record<string, unknown>,

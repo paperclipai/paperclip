@@ -93,10 +93,11 @@ type Scope = {
   runIds: string[];
   invocationIds: string[];
   eventIds: string[];
+  createdAfter: Date | null;
 };
 
 function connectionScope(connection: { id: string; companyId: string }, cutoff: Date): Scope {
-  return { companyId: connection.companyId, cutoff, connectionId: connection.id, issueId: null, runIds: [], invocationIds: [], eventIds: [] };
+  return { companyId: connection.companyId, cutoff, connectionId: connection.id, issueId: null, runIds: [], invocationIds: [], eventIds: [], createdAfter: null };
 }
 
 export function uuidList(values: string[]): SQL {
@@ -118,6 +119,11 @@ function callsInScopeSql(scope: Scope, columns: { connectionId: SQL; runId: SQL;
 
 function invocationsInScopeSql(scope: Scope) {
   return callsInScopeSql(scope, { connectionId: sql`${toolInvocations.connectionId}`, runId: sql`${toolInvocations.runId}`, invocationId: sql`${toolInvocations.id}` });
+}
+
+function wakeCarriesResultsSql(requestIds: SQL): SQL {
+  return sql`(${agentWakeupRequests.payload}->'toolActionRequestIds' ?| ${requestIds}
+    or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'toolActionRequestIds' ?| ${requestIds})`;
 }
 
 function savedResultSql(runId: SQL): SQL {
@@ -329,6 +335,15 @@ export function createConnectionContentDeletion(db: Db, deps: {
     return new Set(rows.map((row) => row.id));
   }
 
+  async function openRunIds(tx: Db, runIds: string[]) {
+    if (runIds.length === 0) return new Set<string>();
+    const rows = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(inArray(heartbeatRuns.id, runIds), sql`not ${settledRunSql(sql`${heartbeatRuns.id}`)}`));
+    return new Set(rows.map((row) => row.id));
+  }
+
   async function clearDeliveredResults(tx: Db, scope: Scope, progress: Progress, requests: Array<{ id: string; issueId: string | null }>) {
     const issueIds = scope.issueId ? [scope.issueId] : [...new Set(requests.flatMap((row) => row.issueId ? [row.issueId] : []))];
     if (issueIds.length === 0) return [];
@@ -360,8 +375,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .where(and(
         eq(agentWakeupRequests.companyId, scope.companyId),
         inArray(sql<string>`${agentWakeupRequests.payload}->>'issueId'`, issueIds),
-        sql`(${agentWakeupRequests.payload}->'toolActionRequestIds' ?| ${idList}
-          or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'toolActionRequestIds' ?| ${idList})`,
+        wakeCarriesResultsSql(idList),
       ))
       .for("update");
     for (const wake of wakes) {
@@ -510,6 +524,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .where(and(
         eq(toolAccessAuditEvents.companyId, scope.companyId),
         cutoffSql(sql`${toolAccessAuditEvents.createdAt}`, scope),
+        scope.createdAfter ? sql`${toolAccessAuditEvents.createdAt} >= ${scope.createdAfter.toISOString()}::timestamptz` : undefined,
         cursor ? sql`(${toolAccessAuditEvents.createdAt}, ${toolAccessAuditEvents.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)` : undefined,
         scope.connectionId
           ? eq(toolAccessAuditEvents.connectionId, scope.connectionId)
@@ -522,8 +537,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
     if (page.length === 0) return true;
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const runIds = [...new Set(page.flatMap((row) => row.runId && uuid.test(row.runId) ? [row.runId] : []))];
-    const settledRuns = await settledRunIds(tx, runIds);
-    const ids = page.filter((row) => !row.runId || !uuid.test(row.runId) || settledRuns.has(row.runId)).map((row) => row.id);
+    const openRuns = await openRunIds(tx, runIds);
+    const ids = page.filter((row) => !row.runId || !uuid.test(row.runId) || !openRuns.has(row.runId)).map((row) => row.id);
     progress.counts.itemsInProgress += page.length - ids.length;
     if (ids.length > 0) {
       const cleared = await tx
@@ -750,7 +765,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
   const issueJobs: JobStore<IssueDeletionRow> = {
     load: async (id) => (await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, id)))[0],
     scope: (row) => ({ companyId: row.companyId, cutoff: null, connectionId: null, issueId: row.issueId,
-      runIds: row.scope.runIds ?? [], invocationIds: row.scope.invocationIds ?? [], eventIds: row.scope.eventIds ?? [] }),
+      runIds: row.scope.runIds ?? [], invocationIds: row.scope.invocationIds ?? [], eventIds: row.scope.eventIds ?? [],
+      createdAfter: row.scope.createdAfter ? new Date(row.scope.createdAfter) : null }),
     waitMs: (row, open) => {
       const waitedMs = Date.now() - row.requestedAt.getTime();
       if (waitedMs >= ISSUE_WAIT_LIMIT_MS || open === 0) return null;
@@ -809,8 +825,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
       + (select count(*) from ${agentWakeupRequests} where ${agentWakeupRequests.companyId} = ${scope.companyId}
         and ${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}::text
         and ${agentWakeupRequests.status} in (${listSql(UNSETTLED_WAKE_STATUSES)})
-        and (${agentWakeupRequests.payload}->'toolActionRequestIds' ?| ${requestIds}
-          or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'toolActionRequestIds' ?| ${requestIds}))
+        and ${wakeCarriesResultsSql(requestIds)})
     )::int as count`);
     return Number(open?.count ?? 0);
   }

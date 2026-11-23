@@ -131,7 +131,7 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
       companyId: company!.id, name: "Canary agent", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
     }).returning();
     const [application] = await db.insert(toolApplications).values({ companyId: company!.id, name: `Docs ${randomUUID().slice(0, 6)}`, type: "mcp_http" }).returning();
-    const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Summarise the drive" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Summarise the drive", createdAt: new Date(Date.now() - 60 * 60_000) }).returning();
     return { company: company!, agent: agent!, application: application!, issue: issue! };
   }
 
@@ -324,7 +324,7 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     const kept = `CANARY${randomUUID().replace(/-/g, "")}`;
     const flow = await seedConnectionFlow(base, logs, marker);
     await seedDeliveryRun(base, logs, [{ actionRequestId: flow.actionRequest.id, marker }]);
-    const [otherIssue] = await db.insert(issues).values({ companyId: base.company.id, title: "Another task" }).returning();
+    const [otherIssue] = await db.insert(issues).values({ companyId: base.company.id, title: "Another task", createdAt: new Date(Date.now() - 60 * 60_000) }).returning();
     const otherBase = { ...base, issue: otherIssue! };
     const otherFlow = await seedConnectionFlow(otherBase, logs, kept);
     await seedDeliveryRun(otherBase, logs, [{ actionRequestId: otherFlow.actionRequest.id, marker: kept }]);
@@ -453,6 +453,43 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     await settle();
     await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, job!.id));
     await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("does not wait for an open wake that carries no result of the task", async () => {
+    const logs = stores(path.join(baseDir, "task-unrelated-wake"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    await seedConnectionFlow(base, logs, marker);
+    await db.insert(agentWakeupRequests).values([
+      { companyId: base.company.id, agentId: base.agent.id, source: "automation", status: "queued", payload: { issueId: base.issue.id } },
+      { companyId: base.company.id, agentId: base.agent.id, source: "automation", status: "queued",
+        payload: { issueId: base.issue.id, toolActionRequestIds: [randomUUID()] } },
+    ]);
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(job!.status).toBe("completed");
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("does not wait for an audit entry whose run no longer exists", async () => {
+    const logs = stores(path.join(baseDir, "task-dangling-run"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: base.company.id, applicationId: base.application.id, name: "Docs dangling", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    await db.insert(toolAccessAuditEvents).values({
+      companyId: base.company.id, connectionId: connection!.id, action: "tool_access.policy_decision", outcome: "success",
+      details: { decision: "allow", issueId: base.issue.id, runId: randomUUID(), toolName: "read_doc", argumentsSummary: summarizeToolValue({ query: marker }) },
+    });
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(job!.status).toBe("completed");
     expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
 

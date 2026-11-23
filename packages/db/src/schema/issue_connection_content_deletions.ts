@@ -8,7 +8,7 @@ export const issueConnectionContentDeletions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     issueId: uuid("issue_id").notNull(),
-    scope: jsonb("scope").$type<{ runIds: string[]; invocationIds: string[]; eventIds?: string[] }>().notNull(),
+    scope: jsonb("scope").$type<{ runIds: string[]; invocationIds: string[]; eventIds?: string[]; createdAfter?: string | null }>().notNull(),
     status: text("status").$type<"pending" | "completed">().notNull().default("pending"),
     requestedByActorType: text("requested_by_actor_type").notNull(),
     requestedByActorId: text("requested_by_actor_id"),
