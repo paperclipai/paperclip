@@ -57,7 +57,7 @@
     "packages/shared/src/agent-observability.ts": "52dc94e13624adeaf1aafa8996099a5dc158ef4b",
     "packages/shared/src/agent-runner.test.ts": "d02d0bba0cf57838011d4ec5f1304b65c15cff56",
     "packages/shared/src/agent-runner.ts": "c4e9a7206d8c5cba7d9d95e7b02389cc351f3ecb",
-    "packages/shared/src/agent-setup-progress.ts": "36b38acb8e372b8c3a9d14bcc99c2b4b76bc1083",
+    "packages/shared/src/agent-setup-progress.ts": "44e3b42853c8c3c795d2b5701a371d95c69adf55",
     "packages/shared/src/agent-url-key.ts": "d0ec20b3ea1636a960bc5372a2c1e5a124bc5511",
     "packages/shared/src/aggregator-app-catalog.test.ts": "39ee377e55cc9565fce004b928bbe0998268e004",
     "packages/shared/src/aggregator-app-catalog.ts": "d6778b07a41356878c549d039ae316553ca9a22b",
