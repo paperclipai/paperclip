@@ -48,11 +48,12 @@ export function agentSetupProgressUrls(origin: string, id: string): AgentSetupPr
   return { checklist: `${base}/checklist`, item: `${base}/items/{key}`, finish: `${base}/finish` };
 }
 
-/** Overall status follows the items until the agent says it finished. */
+/**
+ * Until the agent finishes, a checklist with steps is in progress, even with every step ticked off:
+ * only the finish carries the summary (such as the role ARN), and the page keeps refreshing until then.
+ */
 function statusFor(items: AgentSetupProgressItemRecord[]): AgentSetupProgressStatus {
-  if (items.length === 0) return "waiting";
-  if (items.some((item) => item.status === "failed")) return "in_progress";
-  return items.every((item) => item.status === "done") ? "done" : "in_progress";
+  return items.length === 0 ? "waiting" : "in_progress";
 }
 
 export function agentSetupProgressService(db: Db, options: { now?: () => Date } = {}) {
@@ -81,7 +82,11 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
   }
 
   /** Saves the agent's change; the update counter guards against two writes racing. */
-  async function save(row: Row, change: { items: AgentSetupProgressItemRecord[]; status?: AgentSetupProgressStatus; summary?: string | null }) {
+  async function save(
+    row: Row,
+    change: { items: AgentSetupProgressItemRecord[]; status?: AgentSetupProgressStatus; summary?: string | null },
+    activity: { action: string; details: Record<string, unknown> },
+  ) {
     const [saved] = await db.update(agentSetupProgress).set({
       items: change.items,
       status: change.status ?? statusFor(change.items),
@@ -90,6 +95,11 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       updatedAt: now(),
     }).where(and(eq(agentSetupProgress.id, row.id), eq(agentSetupProgress.updateCount, row.updateCount))).returning();
     if (!saved) throw conflict("The checklist changed at the same time. Send the update again.", { code: "agent_setup_progress_conflict" });
+    // Every change the agent makes is on the activity history; the token never is.
+    await logActivity(db, {
+      companyId: row.companyId, actorType: "system", actorId: "agent-setup", action: activity.action,
+      entityType: "agent_setup_progress", entityId: row.id, details: { purpose: row.purpose, ...activity.details },
+    });
     publish(saved);
     return toProgress(saved);
   }
@@ -133,14 +143,10 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       const items = input.items.map((item) => ({
         key: item.key, title: item.title, status: item.status ?? "pending", detail: item.detail ?? null,
       }));
-      const saved = await save(row, { items, summary: null });
-      if (row.items.length === 0) {
-        await logActivity(db, {
-          companyId: row.companyId, actorType: "system", actorId: "agent-setup", action: "agent_setup_progress.started",
-          entityType: "agent_setup_progress", entityId: row.id, details: { purpose: row.purpose, itemCount: items.length },
-        });
-      }
-      return saved;
+      return save(row, { items, summary: null }, {
+        action: row.items.length === 0 ? "agent_setup_progress.started" : "agent_setup_progress.checklist_replaced",
+        details: { itemCount: items.length },
+      });
     },
 
     async updateItem(id: string, key: string, authorization: string | undefined, input: UpdateAgentSetupItem) {
@@ -151,7 +157,7 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       const items = row.items.map((item) => item.key === key
         ? { ...item, status: input.status, detail: input.detail ?? item.detail }
         : item);
-      return save(row, { items });
+      return save(row, { items }, { action: "agent_setup_progress.item_updated", details: { key, status: input.status } });
     },
 
     async finish(id: string, authorization: string | undefined, input: FinishAgentSetup) {
@@ -163,12 +169,9 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       const items = input.status === "done"
         ? row.items.map((item) => item.status === "failed" ? item : { ...item, status: "done" as const })
         : row.items;
-      const saved = await save(row, { items, status: input.status, summary: input.summary ?? null });
-      await logActivity(db, {
-        companyId: row.companyId, actorType: "system", actorId: "agent-setup", action: "agent_setup_progress.finished",
-        entityType: "agent_setup_progress", entityId: row.id, details: { purpose: row.purpose, status: input.status },
+      return save(row, { items, status: input.status, summary: input.summary ?? null }, {
+        action: "agent_setup_progress.finished", details: { status: input.status },
       });
-      return saved;
     },
   };
 }

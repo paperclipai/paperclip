@@ -168,13 +168,32 @@ describe("AwsRoleSetup", () => {
     // Live updates are covered in AgentSetupProgress.test.tsx; here the agent has not reported yet.
     const progressClient: AgentSetupProgressClient = { create: vi.fn(async () => handoff), get: vi.fn(async () => progress) };
     await render(READY, { companyId: "company-1", progressClient });
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(progressClient.create).toHaveBeenCalledWith("company-1", { purpose: "aws_connection", subjectId: "conn-1" });
     expect(container.textContent).toContain("Paste the prompt into your agent. Its steps appear here as it works.");
     const prompt = awsAgentSetupPrompt(READY as Ready, "PROGRESS");
     expect(prompt).toContain("Also put it in your finish summary");
     // Progress reporting comes first, so the agent sets its checklist before it starts.
     expect(prompt.indexOf("PROGRESS")).toBeLessThan(prompt.indexOf("Steps:"));
+  });
+
+  it("says when live progress is unavailable, keeps the prompt, and tries again", async () => {
+    const create = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({
+      progress: { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1", purpose: "aws_connection", subjectId: "conn-1",
+        status: "waiting", items: [], summary: null, expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        createdAt: "2026-11-23T14:00:00.000Z", updatedAt: "2026-11-23T14:00:00.000Z" },
+      token: "pcsp_test", urls: { checklist: "https://x/checklist", item: "https://x/items/{key}", finish: "https://x/finish" },
+    });
+    const progressClient: AgentSetupProgressClient = { create, get: vi.fn(async () => { throw new Error("unused"); }) };
+    await render(READY, { companyId: "company-1", progressClient });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("Live progress isn’t available");
+    expect(container.querySelector('button[aria-label="Set it up with your agent"]')).not.toBeNull();
+    await act(async () => { button("Try again")?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Live progress isn’t available");
+    expect(container.textContent).toContain("Paste the prompt into your agent.");
   });
 
   it("points to the access-key method when AWS cannot reach this instance", async () => {

@@ -28,7 +28,7 @@ Board only, for members of the company. The `201` response returns the checklist
 }
 ```
 
-`GET /api/agent-setup-progress/{id}` reads it (board only, same company). Each agent update is also sent as an `agent_setup_progress.updated` live event carrying only the checklist ID.
+`GET /api/agent-setup-progress/{id}` reads it (board only, same company; another company's checklist answers 404, like a missing one). Each agent update is also sent as an `agent_setup_progress.updated` live event carrying only the checklist ID.
 
 ## Agent Requests
 
@@ -39,6 +39,8 @@ Each request sends `Authorization: Bearer <token>` and JSON.
 | `PUT …/checklist` | `{ "items": [{ "key": "check-account", "title": "Check the AWS account" }] }` | Replaces the checklist: 1 to 20 items; keys are lowercase letters, numbers, `-` and `_` (up to 40); titles up to 120 characters. |
 | `POST …/items/{key}` | `{ "status": "in_progress", "detail": "…" }` | Sets one step's status (`pending`, `in_progress`, `done` or `failed`) and an optional detail (up to 500 characters). |
 | `POST …/finish` | `{ "status": "done", "summary": "…" }` | Finishes the setup. `done` ticks off any open steps; `failed` keeps them. The summary is shown on the page. |
+
+The checklist stays `in_progress` until the agent finishes, even with every step done, because only the finish carries the summary. Each change is recorded on the activity history (never the token). The setup page keeps the same checklist if the person leaves the step and comes back, and offers to start again once a prompt expires.
 
 Errors: `400` for an invalid body, `401` when the token is missing or does not open this checklist, `404` for an unknown item, `409` when another update changed the checklist at the same time (send it again), `410` once the token expired, and `429` after 300 updates.
 

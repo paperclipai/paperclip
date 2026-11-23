@@ -163,9 +163,15 @@ export function AwsRoleSetup({
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
               <span className="text-foreground">Give this prompt to an agent on a computer signed in to your AWS account.</span>{" "}
-              {ready.savedRoleArn ? "It updates the existing role" : "It creates the role"} with the AWS CLI, shows its progress
-              here, and tells you the role ARN to paste below.
+              {ready.savedRoleArn ? "It updates the existing role" : "It creates the role"} with the AWS CLI
+              {agentProgress.handoff ? ", shows its progress here," : ""} and tells you the role ARN to paste below.
             </p>
+            {agentProgress.error ? (
+              <InlineBanner tone="warning" title="Live progress isn’t available">
+                {agentProgress.error} The prompt still works; your agent just won’t show its steps here.{" "}
+                <Button type="button" variant="outline" size="sm" className="ml-1" onClick={agentProgress.renew}>Try again</Button>
+              </InlineBanner>
+            ) : null}
             {promptReady ? (
               <AgentSetupPrompt
                 prompt={awsAgentSetupPrompt(ready, agentProgress.handoff ? agentSetupProgressInstructions(agentProgress.handoff, AWS_AGENT_SETUP_STEPS) : null)}
@@ -179,7 +185,14 @@ export function AwsRoleSetup({
                 <Loader2 className="h-4 w-4 animate-spin" /> Preparing the prompt…
               </p>
             )}
-            {agentProgress.handoff ? <AgentSetupProgressPanel progress={agentProgress.progress} subject="AWS" /> : null}
+            {agentProgress.handoff ? (
+              <AgentSetupProgressPanel
+                progress={agentProgress.progress}
+                subject="AWS"
+                expired={agentProgress.expired}
+                onRenew={agentProgress.renew}
+              />
+            ) : null}
             <div className="space-y-2">
               <label htmlFor="aws-role-arn" className="text-sm font-medium text-foreground">Role ARN</label>
               <Input

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AGENT_SETUP_PROGRESS_LIMITS } from "@paperclipai/shared";
 import type {
   AgentSetupProgress,
   AgentSetupProgressHandoff,
@@ -8,6 +9,7 @@ import type {
 } from "@paperclipai/shared";
 import { agentSetupProgressApi } from "@/api/agentSetupProgress";
 import { describeError } from "@/api/errors";
+import { Button } from "@/components/ui/button";
 import { StatusIcon } from "@/components/StatusIcon";
 import { timeAgo } from "@/lib/timeAgo";
 import { queryKeys } from "@/lib/queryKeys";
@@ -39,8 +41,10 @@ export interface AgentSetupStep {
 const SAFETY_REFETCH_MS = 20_000;
 
 /**
- * Creates one checklist for this setup (once per company, purpose and subject)
- * and follows it. Returns the agent's handoff for the prompt and the live checklist.
+ * Creates one checklist for this setup and follows it. The checklist is kept
+ * per company, purpose and subject, so leaving the step and coming back keeps
+ * following the checklist the copied prompt writes to. `renew` makes a fresh
+ * one, for an expired prompt or after a failed request.
  */
 export function useAgentSetupProgress({
   companyId,
@@ -50,30 +54,24 @@ export function useAgentSetupProgress({
   client = agentSetupProgressApiClient,
 }: CreateAgentSetupProgress & { companyId: string | null | undefined; enabled?: boolean; client?: AgentSetupProgressClient }) {
   const queryClient = useQueryClient();
-  const [handoff, setHandoff] = useState<AgentSetupProgressHandoff | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const requested = useRef<string | null>(null);
-  const requestKey = companyId && enabled ? `${companyId}:${purpose}:${subjectId ?? ""}` : null;
-
-  useEffect(() => {
-    if (!requestKey || requested.current === requestKey) return;
-    requested.current = requestKey;
-    setHandoff(null);
-    setError(null);
-    let cancelled = false;
-    client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) }).then(
-      (created) => {
-        if (cancelled) return;
-        queryClient.setQueryData(queryKeys.agentSetupProgress(created.progress.id), created.progress);
-        setHandoff(created);
-      },
-      (caught) => { if (!cancelled) setError(describeError(caught).body); },
-    );
-    return () => {
-      cancelled = true;
-      requested.current = null;
-    };
-  }, [client, companyId, purpose, queryClient, requestKey, subjectId]);
+  const handoffKey = ["agent-setup-progress-handoff", companyId ?? null, purpose, subjectId ?? null] as const;
+  const handoffQuery = useQuery({
+    queryKey: handoffKey,
+    queryFn: async () => {
+      const created = await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
+      queryClient.setQueryData(queryKeys.agentSetupProgress(created.progress.id), created.progress);
+      return created;
+    },
+    enabled: Boolean(companyId) && enabled,
+    // Creating is not idempotent: never re-create on its own, only through renew.
+    staleTime: Infinity,
+    gcTime: AGENT_SETUP_PROGRESS_LIMITS.lifetimeMs,
+    retry: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const handoff = handoffQuery.data ?? null;
 
   const progressId = handoff?.progress.id ?? null;
   const query = useQuery({
@@ -82,12 +80,22 @@ export function useAgentSetupProgress({
     enabled: Boolean(progressId),
     initialData: handoff?.progress,
     refetchInterval: (current) => {
-      const status = current.state.data?.status;
-      return status === "done" || status === "failed" ? false : SAFETY_REFETCH_MS;
+      const data = current.state.data;
+      if (!data || data.status === "done" || data.status === "failed") return false;
+      return Date.parse(data.expiresAt) > Date.now() ? SAFETY_REFETCH_MS : false;
     },
   });
+  const progress = query.data ?? handoff?.progress ?? null;
+  const expired = Boolean(progress && progress.status !== "done" && progress.status !== "failed"
+    && Date.parse(progress.expiresAt) <= Date.now());
 
-  return { handoff, progress: query.data ?? handoff?.progress ?? null, error };
+  return {
+    handoff,
+    progress,
+    expired,
+    error: handoffQuery.error ? describeError(handoffQuery.error).body : null,
+    renew: () => { void handoffQuery.refetch(); },
+  };
 }
 
 /**
@@ -126,13 +134,17 @@ const ITEM_LABEL: Record<AgentSetupProgressItemStatus, string | null> = {
 
 export interface AgentSetupProgressPanelProps {
   progress: AgentSetupProgress | null;
+  /** The prompt's token stopped working before the agent finished. */
+  expired?: boolean;
+  /** Makes a fresh checklist (and prompt) after it expired. */
+  onRenew?: () => void;
   /** What the agent is setting up, in a few words, such as "AWS". */
   subject: string;
   className?: string;
 }
 
 /** The live checklist. Before the agent reports anything, it says what to do and waits. */
-export function AgentSetupProgressPanel({ progress, subject, className }: AgentSetupProgressPanelProps) {
+export function AgentSetupProgressPanel({ progress, subject, expired = false, onRenew, className }: AgentSetupProgressPanelProps) {
   const [, setTick] = useState(0);
   // Keeps "Last update …" current while the panel is open.
   useEffect(() => {
@@ -156,9 +168,13 @@ export function AgentSetupProgressPanel({ progress, subject, className }: AgentS
       data-testid="agent-setup-progress"
     >
       <div className="space-y-1">
-        <h3 id="agent-setup-progress-heading" className="text-sm font-medium text-foreground">{heading}</h3>
+        <h3 id="agent-setup-progress-heading" className="text-sm font-medium text-foreground">
+          {expired ? "This setup prompt expired" : heading}
+        </h3>
         <p className="text-sm text-muted-foreground">
-          {status === "waiting"
+          {expired
+            ? "Its progress link stopped working before your agent finished. Start again for a new prompt, then give it to your agent."
+            : status === "waiting"
             ? "Paste the prompt into your agent. Its steps appear here as it works."
             : progress?.summary ?? (status === "done" ? "Every step is done." : "Keep your agent running; its steps update here.")}
         </p>
@@ -183,6 +199,9 @@ export function AgentSetupProgressPanel({ progress, subject, className }: AgentS
 
       {progress && status !== "waiting" ? (
         <p className="text-xs text-muted-foreground">Last update {timeAgo(progress.updatedAt)}</p>
+      ) : null}
+      {expired && onRenew ? (
+        <Button type="button" variant="outline" size="sm" onClick={onRenew}>Start again</Button>
       ) : null}
     </section>
   );

@@ -13,7 +13,7 @@ import { notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { agentSetupProgressService } from "../services/agent-setup-progress.js";
 import { workloadIdentityPublicOrigin } from "../services/workload-identity.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const idSchema = z.string().uuid();
 
@@ -70,9 +70,9 @@ export function agentSetupProgressBoardRoutes(db: Db) {
   router.get("/agent-setup-progress/:id", async (req, res) => {
     assertBoard(req);
     const id = idSchema.safeParse(req.params.id);
-    const progress = id.success ? await service.get(id.data) : null;
-    if (!progress) throw notFound("Setup progress not found");
-    assertCompanyAccess(req, progress.companyId);
+    // Another company's checklist answers exactly like a missing one.
+    const progress = await getAccessibleResource(req, res, id.success ? service.get(id.data) : null, "Setup progress not found");
+    if (!progress) return;
     res.json(progress);
   });
   return router;

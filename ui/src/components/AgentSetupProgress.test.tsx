@@ -60,7 +60,7 @@ describe("agent setup progress", () => {
     await act(async () => {
       root.render(<QueryClientProvider client={queryClient}><Harness client={client} /></QueryClientProvider>);
     });
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(client.create).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Your agent is setting up AWS");
     expect(container.textContent).toContain("Paste the prompt into your agent.");
@@ -90,5 +90,47 @@ describe("agent setup progress", () => {
     expect(container.textContent).toContain("Your agent set up AWS");
     expect(container.textContent).toContain("Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1");
     expect(client.create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps following the same checklist after leaving the step and coming back", async () => {
+    const client: AgentSetupProgressClient = { create: vi.fn(async () => HANDOFF), get: vi.fn(async () => WAITING) };
+    const show = (visible: boolean) => root.render(
+      <QueryClientProvider client={queryClient}>{visible ? <Harness client={client} /> : <p>other step</p>}</QueryClientProvider>,
+    );
+    await act(async () => { show(true); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { show(false); });
+    await act(async () => { show(true); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // The copied prompt writes to the first checklist, so coming back must not make another.
+    expect(client.create).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Your agent is setting up AWS");
+  });
+
+  it("says when the prompt expired and starts again with a fresh checklist", async () => {
+    const expiredAt = new Date(Date.now() - 1000).toISOString();
+    const stale: AgentSetupProgress = { ...WAITING, status: "in_progress", expiresAt: expiredAt,
+      items: [{ key: "check-account", title: "Check the AWS account", status: "in_progress", detail: null }] };
+    const fresh: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_fresh", progress: { ...WAITING, id: "22222222-2222-4222-8222-222222222222" } };
+    const create = vi.fn().mockResolvedValueOnce({ ...HANDOFF, progress: stale }).mockResolvedValueOnce(fresh);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === fresh.progress.id ? fresh.progress : stale) };
+    function Renewing() {
+      const state = useAgentSetupProgress({ companyId: "company-1", purpose: "aws_connection", subjectId: "conn-1", client });
+      return state.handoff ? (
+        <>
+          <span data-testid="token">{state.handoff.token}</span>
+          <AgentSetupProgressPanel progress={state.progress} subject="AWS" expired={state.expired} onRenew={state.renew} />
+        </>
+      ) : null;
+    }
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Renewing /></QueryClientProvider>); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("This setup prompt expired");
+    const startAgain = [...container.querySelectorAll("button")].find((b) => b.textContent === "Start again")!;
+    await act(async () => { startAgain.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="token"]')?.textContent).toBe("pcsp_fresh");
+    expect(container.textContent).toContain("Paste the prompt into your agent.");
   });
 });

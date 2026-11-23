@@ -78,6 +78,9 @@ describe("agent setup progress", () => {
       { key: "check-account", status: "done", detail: "Account 123456789012" },
       { key: "deploy-stack", status: "in_progress", detail: null },
     ] });
+    // Every step ticked off is still in progress: only the finish carries the summary, and the page keeps refreshing until it.
+    const ticked = await request(server).post(item("deploy-stack")).set(auth).send({ status: "done" }).expect(200);
+    expect(ticked.body.status).toBe("in_progress");
     const finished = await request(server).post(path(handoff.urls.finish)).set(auth)
       .send({ status: "done", summary: "Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1" }).expect(200);
     // Finishing done ticks off what is left.
@@ -85,13 +88,20 @@ describe("agent setup progress", () => {
       items: [{ status: "done" }, { status: "done" }] });
     stop();
     const progressEvents = events.filter((event) => event.type === "agent_setup_progress.updated");
-    expect(progressEvents).toHaveLength(4);
+    expect(progressEvents).toHaveLength(5);
     expect(progressEvents.every((event) => event.payload.progressId === handoff.progress.id)).toBe(true);
 
     const read = await request(server).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(200);
     expect(read.body.status).toBe("done");
     const actions = (await db.select().from(activityLog).where(eq(activityLog.entityId, handoff.progress.id))).map((row) => row.action).sort();
-    expect(actions).toEqual(["agent_setup_progress.created", "agent_setup_progress.finished", "agent_setup_progress.started"]);
+    // Every change is on the activity history, and no entry holds the token.
+    expect(actions).toEqual([
+      "agent_setup_progress.created", "agent_setup_progress.finished",
+      "agent_setup_progress.item_updated", "agent_setup_progress.item_updated", "agent_setup_progress.item_updated",
+      "agent_setup_progress.started",
+    ]);
+    const history = await db.select().from(activityLog).where(eq(activityLog.entityId, handoff.progress.id));
+    expect(JSON.stringify(history)).not.toContain(handoff.token);
   });
 
   it("refuses a missing or wrong token, an unknown item, an expired checklist and too many updates", async () => {
@@ -121,7 +131,10 @@ describe("agent setup progress", () => {
     const org = await company();
     const outsider = await company();
     const handoff = (await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
-    await request(app([outsider.id])).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(403);
+    // Another company's checklist answers exactly like a missing one.
+    const hidden = await request(app([outsider.id])).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(404);
+    const missing = await request(app([outsider.id])).get(`/api/agent-setup-progress/${randomUUID()}`).expect(404);
+    expect(hidden.body).toEqual(missing.body);
     await request(app([outsider.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(403);
   });
 });
