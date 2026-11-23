@@ -22,7 +22,7 @@ type Entry = "beta-welcome" | "first-run" | "portfolio" | "create-form";
 type Control = { role: string; name: string; scope?: string; fill?(value: string): void; click?(): void; select?(value: string): void };
 
 /** Visible control contracts only; no browser, Cloud API, or provider is started. */
-function fixture(entry: Entry, options: { intentFailure?: boolean; qualificationFailure?: boolean; traceFailure?: boolean } = {}) {
+function fixture(entry: Entry, options: { legacyRunnerPicker?: boolean; intentFailure?: boolean; qualificationFailure?: boolean; traceFailure?: boolean } = {}) {
   let stage: string = entry, name = "", apiMode = false, source = false, advanced = false, runnerOpen = false;
   let modelsOpen = false, model = "", runner = "", saved = false, hired = false;
   const fields: Record<string, string> = {}, events: string[] = [];
@@ -56,7 +56,7 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
       { role: "button", name: apiMode ? "Use subscription instead" : "Use API key instead", click() { apiMode = !apiMode; } },
       { role: "radio", name: apiMode ? "OpenAI API key" : "OpenAI Subscription", click() { source = true; } },
     ];
-    if (source && apiMode) result.push({ role: "button", name: "Use a custom gateway", click() { stage = "gateway"; } });
+    if (source && apiMode && (advanced || options.legacyRunnerPicker)) result.push({ role: "button", name: "Use a custom gateway", click() { stage = "gateway"; } });
     if (stage === "gateway") {
       result.push({ role: "dialog", name: "Custom gateway connection" });
       for (const field of ["Provider URL", "API key", ...(modelsOpen ? ["Model IDs"] : [])]) result.push({
@@ -70,9 +70,9 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
     }
     if (saved) result.push({ role: "combobox", name: "Model", select(value) { expect(value).toBe(gateway.model); model = value; } });
     if (source) result.push({ role: "summary", name: "Advanced", click() { advanced = true; } });
-    if (advanced) result.push({ role: "button", name: "Runner", click() { runnerOpen = true; } });
+    if (advanced && options.legacyRunnerPicker) result.push({ role: "button", name: "Runner", click() { runnerOpen = true; } });
     if (runnerOpen) result.push({ role: "option", name: "Paperclip Runner (default)", click() { runner = "paperclip"; runnerOpen = false; } });
-    if (saved && model && runner) result.push({ role: "button", name: "Connect", click() {
+    if (saved && model && (!options.legacyRunnerPicker || runner)) result.push({ role: "button", name: "Connect", click() {
       expect(events).toContain("qualified"); events.push("paid:connect"); hired = true;
     } });
     return result;
@@ -148,6 +148,12 @@ describe("Cloud onboarding visible controls", () => {
     expect(f.events.indexOf("intent:workspace")).toBeLessThan(f.events.indexOf("create:workspace"));
     expect(f.events.indexOf("intent:connection")).toBeLessThan(f.events.indexOf("save:connection"));
     expect(f.events.indexOf("qualified")).toBeLessThan(f.events.indexOf("paid:connect"));
+    expect(f.events).toContain("native:verified");
+  });
+  it("can still choose the native runner on tenants with a separate runner picker", async () => {
+    const f = fixture("first-run", { legacyRunnerPicker: true });
+    await cloudOnboarding(f.input);
+    expect(f.events).toContain("click:Paperclip Runner (default)");
     expect(f.events).toContain("native:verified");
   });
   it("does not dispatch workspace creation without durable ownership", async () => {
