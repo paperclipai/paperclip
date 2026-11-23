@@ -237,6 +237,8 @@ test("selectTestProjects follows the import graph so imported UI and server help
   assert.deepEqual(selectTestProjects(["ui/src/components/Sidebar.tsx"]), []);
   assert.ok(selectTestProjects(["server/src/services/issues.ts"]).includes("tests/runner-e2e"));
   assert.ok(selectTestProjects(["server/src/services/issues.ts"]).includes("server/src/__tests__/helpers/maintenance"));
+  assert.ok(selectTestProjects(["server/src/index.ts"]).includes("tests/e2e"));
+  assert.ok(selectTestProjects(["packages/db/src/test-embedded-postgres.ts"]).includes("tests/e2e"));
   assert.ok(selectTestProjects(["tests/unknown-new-project/a.ts"], [...PROJECTS, "tests/unknown-new-project"]).includes("tests/unknown-new-project"));
 
   const uiHelperPlan = planLane({
