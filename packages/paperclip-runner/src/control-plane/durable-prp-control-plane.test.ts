@@ -423,7 +423,7 @@ it("stages and restores a run attachment for every tool catalog the provider pro
   while (runnerCodexDynamicToolsFit(denseToolCatalog(250, valuesPerTool + 10))) valuesPerTool += 10;
   const tools = denseToolCatalog(250, valuesPerTool);
   expect(runnerCodexDynamicToolsFit(tools)).toBe(true);
-  const connectorCatalog = denseToolCatalog(180, 300);
+  const connectorCatalog = denseToolCatalog(180, 400);
   expect(Buffer.byteLength(JSON.stringify(connectorCatalog))).toBeLessThan(768 * 1024);
   expect(runnerCodexDynamicToolsFit(connectorCatalog)).toBe(false);
   const root = mkdtempSync(resolve(tmpdir(), "runner-large-catalog-"));
@@ -443,6 +443,29 @@ it("stages and restores a run attachment for every tool catalog the provider pro
     } finally {
       await restored.stop();
     }
+  } finally {
+    await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("leaves room in the run attachment for the instructions it reserves", async () => {
+  const instructions = "Large agent instructions. ".repeat(6_000);
+  const reserved = Buffer.byteLength(JSON.stringify(instructions));
+  let valuesPerTool = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(100, valuesPerTool + 10))) valuesPerTool += 10;
+  const unreserved = denseToolCatalog(100, valuesPerTool);
+  expect(runnerCodexDynamicToolsFit(unreserved, reserved)).toBe(false);
+  let fitting = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(100, fitting + 10), reserved)) fitting += 10;
+  const tools = denseToolCatalog(100, fitting);
+  const root = mkdtempSync(resolve(tmpdir(), "runner-reserved-catalog-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000004", turnId: "reserved-turn", itemId: "reserved-item" };
+  const template = { provider: { provider: "acpx", command: "fixture", instructions }, authorizedTools: authorizedToolSetForProvider("acpx", tools) };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  core.setCheckpointPersistence(async () => undefined);
+  try {
+    expect(() => core.stageRunAttachment(target, template)).not.toThrow();
+    await core.flushCheckpoint();
   } finally {
     await core.stop(); rmSync(root, { recursive: true, force: true });
   }

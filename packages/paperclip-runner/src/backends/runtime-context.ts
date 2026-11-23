@@ -9,6 +9,17 @@ import {
   composeNativeSystemInstructions,
 } from "../contracts/runtime-context.js";
 
+export function nativeRunAttachReservedBytes(input: NativeExecutionInput): number {
+  const runtimeContextBytes = Buffer.byteLength(JSON.stringify("runtimeContext" in input ? input.runtimeContext : null), "utf8");
+  let instructionsBytes: number;
+  try {
+    instructionsBytes = Buffer.byteLength(JSON.stringify(nativeSystemInstructions(input)), "utf8");
+  } catch {
+    instructionsBytes = 128 * 1024;
+  }
+  return runtimeContextBytes + instructionsBytes;
+}
+
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
   const configuredRoot = resolve(

@@ -65,7 +65,7 @@ const transitionCoreStateSchema =
 const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
-const MAX_RUN_ATTACH_TOOL_CATALOG_BYTES = 384 * 1024;
+const RUN_ATTACH_ENVELOPE_BYTES = 32 * 1024;
 const maxCommands = 500;
 const maxCommandsAtAttach = 32;
 const maxEventsPerAck = 64;
@@ -872,9 +872,10 @@ function canonicalDigest(value: unknown, maxNodes = MAX_CONTROLLER_JSON_NODES): 
   return createHash("sha256").update(canonicalJson(value, new WeakSet<object>(), { nodes: 0, maxNodes })).digest("hex");
 }
 
-export function runAttachToolCatalogFits(authorizedTools: Record<string, unknown>): boolean {
+export function runAttachToolCatalogFits(authorizedTools: Record<string, unknown>, reservedBytes = 0): boolean {
   try {
-    return Buffer.byteLength(canonicalJson(authorizedTools), "utf8") <= MAX_RUN_ATTACH_TOOL_CATALOG_BYTES;
+    return Buffer.byteLength(canonicalJson(authorizedTools), "utf8") + RUN_ATTACH_ENVELOPE_BYTES + Math.max(0, reservedBytes)
+      <= maxCommandBytes;
   } catch {
     return false;
   }

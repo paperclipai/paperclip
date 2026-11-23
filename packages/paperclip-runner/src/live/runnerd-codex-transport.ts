@@ -3882,13 +3882,14 @@ export function authorizedToolSetForProvider(
 /** Include the completion tools that the Codex driver adds at session startup. */
 export function runnerCodexDynamicToolsFit(
   tools: readonly Readonly<Record<string, unknown>>[],
+  reservedRunAttachBytes = 0,
 ): boolean {
   const supplied = [...tools, ...codexSemanticToolSpecs()];
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
   if (supplied.length > 256) return false;
   const catalog = authorizedToolSet(supplied);
-  return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog);
+  return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog, reservedRunAttachBytes);
 }
 
 /**
