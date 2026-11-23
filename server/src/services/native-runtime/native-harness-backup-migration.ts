@@ -19,7 +19,8 @@ export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean>
   return false;
 }
 
-async function* localNativeHarnessObligationScopes(db: Db, all = false, signal?: AbortSignal): AsyncGenerator<string> {
+async function* localNativeHarnessObligationScopes(db: Db, all = false, signal?: AbortSignal,
+  skip: ReadonlySet<string> = new Set()): AsyncGenerator<string> {
   let afterSession = "", afterScope = "";
   for (;;) {
     signal?.throwIfAborted();
@@ -45,6 +46,7 @@ async function* localNativeHarnessObligationScopes(db: Db, all = false, signal?:
       while (!failed && (all || !invalid.length) && next < rows.length) {
         signal?.throwIfAborted();
         const row = rows[next++]!;
+        if (skip.has(row.scope_digest)) continue;
         try {
           if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
             companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
@@ -276,14 +278,16 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       throw error;
     }
   });
-  for await (const scopeDigest of localNativeHarnessObligationScopes(db, true, input.signal)) {
+  let absent = 0;
+  for await (const scopeDigest of localNativeHarnessObligationScopes(db, true, input.signal, visited)) {
     input.signal.throwIfAborted();
     if (visited.has(scopeDigest)) continue;
     visited.add(scopeDigest);
-    outcomes.push("selected_source_absent");
+    absent++;
     input.onOutcome?.("selected_source_absent");
   }
   const counts = { inspected: outcomes.length, published: 0, current: 0, deferred: {} as Record<string, number> };
+  if (absent) counts.deferred.selected_source_absent = absent;
   for (const outcome of outcomes) {
     if (outcome === "published" || outcome === "current") counts[outcome]++;
     else counts.deferred[outcome] = (counts.deferred[outcome] ?? 0) + 1;

@@ -123,7 +123,11 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     const [before] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const result = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) });
     expect(result.published).toBe(1);
-    expect(Object.keys(result.deferred).filter(outcome => outcome !== "selected_source_absent")).toEqual([]);
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(environment.current.runtimeRoot, randomUUID()));
+    const leftover = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) });
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", f.base);
+    expect(leftover).toMatchObject({ inspected: 0, published: 0 });
+    expect(result.deferred).toEqual(leftover.deferred);
     expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest)))[0].status).toBe("current");
     expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(before);
     expect(await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.lastRunId, f.runId))).toEqual(sessions);
@@ -155,7 +159,7 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     const absent = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
     expect(absent.deferred.source_run_active).toBeUndefined();
     expect(absent.deferred.selected_source_absent).toBe((present.deferred.selected_source_absent ?? 0) + 1);
-    expect(absent.published).toBe(0);
+    expect(absent).toMatchObject({ inspected: 0, published: 0 });
   });
   it("stops the selected-source scan once the pass is cancelled", async () => {
     const f = await fixture(), controller = new AbortController();
