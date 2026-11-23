@@ -664,6 +664,7 @@ describe("HTTP logger redaction", () => {
       "/mcp/gateways/public-gateway-1",
       "/mcp/native-runs/run-1",
       "/mcp/runtime-tools",
+      "/mcp/runner",
       "/api/mcp/project-tools",
       "/api/issues/issue-1/mcp-app-views/view-1/tool-calls",
       "/api/tool-connections/connection-1/test-calls",

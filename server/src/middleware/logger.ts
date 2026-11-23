@@ -214,13 +214,7 @@ export function createHttpLogger(baseLogger: Logger) {
               : {}),
           };
         }
-        if (isPrivateToolCallHttpRequest(requestClassificationUrl(req))) {
-          return {
-            reqBody: "[REDACTED]",
-            ...(ctx ? { errorContext: redactSensitive(ctx.error), reqParams: redactSensitive(ctx.reqParams) } : {}),
-            ...((req as any).route?.path ? { routePath: (req as any).route.path } : {}),
-          };
-        }
+        const toolCall = isPrivateToolCallHttpRequest(requestClassificationUrl(req));
         if (ctx) {
           const secretSensitiveRoute = isSecretSensitiveHttpRequest(
             req.method,
@@ -233,13 +227,15 @@ export function createHttpLogger(baseLogger: Logger) {
             errorContext: secretSensitiveRoute
               ? { name: "Error" }
               : redactSensitive(ctx.error),
-            reqBody: redactSensitive(ctx.reqBody),
+            reqBody: toolCall ? "[REDACTED]" : redactSensitive(ctx.reqBody),
             reqParams: redactSensitive(ctx.reqParams),
           };
         }
         const props: Record<string, unknown> = {};
         const { body, params } = req as any;
-        if (body && typeof body === "object" && Object.keys(body).length > 0) {
+        if (toolCall) {
+          props.reqBody = "[REDACTED]";
+        } else if (body && typeof body === "object" && Object.keys(body).length > 0) {
           props.reqBody = redactSensitive(body);
         }
         if (
