@@ -45,6 +45,7 @@ export function calendarProbeRequest(): GoogleRequest {
 export const listCalendars = defineTool({
   definition: {
     name: "list_calendars",
+    title: "List calendars",
     description: "Lists the calendars the signed-in user owns or has subscribed to, as shown in Google Calendar's calendar list. Use it to turn a name such as \"my family calendar\" into a calendar ID. Other calendars shared with the user can still be read by their ID.",
     inputSchema: {
       type: "object",
