@@ -231,8 +231,10 @@ gateways. The server emits all of them through
   the app setup screens (`origin: user`), or from the tool gateway when an
   agent calls `COMPOSIO_MANAGE_CONNECTIONS` with `add`, or when an Arcade tool
   call answers with an authorization step (`origin: agent`). `outcome` is
-  `needs_auth` when the provider returns a sign-in step, `succeeded` when the
-  app is already connected, and `failed` otherwise.
+  read from each app's own result: `needs_auth` when the provider returns a
+  sign-in step for that app, `succeeded` when the app is connected, and
+  `failed` otherwise. A sign-in link for another app in the same request
+  never counts.
 
 ## Cloud Direct Delivery
 

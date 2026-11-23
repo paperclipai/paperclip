@@ -12,7 +12,7 @@ import {
   trackConnectionAppRequested,
 } from "@paperclipai/shared/telemetry";
 import { remoteEndpointValue } from "./tool-access/connection-methods.js";
-import { composioAppSetupResult } from "./composio-app-setup.js";
+import { composioAddOutcomes } from "./composio-app-setup.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
@@ -414,21 +414,11 @@ function addedComposioToolkits(parameters: unknown): string[] {
   });
 }
 
-/** Outcome of one toolkit in a `COMPOSIO_MANAGE_CONNECTIONS` add response, read from that toolkit's own result. */
-function composioAddOutcome(response: unknown, toolkit: string): AggregatorAppRequestOutcome {
-  try {
-    const result = composioAppSetupResult(response, toolkit);
-    return result.status === "connected" ? "succeeded" : result.status === "authorization_required" ? "needs_auth" : "failed";
-  } catch {
-    // A provider or protocol error in the response.
-    return "failed";
-  }
-}
-
 /**
  * Agent-side app requests seen by the tool gateway: a Composio
  * `COMPOSIO_MANAGE_CONNECTIONS` call whose arguments add one or more
- * toolkits, each with the outcome read from its own result in the response,
+ * toolkits, each with the outcome read from its own result node in the
+ * response (`composioAddOutcomes`),
  * or an Arcade tool call that answered with an authorization step (the agent
  * tried to use an app its person has not connected yet; the toolkit is the
  * tool name's prefix, e.g. `Gmail` from `Gmail_SendEmail`). Other tools and
@@ -446,12 +436,16 @@ export function emitAggregatorAppRequestsFromToolCall(input: {
   try {
     if (!input.origin) return;
     if (input.provider === "composio" && input.toolName === "COMPOSIO_MANAGE_CONNECTIONS") {
-      for (const toolkit of new Set(addedComposioToolkits(input.parameters))) {
+      const added = [...new Set(addedComposioToolkits(input.parameters))];
+      if (!added.length) return;
+      const outcomes = composioAddOutcomes(input.response, added);
+      for (const toolkit of added) {
+        const outcome = outcomes.get(toolkit);
         emitAggregatorAppsRequested(input.companyId, {
           provider: "composio",
           toolkits: [toolkit],
           origin: input.origin,
-          outcome: composioAddOutcome(input.response, toolkit),
+          outcome: outcome === "connected" ? "succeeded" : outcome === "authorization_required" ? "needs_auth" : "failed",
         });
       }
       return;

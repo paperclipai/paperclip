@@ -181,7 +181,11 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
           .returning({ toolkit: toolConnectionAppSnapshots.toolkit });
         // Emit per committed row: a later toolkit in this batch may still throw.
         // A write that lost to a newer observation changed nothing and emits nothing.
-        if (written.length) emitAggregatorAppsLinked(connection.companyId, "composio", newlyLinkedToolkits(previous, [{ toolkit: tool.name, status }]));
+        if (written.length) {
+          emitAggregatorAppsLinked(connection.companyId, "composio", newlyLinkedToolkits(previous, [{ toolkit: tool.name, status }]));
+          // A repeated toolkit in the same batch compares against this write, not the stale read.
+          previous.set(tool.name, status);
+        }
       }
       return { payload, failedToolkits };
       } catch (error) { await markFailed(); throw error; }

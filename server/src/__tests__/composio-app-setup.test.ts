@@ -360,6 +360,13 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(f.access.refreshComposioApps(f.connection.id, ["circleback_mcp", "notion"], f.actor)).rejects.toThrow();
     expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp") }]]);
   });
+  it("emits app_linked once when the same app is named twice in one check", async () => {
+    const f = await fixture();
+    f.activate();
+    track.mockClear();
+    await f.access.refreshAggregatorApps(f.connection.id, ["circleback_mcp", "circleback_mcp"], f.actor);
+    expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp") }]]);
+  });
   it("reports a failed app request when Composio does not confirm the new account", async () => {
     const f = await fixture();
     f.setMutationStatus(500);

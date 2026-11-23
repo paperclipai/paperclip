@@ -438,7 +438,7 @@ describe("aggregator app events", () => {
     expect(track.mock.calls).toEqual([
       ["connection.app_requested", { provider: "composio", app: "github", origin: "agent", outcome: "succeeded" }],
       ["connection.app_requested", { provider: "composio", app: "gmail", origin: "agent", outcome: "needs_auth" }],
-      ["connection.app_requested", { provider: "composio", app: "other", origin: "agent", outcome: "needs_auth" }],
+      ["connection.app_requested", { provider: "composio", app: "other", origin: "agent", outcome: "failed" }],
     ]);
     track.mockClear();
     emitAggregatorAppRequestsFromToolCall({ ...call, parameters: { toolkits: [{ name: "github", action: "list" }] } });
@@ -453,6 +453,25 @@ describe("aggregator app events", () => {
     emitAggregatorAppRequestsFromToolCall({ ...call, response: { jsonrpc: "2.0", id: "1", result: { isError: true, content: [] } } });
     emitAggregatorAppRequestsFromToolCall({ ...call, response: { jsonrpc: "2.0", id: "1", result: { structuredContent: { data: { results: {} } } } } });
     expect(track.mock.calls.map(([, dims]) => dims.outcome)).toEqual(["failed", "failed", "failed"]);
+  });
+
+  it("never lets a sibling's sign-in link or a top-level link mark another app as needs_auth", () => {
+    const link = "https://connect.composio.dev/link/abc";
+    const call = { companyId: "company-1", provider: "composio", toolName: "COMPOSIO_MANAGE_CONNECTIONS", origin: "agent" as const, pendingAuthorization: true };
+    emitAggregatorAppRequestsFromToolCall({ ...call,
+      parameters: { toolkits: [{ name: "gmail", action: "add" }, { name: "slack", action: "add" }] },
+      response: { jsonrpc: "2.0", id: "1", result: { structuredContent: { data: { results: { gmail: { redirect_url: link }, slack: { toolkit: "slack", error: "not enabled" } } } } } } });
+    emitAggregatorAppRequestsFromToolCall({ ...call,
+      parameters: { toolkits: [{ name: "gmail", action: "add" }, { name: "slack", action: "add" }] },
+      response: { jsonrpc: "2.0", id: "1", result: { structuredContent: { redirect_url: link } } } });
+    emitAggregatorAppRequestsFromToolCall({ ...call,
+      parameters: { toolkits: [{ name: "gmail", action: "add" }] },
+      response: { jsonrpc: "2.0", id: "1", result: { structuredContent: { redirect_url: link } } } });
+    expect(track.mock.calls.map(([, dims]) => `${dims.app}:${dims.outcome}`)).toEqual([
+      "gmail:needs_auth", "slack:failed",
+      "gmail:failed", "slack:failed",
+      "gmail:needs_auth",
+    ]);
   });
 
   it("reports an Arcade tool call that asks for authorization as a request for its toolkit", () => {
