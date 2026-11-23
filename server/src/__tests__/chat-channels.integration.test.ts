@@ -3196,7 +3196,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (scenario === "pending_publication") {
         expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
         expect(response.result?.final).not.toBe(true);
-        expect(response).toMatchObject({ status: "failed", result: { retryable: true, code: "acknowledgement_unconfirmed" } });
+        // Waiting for the reply to settle spends no delivery retry.
+        expect(response.status).toBe("processed");
+        expect(response.result?.attempts).toBeUndefined();
       } else if (pendingPresentation) {
         expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
         expect(response.result?.final).not.toBe(true);

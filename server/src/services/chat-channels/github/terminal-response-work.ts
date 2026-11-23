@@ -4,7 +4,7 @@ import { chatActions, chatConversations, chatDeliveries, chatEndpointLeases, cha
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
-import { githubResponseExecution, settlesFromRequestRun } from "./response-execution.js";
+import { githubResponseExecution } from "./response-execution.js";
 import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 import { HttpError } from "../../../errors.js";
@@ -89,11 +89,6 @@ export function registerGitHubTerminalResponseWork(
    * recorded: a publication that commits it changes no wait-key input, and a
    * restart can lose the hint that its lease release sends. */
   async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | { parkable: boolean }> {
-    // A request whose own run finished while another request's run became the
-    // latest is owed now. Its acknowledgement reads the reply state, so the page
-    // read stays batched.
-    if (!("forbidden" in read) && settlesFromRequestRun(read, row.issueStatus) &&
-        !read.finishedRequestRun!.nativePresentationPending) return pending(row);
     try {
       const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
       if (execution.body === undefined || execution.reply === "unsettled" ||

@@ -194,9 +194,24 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     // The latest runs, their requester provenance, and the earlier runs: each one statement for the page.
     expect(read.statements).toBeLessThanOrEqual(4);
     expect(reads.every(state => !("forbidden" in state) && !state.ownsLatestRequest && state.finishedRequestRun)).toBe(true);
+    // One earlier run is still publishing its reply: that request waits.
+    const publishing = f.stale[0]!;
+    const [publishingRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId), sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${publishing.commentId}`));
+    const [conversation] = await db.select({ conversationId: chatActions.conversationId }).from(chatActions)
+      .where(eq(chatActions.id, publishing.actionId));
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: conversation!.conversationId, kind: "github_review_publication",
+      providerActionId: `github_publication:${randomUUID()}`, status: "processing",
+      payload: { operation: "comment", session: { companyId: f.companyId, issueId: publishing.issueId,
+        runId: publishingRun!.id, agentId: f.agentId } } });
     await start(); await advance(31_000);
-    expect(new Set(acknowledged)).toEqual(new Set(f.stale.map(request => request.deliveryId)));
-    expect(await finals(f.stale.map(request => request.actionId))).toBe(f.stale.length);
+    const settled = f.stale.filter(request => request !== publishing);
+    expect(new Set(acknowledged)).toEqual(new Set(settled.map(request => request.deliveryId)));
+    expect(await finals(settled.map(request => request.actionId))).toBe(settled.length);
+    const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, publishing.actionId));
+    expect(waiting).toMatchObject({ status: "processed" });
+    expect(waiting!.result?.final).not.toBe(true);
   }, 300_000);
 
   it("acknowledges every owed request of a page when one run's requester provenance changed", async () => {

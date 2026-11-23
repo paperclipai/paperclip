@@ -247,7 +247,12 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           sourceMessageId: source.sourceMessageId, issueStatus: source.issueStatus,
           deliveryCreatedAt: source.delivery.createdAt,
         });
-        if (execution.reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+        if (execution.reply === "unsettled") {
+          // An acknowledged request waits for its reply to settle without
+          // spending delivery retries; the terminal sweep reads it again.
+          if (existing.status === "processed" && existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
+          throw conflict("GitHub reply is still being resolved");
+        }
         if (execution.presentationPending) return;
         if (isMainPullResponse(source) && execution.passiveResponseWait) {
           // Preserve the shared assessment when this exact run intentionally waits
