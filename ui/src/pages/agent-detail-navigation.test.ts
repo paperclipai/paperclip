@@ -15,6 +15,7 @@ describe("agent detail navigation", () => {
     expect(AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items.map((item) => item.value))).toEqual([
       "overview",
       "instructions",
+      "skills",
       "runtime",
       "secrets",
       "permissions",
@@ -24,11 +25,11 @@ describe("agent detail navigation", () => {
       "costs",
       "budgets",
     ]);
+    expect(parseAgentDetailView("skills")).toBe("skills");
     expect(agentDetailViewLabel("instructions")).toBe("Identity");
   });
 
   it("keeps views that left the nav reachable by URL", () => {
-    expect(parseAgentDetailView("skills")).toBe("skills");
     expect(parseAgentDetailView("tools")).toBe("tools");
     expect(parseAgentDetailView("channels")).toBe("channels");
     expect(parseAgentDetailView("api-keys")).toBe("api-keys");

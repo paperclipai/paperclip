@@ -66,6 +66,7 @@ describe("AgentContextualSidebar", () => {
     expect(markup).toContain('href="/agents/codexcoder/advanced"');
     expect(markup).toContain('href="/agents/codexcoder/permissions"');
     expect(markup).toContain('href="/agents/codexcoder/identity"');
+    expect(markup).toContain('href="/agents/codexcoder/skills"');
     expect(markup).not.toContain('href="/agents/codexcoder/api-keys"');
     expect(markup).toContain('href="/agents/codexcoder/activity"');
     expect(markup).toContain('href="/agents/codexcoder/runs"');
