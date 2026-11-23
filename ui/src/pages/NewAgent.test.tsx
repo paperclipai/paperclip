@@ -1461,7 +1461,8 @@ describe("New agent setup", () => {
     const thinking = container.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
     expect(thinking.value).toBe("max");
     expect([...thinking.options].map(option => option.value)).toEqual(["", "off", "low", "high", "max"]);
-    expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Connection"][role="combobox"]')?.textContent).toContain("Use harness sign-in");
+    expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).not.toBeNull();
   });
 
   it.each(["auto", "legacy"] as const)("keeps OpenCode %s selection consistent between testing and hiring", async runner => {
@@ -1530,6 +1531,35 @@ describe("New agent setup", () => {
       expect(api.update.mock.invocationCallOrder.at(-1)).toBeLessThan(api.testEnvironment.mock.invocationCallOrder.at(-1)!);
       expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
     }
+  });
+
+  it("preserves native Pi harness sign-in after saving and reopening setup", async () => {
+    const id = "00000000-0000-4000-8000-000000000095";
+    let draft = { id, companyId: "company-1", name: "Pi", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "openrouter/anthropic/claude-sonnet-4.6" },
+      runtimeConfig: { heartbeat: { enabled: false }, aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } } as Record<string, unknown>,
+      pauseReason: "setup", status: "paused" };
+    state.params = new URLSearchParams({ name: "Pi", adapterType: "pi_local", setupAgentId: id });
+    api.get.mockImplementation(async () => draft);
+    api.update.mockImplementation(async (_id, patch) => { draft = { ...draft, ...patch }; return draft; });
+    await renderCurrentParams();
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Use harness sign-in")!;
+    await act(async () => option.click());
+    await settle();
+    await click("Save & exit");
+    expect(draft.runtimeConfig.aiConnection).toBeUndefined();
+    await act(async () => root.render(null));
+    cache.removeQueries({ queryKey: queryKeys.agents.detail(id) });
+    await renderCurrentParams();
+    expect(container.querySelector('[aria-label="Connection"][role="combobox"]')?.textContent).toContain("Use harness sign-in");
+    expect(container.textContent).not.toContain("You have no default account");
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)![1].runtimeConfig.aiConnection).toBeUndefined();
   });
 
   it("retains automatic OpenCode selection while the first draft request is in flight", async () => {

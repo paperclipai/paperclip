@@ -228,13 +228,6 @@ function Setup({
   const runtimeReady = Boolean(created && isAgentStatusInvokable(created.status)
     && (!created.lifecycleState || created.lifecycleState === "ready"));
   const finishingSetup = !isDot && ["preparing", "verifying", "resuming", "pausing"].includes(created?.lifecycleState ?? "");
-  useEffect(() => {
-    if (brandType !== "pi_local" || created?.adapterType !== "paperclip_runner"
-      || created.runtimeConfig.aiConnection) return;
-    const env = (created.adapterConfig.env ?? {}) as Record<string, unknown>;
-    if (Object.values(PROVIDER_ENV_KEYS).some(key => env[key] !== undefined)) return;
-    setRuntimeAiBinding(current => current ?? { provider: "openrouter", method: "api_key", mode: "responsible_user" });
-  }, [brandType, created?.id, created?.adapterType]);
   const savedNativeMultiProvider = multiProvider && (Boolean(setupAgentId) || runner === "legacy")
     && created?.adapterType === "paperclip_runner";
   const requestAdapterType = savedNativeMultiProvider || (preserveNativeHarness && runner === "paperclip")
