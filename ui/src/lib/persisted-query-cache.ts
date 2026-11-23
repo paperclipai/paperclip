@@ -17,7 +17,7 @@ const controllers = new WeakMap<QueryClient, { clear: () => void }>();
 /** Per client: each restored query's hash and the read time it was restored with. */
 const restoredReads = new WeakMap<QueryClient, Map<string, number>>();
 type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
-type Envelope = { version: 1; userId: string; companyId: string | null; buildId: string; revision: string | null; savedAt: number; state: DehydratedState };
+type Envelope = { version: 1; userId: string; companyId: string | null; buildId: string; revision: string | null; savedAt: number; state: DehydratedState; visits?: Record<string, number> };
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" ? value as Record<string, unknown> : null;
 const userIdOf = (value: unknown) => {
   const id = object(object(value)?.user)?.id;
@@ -382,6 +382,13 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       catch { try { storage.removeItem(key); } catch {} }
     }
   };
+  const rememberVisits = (entry: Envelope) => {
+    const saved = object(entry.visits);
+    if (!saved) return;
+    for (const [hash, at] of Object.entries(saved)) {
+      if (typeof at === "number" && fresh(at) && at > (visits.get(hash) ?? -Infinity)) visits.set(hash, at);
+    }
+  };
   const restoreState = (entry: Envelope, companyIds: string[]) => {
     const queries = savedQueries(entry, companyIds).filter(allowedIssue)
       .map(query => ({ queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: {
@@ -392,6 +399,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         fetchMeta: null, isInvalidated: query.queryKey[0] !== "link-preview", status: "success" as const, fetchStatus: "idle" as const,
       } }));
     hydrate(client, { mutations: [], queries });
+    rememberVisits(entry);
     let restored = restoredReads.get(client);
     if (!restored) restoredReads.set(client, restored = new Map());
     for (const query of queries) restored.set(query.queryHash, query.state.dataUpdatedAt);
@@ -438,6 +446,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     // reads, prefer newer data, and apply the same limits to the merged set.
     const merged = new Map<string, SavedQuery>();
     for (const entry of entries) for (const query of savedQueries(entry, companies)) merged.set(hashKey(query.queryKey), query);
+    for (const entry of entries) rememberVisits(entry);
     for (const query of client.getQueryCache().getAll()) {
       if (query.state.status === "error" && !isTransientError(query.state.error)) merged.delete(hashKey(query.queryKey));
     }
@@ -446,8 +455,12 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       const key = hashKey(query.queryKey);
       if (!merged.has(key) || merged.get(key)!.state.dataUpdatedAt <= query.state.dataUpdatedAt) merged.set(key, query);
     }
+    const rank = (query: SavedQuery) => {
+      const visit = visits.get(hashKey(query.queryKey));
+      return visit === undefined ? [0, query.state.dataUpdatedAt] : [1, visit];
+    };
     const recent = [...merged.values()].filter(query => query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && allowedIssue(query))
-      .sort((a, b) => (visits.get(hashKey(b.queryKey)) ?? b.state.dataUpdatedAt) - (visits.get(hashKey(a.queryKey)) ?? a.state.dataUpdatedAt));
+      .sort((a, b) => { const [openedA, atA] = rank(a); const [openedB, atB] = rank(b); return openedB - openedA || atB - atA; });
     const issueIds = new Set<string>();
     for (const query of recent) if (issueIds.size < QUERY_CACHE_MAX_ISSUES) issueIds.add(issueIdentity(query));
     const previews = new Set([...merged.values()].filter(query => query.queryKey[0] === "link-preview")
@@ -490,8 +503,13 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         expected.add(key);
         const scoped = queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies, taskCompanies) === companyId);
         const write = (records: SavedQuery[]) => {
+          const savedVisits = Object.fromEntries(records.flatMap(query => {
+            const hash = hashKey(query.queryKey);
+            const at = query.queryKey[1] === "detail" ? visits.get(hash) : undefined;
+            return at === undefined ? [] : [[hash, at]];
+          }));
           const serialized = JSON.stringify({ version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
-            state: { mutations: [], queries: records } } satisfies Envelope);
+            state: { mutations: [], queries: records }, visits: savedVisits } satisfies Envelope);
           if (serialized.length > MAX_RECORD_BYTES) return false;
           try { storage.setItem(key, serialized); return true; } catch { return false; }
         };

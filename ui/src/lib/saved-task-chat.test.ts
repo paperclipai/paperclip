@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
@@ -145,6 +145,26 @@ describe("saved first chat frame of a recently opened task", () => {
       // Nothing of the older task's chat is left on disk either.
       expect(storage.text()).not.toContain("comment-1-0");
       for (const n of [2, 21]) expect(client.getQueryData(commentsKey(`ABC-${n}`))).toBeDefined();
+    });
+
+    it("keeps a task the user opened over newer tasks a list only preloaded, across loads", async () => {
+      const storage = new MemoryStorage();
+      const first = page(storage);
+      signIn(first.client);
+      openTask(first.client, 1, { updatedAt: Date.now() - 30_000 });
+      const stop = new QueryObserver(first.client, { queryKey: coreKey("ABC-1"), enabled: false }).subscribe(() => {});
+      for (let n = 100; n < 125; n += 1) openTask(first.client, n);
+      first.handle.flush();
+      stop();
+      expect(storage.text()).toContain("comment-1-0");
+
+      const second = page(storage);
+      await second.client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session("alice") });
+      signIn(second.client);
+      for (let n = 200; n < 225; n += 1) openTask(second.client, n);
+      second.handle.flush();
+      expect(storage.text()).toContain("comment-1-0");
+      expect(page(storage).client.getQueryData(commentsKey("ABC-1"))).toBeDefined();
     });
 
     it("skips a task whose chat exceeds the per-task budget and keeps its record", () => {
