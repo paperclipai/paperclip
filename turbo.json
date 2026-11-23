@@ -154,7 +154,6 @@
     "//#ci:runner-static": {
       "inputs": [
         "server/**",
-        "cli/**",
         "packages/**",
         "ui/src/lib/**",
         "ui/src/api/**",
@@ -187,7 +186,6 @@
     "//#ci:runner-vitest": {
       "inputs": [
         "server/**",
-        "cli/**",
         "packages/**",
         "ui/src/lib/**",
         "ui/src/api/**",
