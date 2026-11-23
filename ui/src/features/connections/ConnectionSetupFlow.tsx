@@ -61,7 +61,11 @@ import {
   getAvailableConnectionMethods,
   getRecommendedConnectionMethod,
   isGoogleWorkspaceConnectorProfileId,
+  appDefinitionForDeployment,
+  isCloudOnlyConnectionMethod,
+  GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE,
 } from "@paperclipai/shared";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -1188,8 +1192,12 @@ function StandardConnectionSetupFlow({
     ),
     [galleryQuery.data, chatConnectorsEnabled, githubEnabled, memoryConnectorsEnabled, connectorAvailability.enabled],
   );
-  const fullRequestedDefinition = requestedAppKey
+  const cloudInstance = useCloudInstance();
+  const bundledRequestedDefinition = requestedAppKey
     ? getConnectableAppDefinition(requestedAppKey)
+    : null;
+  const fullRequestedDefinition = bundledRequestedDefinition
+    ? appDefinitionForDeployment(bundledRequestedDefinition, { cloudHosted: Boolean(cloudInstance) })
     : null;
   const customOAuthMethod = fullRequestedDefinition?.methods.find((candidate) =>
     connectionMethodAcceptsCustomerOAuthClient(candidate)
@@ -2815,6 +2823,7 @@ function StandardConnectionSetupFlow({
         <KeyStep
           settingsValid={additionalSettingsValid && instructionsValid && !dedicatedAgentMissing}
           entry={entry}
+          selfHostedGoogleApp={!cloudInstance && Boolean(getConnectableAppDefinition(entry.slug)?.methods.some(isCloudOnlyConnectionMethod))}
           error={connectMutation.error ? describeError(connectMutation.error).body : null}
           values={credentials}
           onChange={setCredentials}
@@ -3483,6 +3492,7 @@ function normalizeAppLink(value: string): string | null {
 function KeyStep({
   settingsValid = true,
   entry,
+  selfHostedGoogleApp = false,
   error,
   values,
   onChange,
@@ -3512,6 +3522,7 @@ function KeyStep({
 }: {
   settingsValid?: boolean;
   entry: AppDefinition;
+  selfHostedGoogleApp?: boolean;
   error?: string | null;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
@@ -3811,6 +3822,8 @@ function KeyStep({
 
   const managedAsana = method?.connectorProfile === "asana.mcp";
   const requirementsUrl = managedAsana ? null : method?.consoleLinks?.docs ?? entry.docsUrl;
+  const selfHostedGoogleClient = selfHostedGoogleApp && connectionMethodAcceptsCustomerOAuthClient(method);
+  const selfHostedGoogleClientGuide = method?.consoleLinks?.docs ?? entry.docsUrl ?? null;
 
   return (
     <div className="mx-auto max-w-xl">
@@ -3831,6 +3844,25 @@ function KeyStep({
       <div className="space-y-6">
         {managedAsana ? (
           <p className="text-sm text-muted-foreground">Sign in with Asana to choose your workspace and connect it to Paperclip.</p>
+        ) : null}
+        {selfHostedGoogleClient ? (
+          <InlineBanner tone="info">
+            {GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}
+            {selfHostedGoogleClientGuide ? (
+              <>
+                {" "}
+                <a
+                  href={selfHostedGoogleClientGuide}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2"
+                >
+                  How to set up a Google OAuth client
+                  <ArrowUpRight className="h-3 w-3" />
+                </a>
+              </>
+            ) : null}
+          </InlineBanner>
         ) : null}
         {method?.capabilityProfile && (
           <p className="text-sm text-muted-foreground">

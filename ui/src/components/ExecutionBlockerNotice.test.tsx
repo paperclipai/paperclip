@@ -38,6 +38,15 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+
+  it("offers account and billing repair instead of a quota countdown", async () => {
+    await render({ ...failed, state: "waiting_for_user", responsibility: "user", userAction: "provider_billing",
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "Check your plan and billing details.", retryability: "requires_action" } });
+    expect(container.textContent).toContain("Check your provider account’s billing and usage allowance, then retry.");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toBe("Review AI account");
+    expect(container.textContent).not.toMatch(/Trying again|retry automatically/);
+  });
   it("does not report a failed attempt for a task the agent handed to a person", async () => {
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
     expect(container.textContent).toBe("");

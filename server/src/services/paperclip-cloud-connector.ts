@@ -1,6 +1,6 @@
 import { assertMcpClientMirrorEnvelope } from "./public-mcp/client-mirror-wire.js";
 import { providerRetryAt } from "./provider-retry-after.js";
-import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
+import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, appDefinitionForDeployment, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
   createHash,
@@ -160,7 +160,7 @@ const BROKER_REJECTION_REASONS = new Set([
   "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
-  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED", "REVOCATION_NOT_AVAILABLE",
+  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED", "REVOCATION_NOT_AVAILABLE", "PROVIDER_CLOUD_ONLY",
   "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
   "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
   "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
@@ -836,9 +836,10 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
 export function appWithPaperclipCloudConnectorAvailability(
   app: AppDefinition,
   profiles: readonly string[],
+  cloudHosted: boolean,
 ): AppDefinition {
   const enabledProfiles = new Set(profiles);
-  const methods = app.methods.filter((method) =>
+  const methods = appDefinitionForDeployment(app, { cloudHosted }).methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
     || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
       && paperclipCloudConnectorConsentAllowed(method.connectorProfile))

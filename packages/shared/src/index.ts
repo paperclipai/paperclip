@@ -365,6 +365,7 @@ export {
 } from "./connection-setup-state.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./google-workspace-connectors.js";
+export * from "./google-sign-in-deployment.js";
 export * from "./github-connectors.js";
 export * from "./asana-connectors.js";
 export {
