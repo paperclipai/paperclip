@@ -162,7 +162,8 @@ metadata in the encrypted credential secret. On macOS, it reads only that home's
 namespaced Keychain item, with the credential file as fallback when the item is
 absent. It never imports the operator's ambient login. When the sign-in attempt
 completes, is cancelled, is replaced or expires, Paperclip deletes that Keychain
-item together with the home.
+item together with the home. It stops the sign-in process first, also a process
+that another browser tab started for the same attempt in the meantime.
 
 When a run or account probe uses a credential with less than two hours left,
 the server renews it under the existing company credential mutation lock. The
@@ -200,11 +201,21 @@ cleaned up, so a busy connection is renewed in the gap after its last run ends.
 A run counts as a holder from the moment it receives the token until its status
 is final. That includes a run whose controller detached for a restart and left
 its runner alive, and a run that restart recovery reconnects to a live runner.
+An account test or an agent verification in flight counts as a holder too. It
+has no run, so the server counts it in memory until the test ends.
 Once less than five minutes remain, renewal no longer waits; the other runs would
 lose the token at expiry either way. A run that outlasts the token it started
 with fails with an authentication error and can be retried. That failure does
 not request sign-in: the stored token is marked spent, the next use renews it,
 and only the provider refusing the renewal marks the connection for sign-in.
+The token is marked spent for each failed run that used it, also for a run with
+no task and no repair card. A run that restart recovery reconnected to a live
+runner keeps the identity of the token that runner holds, so its failure is not
+attributed to a token that was renewed during the recovery.
+
+An exchanged pair that could not be saved to the vault stays in server memory
+until the next credential read saves it. The server reports it as pending local
+work, so an idle shutdown waits for the save.
 
 ## Storage and API
 

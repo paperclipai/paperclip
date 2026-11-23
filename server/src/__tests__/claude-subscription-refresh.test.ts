@@ -277,7 +277,9 @@ describe("Claude subscription idle renewal", () => {
   };
 
   it("renews instead of requesting sign-in when a run's access token is rejected, and requests sign-in only if renewal is refused", async () => {
-    const { account, owner, row, service } = await connect(document(Date.now() + 3600_000));
+    // Not yet due for renewal, so nothing reaches the provider before the rejection.
+    const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
     const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
     const failed = { companyId, runStartedAt: new Date(Date.now() + 1000), attribution: { ...run.attribution, identity: run.identity } };
     await run.cleanup();
@@ -285,7 +287,7 @@ describe("Claude subscription idle renewal", () => {
     const status = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status;
     expect(await status()).toBe("active");
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
-    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    expect(exchange).not.toHaveBeenCalled();
     expect(await service.credential(row)).toBe("renewed");
     expect(exchange).toHaveBeenCalledOnce();
     // The same failure on a login the provider no longer renews does request sign-in.
