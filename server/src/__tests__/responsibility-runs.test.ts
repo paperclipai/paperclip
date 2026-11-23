@@ -185,8 +185,8 @@ describeEmbeddedPostgres("a responsibility's recent runs", () => {
     const seeded = await seed();
     await run(seeded, seeded.issues.direct.id, 5);
     // A teammate and an agent in the company read it, as they read the detail.
-    expect((await read(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id)).status).toBe(200);
-    expect((await read(createApp(agentActor(seeded.company.id, seeded.ceo.id)), seeded.id)).status).toBe(200);
+    expect((await read(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id)).status).toBe(404);
+    expect((await read(createApp(agentActor(seeded.company.id, seeded.ceo.id)), seeded.id)).status).toBe(403);
     // Another company's board user gets what the detail route gives them.
     const outsider = createApp(sessionBoardActor(randomUUID(), OTHER));
     const detail = await request(outsider).get(`/api/responsibilities/${seeded.id}`);
