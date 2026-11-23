@@ -333,6 +333,7 @@ import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
 import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
+import { resolveRemoteOpenCodeArtifacts } from "./remote-opencode-runtime.js";
 import {
   createNativeRunTrace,
   isNativeRunRootHistoricalSpan,
@@ -17214,6 +17215,14 @@ async function createRunnerdBackendWithinSessionClaim(
   const adoptingPersistedRemoteRunner = remoteTarget !== null
     && input.restartRecovery?.kind === "reattach_remote_runner"
     && input.controllerPersistence?.runnerArtifact !== undefined;
+  const remoteOpenCodeArtifacts = remoteTarget?.transport === "ssh" && input.execution.provider.kind === "opencode" && !adoptingPersistedRemoteRunner
+    ? await timeController("companion_selection", () => resolveRemoteOpenCodeArtifacts({
+      runner: remoteCommandRunner!, remoteCwd: remoteTarget.remoteCwd,
+      configuredProviderPack: input.runnerRemoteProviderPackPath, configuredRunner: input.runnerRemoteBinaryPath,
+      runtimeRoot: process.env.PAPERCLIP_RUNNER_REMOTE_RUNTIMES_PATH,
+    })) : null;
+  const remoteOpenCodeManifest = remoteOpenCodeArtifacts
+    ? await verifyRemoteProviderPackManifest(remoteOpenCodeArtifacts.providerPack) : null;
   const remoteClaude = remoteTarget !== null && input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude";
   const remoteClaudeRunnerBinary = remoteClaude && !adoptingPersistedRemoteRunner
     ? await resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget!.remoteCwd, configuredPath: input.runnerRemoteBinaryPath })
@@ -17236,7 +17245,7 @@ async function createRunnerdBackendWithinSessionClaim(
     workspaceRoot: input.execution.workspace.cwd!,
   }));
   const configuredProviderPackRoot =
-    input.runnerRemoteProviderPackPath?.trim() || remotePiCompanion?.providerPack || bundledClaudeRoot || null;
+    remoteOpenCodeArtifacts?.providerPack || input.runnerRemoteProviderPackPath?.trim() || remotePiCompanion?.providerPack || bundledClaudeRoot || null;
   const useBundledRemoteImageAssets =
     (requiresRemoteProviderPack && !configuredProviderPackRoot &&
       (input.execution.provider.kind === "opencode" || remoteClaude)) ||
@@ -17260,7 +17269,7 @@ async function createRunnerdBackendWithinSessionClaim(
           ? readBundledRemoteProviderPackManifest(bundledClaudeManifest, remoteClaudeTarget)
           : readBundledRemoteProviderPackManifest();
       }
-      return resolveRemoteProviderPackSource(configuredProviderPackRoot).manifest;
+      return remoteOpenCodeManifest ?? resolveRemoteProviderPackSource(configuredProviderPackRoot).manifest;
     })();
     return currentProviderPackManifest;
   };
@@ -17283,7 +17292,7 @@ async function createRunnerdBackendWithinSessionClaim(
     : targetMatchedCodexArtifact
     ? await timeController("runner_binary", () => resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget.remoteCwd, configuredPath: input.runnerRemoteBinaryPath }))
     : remoteTarget
-    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
+    ? remoteOpenCodeArtifacts?.runnerBinary || remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
     : await resolvePaperclipRunnerBinaryAsync();
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
@@ -17417,7 +17426,7 @@ async function createRunnerdBackendWithinSessionClaim(
         remoteRuntimeRoot, remoteCodexBinary, runnerRemoteBinaryPath: input.runnerRemoteBinaryPath,
         runnerRemoteCodexPath: input.runnerRemoteCodexPath, runnerRemoteCodexNpmSpec: input.runnerRemoteCodexNpmSpec,
         model: input.execution.provider.kind === "codex" ? input.execution.provider.model : null,
-        reuseRetainedRunner: sandboxLeaseAcquisition?.outcome === "resumed", targetPlatformArtifactVerified: remotePiCompanion !== null || useBundledRemoteImageAssets || targetMatchedCodexArtifact || remoteClaude,
+        reuseRetainedRunner: sandboxLeaseAcquisition?.outcome === "resumed", targetPlatformArtifactVerified: remoteOpenCodeArtifacts !== null || remotePiCompanion !== null || useBundledRemoteImageAssets || targetMatchedCodexArtifact || remoteClaude,
         trace: input.trace, onLog: input.onLog,
         providerPackRoots: requiresRemoteProviderPack && stagedRemoteProviderPackRoot
           ? [stagedRemoteProviderPackRoot, "/opt/paperclip-runner/provider-pack"] : undefined,

@@ -1,4 +1,5 @@
-import { agentSlotsFromRows, queueWaitFairnessFrom, type QueueWaitFairness } from "./agent-slots.js";
+import { agentSlotsFromRows, queueWaitFairnessFrom, slotFreeFrom, type QueueWaitFairness } from "./agent-slots.js";
+import type { SlotFree } from "./universal.js";
 import { gradeR1 } from "./grader.js";
 import type { ContinuityReport, DetectedRelease } from "./hosted-release.js";
 import { ms, type HostedRunRow } from "./hosted-readers.js";
@@ -41,12 +42,27 @@ type R1Subject = Pick<TaskRecord, "issueId" | "identifier" | "createdAt" | "laun
  * be proven fair; the gate fails on it instead of grading R1 without the evidence.
  */
 export function hostedQueueWait(agentIds: readonly string[], agents: readonly HostedAgentRow[], companyRuns: readonly HostedRunRow[]):
-  { queueWait: QueueWaitFairness; missing: string[] } {
+  { queueWait: QueueWaitFairness; slotFree: SlotFree; missing: string[] } {
   const slots = agentSlotsFromRows(agents.map(agent => ({ id: agent.id, maxConcurrentRuns: agent.runtimeConfig?.heartbeat?.maxConcurrentRuns })),
     companyRuns.map(run => ({ id: run.runId, agentId: run.agentId, createdAt: run.createdAt, invocationSource: run.invocationSource,
       retryOfRunId: run.retryOfRunId, startedAt: run.startedAt, finishedAt: run.finishedAt })));
   const capped = new Set(slots.agents.filter(agent => agent.maxConcurrentRuns !== null).map(agent => agent.agentId));
-  return { queueWait: queueWaitFairnessFrom(slots), missing: agentIds.filter(id => !capped.has(id)) };
+  return { queueWait: queueWaitFairnessFrom(slots), slotFree: slotFreeFrom(slots), missing: agentIds.filter(id => !capped.has(id)) };
+}
+
+export function slotQueuedRuns(runs: readonly HostedRunRow[], at: number, proof: { queueWait: QueueWaitFairness; slotFree: SlotFree }): Set<string> {
+  return new Set(runs.filter(run => run.status === "queued" && run.startedAt === null && run.createdAt !== null && run.createdAt <= at
+    && proof.queueWait(run.runId, run.createdAt, at).verdict === "fair" && proof.slotFree(run.runId, at) === false).map(run => run.runId));
+}
+
+const SLOT_WAIT_STATUSES = new Set(["todo", "in_progress"]);
+const LIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+const FAILED_RUN_STATUSES = new Set(["failed", "timed_out", "interrupted"]);
+
+export function queuedBehindSlotCap(status: unknown, runs: readonly HostedRunRow[], slotQueued: ReadonlySet<string>): boolean {
+  if (!SLOT_WAIT_STATUSES.has(String(status)) || runs.some(run => FAILED_RUN_STATUSES.has(run.status))) return false;
+  const live = runs.filter(run => LIVE_RUN_STATUSES.has(run.status));
+  return live.length > 0 && live.every(run => slotQueued.has(run.runId));
 }
 
 /**
