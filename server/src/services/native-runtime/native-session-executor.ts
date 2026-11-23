@@ -18,6 +18,7 @@ import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE,
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { isProviderQuotaActionRequired } from "../provider-quota-reset.js";
 import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
@@ -9162,8 +9163,10 @@ export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
 
 function deterministicProviderStartupFailure(error: unknown): boolean {
   const failure = providerFailureFromError(error);
-  return failure?.phase === "startup" && failure.retryability === "requires_action"
-    && ["authentication", "permission", "invalid_request"].includes(failure.category);
+  return failure?.phase === "startup" && (
+    isProviderQuotaActionRequired({ resultJson: { providerFailure: failure } })
+    || failure.retryability === "requires_action" && ["authentication", "permission", "invalid_request"].includes(failure.category)
+  );
 }
 
 /** The Runner transport proved the failed runner settled and its process exited. */
@@ -9213,9 +9216,9 @@ export function nativeStartupFailureSignature(failure: unknown): string | null {
  * startup error. Otherwise it ends at once with Retry. A deterministic
  * rejection never reaches here: it is already NATIVE_PROVIDER_STARTUP_REJECTED.
  *
- * An exhausted provider allowance (a rate limit or quota) ends as a usage-limit
- * hold instead: it passes by itself, so the hold retries the task at the reset
- * like a limit reported on a turn, rather than waiting for a person's Retry.
+ * A rate limit or an allowance with a reported reset can end as a usage-limit
+ * hold, which retries the task at the reset like a limit reported on a turn.
+ * A quota with no reset is already classified as an action-required refusal.
  */
 export function nativeRemoteStartupRejectionCode<Code extends string>(
   sourceFailureCode: Code,

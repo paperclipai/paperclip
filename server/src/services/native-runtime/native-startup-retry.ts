@@ -113,6 +113,8 @@ export async function planNativeStartupRetry(input: {
   failure: ProviderFailure | null;
   now: Date;
 }): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now))
+    return { nextAttemptAt: null, providerCooldownAt: null };
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
   const providerCooldownAt = await agentProviderLimitCooldown(input.db, {

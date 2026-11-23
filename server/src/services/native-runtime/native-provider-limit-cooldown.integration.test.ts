@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { agentProviderLimitCooldown } from "./native-startup-retry.js";
+import { agentProviderLimitCooldown, planNativeStartupRetry } from "./native-startup-retry.js";
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -96,6 +96,16 @@ describe("native provider limit cooldown", () => {
     } } }).where(eq(heartbeatRuns.agentId, agentId));
     expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
       .toMatchObject({ resetReported: false, category: "rate_limit" });
+  });
+
+  it("never plans a startup retry for a billing refusal even when the caller allows retries", async () => {
+    const agentId = await limitedAgent(new Date(Date.now() + HOUR_MS));
+    const plan = await planNativeStartupRetry({ db, binding: { companyId, agentId, runId: randomUUID() },
+      attempt: 1, retryable: true, now: new Date(), failure: {
+        schema: "paperclip.provider-failure.v1", provider: "openai", phase: "startup",
+        category: "quota_exhausted", message: "Check your billing details.", retryability: "requires_action",
+      } });
+    expect(plan).toEqual({ nextAttemptAt: null, providerCooldownAt: null });
   });
 
   it("re-checks a dated reset days away within one day", async () => {
