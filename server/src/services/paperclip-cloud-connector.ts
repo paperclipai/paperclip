@@ -231,10 +231,12 @@ export class PaperclipCloudConnectorError extends Error {
  */
 export function isTransientPaperclipCloudConnectorError(error: unknown): boolean {
   if (!(error instanceof PaperclipCloudConnectorError)) return false;
-  if (error.code === "CONNECTOR_UNAVAILABLE") return true;
+  if (error.code === "CONNECTOR_UNAVAILABLE" || error.brokerReason === UNREADABLE_RESPONSE) return true;
   const status = error.status ?? 0;
-  return status === 429 || status >= 500;
+  return status === 408 || status === 429 || status >= 500;
 }
+
+const UNREADABLE_RESPONSE = "UNREADABLE_RESPONSE";
 
 // Last answers the broker confirmed, per connector identity, for this process.
 // The generation stops a request that started before an invalidation from
@@ -398,7 +400,16 @@ export function createPaperclipCloudConnector(input: {
     try {
       return await response.json() as ConnectorResponse;
     } catch {
-      throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid response", "CONNECTOR_BAD_RESPONSE");
+      // A body that is not JSON (for example a gateway page during an outage)
+      // is no verdict; a readable answer with the wrong shape stays a
+      // protocol error.
+      throw new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector returned an invalid response",
+        "CONNECTOR_BAD_RESPONSE",
+        response.status,
+        undefined,
+        UNREADABLE_RESPONSE,
+      );
     }
   }
 

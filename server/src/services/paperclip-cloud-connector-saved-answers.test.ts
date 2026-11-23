@@ -72,6 +72,19 @@ describe("Paperclip Cloud connector saved answers", () => {
     await expect(connector.getInstanceStatus()).resolves.toBe("active");
   });
 
+  it("treats an unreadable answer or a gateway timeout as no verdict, but a wrong-shaped answer as one", async () => {
+    const connector = connectorAnswering(
+      active(),
+      new Response("<html>gateway</html>", { status: 200 }),
+      new Response("timeout", { status: 408 }),
+      Response.json({ active: "yes" }),
+    );
+    await expect(connector.getCapabilities()).resolves.toEqual(["github.code"]);
+    await expect(connector.getCapabilities()).resolves.toEqual(["github.code"]);
+    await expect(connector.getCapabilities()).resolves.toEqual(["github.code"]);
+    await expect(connector.getCapabilities()).resolves.toEqual([]);
+  });
+
   it("reports no verdict when Cloud is busy and nothing was confirmed yet", async () => {
     const connector = connectorAnswering(busy(), busy());
     await expect(connector.readCapabilities()).resolves.toEqual({ profiles: [], confirmed: false });
