@@ -132,7 +132,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   for (;;) {
     signal.throwIfAborted();
     const page = await skills.verifyVersions({ after, limit: 50, signal });
-    if (page.results.some(row => !["remote_storage", "database_release_snapshot", "database_snapshot", "expired_git_history"].includes(row.status))) {
+    if (page.results.some(row => !["remote_storage", "database_release_snapshot", "database_snapshot", "expired_git_history", "source_unavailable"].includes(row.status))) {
       throw new Error("skill_version_verification_failed");
     }
     counts.verifiedSkillVersions = (counts.verifiedSkillVersions ?? 0) + page.inspected;

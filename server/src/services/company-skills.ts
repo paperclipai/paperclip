@@ -125,7 +125,7 @@ import {
   stringifyFrontmatter,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -373,6 +373,10 @@ type SkillSourceMeta = {
   auditScannedAt?: string;
   auditScanVersion?: string;
 };
+
+export class RemoteSkillSourceUnavailableError extends HttpError {
+  constructor(message: string) { super(422, message); }
+}
 
 type SkillMissingSourceMarker = {
   reason: "local_source_missing" | "remote_source_unavailable";
@@ -6043,7 +6047,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     skill: CompanySkill,
     options: RuntimeSkillEntryOptions,
   ): Promise<RuntimeSkillSourceResolution | null> {
-    if (remoteSourceUnavailable(skill)) {
+    if (remoteSourceUnavailable(skill) && !options.versionSelections?.get(skill.key)) {
       return { status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill), detail: buildMissingRuntimeSourceDetail(skill) };
     }
     const selectedVersionId = options.versionSelections?.get(skill.key)
@@ -6565,7 +6569,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         if (!owner || !repo || !isPinnedCommitRef(skill.sourceRef)) throw unprocessable("Repository revision is not pinned.");
         const dir = typeof metadata.repoSkillDir === "string" ? normalizeGitHubSkillDirectory(metadata.repoSkillDir, "") : skill.slug;
         const url = resolveRawGitHubUrl(asString(metadata.hostname) ?? "github.com", owner, repo, skill.sourceRef!, path.posix.join(dir, entry.path));
-        const response = await ghFetch(url);
+        const response = await ghFetch(url).catch(error => {
+          throw new RemoteSkillSourceUnavailableError(`Could not reach installed file ${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        if (response.status === 404 || response.status === 410) throw new RemoteSkillSourceUnavailableError(`Installed file ${entry.path} no longer exists at its source: ${response.status}`);
         if (!response.ok) throw unprocessable(`Could not acquire installed file ${entry.path}: ${response.status}`);
         if (!response.body) throw unprocessable("Installed file response has no body.");
         const reader = response.body.getReader();

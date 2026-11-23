@@ -5,7 +5,7 @@ import { companySkills, companySkillVersions, type Db } from "@paperclipai/db";
 import { parseFrontmatterMarkdown, type CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { classifyInventoryKind, companySkillService } from "./company-skills.js";
+import { classifyInventoryKind, companySkillService, RemoteSkillSourceUnavailableError } from "./company-skills.js";
 import { managedSkillContent } from "./managed-skill-content.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "./skill-package-store.js";
 import { skillPackageMaintenance } from "./skill-package-maintenance.js";
@@ -183,7 +183,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
           const remoteFiles = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
             ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id).catch(error => {
               if (options.signal?.aborted) throw error;
-              if (!options.settleUnavailableSources) throw blocked(SKILL_SOURCE_UNAVAILABLE, error instanceof Error ? error.message : "Remote source is unavailable");
+              if (!options.settleUnavailableSources || !(error instanceof RemoteSkillSourceUnavailableError)) throw blocked(SKILL_SOURCE_UNAVAILABLE, error instanceof Error ? error.message : "Remote source is unavailable");
               remoteUnavailable = true;
               return null;
             })
@@ -222,6 +222,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
             ? await content.prepare(skill.companyId, origin, options.signal) : null;
           if (originCandidate && !originCandidate.packageSnapshotId) throw blocked("catalog_origin_not_durable", "Catalog origin is not durably available");
           const markdown = files.find(file => file.path === "SKILL.md")!.content;
+          const publications: ActivityPublication[] = [];
           const parsed = parseFrontmatterMarkdown(markdown);
           const { missingSource: _missing, ...metadata } = skill.metadata ?? {};
           // Object preparation is private. Hold the shared cache lock only for
@@ -238,7 +239,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
               ...(reconstructed ? { reconstructedFromStoredContent: { at: new Date().toISOString(),
                 missingFiles: reconstructed.missingFiles } } : {}) },
           }, { type: "system" }, { label: reconstructed ? RECONSTRUCTED_FROM_STORED_CONTENT_LABEL : "Legacy installation conversion",
-            reuseCurrentVersion: Boolean(saved && skillSnapshotHash(saved) === skillSnapshotHash(files)),
+            reuseCurrentVersion: Boolean(!reconstructed && saved && skillSnapshotHash(saved) === skillSnapshotHash(files)),
             validate: async tx => {
               // publish already holds the canonical slug and skill-row locks.
               // Recheck filesystem writers after upload, before changing authority.
@@ -264,16 +265,15 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
               }
             },
             afterPublish: async (tx, row, version) => {
+              if (reconstructed) await logActivity(tx as unknown as Db, { companyId: skill.companyId, actorType: "system",
+                actorId: "skill-installation-maintenance", action: "company.skill_reconstructed_from_stored_content",
+                entityType: "company_skill", entityId: skill.id, details: { skillName: skill.name, versionId: version.id,
+                  restoredFiles: files.map(file => file.path), missingFiles: reconstructed.missingFiles } }, publications);
               if (catalogOrigin) await tx.update(companySkills)
                 .set({ metadata: { ...row.metadata, originVersionId: originVersionId ?? version.id } }).where(eq(companySkills.id, row.id));
             },
           }));
-          if (reconstructed) {
-            await logActivity(db, { companyId: skill.companyId, actorType: "system", actorId: "skill-installation-maintenance",
-              action: "company.skill_reconstructed_from_stored_content", entityType: "company_skill", entityId: skill.id,
-              details: { skillName: skill.name, versionId: result.version.id, restoredFiles: files.map(file => file.path),
-                missingFiles: reconstructed.missingFiles } });
-          }
+          for (const publication of publications) publishActivity(publication);
           return { skillId: skill.id, companyId: skill.companyId, status: "converted", versionId: result.version.id,
             ...(reconstructed ? { reconstructed: true } : {}) };
         };
@@ -346,9 +346,17 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
             }
           }
         } else {
+          const [unavailableHead] = await db.select({ id: companySkills.id }).from(companySkills).where(and(
+            eq(companySkills.companyId, version.companyId), eq(companySkills.id, version.companySkillId),
+            eq(companySkills.currentVersionId, version.id), sql`${companySkills.metadata}->'missingSource'->>'reason' = ${SKILL_SOURCE_UNAVAILABLE}`));
           const files = await store.versionFiles(version, false, options.signal);
+          const complete = files.some(file => file.path === "SKILL.md" && file.encoding !== "base64");
+          if (unavailableHead && (!complete || !files.length)) {
+            results.push({ companyId: version.companyId, skillId: version.companySkillId, versionId: version.id, packageId, status: "source_unavailable" });
+            continue;
+          }
           skillPackageManifest(files);
-          status = files.some(file => file.path === "SKILL.md" && file.encoding !== "base64")
+          status = complete
             ? version.releaseId ? "database_release_snapshot" : "database_snapshot"
             : "incomplete_database_snapshot";
         }
