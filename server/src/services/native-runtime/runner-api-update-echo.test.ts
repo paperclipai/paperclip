@@ -21,7 +21,7 @@ describe("omitIssueUpdateEcho", () => {
         changes: { status: { from: "in_review", to: "done" } },
         comment: { id: "comment-a", createdAt: "2026-01-01T00:00:00.000Z" },
       },
-      omitted: { fields: ["description", "relatedWork", "comment.body"], guidance: expect.stringContaining("GET /api/issues/{id}") },
+      omitted: { fields: ["description", "relatedWork", "comment.body"], guidance: expect.stringContaining("GET /api/issues/{id}/comments/{commentId}") },
     });
   });
 
