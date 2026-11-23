@@ -135,12 +135,17 @@ For an ordinary "post this?" decision, use an issue-thread confirmation:
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
+  "resolverPolicy": "human_only",
   "continuationPolicy": "wake_assignee_on_accept",
   ...
 }
 ```
 
-Set `continuationPolicy` explicitly. `request_confirmation` defaults it to
+Set `resolverPolicy: "human_only"` explicitly. `request_confirmation` defaults
+it to `anyone`, which lets another agent accept the card, and then nothing
+proves a person saw the post.
+
+Set `continuationPolicy` explicitly too. `request_confirmation` defaults it to
 `none`, and with `none` an acceptance does not wake you — the approved post
 then sits forever. Bind the request to the revision of the copy you are about
 to send, use an idempotency key such as
