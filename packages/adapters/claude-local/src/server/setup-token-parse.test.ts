@@ -798,3 +798,15 @@ describe("parseSetupTokenCredential", () => {
 it("accepts the auth login URL preamble with the same URL and prompt validation", () => {
   expect(parseSetupTokenPrompt(completeOutput(VALID_URL).replace(PREAMBLE_LINE, "If the browser didn't open, visit:"))).toEqual({ url: VALID_URL, prompt: SETUP_TOKEN_PROMPT });
 });
+
+it("accepts the short sign-in link that claude 2.1.330 prints for auth login, including its terminal hyperlink", () => {
+  const handle = "z-YcXBFQSjFkEPwepM23IZkhkglYYE1Cin4DrxRgP_fOM";
+  const url = `https://claude.ai/oauth/authorize?${handle}`;
+  const output = `Opening browser to sign in…\r\nIf the browser didn't open, visit:\r\n\x1b]8;;${url}\x07\x1b[94m${url}\x1b[39m\x1b]8;;\x07\r\nPaste code here if prompted > `;
+  expect(parseSetupTokenPrompt(output)).toEqual({ url, prompt: SETUP_TOKEN_PROMPT });
+  // A short handle, a parameter, or another host is still refused.
+  for (const bad of [`https://claude.ai/oauth/authorize?short`, `https://claude.ai/oauth/authorize?${handle}&next=x`, `https://claude.ai/oauth/authorize?${handle}=1`, `https://example.com/oauth/authorize?${handle}`]) {
+    expect(parseSetupTokenPrompt(output.replaceAll(url, bad))).toBeNull();
+  }
+});
+
