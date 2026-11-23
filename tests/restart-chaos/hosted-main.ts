@@ -187,7 +187,9 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   } finally {
     await polling?.stop();
     await probe.stop();
-    await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
+    const finalSamples = [...probe.samples];
+    await api.settleDiagnostics(finalSamples.map(sample => sample.failure));
+    await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(finalSamples), health: continuity(finalSamples),
       api: continuity(requestSamples(apiRequests(api.requests))), inventory: census }, null, 2)}\n`, { mode: 0o600 });
     const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });
     if (cleaned && cleaned.errors.length) exit = Math.max(exit, 1);
