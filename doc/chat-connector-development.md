@@ -86,6 +86,11 @@ Late acknowledgements and retries use the native acknowledgement receipt to
 avoid sending the same update twice. Other chat providers keep their existing
 delivery behavior.
 
+A queued update also supersedes a blocker continuation. If the active run
+reports a blocker that Paperclip would continue in a fresh session, and a GitHub
+update waits behind that run, Paperclip releases the task instead. The waiting
+update then starts the next turn with its own source binding.
+
 Each native GitHub receipt stays separate until steering acknowledges its exact input.
 This prevents ordinary wake coalescing from merging a newer input into an
 uncertain delivery. Steering dispatch does not hold task or conversation locks while it waits for
