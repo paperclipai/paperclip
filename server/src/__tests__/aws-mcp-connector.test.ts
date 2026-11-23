@@ -316,7 +316,6 @@ describe("AWS connector with minted credentials", () => {
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     expect(row!.healthMessage ?? JSON.stringify(health)).toContain("AWS refused this connection's role");
     expect(row!.healthMessage ?? "").not.toContain("123456789012");
-    // The customer's AWS setup is at fault, not Paperclip: a 4xx the error handler does not report as a crash.
     expect(health).toMatchObject({ status: 422, details: { code: "aws_role_access_denied" } });
 
     // The instance's address changes: Paperclip stops with a clear message instead of a role refusal from AWS.

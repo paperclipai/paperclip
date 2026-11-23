@@ -43,8 +43,6 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
-  // AWS refused the customer's own role, key or sign-in policy. The message names
-  // the fix in their AWS account; only an AWS outage stays a gateway failure.
   if (isAwsConfigurationFailureCode(failure.code)) return 422;
   return 502;
 }
