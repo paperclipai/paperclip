@@ -2298,6 +2298,20 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(new URL(start.authorizationUrl).searchParams.get("client_id")).not.toBe("preconfigured-client");
   });
 
+  it("explains that a deployment-wide client cannot be used when a custom server has no other client", async () => {
+    installMcpOAuthFixture({ auth: "oauth", dcr: false });
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "preconfigured-client");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "preconfigured-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture refused deployment client" });
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    })).rejects.toMatchObject({ details: { code: "oauth_instance_client_endpoint_mismatch" } });
+  });
+
   it("asks for a preregistered client when the server offers neither CIMD nor DCR", async () => {
     installMcpOAuthFixture({ auth: "oauth", dcr: false });
     const company = await createCompany(db);

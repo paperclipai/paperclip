@@ -10,7 +10,7 @@ import { notFound, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
 import { resolveConnectionGrantSecret, writeConnectionCredential } from "../../connection-credentials.js";
 
-import { configuredOAuthClientForConnection, oauthClientConfig, oauthSecretRef } from "./client-settings.js";
+import { configuredOAuthClientForConnection, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 export function actorForSecret(
   actor?: ActorInfo,
 ): { userId?: string | null; agentId?: string | null } | undefined {
@@ -69,12 +69,8 @@ async function syncCredentialBindings(
         ? oauth.clientId.trim()
         : null;
     if (!clientId) {
-      if (oauthClientConfig(provider).clientId) {
-        throw unprocessable(
-          "This deployment's OAuth client works only with the sign-in endpoints of the app it is set up for. Add your own client ID and secret to this connection to use a different endpoint.",
-          { code: "oauth_instance_client_endpoint_mismatch" },
-        );
-      }
+      const refused = refusedDeploymentClientError(provider);
+      if (refused) throw refused;
       return configured;
     }
     // CIMD clients and public DCR clients have no token-endpoint secret. A DCR

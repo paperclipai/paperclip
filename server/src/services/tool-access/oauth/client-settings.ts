@@ -76,6 +76,14 @@ function instanceClientTokenUrlAllowed(
   return fixedHosts.includes(target.host.toLowerCase());
 }
 
+export function refusedDeploymentClientError(provider: string) {
+  if (!oauthClientConfig(provider).clientId) return null;
+  return unprocessable(
+    "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.",
+    { code: "oauth_instance_client_endpoint_mismatch" },
+  );
+}
+
 export function configuredOAuthClientForConnection(
   connection: typeof toolConnections.$inferSelect,
   provider: string,
