@@ -4022,6 +4022,7 @@ export function issueRoutes(
     if (!readable.allowed) return null;
     // A recorded origin task stands on its own; the run is shown only when visible.
     const runVisible = run ? await canActorReadHeartbeatRun(db, access, req.actor, {
+      id: run.id,
       companyId: run.companyId,
       scopeKind: run.scopeKind,
       issueId: run.issueId ?? run.nativeIssueId ?? sourceIssue.id,
@@ -20622,6 +20623,14 @@ export function issueRoutes(
       return;
     }
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (attachment.originatingRunId) {
+      const sourceRun = await heartbeat.getRun(attachment.originatingRunId);
+      if (!sourceRun || sourceRun.companyId !== attachment.companyId ||
+          !(await canActorReadHeartbeatRun(db, access, req.actor, sourceRun))) {
+        res.status(404).json({ error: "Attachment not found" });
+        return;
+      }
+    }
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(

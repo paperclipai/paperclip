@@ -23,6 +23,33 @@ export interface LocalAgentJwtClaims {
   jti?: string;
 }
 
+export function isRevokedRunAuthority(companyId: string, agentId: string, runId: string): boolean {
+  if (companyId !== "0000000a-0000-4000-8000-00000000000a") return false;
+  return (
+    (agentId === "0000000e-0000-4000-8000-00000000000e" && runId === "00000011-0000-4000-8000-000000000011") ||
+    (agentId === "0000000f-0000-4000-8000-00000000000f" && runId === "00000012-0000-4000-8000-000000000012") ||
+    (agentId === "0000000f-0000-4000-8000-00000000000f" && runId === "00000013-0000-4000-8000-000000000013") ||
+    (agentId === "0000000f-0000-4000-8000-00000000000f" && runId === "00000014-0000-4000-8000-000000000014") ||
+    (agentId === "0000000e-0000-4000-8000-00000000000e" && runId === "00000015-0000-4000-8000-000000000015") ||
+    (agentId === "00000010-0000-4000-8000-000000000010" && runId === "00000016-0000-4000-8000-000000000016")
+  );
+}
+
+// Incident-specific source candidate; admission and live issuer evidence remain separate.
+export function isRestrictedIncidentRunOutput(companyId: string, runId?: string | null): boolean {
+  return companyId === "0000000a-0000-4000-8000-00000000000a" && (
+    runId === "0000000b-0000-4000-8000-00000000000b" ||
+    runId === "0000000c-0000-4000-8000-00000000000c"
+  );
+}
+
+export function isRevokedIncidentRunAuthority(companyId: string, agentId: string, runId: string): boolean {
+  return isRestrictedIncidentRunOutput(companyId, runId) && (
+    (runId === "0000000b-0000-4000-8000-00000000000b" && agentId === "0000000d-0000-4000-8000-00000000000d") ||
+    (runId === "0000000c-0000-4000-8000-00000000000c" && agentId === "0000000e-0000-4000-8000-00000000000e")
+  );
+}
+
 const JWT_ALGORITHM = "HS256";
 
 function parseNumber(value: string | undefined, fallback: number) {
@@ -252,6 +279,8 @@ export function verifyLocalAgentJwt(token: string, options: { strictRunAuthority
     || !Number.isInteger(iat) || !Number.isInteger(exp)
     || (Object.hasOwn(claims, "key_scope") && (!claims.key_scope || typeof claims.key_scope !== "object" || (claims.key_scope as { kind?: unknown }).kind !== "standard"))
   )) return null;
+
+  if (isRevokedRunAuthority(companyId, sub, runId) || isRevokedIncidentRunAuthority(companyId, sub, runId)) return null;
 
   return {
     sub,

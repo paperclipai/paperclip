@@ -322,6 +322,7 @@ export function setupLiveEventsWebSocketServer(
       }
       if (runId) {
         const [run] = await db.select({
+          id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
