@@ -7749,17 +7749,12 @@ export function createToolGatewayService(
       eq(toolMcpTasks.agentId, session.agentId),
       eq(toolMcpTasks.issueId, session.issueId),
       isNotNull(toolMcpTasks.createdByUserId),
-      mcpTaskCollectable(),
     )).limit(1);
     if (!row) return null;
-    const continued: ToolGatewaySession = { ...session, createdByUserId: row.createdByUserId };
-    try {
-      const grant = await resolveConnectionGrant(continued, connection, false);
-      return grant.id === row.grantId ? row : null;
-    } catch (error) {
-      if (error instanceof ToolGatewayHttpError) return null;
-      throw error;
-    }
+    const [collectable] = await db.select({ id: toolMcpTasks.id }).from(toolMcpTasks)
+      .where(and(eq(toolMcpTasks.id, row.id), mcpTaskCollectable())).limit(1);
+    if (!collectable) throw mcpTaskExpiredError();
+    return row;
   }
 
   /**
@@ -8595,6 +8590,7 @@ export function createToolGatewayService(
             rowId: taskSignals.attachToTaskRecordId ?? undefined,
           });
         const attachedTaskId = attachable ? openMcpTaskId(mcpTaskSecret(), mcpTaskScope(attachable), attachable.sealedProviderTaskId) : null;
+        if (attachable && !attachedTaskId && attachable.grantId !== grant.id) throw mcpTaskExpiredError();
         if (attachable && attachedTaskId) {
           // Only one caller collects a task at a time; another one waiting on
           // it means this call is told to try again, never handed a copy.

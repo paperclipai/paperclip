@@ -749,6 +749,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(server.count("tools/call")).toBe(callsBeforeContinuation);
     const [collected] = await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, openerRow.id));
     expect(collected!.deliveredAt).toBeInstanceOf(Date);
+
+    await expect(callAs(ctx, "task-opener", "revoked-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const revokedTaskId = server.only().id;
+    const [revokedRow] = (await ctx.rows()).filter((row) => row.createdByUserId === "task-opener" && !row.deliveredAt);
+    server.tasks.get(revokedTaskId)!.status = "completed";
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grants.get("task-opener")!));
+    const [wokenAgain] = await db.insert(heartbeatRuns).values({ companyId: ctx.org.id, agentId: ctx.agent.id, invocationSource: "automation",
+      status: "running", responsibleUserId: "task-owner",
+      contextSnapshot: { issueId: ctx.issue.id, toolTask: { tool: revokedRow!.catalogToolName, status: "completed", taskRecordId: revokedRow!.id } } }).returning();
+    await releaseLeases(ctx.org.id);
+    const callsBeforeRevokedContinuation = server.count("tools/call");
+    await expect(callAs(ctx, null, "revoked-ref", { runId: wokenAgain!.id, timeoutMs: 2_000 }))
+      .rejects.toMatchObject({ reasonCode: "provider_task_expired" });
+    expect(server.count("tools/call")).toBe(callsBeforeRevokedContinuation);
   });
 
   it("lets any person collect a task on a shared grant, including one started before openers were recorded", async () => {
