@@ -2691,15 +2691,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const login = localAiLoginService(db);
       await mkdir(directory, { recursive: true });
       await expect(login.cancel(companyId, owner, id)).rejects.toThrow("Keychain item");
-      expect(await read()).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
-      await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, id));
+      // The failed cancel makes the attempt due now, not at its original expiry a minute later.
+      const pending = await read();
+      expect(pending).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+      expect(pending.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
       await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
       expect(await read()).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
       await expect(stat(directory)).resolves.toBeTruthy();
       expect(await login.nextCleanupAt()).not.toBeNull();
       remove.mockResolvedValue(true);
       await login.reapExpired();
-      expect(await read()).toMatchObject({ status: "timed_out", expiresAt: null });
+      expect(await read()).toMatchObject({ status: "cancelled", expiresAt: null });
       await expect(stat(directory)).rejects.toThrow();
     } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });

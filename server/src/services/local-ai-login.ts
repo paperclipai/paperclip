@@ -130,6 +130,26 @@ export function localAiLoginService(db: Db) {
     void retirement.then(release, release);
     return retirement;
   }
+  /** Make an attempt due for the expiry worker now, when its retirement could not finish in this request. */
+  async function requestCleanup(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
+    await db.transaction(async tx => {
+      const [session] = await tx.select().from(adapterAuthSessions).where(and(
+        eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
+        eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+      )).for("update");
+      if (!session) return;
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
+      const now = new Date();
+      await tx.update(adapterAuthSessions).set({ expiresAt: session.expiresAt && session.expiresAt < now ? session.expiresAt : now,
+        failureReason: RETIREMENT_PENDING, updatedAt: now })
+        .where(eq(adapterAuthSessions.id, id));
+      await logActivity(tx as unknown as Db, {
+        companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
+        action: "ai_connection.local_login_cleanup_requested", entityType: "adapter_auth_session", entityId: id,
+        details: { provider: session.aiConnection?.provider },
+      });
+    });
+  }
   async function retireOwnedAttempt(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const retirement = stopBrowserLogin(id);
@@ -141,23 +161,7 @@ export function localAiLoginService(db: Db) {
       retainRetirement(id, retirement);
       // Keep the active claim and private home. The existing expiry worker may
       // join the original retirement without holding a database transaction.
-      await db.transaction(async tx => {
-        const [session] = await tx.select().from(adapterAuthSessions).where(and(
-          eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
-          eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
-        )).for("update");
-        if (!session) return;
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
-        const now = new Date();
-        await tx.update(adapterAuthSessions).set({ expiresAt: session.expiresAt && session.expiresAt < now ? session.expiresAt : now,
-          failureReason: RETIREMENT_PENDING, updatedAt: now })
-          .where(eq(adapterAuthSessions.id, id));
-        await logActivity(tx as unknown as Db, {
-          companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
-          action: "ai_connection.local_login_cleanup_requested", entityType: "adapter_auth_session", entityId: id,
-          details: { provider: session.aiConnection?.provider },
-        });
-      });
+      await requestCleanup(companyId, userId, id, managementContext);
       throw unprocessable("The previous sign-in is still stopping. Retry shortly.", { code: "ai_connection_busy" });
     } finally { clearTimeout(timeout); }
   }
@@ -498,6 +502,10 @@ export function localAiLoginService(db: Db) {
     ));
     if (!owned) throw notFound("Local sign-in attempt not found.");
     await retireOwnedAttempt(companyId, userId, id, managementContext);
+    // The cleanup below can fail, for example while the Keychain refuses a
+    // delete. The transaction then rolls back and the attempt stays waiting.
+    // Make it due now, so the expiry worker retries the cleanup at once and
+    // not at the original expiry of the attempt.
     await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -517,6 +525,9 @@ export function localAiLoginService(db: Db) {
           details: { provider: session.aiConnection?.provider },
         });
       }
+    }).catch(async error => {
+      if ((error as { details?: { code?: unknown } } | null)?.details?.code === "ai_connection_busy") await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
+      throw error;
     });
     deferredRetirements.delete(id);
   }
