@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { wrapCommandWithEnv } from "../../src/pod-exec.js";
 
@@ -19,10 +20,33 @@ describe("wrapCommandWithEnv", () => {
     expect(out[2]).toContain("exec 'opencode' 'run' '--model' 'anthropic/x'");
   });
 
-  it("never propagates PATH (would break command resolution in the sandbox image)", () => {
-    const out = wrapCommandWithEnv(["opencode"], { PATH: "/server/bin", XDG_CONFIG_HOME: "/c" });
+  it("skips the orchestrator's own PATH (would break command resolution in the sandbox image)", () => {
+    const out = wrapCommandWithEnv(
+      ["opencode"],
+      { PATH: "/server/bin", XDG_CONFIG_HOME: "/c" },
+      { hostPath: "/server/bin" },
+    );
     expect(out[2]).not.toContain("PATH=");
     expect(out[2]).toContain("XDG_CONFIG_HOME=");
+    const empty = wrapCommandWithEnv(["opencode"], { PATH: "", V: "x" }, { hostPath: "/server/bin" });
+    expect(empty[2]).not.toContain("PATH=");
+  });
+
+  it("defaults hostPath to this process's PATH", () => {
+    const out = wrapCommandWithEnv(["opencode"], { PATH: process.env.PATH ?? "", V: "x" });
+    expect(out[2]).not.toContain("PATH=");
+  });
+
+  it("puts a sandbox PATH ahead of the image's PATH, keeping the image's entries", () => {
+    const out = wrapCommandWithEnv(
+      ["/bin/sh", "-c", 'printf "%s" "$PATH"'],
+      { PATH: "/workspace/.launchers:/opt/it's" },
+      { hostPath: "/server/bin" },
+    );
+    const [file, ...args] = out;
+    const result = spawnSync(file!, args, { encoding: "utf-8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`/workspace/.launchers:/opt/it's:${process.env.PATH ?? ""}`);
   });
 
   it("skips invalid identifiers and non-string values", () => {

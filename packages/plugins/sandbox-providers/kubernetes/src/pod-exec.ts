@@ -37,20 +37,31 @@ export function shQuote(segment: string): string {
 // Wrap a command so the given env vars are exported before it runs. The Kubernetes
 // exec API has no env field, so the only way to give an exec'd process additional
 // env is to run it under a shell that exports the vars and then `exec`s the real
-// command. PATH is deliberately skipped (the caller's PATH is the orchestrator's,
-// not the sandbox image's, and overriding it would break command resolution), and
-// only valid shell identifiers are exported. Returns the original command unchanged
-// when there is nothing to apply.
+// command. PATH is never replaced. A PATH equal to the orchestrator's own
+// (`hostPath`, default this process's PATH) is the orchestrator's, not the sandbox
+// image's, and is skipped. Any other PATH was built for the sandbox (for example
+// the GitHub operation launchers, which must come first) and is prepended to the
+// image's PATH, so commands the caller didn't list still resolve. Only valid shell
+// identifiers are exported. Returns the original command unchanged when there is
+// nothing to apply.
 export function wrapCommandWithEnv(
   command: string[],
   env: Record<string, string> | undefined | null,
+  options: { hostPath?: string } = {},
 ): string[] {
+  const hostPath = "hostPath" in options ? options.hostPath : process.env.PATH;
   const entries = Object.entries(env && typeof env === "object" ? env : {}).filter(
     ([key, value]) =>
-      typeof value === "string" && key !== "PATH" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key),
+      typeof value === "string" &&
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+      (key !== "PATH" || (value !== "" && value !== hostPath)),
   );
   if (entries.length === 0) return command;
-  const exports = entries.map(([k, v]) => `export ${k}=${shQuote(v)};`).join(" ");
+  const exports = entries
+    .map(([k, v]) =>
+      k === "PATH" ? `export PATH=${shQuote(v)}"\${PATH:+:$PATH}";` : `export ${k}=${shQuote(v)};`,
+    )
+    .join(" ");
   return ["/bin/sh", "-c", `${exports} exec ${command.map(shQuote).join(" ")}`];
 }
 
