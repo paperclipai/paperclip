@@ -119,6 +119,7 @@ async function finalizeOAuthAccess(
         throw conflict("This connection already uses a company identity");
       }
       connection = await writeToolConnectionHealthChange(db, connection, async tx => {
+        await lockConnectionForSignIn(tx, connection);
         await notifyGitHubCredentialChange(tx, connection);
         const [updated] = await tx
           .update(toolConnections)
