@@ -6,6 +6,7 @@ import { unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { AI_CREDENTIAL_HOLDER_KEY } from "./run-ai-credential-holder.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
 import { isTransientLockContention, retryTransientLockContention } from "./transient-lock-contention.js";
 import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
@@ -76,7 +77,7 @@ export async function refreshClaudeSubscription(
             const [held] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"),
               or(sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
-                sql`${heartbeatRuns.contextSnapshot}->>'aiCredentialHolder' = ${grant.id}`),
+                sql`${heartbeatRuns.contextSnapshot}->>${AI_CREDENTIAL_HOLDER_KEY} = ${grant.id}`),
               ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
             )).limit(1);
             if (held) return { value: current };
@@ -138,7 +139,7 @@ export async function refreshClaudeSubscription(
         // between the commit above and this write.
         if (options.currentRunId) {
           await db.update(heartbeatRuns)
-            .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiCredentialHolder: row.grant.id })}::jsonb` })
+            .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ [AI_CREDENTIAL_HOLDER_KEY]: row.grant.id })}::jsonb` })
             .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, options.currentRunId)));
         }
         return claudeAccessTokenOf(result.value!);
