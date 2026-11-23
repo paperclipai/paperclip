@@ -149,4 +149,67 @@ describe("agent setup progress", () => {
     expect(client.get).toHaveBeenCalledWith(ID);
     expect(container.textContent).toContain("Your agent is setting up AWS");
   });
+
+  function Full({ client }: { client: AgentSetupProgressClient }) {
+    const state = useAgentSetupProgress({ companyId: "company-1", purpose: "aws_connection", subjectId: "conn-1", client });
+    return state.handoff ? (
+      <>
+        <span data-testid="token">{state.handoff.token}</span>
+        <AgentSetupProgressPanel progress={state.progress} subject="AWS" expired={state.expired} onRenew={state.renew}
+          refreshError={state.refreshError} onRetryRefresh={state.retryRefresh} />
+      </>
+    ) : null;
+  }
+  const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  const token = () => container.querySelector('[data-testid="token"]')?.textContent;
+
+  it("offers a fresh checklist after a failed attempt, and opening the step again later starts fresh", async () => {
+    const failedAttempt: AgentSetupProgress = { ...WAITING, status: "failed", summary: "Stopped: no permission",
+      items: [{ key: "deploy", title: "Create the role", status: "failed", detail: "iam:CreateRole denied" }] };
+    const second: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_second", progress: { ...WAITING, id: "33333333-3333-4333-8333-333333333333" } };
+    const create = vi.fn().mockResolvedValueOnce(HANDOFF).mockResolvedValueOnce(second);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === ID ? failedAttempt : second.progress) };
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
+    await flush();
+    // The failed attempt stays on screen while this page is open, with a way to try again.
+    expect(container.textContent).toContain("Your agent couldn’t finish setting up AWS");
+    expect(window.sessionStorage.length).toBe(0);
+    const startAgain = [...container.querySelectorAll("button")].find((b) => b.textContent === "Start again")!;
+    await act(async () => { startAgain.click(); });
+    await flush();
+    expect(token()).toBe("pcsp_second");
+
+    // Opening the step again with a finished checklist in the cache (such as a reconnect) starts a fresh one.
+    const third: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_third", progress: { ...WAITING, id: "44444444-4444-4444-8444-444444444444" } };
+    const reopenCreate = vi.fn().mockResolvedValueOnce(third);
+    const finishedCache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    finishedCache.setQueryData(["agent-setup-progress-handoff", "company-1", "aws_connection", "conn-1"], HANDOFF);
+    const reopenClient: AgentSetupProgressClient = { create: reopenCreate, get: vi.fn(async (id: string) => id === ID ? { ...failedAttempt, status: "done" as const } : third.progress) };
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => { root.render(<QueryClientProvider client={finishedCache}><Full client={reopenClient} /></QueryClientProvider>); });
+    await flush();
+    await flush();
+    expect(reopenCreate).toHaveBeenCalledOnce();
+    expect(token()).toBe("pcsp_third");
+  });
+
+  it("keeps the last checklist when a refresh fails, says so, and retries", async () => {
+    const working: AgentSetupProgress = { ...WAITING, status: "in_progress",
+      items: [{ key: "deploy", title: "Create the role", status: "in_progress", detail: null }] };
+    const get = vi.fn().mockResolvedValueOnce(working).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(working);
+    const client: AgentSetupProgressClient = { create: vi.fn(async () => HANDOFF), get };
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
+    await flush();
+    expect(container.textContent).toContain("Create the role");
+    expect(container.textContent).toContain("Couldn’t refresh your agent’s progress");
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent === "Retry")!;
+    await act(async () => { retry.click(); });
+    await flush();
+    expect(container.textContent).not.toContain("Couldn’t refresh your agent’s progress");
+  });
 });

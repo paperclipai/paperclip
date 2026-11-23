@@ -191,6 +191,8 @@ export function AwsRoleSetup({
                 subject="AWS"
                 expired={agentProgress.expired}
                 onRenew={agentProgress.renew}
+                refreshError={agentProgress.refreshError}
+                onRetryRefresh={agentProgress.retryRefresh}
               />
             ) : null}
             <div className="space-y-2">

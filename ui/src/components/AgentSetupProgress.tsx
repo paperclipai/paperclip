@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_SETUP_PROGRESS_LIMITS } from "@paperclipai/shared";
 import type {
@@ -110,18 +110,38 @@ export function useAgentSetupProgress({
     },
   });
   const progress = query.data ?? handoff?.progress ?? null;
-  const expired = Boolean(progress && progress.status !== "done" && progress.status !== "failed"
-    && Date.parse(progress.expiresAt) <= Date.now());
+  const finished = progress?.status === "done" || progress?.status === "failed";
+  const expired = Boolean(progress && !finished && Date.parse(progress.expiresAt) <= Date.now());
+  const renew = () => {
+    storeHandoff(storageKey, null);
+    void handoffQuery.refetch();
+  };
+
+  // A finished checklist takes no more updates, so it is never handed to another attempt: a reload
+  // stops reusing it, and opening the step again later (such as a reconnect) starts a fresh one.
+  useEffect(() => {
+    if (finished) storeHandoff(storageKey, null);
+  }, [finished, storageKey]);
+  // Only a checklist the page opened with (from an earlier visit) is replaced: one that finishes while
+  // this page is open stays on screen.
+  const openedWithEarlier = useRef<boolean | null>(null);
+  if (openedWithEarlier.current === null) openedWithEarlier.current = queryClient.getQueryData(handoffKey) !== undefined;
+  useEffect(() => {
+    if (!openedWithEarlier.current || !handoff || !query.isFetched) return;
+    openedWithEarlier.current = false;
+    if (finished) renew();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handoff, query.isFetched]);
 
   return {
     handoff,
     progress,
     expired,
     error: handoffQuery.error ? describeError(handoffQuery.error).body : null,
-    renew: () => {
-      storeHandoff(storageKey, null);
-      void handoffQuery.refetch();
-    },
+    /** A refresh of the checklist failed; the last one stays on screen. */
+    refreshError: query.error && progress ? describeError(query.error).body : null,
+    retryRefresh: () => { void query.refetch(); },
+    renew,
   };
 }
 
@@ -163,15 +183,20 @@ export interface AgentSetupProgressPanelProps {
   progress: AgentSetupProgress | null;
   /** The prompt's token stopped working before the agent finished. */
   expired?: boolean;
-  /** Makes a fresh checklist (and prompt) after it expired. */
+  /** Makes a fresh checklist (and prompt), after it expired or a failed attempt. */
   onRenew?: () => void;
+  /** Why the latest refresh failed; the last checklist stays on screen. */
+  refreshError?: string | null;
+  onRetryRefresh?: () => void;
   /** What the agent is setting up, in a few words, such as "AWS". */
   subject: string;
   className?: string;
 }
 
 /** The live checklist. Before the agent reports anything, it says what to do and waits. */
-export function AgentSetupProgressPanel({ progress, subject, expired = false, onRenew, className }: AgentSetupProgressPanelProps) {
+export function AgentSetupProgressPanel({
+  progress, subject, expired = false, onRenew, refreshError = null, onRetryRefresh, className,
+}: AgentSetupProgressPanelProps) {
   const [, setTick] = useState(0);
   // Keeps "Last update …" current while the panel is open.
   useEffect(() => {
@@ -227,8 +252,19 @@ export function AgentSetupProgressPanel({ progress, subject, expired = false, on
       {progress && status !== "waiting" ? (
         <p className="text-xs text-muted-foreground">Last update {timeAgo(progress.updatedAt)}</p>
       ) : null}
-      {expired && onRenew ? (
-        <Button type="button" variant="outline" size="sm" onClick={onRenew}>Start again</Button>
+      {refreshError ? (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-destructive" role="alert">
+          Couldn’t refresh your agent’s progress: {refreshError}
+          {onRetryRefresh ? <Button type="button" variant="outline" size="sm" onClick={onRetryRefresh}>Retry</Button> : null}
+        </p>
+      ) : null}
+      {(expired || status === "failed") && onRenew ? (
+        <div className="space-y-1">
+          {status === "failed" && !expired ? (
+            <p className="text-xs text-muted-foreground">Fix what stopped it, then start again for a new prompt.</p>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={onRenew}>Start again</Button>
+        </div>
       ) : null}
     </section>
   );
