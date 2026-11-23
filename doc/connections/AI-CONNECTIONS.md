@@ -351,8 +351,19 @@ same inline connection/reconnect controls as missing-account setup. Pending
 cards are deduplicated. Creating a repair card persists a blocked run classification
 that suppresses immediate and periodic generic retries until the responsible user
 repairs the connection. Unsupported providers and failures that could not create
-a card retain their existing recovery path. Tool permission errors and provider quota failures do not
+a card retain their existing recovery path. Typed provider authentication failures
+and the runtime's `provider_invalid_credentials` code enter this same repair path.
+Managed repair follows the run's recorded account attribution, including proxy
+accounts whose driver reports an upstream provider. Unmanaged adoption requires
+a compatible provider. Tool permission errors and provider quota failures do not
 request model authentication.
+
+An exhausted provider allowance with typed `quota_exhausted` evidence and no
+reported reset asks the user to review billing and usage, then retry. It does
+not create an estimated cooldown or an automatic provider retry. The task links
+to Apps to review the connected AI account. Rate limits without a reset retain
+their default cooldown; allowance limits with a reported reset retain their
+scheduled retry. Older untyped quota failures retain their existing recovery.
 
 Pre-dispatch `configuration_incomplete` failures also show this card when every
 missing binding is a personal `user_secret_ref` for the same compatible AI
