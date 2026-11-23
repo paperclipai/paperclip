@@ -800,7 +800,8 @@ it("accepts the auth login URL preamble with the same URL and prompt validation"
 });
 
 it("accepts the short sign-in link that claude 2.1.330 prints for auth login, including its terminal hyperlink", () => {
-  const handle = "z-YcXBFQSjFkEPwepM23IZkhkglYYE1Cin4DrxRgP_fOM";
+  // A generated handle with the length and alphabet of the ones the CLI prints.
+  const handle = "A1b2-C3d4_E5f6-G7h8_I9j0-K1l2_M3n4-O5p6_Q7r8";
   const url = `https://claude.ai/oauth/authorize?${handle}`;
   const output = `Opening browser to sign in…\r\nIf the browser didn't open, visit:\r\n\x1b]8;;${url}\x07\x1b[94m${url}\x1b[39m\x1b]8;;\x07\r\nPaste code here if prompted > `;
   expect(parseSetupTokenPrompt(output)).toEqual({ url, prompt: SETUP_TOKEN_PROMPT });
