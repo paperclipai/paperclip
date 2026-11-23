@@ -73,9 +73,18 @@ export function useAgentSetupProgress({
   const accountFailed = !accountOverride && account.failed;
   const handoffKey = ["agent-setup-progress-handoff", accountId, companyId ?? null, purpose, subjectId ?? null] as const;
   const storageKey = agentSetupHandoffStorageKey(accountId, companyId, purpose, subjectId);
+  // Set by renew: the one refetch that may replace the checklist this page already has.
+  const replacing = useRef(false);
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
+      // Any other refetch (the app refreshes every query on screen when its live connection
+      // reconnects or the tab returns) keeps the checklist on screen. A finished one is no longer
+      // in storage, so falling through here would replace it with a blank checklist.
+      const current = queryClient.getQueryData<{ handoff: AgentSetupProgressHandoff; fromEarlierVisit: boolean }>(handoffKey);
+      const replace = replacing.current;
+      replacing.current = false;
+      if (current && !replace) return current;
       // A handoff found in this tab's storage came from an earlier visit; a created one is new.
       const stored = storedAgentSetupHandoff(storageKey);
       const handoff = stored ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
@@ -115,6 +124,7 @@ export function useAgentSetupProgress({
       return;
     }
     storeAgentSetupHandoff(storageKey, null);
+    replacing.current = true;
     void handoffQuery.refetch();
   };
 
