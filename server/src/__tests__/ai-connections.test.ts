@@ -2602,7 +2602,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   });
   it("stops a sign-in process that a reopen launched while the attempt was being cancelled", async () => {
     const owner = "reopen-during-cancel";
-    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] } as const;
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] as string[] } as const;
     const running = new Set<number>();
     let launched = 0;
     browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
