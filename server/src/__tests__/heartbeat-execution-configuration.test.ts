@@ -384,6 +384,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
   it.each(["none", "remote", "local"] as const)("records the token identity that the process holds, not one renewed under a live runner (live runner=%s)", async live => {
     const f = await seed(true);
     const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    if (!("grantId" in binding)) throw new Error("The fixture agent has no saved AI account");
     const attribution = { connectionId: binding.connectionId, grantId: binding.grantId, provider: binding.provider, method: binding.method, mode: binding.mode, responsibleUserId: null };
     // This preparation renewed the credential: the runtime reports a new token identity.
     vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockResolvedValue({ config: { provider: "codex", env: {} }, attribution, accountName: "Fixture",

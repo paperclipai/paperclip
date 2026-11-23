@@ -2617,7 +2617,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   });
   it("stops a sign-in process that a reopen launched while the attempt was being cancelled", async () => {
     const owner = "reopen-during-cancel";
-    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] } as const;
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] as string[] } as const;
     const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
     const running = new Set<number>();
     let launched = 0;
