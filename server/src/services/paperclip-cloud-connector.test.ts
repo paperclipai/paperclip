@@ -722,7 +722,7 @@ describe("Paperclip Cloud connector", () => {
     await expect(connector.getInstanceStatus()).rejects.toMatchObject({ status: 429 });
   });
 
-  it("does not pin a rate-limited capability check for a minute", async () => {
+  it("keeps a rate-limited capability check only briefly", async () => {
     const keys = config().config;
     const env = {
       PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: keys.baseUrl,
@@ -731,17 +731,23 @@ describe("Paperclip Cloud connector", () => {
       PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: keys.signPrivateKey,
       PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: keys.sealPrivateKey,
     };
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 10, 23) });
     const request = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: "RATE_LIMITED" }), { status: 429 }))
       .mockResolvedValue(Response.json({ status: "active", active: true, profiles: ["github.code"] }));
     invalidatePaperclipCloudConnectorCapabilities();
     try {
       await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+      // Reads during the short hold reuse the fallback instead of calling Cloud.
+      await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+      expect(request).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(5_001);
       await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["github.code"]);
       await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["github.code"]);
       expect(request).toHaveBeenCalledTimes(2);
     } finally {
       request.mockRestore();
+      vi.useRealTimers();
       invalidatePaperclipCloudConnectorCapabilities();
     }
   });

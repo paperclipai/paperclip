@@ -819,6 +819,7 @@ export function paperclipCloudConnectorConsentAllowed(profile: string): boolean 
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
 let capabilityCacheGeneration = 0;
+const UNCONFIRMED_CAPABILITIES_TTL_MS = 5_000;
 
 export function invalidatePaperclipCloudConnectorCapabilities(): void {
   capabilityCacheGeneration += 1;
@@ -847,10 +848,11 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
   const { profiles, confirmed } = await connector.readCapabilities();
-  // Only a confirmed answer is cached; an unanswered check is asked again on
-  // the next request instead of pinning a fallback for a minute.
-  if (confirmed && generation === capabilityCacheGeneration) {
-    capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  // An unanswered check keeps its fallback only briefly, so the next gallery
+  // read soon asks Cloud again without sending one request per read to a
+  // broker that is already failing.
+  if (generation === capabilityCacheGeneration) {
+    capabilityCache = { key, expiresAt: Date.now() + (confirmed ? 60_000 : UNCONFIRMED_CAPABILITIES_TTL_MS), profiles };
   }
   return profiles;
 }
