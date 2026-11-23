@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act as reactAct } from "react";
+import { act as reactAct, useState } from "react";
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -26,6 +26,7 @@ const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
   /** Typed into the editor on mount, for forms the test cannot type into. */
   emitMountValue: null as string | null,
+  changeBody: null as null | ((body: string) => void),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,8 +61,10 @@ vi.mock("../api/auth", () => ({
   },
 }));
 
-vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ hash: "" }),
+const mockLocation = vi.hoisted(() => ({ hash: "" }));
+vi.mock("@/lib/router", () => ({ useLocation: () => mockLocation }));
+vi.mock("./DocumentMarkdownBody", async () => ({
+  DocumentMarkdownBody: (await import("./MarkdownBody")).MarkdownBody,
 }));
 
 vi.mock("./MarkdownBody", () => ({
@@ -103,6 +106,7 @@ vi.mock("./MarkdownEditor", async () => {
         onChange?.("");
       }, []);
 
+      markdownEditorMockState.changeBody = onChange ?? null;
       return (
         <div className={contentClassName} data-testid="markdown-editor">
           {value || placeholder || ""}
@@ -301,11 +305,507 @@ describe("IssueDocumentsSection", () => {
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
     markdownEditorMockState.emitMountValue = null;
+    markdownEditorMockState.changeBody = null;
     mockSession.unreachable = false;
+    mockLocation.hash = "";
   });
 
   afterEach(() => {
     container.remove();
+  });
+
+  it.each([false, true])("restores an unfinished document after its Artifacts pane unmounts (general only: %s)", async generalDocumentsOnly => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    function TaskPane() {
+      const [artifacts, setArtifacts] = useState(true);
+      return <>
+        <button onClick={() => setArtifacts(true)}>Artifacts</button>
+        <button onClick={() => setArtifacts(false)}>Properties</button>
+        {artifacts ? <IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly={generalDocumentsOnly} /> : null}
+      </>;
+    }
+    await act(async () => root.render(<QueryClientProvider client={client}><TaskPane /></QueryClientProvider>));
+    await flush();
+    const button = (name: string) => Array.from(container.querySelectorAll("button")).find(element => element.textContent === name)!;
+    await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+    await act(async () => markdownEditorMockState.changeBody?.("Body typed before its key"));
+    const title = container.querySelector<HTMLInputElement>('input[placeholder="Optional title"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Unfinished note");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const form = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!.parentElement!;
+    await act(async () => form.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: button("Properties") })));
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => button("Properties").click());
+    expect(container.textContent).not.toContain("Body typed before its key");
+    await act(async () => button("Artifacts").click());
+    await flush();
+    expect(container.textContent).toContain("Body typed before its key");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')?.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional title"]')?.value).toBe("Unfinished note");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    const cancel = Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("Cancel"))!;
+    await act(async () => cancel.click());
+    await act(async () => button("Properties").click());
+    await act(async () => button("Artifacts").click());
+    await flush();
+    expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+    expect(container.textContent).not.toContain("Body typed before its key");
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("keeps new document drafts within their task and signed-in account", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    const issue = createIssue();
+    const otherTask = { ...issue, id: "task-b", identifier: "DOC-2" };
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const show = (task: Issue) => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={task} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>);
+    await act(async () => show(issue));
+    await flush();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+    await act(async () => markdownEditorMockState.changeBody?.("Private unfinished document"));
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }));
+    await flush();
+    expect(container.textContent).not.toContain("Private unfinished document");
+    expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+    await act(async () => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      show(otherTask);
+    });
+    await flush();
+    expect(container.textContent).not.toContain("Private unfinished document");
+    await act(async () => show(issue));
+    await flush();
+    expect(container.textContent).toContain("Private unfinished document");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it.each([
+    { generalDocumentsOnly: false, saveOutcome: "saved" },
+    { generalDocumentsOnly: false, saveOutcome: "failed" },
+    { generalDocumentsOnly: true, saveOutcome: "saved" },
+    { generalDocumentsOnly: true, saveOutcome: "failed" },
+  ])("reopens the latest edits after pending creation ($generalDocumentsOnly, $saveOutcome)", async ({ generalDocumentsOnly, saveOutcome }) => {
+    const { ApiError } = await import("../api/client");
+    const issue = createIssue();
+    const initial = createIssueDocument({ key: "notes", title: "Initial title", body: "Initial body", latestRevisionId: "created-revision", latestRevisionNumber: 1 });
+    const revised = { ...initial, title: "Latest title", body: "Latest body", latestRevisionId: "edited-revision", latestRevisionNumber: 2 };
+    let savedDocuments: IssueDocument[] = [];
+    const pendingCreate = deferred<IssueDocument>();
+    mockIssuesApi.listDocuments.mockImplementation(async () => savedDocuments);
+    mockIssuesApi.upsertDocument.mockImplementationOnce(async () => {
+      const saved = await pendingCreate.promise;
+      savedDocuments = [saved];
+      return saved;
+    }).mockImplementationOnce(async () => {
+      if (saveOutcome === "failed") throw new ApiError("Save refused", 400, null);
+      savedDocuments = [revised];
+      return revised;
+    });
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    function TaskPane() {
+      const [artifacts, setArtifacts] = useState(true);
+      return <>
+        <button onClick={() => setArtifacts(true)}>Artifacts</button>
+        <button onClick={() => setArtifacts(false)}>Properties</button>
+        {artifacts ? <IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly={generalDocumentsOnly} /> : null}
+      </>;
+    }
+    const button = (name: string) => Array.from(container.querySelectorAll("button")).find(element => element.textContent === name)!;
+    const typeInput = async (placeholder: string, value: string) => act(async () => {
+      const input = container.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><TaskPane /></QueryClientProvider>));
+      await flush();
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+      await typeInput("Document key", "notes");
+      await typeInput("Optional title", initial.title!);
+      await act(async () => markdownEditorMockState.changeBody?.(initial.body));
+      await act(async () => button("Create document").click());
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledOnce();
+      await typeInput("Optional title", "Title typed during creation");
+      await act(async () => markdownEditorMockState.changeBody?.("Body typed during creation"));
+      await act(async () => pendingCreate.resolve(initial));
+      await flush();
+      const titleAfterCreate = container.querySelector<HTMLInputElement>('input[placeholder="Optional title"]')?.value;
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("Body typed during creation");
+      await typeInput("Optional title", revised.title);
+      await act(async () => markdownEditorMockState.changeBody?.(revised.body));
+      await act(async () => new Promise(resolve => setTimeout(resolve, 1100)));
+      await flush();
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledTimes(2);
+      expect(mockIssuesApi.upsertDocument).toHaveBeenLastCalledWith(issue.id, "notes", expect.objectContaining({
+        title: revised.title, body: revised.body, baseRevisionId: initial.latestRevisionId,
+      }));
+      await act(async () => button("Properties").click());
+      await act(async () => button("Artifacts").click());
+      await flush();
+      expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+      expect(container.textContent).toContain(revised.body);
+      expect(titleAfterCreate).toBe("Title typed during creation");
+      expect(localStorage.getItem(`paperclip:new-document-draft:v1:user-1:${issue.id}:${generalDocumentsOnly ? "general" : "all"}`)).toBeNull();
+      const editBackup = localStorage.getItem(`paperclip:document-draft:v2:user-1:${issue.id}:notes`);
+      if (saveOutcome === "failed") {
+        expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe(revised.body);
+        expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional title"]')?.value).toBe(revised.title);
+        expect(JSON.parse(editBackup!)).toMatchObject({ body: revised.body, title: revised.title, baseRevisionId: initial.latestRevisionId, isNew: false });
+      } else expect(editBackup).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
+  it.each([
+    { generalDocumentsOnly: false, reopenBeforeCreate: false, remoteChange: false },
+    { generalDocumentsOnly: false, reopenBeforeCreate: true, remoteChange: false },
+    { generalDocumentsOnly: true, reopenBeforeCreate: false, remoteChange: false },
+    { generalDocumentsOnly: true, reopenBeforeCreate: true, remoteChange: false },
+    { generalDocumentsOnly: true, reopenBeforeCreate: false, remoteChange: true },
+  ])("resumes edits when creation finishes after the Artifacts pane unmounts ($generalDocumentsOnly, $reopenBeforeCreate, $remoteChange)", async ({ generalDocumentsOnly, reopenBeforeCreate, remoteChange }) => {
+    const { ApiError } = await import("../api/client");
+    const issue = createIssue();
+    const initial = createIssueDocument({ key: "notes", title: "Submitted title", body: "Submitted body", latestRevisionId: "created-revision", latestRevisionNumber: 1 });
+    const remote = { ...initial, title: "Remote title", body: "Another writer's text", latestRevisionId: "remote-revision", latestRevisionNumber: 2 };
+    let savedDocuments: IssueDocument[] = [];
+    const pendingCreate = deferred<IssueDocument>();
+    mockIssuesApi.listDocuments.mockImplementation(async () => savedDocuments);
+    mockIssuesApi.getDocument.mockImplementation(async () => savedDocuments[0]);
+    mockIssuesApi.upsertDocument.mockImplementation(async (_issueId, _key, data) => {
+      if (mockIssuesApi.upsertDocument.mock.calls.length === 1) {
+        const saved = await pendingCreate.promise;
+        savedDocuments = [saved];
+        return saved;
+      }
+      if (data.baseRevisionId !== savedDocuments[0].latestRevisionId) throw new ApiError("Document changed", 409, null);
+      const revised = { ...initial, title: data.title, body: data.body, latestRevisionId: "edited-revision", latestRevisionNumber: 2 };
+      savedDocuments = [revised];
+      return revised;
+    });
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    function TaskPane() {
+      const [artifacts, setArtifacts] = useState(true);
+      return <>
+        <button onClick={() => setArtifacts(true)}>Artifacts</button>
+        <button onClick={() => setArtifacts(false)}>Properties</button>
+        {artifacts ? <IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly={generalDocumentsOnly} /> : null}
+      </>;
+    }
+    const button = (name: string) => Array.from(container.querySelectorAll("button")).find(element => element.textContent === name)!;
+    const typeInput = async (placeholder: string, value: string) => act(async () => {
+      const input = container.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const title = reopenBeforeCreate ? "Newest reopened title" : "Title typed during creation";
+    const body = reopenBeforeCreate ? "Newest reopened body" : "Body typed during creation";
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><TaskPane /></QueryClientProvider>));
+      await flush();
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+      await typeInput("Document key", "notes");
+      await typeInput("Optional title", initial.title!);
+      await act(async () => markdownEditorMockState.changeBody?.(initial.body));
+      await act(async () => button("Create document").click());
+      await typeInput("Optional title", "Title typed during creation");
+      await act(async () => markdownEditorMockState.changeBody?.("Body typed during creation"));
+      await act(async () => button("Properties").click());
+      expect(container.querySelector('[data-testid="markdown-editor"]')).toBeNull();
+      if (reopenBeforeCreate) {
+        await act(async () => button("Artifacts").click());
+        await flush();
+        await typeInput("Optional title", title);
+        await act(async () => markdownEditorMockState.changeBody?.(body));
+      }
+      await act(async () => pendingCreate.resolve(initial));
+      await flush();
+      if (remoteChange) await act(async () => {
+        savedDocuments = [remote];
+        client.setQueryData(queryKeys.issues.documents(issue.id), savedDocuments);
+      });
+      if (!reopenBeforeCreate) await act(async () => button("Artifacts").click());
+      await flush();
+      expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe(body);
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional title"]')?.value).toBe(title);
+      await act(async () => new Promise(resolve => setTimeout(resolve, 1100)));
+      await flush();
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledTimes(2);
+      expect(mockIssuesApi.upsertDocument).toHaveBeenLastCalledWith(issue.id, "notes", expect.objectContaining({ title, body, baseRevisionId: initial.latestRevisionId }));
+      if (remoteChange) {
+        expect(savedDocuments).toEqual([remote]);
+        expect(container.textContent).toContain("Out of date");
+        expect(container.textContent).toContain("Overwrite remote");
+      } else {
+        expect(container.textContent).not.toContain("Out of date");
+        expect(savedDocuments[0]).toMatchObject({ title, body, latestRevisionId: "edited-revision" });
+        await act(async () => button("Properties").click());
+        await act(async () => button("Artifacts").click());
+        await flush();
+        expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+        expect(container.textContent).toContain(body);
+      }
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
+  it.each([false, true])("keeps a newer new-document form when an earlier create completes (general only: %s)", async generalDocumentsOnly => {
+    const issue = createIssue();
+    const saved = createIssueDocument({ key: "first", title: null, body: "Submitted first body" });
+    let savedDocuments: IssueDocument[] = [];
+    const pendingCreate = deferred<IssueDocument>();
+    mockIssuesApi.listDocuments.mockImplementation(async () => savedDocuments);
+    mockIssuesApi.upsertDocument.mockImplementation(async () => {
+      const saved = await pendingCreate.promise;
+      savedDocuments = [saved];
+      return saved;
+    });
+    let root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const show = () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly={generalDocumentsOnly} /></QueryClientProvider>);
+    const typeKey = async (value: string) => act(async () => {
+      const input = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    try {
+      await act(async () => show());
+      await flush();
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+      await typeKey("first");
+      await act(async () => markdownEditorMockState.changeBody?.(saved.body));
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent === "Create document")!.click());
+      await typeKey("second");
+      await act(async () => markdownEditorMockState.changeBody?.("Keep the newer document body"));
+      await act(async () => pendingCreate.resolve(saved));
+      await flush();
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await act(async () => show());
+      await flush();
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')?.value).toBe("second");
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("Keep the newer document body");
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
+  it("keeps the new-document backup if storing the pending-create edits fails", async () => {
+    const issue = createIssue();
+    const saved = createIssueDocument({ key: "notes", title: null, body: "Submitted body" });
+    let savedDocuments: IssueDocument[] = [];
+    const pendingCreate = deferred<IssueDocument>();
+    mockIssuesApi.listDocuments.mockImplementation(async () => savedDocuments);
+    mockIssuesApi.upsertDocument.mockImplementation(async () => {
+      const saved = await pendingCreate.promise;
+      savedDocuments = [saved];
+      return saved;
+    });
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const write = localStorage.setItem.bind(localStorage);
+    const methodOwner: Storage = Object.hasOwn(localStorage, "setItem") ? localStorage : Object.getPrototypeOf(localStorage);
+    const editKey = `paperclip:document-draft:v2:user-1:${issue.id}:notes`;
+    const setItem = vi.spyOn(methodOwner, "setItem").mockImplementation((key, value) => {
+      if (key === editKey) throw new Error("Storage full");
+      write(key, value);
+    });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>));
+      await flush();
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+      await act(async () => {
+        const input = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "notes");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        markdownEditorMockState.changeBody?.(saved.body);
+      });
+      await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent === "Create document")!.click());
+      await act(async () => markdownEditorMockState.changeBody?.("Keep the unsaved pending-create edits"));
+      await act(async () => pendingCreate.resolve(saved));
+      await flush();
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("Keep the unsaved pending-create edits");
+      expect(localStorage.getItem(editKey)).toBeNull();
+      const retained = localStorage.getItem(`paperclip:new-document-draft:v1:user-1:${issue.id}:general`);
+      expect(JSON.parse(retained!)).toMatchObject({ key: "notes", body: "Keep the unsaved pending-create edits", baseRevisionId: saved.latestRevisionId, isNew: false });
+      await act(async () => container.querySelector('[data-testid="markdown-editor"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      expect(localStorage.getItem(`paperclip:new-document-draft:v1:user-1:${issue.id}:general`)).toBeNull();
+    } finally {
+      setItem.mockRestore();
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
+  it("keeps native Plans out of the general-document authoring surface", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({ body: "Native Plan content" }),
+      createIssueDocument({ id: "note", key: "notes", title: "Task note", body: "General document content" }),
+      createIssueDocument({ id: "file-review", key: "artifact-review-output", body: "Work product review content" }),
+    ]);
+    markdownEditorMockState.emitMountValue = "A new general note";
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={{ ...createIssue(), legacyPlanDocument: { key: "plan", source: "issue_description", body: "Legacy Plan content" } }}
+      canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toContain("General document content");
+    expect(container.textContent).not.toContain("Native Plan content");
+    expect(container.textContent).not.toContain("Legacy Plan content");
+    expect(container.textContent).not.toContain("Work product review content");
+    const newDocument = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("New document"))!;
+    await act(async () => newDocument.click());
+    const keyInput = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(keyInput, "plan");
+      keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const create = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create document"))!;
+    await act(async () => create.click());
+    await flush();
+    expect(container.textContent).toContain("Create and revise Plans in the task conversation.");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it.each([
+    ["continuation-summary", "This document key is reserved for task state."],
+    ["pipeline-case-body", "This document key is reserved for task state."],
+    ["artifact-review-output", "Review this document through its work product."],
+  ])("refuses reserved general-document key %s and preserves the draft", async (key, message) => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    mockIssuesApi.upsertDocument.mockResolvedValue(createIssueDocument({ key, body: "Keep my document draft" }));
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>));
+    await flush();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("New document"))!.click());
+    const keyInput = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(keyInput, key);
+      keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+      markdownEditorMockState.changeBody?.("Keep my document draft");
+    });
+    expect(container.textContent).toContain(message);
+    const create = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create document"))!;
+    await act(async () => create.click());
+    await flush();
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(message);
+    expect(keyInput.value).toBe(key);
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("Keep my document draft");
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("unfolds a Classic confirmation link and loads its bound revision rather than the latest text", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-1";
+    localStorage.setItem("paperclip:issue-document-folds:issue-1", JSON.stringify(["plan"]));
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Newer unreviewed text" })]);
+    let loadHistory!: (value: DocumentRevision[]) => void;
+    mockIssuesApi.listDocumentRevisions.mockReturnValue(new Promise<DocumentRevision[]>((resolve) => { loadHistory = resolve; }));
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    await flush();
+    expect(mockIssuesApi.listDocumentRevisions).toHaveBeenCalledWith("issue-1", "plan");
+    expect(scroll).toHaveBeenCalled();
+    expect(container.textContent).toContain("Loading reviewed revision");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    await act(async () => loadHistory([createRevision({ body: "Exact reviewed text" })]));
+    await flush();
+    expect(container.textContent).toContain("Viewing revision 3");
+    expect(container.textContent).toContain("Exact reviewed text");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    const latest = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Return to latest"));
+    expect(latest).toBeTruthy();
+    await act(async () => latest!.click());
+    expect(container.textContent).toContain("Newer unreviewed text");
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-2&image=2";
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    expect(container.textContent).toContain("Exact reviewed text");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-2&image=3";
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    expect(container.textContent).toContain("Exact reviewed text");
+    await act(async () => root.unmount());
+    scroll.mockRestore();
+    queryClient.clear();
+  });
+
+  it("does not substitute newer content when a Classic review revision is missing", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockLocation.hash = "#document-plan&revision=missing&interaction=review-1";
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Newer unreviewed text" })]);
+    mockIssuesApi.listDocumentRevisions.mockResolvedValue([]);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("The reviewed revision is unavailable");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
+  it.each(["loaded", "failed"])("preserves an unsaved draft when linked revision loading %s", async (outcome) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const storageKey = "paperclip:document-draft:v2:user-1:issue-1:plan";
+    localStorage.setItem(storageKey, JSON.stringify({ key: "plan", title: "Plan", body: "My unsaved draft", baseRevisionId: "revision-4", isNew: false }));
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Saved latest body" })]);
+    let load!: (value: DocumentRevision[]) => void;
+    let fail!: (error: Error) => void;
+    mockIssuesApi.listDocumentRevisions.mockReturnValue(new Promise<DocumentRevision[]>((resolve, reject) => { load = resolve; fail = reject; }));
+    const show = () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>);
+    await act(async () => show());
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-1";
+    await act(async () => show());
+    await flush();
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    expect(JSON.parse(localStorage.getItem(storageKey)!).body).toBe("My unsaved draft");
+    await act(async () => outcome === "loaded" ? load([createRevision()]) : fail(new Error("Disconnected")));
+    await flush();
+    await flush();
+    expect(container.textContent).toContain(outcome === "loaded" ? "Save or cancel your local changes" : "Could not load the reviewed revision");
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    await act(async () => markdownEditorMockState.changeBody!("My unsaved draft, continued"));
+    await flush();
+    expect(JSON.parse(localStorage.getItem(storageKey)!).body).toBe("My unsaved draft, continued");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    queryClient.clear();
   });
 
   it("keeps system handoff documents out of the normal document surface", async () => {
@@ -1092,6 +1592,13 @@ describe("IssueDocumentsSection", () => {
     await act(async () => {
       root.unmount();
     });
+    const reopened = createRoot(container);
+    await act(async () => reopened.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} /></QueryClientProvider>));
+    await flush();
+    expect(container.querySelector('input[placeholder="Document key"]')).toBeNull();
+    expect(container.textContent).toContain("Notes body");
+    expect(mockIssuesApi.upsertDocument).toHaveBeenCalledOnce();
+    await act(async () => reopened.unmount());
     queryClient.clear();
   });
 

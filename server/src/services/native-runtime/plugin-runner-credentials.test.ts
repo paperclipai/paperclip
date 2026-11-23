@@ -36,6 +36,59 @@ describe("plugin Runner selected credentials", () => {
   });
   it("does not read a controller credential when the provider owns the account", async () => {
     expect(await preparePluginRunnerCredentials({ provider: "codex", home: "/must/not/read", environment: {} })).toEqual({});
-    await expect(preparePluginRunnerCredentials({ provider: "opencode", identity: "revision", environment: {} })).rejects.toThrow("credential provider");
+    await expect(preparePluginRunnerCredentials({ provider: "cursor", identity: "revision", environment: { CURSOR_API_KEY: "fixture-key" } })).rejects.toThrow("credential provider");
   });
+});
+
+describe("plugin Runner provider environment credentials", () => {
+  const blanks = { XAI_API_KEY: "", COPILOT_GITHUB_TOKEN: "", OPENROUTER_API_KEY: "", PAPERCLIP_AI_PROVIDER_URL: "", PAPERCLIP_AI_PROVIDER_KEY: "",
+    ANTHROPIC_API_KEY: "", HOME: "/controller/private", GROK_HOME: "/controller/private/provider", OTHER_SECRET: "fixture-unrelated" };
+  it.each([
+    ["grok", { XAI_API_KEY: "fixture-xai" }],
+    ["copilot", { COPILOT_GITHUB_TOKEN: "fixture-copilot" }],
+    ["opencode", { OPENROUTER_API_KEY: "fixture-openrouter" }],
+    ["opencode", { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" }],
+  ] as const)("transfers only the selected %s variables", async (provider, environment) => {
+    const transfer = await preparePluginRunnerCredentials({ provider, identity: "revision", accountIdentity: "account",
+      environment: { ...blanks, ...environment, OPENCODE_CONFIG_CONTENT: "{\"provider\":{}}" } });
+    expect(transfer).toEqual({ accountIdentity: "account", credential: { type: "provider-env", provider, environment } });
+    expect(transfer.needsWriteback).toBeUndefined();
+  });
+  it("uses the credential revision as the account when no account identity is supplied", async () => {
+    const transfer = await preparePluginRunnerCredentials({ provider: "copilot", identity: "revision", environment: { COPILOT_GITHUB_TOKEN: "fixture-copilot" } });
+    expect(transfer.accountIdentity).toBe("revision");
+  });
+  it("keeps the GitHub broker authority beside the provider credential", async () => {
+    const transfer = await preparePluginRunnerCredentials({ provider: "grok", identity: "revision", environment: {
+      XAI_API_KEY: "fixture-xai", PAPERCLIP_GITHUB_BROKER_URL: "https://core.example.test", PAPERCLIP_GITHUB_BROKER_TOKEN: "runtime-capability" } });
+    expect(transfer.githubBroker).toEqual({ url: "https://core.example.test", token: "runtime-capability" });
+    expect(transfer.credential).toEqual({ type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" } });
+  });
+  it("refuses a Grok subscription, which needs an auth file with refresh and writeback", async () => {
+    await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision", home: "/controller/private/provider",
+      environment: blanks })).rejects.toThrow("Grok subscription login is not supported");
+  });
+  it("refuses Grok provider routing that would redirect the key", async () => {
+    await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision",
+      environment: { XAI_API_KEY: "fixture-xai", XAI_BASE_URL: "https://router.example.test" } })).rejects.toThrow("routing");
+  });
+  it.each([
+    ["copilot", {}],
+    ["opencode", {}],
+    ["opencode", { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1" }],
+    ["opencode", { PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" }],
+    ["opencode", { OPENROUTER_API_KEY: "fixture-openrouter", PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" }],
+    ["opencode", { OPENROUTER_API_KEY: "fixture\0value" }],
+  ] as const)("fails closed for an incomplete or ambiguous %s credential", async (provider, environment) => {
+    const result = preparePluginRunnerCredentials({ provider, identity: "revision", environment: { ...blanks, ...environment } });
+    await expect(result).rejects.toThrow("Plugin Runner selected credential unavailable");
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
+  });
+});
+
+it("transfers only broker authority even when the provider owns its AI account", async () => {
+  const result = await preparePluginRunnerCredentials({provider:"codex",home:"/must/not/read",environment:{
+    PAPERCLIP_GITHUB_BROKER_URL:"https://core.example.test",PAPERCLIP_GITHUB_BROKER_TOKEN:"runtime-capability",
+    GH_TOKEN:"ambient-secret",PAPERCLIP_API_KEY:"unrelated-key",HOME:"/controller/private"}});
+  expect(result).toEqual({githubBroker:{url:"https://core.example.test",token:"runtime-capability"}});
 });

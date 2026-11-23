@@ -1,4 +1,4 @@
-import { agentConfigurationDocumentSchema, type AgentConfigurationDocument, type AgentConfigurationWarning } from "@paperclipai/shared";
+import type { AgentConfigurationDocument, AgentConfigurationInput, AgentConfigurationWarning } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
 import { secretsApi } from "../../api/secrets";
 import { agentConfigurationPatch } from "../agent-configuration-yaml";
@@ -6,6 +6,7 @@ import { equal, loadAgentConfiguration, ownedAdapterKeys, type AgentConfiguratio
 import { planToolChanges } from "./tools";
 import { planChannelChanges } from "./channels";
 import { requireItem, unique, type ConfigurationStep, type AddConfigurationStep } from "./steps";
+import { resolveAgentConfiguration } from "./resolve";
 
 export interface ConfigurationReceipt { label: string; id: string; token?: string }
 export class ConfigurationSaveInterrupted extends Error {
@@ -108,7 +109,11 @@ function planSecrets(snapshot: AgentConfigurationSnapshot, document: AgentConfig
   }
 }
 
-export function planAgentConfiguration(snapshot: AgentConfigurationSnapshot, document: AgentConfigurationDocument, receipt: (value: ConfigurationReceipt) => void = () => {}) {
+export function planAgentConfiguration(snapshot: AgentConfigurationSnapshot, input: AgentConfigurationInput, receipt: (value: ConfigurationReceipt) => void = () => {}) {
+  return planResolvedConfiguration(snapshot, resolveAgentConfiguration(snapshot, input), receipt);
+}
+
+function planResolvedConfiguration(snapshot: AgentConfigurationSnapshot, document: AgentConfigurationDocument, receipt: (value: ConfigurationReceipt) => void) {
   const steps: ConfigurationStep[] = [];
   const add: AddConfigurationStep = (label, apply) => { steps.push({ label, apply }); };
   if (!equal(document.observed, snapshot.document.observed)) throw new Error("observed is read-only. Edit spec to change configuration.");
@@ -157,10 +162,10 @@ export function planAgentConfiguration(snapshot: AgentConfigurationSnapshot, doc
   return steps;
 }
 
-export async function saveAgentConfiguration(snapshot: AgentConfigurationSnapshot, input: AgentConfigurationDocument,
+export async function saveAgentConfiguration(snapshot: AgentConfigurationSnapshot, input: AgentConfigurationInput,
   onReceipt: (receipt: ConfigurationReceipt) => void, onProgress: (label: string) => void) {
-  const document = agentConfigurationDocumentSchema.parse(input);
-  const initialPlan = planAgentConfiguration(snapshot, document);
+  const document = resolveAgentConfiguration(snapshot, input);
+  const initialPlan = planResolvedConfiguration(snapshot, document, onReceipt);
   if (!initialPlan.length) return snapshot;
   const current = await loadAgentConfiguration(snapshot.agent.id, snapshot.agent.companyId);
   if (current.core.configurationRevision !== snapshot.core.configurationRevision) throw new Error("Agent configuration changed while you were editing. Reload saved before saving.");
@@ -185,7 +190,7 @@ export async function saveAgentConfiguration(snapshot: AgentConfigurationSnapsho
     const fresh = current.profiles.find(value => value.id === profile.profileId);
     if (!equal(before, fresh)) throw new Error(`Tool profile ${profile.profileId} changed while you were editing. Reload saved before saving.`);
   }
-  const steps = planAgentConfiguration(current, { ...document, spec, observed: current.document.observed }, onReceipt);
+  const steps = planResolvedConfiguration(current, { ...document, spec, observed: current.document.observed }, onReceipt);
   const completed: string[] = [];
   const warnings: AgentConfigurationWarning[] = [];
   for (const step of steps) {

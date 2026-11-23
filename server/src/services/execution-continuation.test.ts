@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -12,6 +15,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -199,6 +203,70 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }
     });
 
+    it("keeps repeated saved-record receipts out of the continuation payload without deleting their results", async () => {
+      const body = "saved document content " + "界".repeat(12_000);
+      const operations = ["PUT /api/issues/{id}/documents/{key}", "POST /api/issues/{id}/comments", "PATCH /api/issues/{id}"];
+      const receipts = Object.fromEntries(Array.from({ length: 39 }, (_, index) => [`record-${index}`, {
+        state: "completed", operationId: operations[index % operations.length],
+        result: { ok: true, status: index % 3 === 1 ? 201 : 200, contentType: "application/json", operationId: operations[index % operations.length],
+          data: { id: randomUUID(), companyId, issueId, key: "case", latestRevisionId: randomUUID(), latestRevisionNumber: index + 1,
+            status: "in_progress", statusVersion: 7, body, latestBody: body, description: body } },
+      }]));
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await build();
+        const prompt = renderPaperclipWakePrompt({ executionContinuation: envelope });
+        // The encrypted PRP frame has a roughly 510 KiB plaintext budget. Keep
+        // repeated record bodies below that boundary with room for launch data.
+        const root = mkdtempSync(join(tmpdir(), "continuation-receipts-prp-"));
+        const core = new DurablePrpControlPlane({ stateDirectory: root,
+          identity: { runnerInstanceId: "fixture-runner", environmentLeaseId: "fixture-lease", runId,
+            normalizedSessionId: "fixture-session", turnId: "fixture-turn", itemId: "fixture-item" },
+          expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+        try {
+          // Exercise the actual journal bound, including other launch data.
+          expect(() => core.queueCommand("turn.start", { prompt, launchData: "x".repeat(64 * 1024) })).not.toThrow();
+        } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+        expect(Buffer.byteLength(prompt)).toBeLessThan(128 * 1024);
+        expect(envelope.completedActions).toHaveLength(39);
+        const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(stored.resultJson).toEqual({ apiToolReceipts: receipts });
+        const storedReceipts = stored.resultJson!.apiToolReceipts as typeof receipts;
+        for (const action of envelope.completedActions ?? []) {
+          const original = storedReceipts[action.receiptId as keyof typeof receipts];
+          expect(action).toMatchObject({ runId, operationId: original.operationId, result: {
+            ok: true, status: original.result.status, data: { id: original.result.data.id, companyId, issueId,
+              latestRevisionId: original.result.data.latestRevisionId, latestRevisionNumber: original.result.data.latestRevisionNumber,
+              status: "in_progress", statusVersion: 7, contentOmitted: true,
+              contentSha256: `sha256:${createHash("sha256").update(JSON.stringify(original.result.data)).digest("hex")}` },
+          } });
+        }
+        expect(prompt).toContain("Focus the Gmail summary on launch decisions.");
+        expect(prompt).toContain("Do not repeat completed actions");
+        expect(prompt).not.toContain(body);
+      } finally { await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, runId)); }
+    });
+
+    it.each(["unknown", "failed", "non-success", "foreign", "mismatch", "invalid-id", "small", "pending"])(
+      "retains %s API results instead of claiming a saved-record reference", async (kind) => {
+        const operationId = "PUT /api/issues/{id}/documents/{key}";
+        const result = { ok: kind !== "failed", status: kind === "non-success" ? 403 : 200,
+          operationId: kind === "mismatch" ? "different_operation" : operationId,
+          data: { id: kind === "invalid-id" ? "not-a-record-id" : randomUUID(), companyId: kind === "foreign" ? randomUUID() : companyId,
+            body: kind === "small" ? "small complete result" : "full saved result ".repeat(1_000) } };
+        const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const receipt = { state: kind === "pending" ? "pending" : "completed", operationId: kind === "unknown" ? "external_write" : operationId, result };
+        await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { original: receipt } } }).where(eq(heartbeatRuns.id, runId));
+        try {
+          const envelope = await build();
+          expect(envelope.completedActions).toEqual(kind === "pending" ? [] : [
+            { runId, receiptId: "original", operationId: receipt.operationId, result },
+          ]);
+        } finally { await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, runId)); }
+      },
+    );
+
     it("degrades a stale interrupted-run hint from a different task instead of failing the wake", async () => {
       // Cross-issue reassigns can leave interruptedRunId pointing at another
       // task's run. The hint is best-effort: the wake must continue without a
@@ -295,6 +363,63 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         }
       } finally {
         await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("carries the failed run's wake reason into a Retry so a monitor check is not lost", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const retryRunId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_session_interrupted",
+        contextSnapshot: { issueId, wakeReason: "issue_monitor_due", monitorNotes: "Phase 2 check" } })
+        .where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { retryOfRunId: runId, wakeReason: "task_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger).toMatchObject({ reason: "task_retry", sourceRunId: runId, retriedReason: "issue_monitor_due" });
+        await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, status: "failed",
+          contextSnapshot: { issueId, wakeReason: "task_retry", executionContinuation: envelope } });
+        const chained = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { retryOfRunId: retryRunId, wakeReason: "task_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(chained.trigger).toMatchObject({ sourceRunId: retryRunId, retriedReason: "issue_monitor_due" });
+        for (const resumedSession of [false, true]) {
+          const prompt = renderPaperclipWakePrompt({ reason: "task_retry", executionContinuation: envelope }, { resumedSession });
+          expect(prompt).toContain("- reason: task_retry");
+          expect(prompt).toContain("- retried wake: issue_monitor_due");
+        }
+        const fresh = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
+        expect(fresh.trigger).not.toHaveProperty("retriedReason");
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null, contextSnapshot: source.contextSnapshot })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("carries the original wake through a chain of automatic re-queues", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const firstRetryId = randomUUID(), secondRetryId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed",
+        contextSnapshot: { issueId, wakeReason: "issue_monitor_due", monitorNotes: "Phase 2 check" } })
+        .where(eq(heartbeatRuns.id, runId));
+      try {
+        await db.insert(heartbeatRuns).values([
+          { id: firstRetryId, companyId, agentId, status: "failed", retryOfRunId: runId,
+            contextSnapshot: { issueId, wakeReason: "transient_failure_retry", retryReason: "interrupted_preparation" } },
+          { id: secondRetryId, companyId, agentId, status: "running", retryOfRunId: firstRetryId,
+            contextSnapshot: { issueId, wakeReason: "transient_failure_retry" } },
+        ]);
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: secondRetryId,
+          context: { wakeReason: "transient_failure_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger).toMatchObject({ reason: "transient_failure_retry", retriedReason: "issue_monitor_due" });
+        const preserved = await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: firstRetryId,
+          context: { wakeReason: "issue_monitor_due" }, summary: null, exposeLowTrustRaw: false });
+        expect(preserved.trigger).not.toHaveProperty("retriedReason");
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, secondRetryId));
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, firstRetryId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null, contextSnapshot: source.contextSnapshot })
+          .where(eq(heartbeatRuns.id, runId));
       }
     });
 

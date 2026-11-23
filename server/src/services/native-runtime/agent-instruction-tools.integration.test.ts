@@ -54,12 +54,20 @@ describe("canonical instruction tools through native authority", () => {
     await fs.writeFile(path.join(root, entryFile), original);
   });
   const call = (tool: string, args: Record<string, unknown> = {}) => authority.execute({ tool, callId: randomUUID(), arguments: { targetAgentId, ...args } }) as Promise<any>;
-  it("bridges old native instruction tools to current files without writing history", async () => {
+  it("bridges old native instruction tools to current files and lists the save in history", async () => {
     const first = await call("read_agent_instructions");
     expect(first).toMatchObject({ entryFile, content: original });
     const changed = await call("update_agent_instructions", { entryFile, content: "changed\r\n", baseRevisionId: first.revision.id });
     expect(changed.revision).toMatchObject({ responsibleUserId: userId, actorAgentId: agentId, sourceRunId: runId });
-    expect((await call("get_agent_instruction_history", { entryFile })).revisions).toHaveLength(0);
+    // The chat reply must not guess routes, so the receipt carries the edited
+    // agent's real profile href and when the saved instructions take effect.
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+    expect(changed.resourceLinks).toEqual([{ kind: "agent", id: targetAgentId, name: "Target",
+      href: `/${encodeURIComponent(company!.issuePrefix)}/agents/${targetAgentId}` }]);
+    expect(changed.appliesTo).toMatch(/start after this save/);
+    expect((await call("get_agent_instruction_history", { entryFile })).revisions).toEqual([
+      expect.objectContaining({ contentHash: changed.revision.contentHash, actorAgentId: agentId, sourceRunId: runId, createdAt: changed.revision.createdAt }),
+    ]);
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("changed\r\n");
     await expect(call("update_agent_instructions", { entryFile, content: "stale", baseRevisionId: first.revision.id })).rejects.toMatchObject({ status: 409 });
     expect((await call("read_agent_instructions")).content).toBe("changed\r\n");
@@ -200,7 +208,7 @@ describe("canonical instruction tools through native authority", () => {
       await expect(authority.execute(request)).rejects.toThrow("injected lost commit acknowledgement");
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       const receipt = (run!.resultJson as any).semanticToolReceipts[`instruction:${request.callId}`].result;
-      expect(receipt).toMatchObject({ changed: true, content });
+      expect(receipt).toMatchObject({ changed: true, content, resourceLinks: [{ kind: "agent", id: targetAgentId, name: "Target" }] });
       authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
       expect(await authority.recover(request)).toEqual({ result: receipt });
       expect(await authority.recover({ ...request, callId: randomUUID() })).toBeNull();

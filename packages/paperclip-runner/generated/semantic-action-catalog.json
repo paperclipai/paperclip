@@ -4,7 +4,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -140,7 +140,7 @@
               "type": "null"
             }
           ],
-          "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
+          "description": "Request value matching the discovered schema. Required when the operation has a required request body, as most POST, PUT and PATCH operations do; all request fields go here. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
         },
         "contentType": {
           "maxLength": 120,
@@ -271,7 +271,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read bounded comments on the active task.",
+    "description": "Read bounded comments on the active task only. Calling get_task does not change the active task. This is not a status or assignment audit. For progress chronology and handoff actors, use search_api to discover the company timeline or issue activity, then call_api.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -336,9 +336,10 @@
       "additionalProperties": false,
       "properties": {
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         }
       },
@@ -371,9 +372,10 @@
       "additionalProperties": false,
       "properties": {
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         },
         "limit": {
@@ -535,6 +537,45 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Send a Markdown message directly to your own persistent chat with this task's responsible human. The destination is automatic. Use for requested digests and proactive task updates; report_progress writes to this task and comment_on_task writes to a chosen task. This sends no message to other agents, starts no chat run, and changes no task status. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The message the human should see.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Stable key for this message within the source task, including across run retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "operationId": "send_chat_message",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Send message to your chat",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "ask",
       "planning",
@@ -660,9 +701,10 @@
           "type": "string"
         },
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         },
         "title": {
@@ -780,6 +822,10 @@
           "maxLength": 10000,
           "minLength": 1,
           "type": "string"
+        },
+        "resolverPolicy": {
+          "const": "human_only",
+          "description": "Optionally require an authenticated human response."
         },
         "targetRevisionId": {
           "description": "Optional bound document revision.",
@@ -1890,271 +1936,152 @@
     "description": "Transfer a case's primary task to the next agent and phase, reusing the same task ID, or record intent to finish an existing case with to: 'done'. Save findings first. Supply the observed case handoffVersion and task statusVersion when reusing existing work. A new case starts with a harness-created task unless explicitly bound. Supply either workflowId or workflow_document_text for case.create and when starting the first task of a passive case; it becomes the ordinary task document key workflow, title Workflow. When binding an existing task, inline text requires an absent workflow document; workflowId explicitly adopts into its revision history. Omit workflow_document_text on later handoffs of an existing primary task. Omit workflowId to preserve the current workflow and instructions; supply an ID to adopt its latest prompt, including the current ID to refresh, or null to detach while preserving instructions. Selected prompts are captured on acceptance and applied after outgoing execution settles. Intervening task-document edits hold the handoff with a revision conflict. Recommend workflow Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose defining each named transition: trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation. State IDs should match phase names. The diagram is advisory and the server does not parse or enforce transitions. Optional initialDocuments seeds other ordinary task documents only for a newly created task; the workflow key is reserved and the combined seed text limit is 200000 characters. For an agent handoff, after callerMustYield is true, end the turn immediately: the harness starts the recipient after your execution settles. Do not finish the task or create a replacement task for another agent phase. For to: 'done', phase defaults to 'done', both observed versions are required, and no agent, new case, or task binding is accepted. A done receipt does not complete the task or yield execution: call finish_task normally with truthful completion evidence. The case closes only when normal task completion is accepted; review and approval gates still apply.",
     "effect": "write",
     "inputSchema": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "case": {
-                    "properties": {
-                      "create": {}
-                    },
-                    "required": [
-                      "create"
-                    ],
-                    "type": "object"
-                  }
-                },
-                "required": [
-                  "case"
-                ]
-              },
-              "then": {
-                "oneOf": [
-                  {
-                    "properties": {
-                      "workflowId": {
-                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "workflowId"
-                    ]
-                  },
-                  {
-                    "properties": {
-                      "workflow_document_text": {}
-                    },
-                    "required": [
-                      "workflow_document_text"
-                    ]
-                  }
-                ]
-              }
-            },
-            {
-              "not": {
-                "properties": {
-                  "workflowId": {},
-                  "workflow_document_text": {}
-                },
-                "required": [
-                  "workflowId",
-                  "workflow_document_text"
-                ]
-              }
-            }
-          ],
-          "properties": {
-            "bindIssueId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": "string"
-            },
-            "case": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "create": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "caseType": {
-                          "maxLength": 120,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "fields": {
-                          "additionalProperties": true,
-                          "type": "object"
-                        },
-                        "projectId": {
-                          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "summary": {
-                          "maxLength": 8000,
-                          "type": "string"
-                        },
-                        "title": {
-                          "maxLength": 500,
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "caseType",
-                        "title"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "create"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "expectedHandoffVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "expectedIssueStatusVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "idempotencyKey": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string"
-            },
-            "initialDocuments": {
-              "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
-              "items": {
-                "additionalProperties": false,
-                "properties": {
-                  "body": {
-                    "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
-                    "maxLength": 524288,
-                    "type": "string"
-                  },
-                  "key": {
-                    "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "not": {
-                      "const": "workflow"
-                    },
-                    "pattern": "^[a-z0-9][a-z0-9_-]*$",
-                    "type": "string"
-                  },
-                  "title": {
-                    "maxLength": 200,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "key",
-                  "title",
-                  "body"
-                ],
-                "type": "object"
-              },
-              "maxItems": 20,
-              "type": "array"
-            },
-            "instructions": {
-              "maxLength": 20000,
-              "minLength": 1,
-              "type": "string"
-            },
-            "phase": {
-              "maxLength": 120,
-              "minLength": 1,
-              "type": "string"
-            },
-            "toAgentId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": "string"
-            },
-            "workflowId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "workflow_document_text": {
-              "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
-              "maxLength": 200000,
-              "minLength": 1,
-              "pattern": "\\S",
-              "type": "string"
-            }
-          },
-          "required": [
-            "idempotencyKey",
-            "case",
-            "toAgentId",
-            "phase",
-            "instructions"
-          ],
-          "type": "object"
+      "additionalProperties": false,
+      "properties": {
+        "bindIssueId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
         },
-        {
+        "case": {
           "additionalProperties": false,
+          "description": "Send exactly one of id (an existing case) or create (a new case). to: \"done\" requires id.",
           "properties": {
-            "case": {
+            "create": {
               "additionalProperties": false,
               "properties": {
-                "id": {
+                "caseType": {
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "fields": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "projectId": {
                   "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "summary": {
+                  "maxLength": 8000,
+                  "type": "string"
+                },
+                "title": {
+                  "maxLength": 500,
+                  "minLength": 1,
                   "type": "string"
                 }
               },
               "required": [
-                "id"
+                "caseType",
+                "title"
               ],
               "type": "object"
             },
-            "expectedHandoffVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "expectedIssueStatusVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "idempotencyKey": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string"
-            },
-            "instructions": {
-              "maxLength": 20000,
-              "minLength": 1,
-              "type": "string"
-            },
-            "phase": {
-              "const": "done",
-              "default": "done",
-              "type": "string"
-            },
-            "to": {
-              "const": "done",
+            "id": {
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
               "type": "string"
             }
           },
-          "required": [
-            "to",
-            "idempotencyKey",
-            "case",
-            "instructions",
-            "expectedHandoffVersion",
-            "expectedIssueStatusVersion"
-          ],
           "type": "object"
+        },
+        "expectedHandoffVersion": {
+          "description": "Observed case handoffVersion. Required with to: \"done\".",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expectedIssueStatusVersion": {
+          "description": "Observed task statusVersion. Required with to: \"done\".",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "initialDocuments": {
+          "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "key": {
+                "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
+                "maxLength": 64,
+                "minLength": 1,
+                "not": {
+                  "const": "workflow"
+                },
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "title",
+              "body"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "instructions": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "phase": {
+          "description": "Required for an agent handoff. With to: \"done\", omit it or send \"done\".",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "Send \"done\" only to record intent to finish an existing case; then expectedHandoffVersion and expectedIssueStatusVersion are required and toAgentId, bindIssueId, workflowId, workflow_document_text and initialDocuments are not accepted. Omit for an agent handoff.",
+          "enum": [
+            "done"
+          ],
+          "type": "string"
+        },
+        "toAgentId": {
+          "description": "Required for an agent handoff. Omit with to: \"done\".",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "workflowId": {
+          "description": "Adopt this workflow's latest prompt, or null to detach. A new case needs workflowId or workflow_document_text, not both.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow_document_text": {
+          "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
         }
+      },
+      "required": [
+        "idempotencyKey",
+        "case",
+        "instructions"
       ],
       "type": "object"
     },
@@ -2177,24 +2104,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "oneOf": [
-        {
-          "properties": {
-            "workflowId": {}
-          },
-          "required": [
-            "workflowId"
-          ]
-        },
-        {
-          "properties": {
-            "workflow_document_text": {}
-          },
-          "required": [
-            "workflow_document_text"
-          ]
-        }
-      ],
       "properties": {
         "caseType": {
           "maxLength": 120,
@@ -2288,7 +2197,7 @@
           "type": "string"
         },
         "workflowId": {
-          "description": "Adopt this company workflow’s latest prompt.",
+          "description": "Adopt this company workflow’s latest prompt. Send exactly one of workflowId or workflow_document_text.",
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
           "type": "string"
         },
@@ -2327,74 +2236,6 @@
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "offsetBytes": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "offsetBytes"
-            ]
-          },
-          "then": {
-            "properties": {
-              "snapshot": {}
-            },
-            "required": [
-              "snapshot"
-            ]
-          }
-        },
-        {
-          "else": {
-            "properties": {
-              "documentIssueId": false,
-              "documentKey": false
-            }
-          },
-          "if": {
-            "properties": {
-              "section": {
-                "const": "document"
-              }
-            },
-            "required": [
-              "section"
-            ]
-          },
-          "then": {
-            "properties": {
-              "documentKey": {}
-            },
-            "required": [
-              "documentKey"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "documentIssueId": {}
-            },
-            "required": [
-              "documentIssueId"
-            ]
-          },
-          "then": {
-            "properties": {
-              "documentKey": {
-                "maxLength": 64,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
-                "type": "string"
-              }
-            }
-          }
-        }
-      ],
       "properties": {
         "caseId": {
           "description": "Case ID. Omit to use the active task's primary workflow case.",
@@ -2461,32 +2302,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "title": {}
-          },
-          "required": [
-            "title"
-          ]
-        },
-        {
-          "properties": {
-            "summary": {}
-          },
-          "required": [
-            "summary"
-          ]
-        },
-        {
-          "properties": {
-            "fields": {}
-          },
-          "required": [
-            "fields"
-          ]
-        }
-      ],
       "properties": {
         "caseId": {
           "description": "Case ID. Omit to use the active task's primary workflow case.",
@@ -2495,6 +2310,7 @@
         },
         "fields": {
           "additionalProperties": true,
+          "description": "Send at least one of title, summary, or fields.",
           "type": "object"
         },
         "idempotencyKey": {
@@ -2504,6 +2320,7 @@
           "type": "string"
         },
         "summary": {
+          "description": "Send at least one of title, summary, or fields.",
           "maxLength": 8000,
           "type": [
             "string",
@@ -2511,6 +2328,7 @@
           ]
         },
         "title": {
+          "description": "Send at least one of title, summary, or fields.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -2620,37 +2438,6 @@
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "responseText": {
-                "properties": {
-                  "offsetBytes": {
-                    "minimum": 1,
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "offsetBytes"
-                ],
-                "type": "object"
-              }
-            },
-            "required": [
-              "responseText"
-            ]
-          },
-          "then": {
-            "properties": {
-              "snapshot": {}
-            },
-            "required": [
-              "snapshot"
-            ]
-          }
-        }
-      ],
       "properties": {
         "responseText": {
           "additionalProperties": false,
@@ -2702,24 +2489,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "name": {}
-          },
-          "required": [
-            "name"
-          ]
-        },
-        {
-          "properties": {
-            "prompt": {}
-          },
-          "required": [
-            "prompt"
-          ]
-        }
-      ],
       "properties": {
         "idempotencyKey": {
           "maxLength": 240,
@@ -2727,12 +2496,13 @@
           "type": "string"
         },
         "name": {
+          "description": "Send name, prompt, or both.",
           "maxLength": 200,
           "minLength": 1,
           "type": "string"
         },
         "prompt": {
-          "description": "Reusable Markdown instructions for LLM execution. Phases and routing are advisory instructions, not a state machine.",
+          "description": "Reusable Markdown instructions for LLM execution. Phases and routing are advisory instructions, not a state machine. Send name, prompt, or both.",
           "maxLength": 200000,
           "minLength": 1,
           "pattern": "\\S",
@@ -2793,21 +2563,67 @@
       "planning",
       "skill_test"
     ],
-    "description": "List authorized reusable workspaces. A project is optional; choosing a workspace does not assign a project.",
+    "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Pages fit 128 KiB and may contain fewer than limit rows. An individually oversized summary includes truncatedFields and string previews; read its full record from GET /api/execution-workspaces/{id} under current access. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "cursor": {
+          "description": "The nextCursor from the previous page. Omit for the first page.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "required": [],
       "type": "object"
     },
     "operationId": "list_workspaces",
     "outputSchema": {
-      "items": {
-        "additionalProperties": true,
-        "type": "object"
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "nextCursor": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "returnedCount": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspaces": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
       },
-      "type": "array"
+      "required": [
+        "workspaces",
+        "limit",
+        "returnedCount",
+        "hasMore",
+        "nextCursor"
+      ],
+      "type": "object"
     },
     "placement": "optional",
     "requiredClaims": [],
@@ -2997,7 +2813,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.",
+    "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details. Project descriptions and goal links supply defaults for newly admitted tasks. Updating a project's defaults does not rewrite existing tasks or running context; backfill existing task properties only when the user asks, and explain that scope when reporting a defaults change.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -3054,6 +2870,1049 @@
     "requiredClaims": [],
     "schema": "paperclip.semantic-action.v1",
     "title": "List available repositories",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List a person's areas and responsibilities: each area with its responsibilities (status, bar, health, the agent that runs it, and counts of filed projects, routines and tasks), responsibilities with no area, and uncovered work (company routines, projects and open tasks filed under no responsibility). Defaults to the person this run works for; never ask for their user ID. Use this before asking the person what they are responsible for. A turned-off error means the feature is off, not that the list is empty.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Return only this area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "includeArchivedAreas": {
+          "default": false,
+          "description": "Include archived areas.",
+          "type": "boolean"
+        },
+        "includeLetGo": {
+          "default": false,
+          "description": "Include responsibilities the person let go.",
+          "type": "boolean"
+        },
+        "includeProposed": {
+          "default": true,
+          "description": "Include responsibilities proposed but not yet confirmed.",
+          "type": "boolean"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "operationId": "list_responsibilities",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List responsibilities",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), its skills (filed by hand, with a link ID, and computed from the agents doing its work), and its latest status report.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities or find_responsibilities_for.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Read responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the proposed and active responsibilities a project, task, routine or company skill is filed under, directly or (for a task or routine) through its project. An empty list means it is uncovered.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The item's ID. For a task, an identifier such as PAP-123 also works.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "description": "What the item is.",
+          "enum": [
+            "project",
+            "task",
+            "routine",
+            "skill"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "type": "object"
+    },
+    "operationId": "find_responsibilities_for",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Find responsibilities for an item",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete an area permanently. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. Prefer update_area with status archived, which can be undone.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "moveResponsibilitiesTo": {
+          "description": "Another area for its responsibilities. Without one they are left with no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID. Send areaId or areaTitle, not both.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "areaTitle": {
+          "description": "Area by title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Why you created it, shown to the person on a proposal.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileItems": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 0,
+          "type": "array"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs the work and keeps the metric current.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "standard": {
+          "description": "The bar as one sentence: what must be true.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Default active. Use proposed to let the person confirm it.",
+          "enum": [
+            "active",
+            "proposed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Move it to this area; null for no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "areaTitle": {
+          "description": "Move it to the area with this title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthNote": {
+          "description": "Why the health is overridden.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthOverride": {
+          "description": "Override the computed health; null clears it.",
+          "enum": [
+            "behind",
+            "at_risk",
+            "on_track",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs it; null for none.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "standard": {
+          "description": "The bar as one sentence.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "proposed",
+            "let_go",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete a responsibility permanently, with its bar and metric history. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. To stop a responsibility without losing it, use update_responsibility with status let_go.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "moveFrom": {
+          "description": "A responsibility ID to move the items from, or all.",
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID to file under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "file_under_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "File work under responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "remove_from_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Remove work from responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "Only routines this agent runs.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 50.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "query": {
+          "description": "Words in the title or instructions.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Only routines under this responsibility, filed directly or through its project. Needs Responsibilities on.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "responsibleUserId": {
+          "description": "Only routines this person is responsible for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "unfiled": {
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active. Needs Responsibilities on.",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_routines",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "routines:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List routines",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "The agent that runs it.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileUnder": {
+          "description": "A responsibility ID to file the routine under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "What each run should do, written out in full.",
+          "maxLength": 200000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "routineId": {
+          "description": "Routine ID from list_routines.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "schedule": {
+          "additionalProperties": false,
+          "description": "When it runs, in the person's local time. null turns its schedule off.",
+          "properties": {
+            "dayOfMonth": {
+              "description": "For monthly.",
+              "maximum": 28,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "dayOfWeek": {
+              "description": "For weekly.",
+              "enum": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday"
+              ],
+              "type": "string"
+            },
+            "frequency": {
+              "enum": [
+                "daily",
+                "weekdays",
+                "weekly",
+                "monthly"
+              ],
+              "type": "string"
+            },
+            "time": {
+              "description": "24-hour HH:MM.",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone.",
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "frequency",
+            "time"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "routineId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_routine",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update routine",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories; send tagline, categories or both. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "description": "Replaces its categories.",
+          "items": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "skillId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "tagline": {
+          "description": "One line shown with the skill; null clears it.",
+          "maxLength": 120,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "skillId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_skill_details",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update skill details",
     "version": 1
   },
   {
@@ -3250,13 +4109,13 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+    "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "assigneeActorId": {
-          "description": "Optional actor assignee. Mutually exclusive with assigneeUserId.",
+          "description": "Existing company agent ID from list_agents. Set the requested teammate here during creation. Omit or use null to assign the current agent; a todo task can start that agent before a later reassignment. Mutually exclusive with assigneeUserId.",
           "maxLength": 200,
           "type": [
             "string",
@@ -3282,7 +4141,7 @@
           "uniqueItems": true
         },
         "description": {
-          "description": "Child task description.",
+          "description": "Task description.",
           "maxLength": 20000,
           "type": [
             "string",
@@ -3312,12 +4171,52 @@
           ]
         },
         "projectId": {
-          "description": "Project identifier for the new task.",
+          "description": "Project ID from list_projects. Set the requested project in this creation call so the task does not inherit a different project.",
           "maxLength": 20000,
           "type": [
             "string",
             "null"
           ]
+        },
+        "requiredQualityReview": {
+          "additionalProperties": false,
+          "properties": {
+            "deliverables": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Stable output key, e.g. copy or visual.",
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-readable output name.",
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10,
+              "minItems": 1,
+              "type": "array"
+            },
+            "version": {
+              "const": 1
+            }
+          },
+          "required": [
+            "version",
+            "deliverables"
+          ],
+          "type": "object"
         },
         "status": {
           "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",
@@ -3742,7 +4641,7 @@
               "type": "string"
             },
             "notes": {
-              "description": "What to check on the next run; do not include secrets.",
+              "description": "What to check on the next run. Maximum 500 characters; do not include secrets.",
               "maxLength": 500,
               "minLength": 1,
               "type": "string"
