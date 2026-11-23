@@ -2,7 +2,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-// @ts-expect-error The build script is untyped ESM.
 import * as generator from "../../../scripts/generate-antigravity-models.mjs";
 
 const declarationPath = resolve(import.meta.dirname, "../../../antigravity-distributions.json");
