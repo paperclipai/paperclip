@@ -1,14 +1,16 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { RefreshCw, Unplug } from "lucide-react";
 import type { ConnectionGrant } from "@paperclipai/shared";
 import { RevokeGrantDialog } from "@/pages/apps/app-detail/IdentitiesSection";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { AI_PROVIDERS, aiSignInNotice, type AiConnectionSummary } from "./model";
+import { AI_PROVIDERS, aiSignInNotice, aiSignInNoticeChangesAt, type AiConnectionSummary } from "./model";
 import { describeError } from "@/api/errors";
 import { AiDefaultCrown } from "./AiConnectionDefault";
 import { isOwnAiAccount } from "./useAiConnectionDefaults";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** AI-only account controls; identity, access and navigation belong to AppDetail. */
 export function AiConnectionAccountControls({
@@ -31,7 +33,14 @@ export function AiConnectionAccountControls({
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
   const providerName = AI_PROVIDERS[account.provider].name;
-  const signInNotice = aiSignInNotice(account);
+  const [now, setNow] = useState(() => Date.now());
+  const signInNotice = aiSignInNotice(account, now);
+  const noticeChangesAt = aiSignInNoticeChangesAt(account, now);
+  useEffect(() => {
+    if (noticeChangesAt === null) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.min(Math.max(noticeChangesAt - Date.now(), 0) + 1000, MAX_TIMER_MS));
+    return () => clearTimeout(timer);
+  }, [noticeChangesAt]);
   return (
     <section className="space-y-4" aria-label="AI account settings">
       {eligibleForDefault && (

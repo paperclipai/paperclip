@@ -119,6 +119,15 @@ export function aiSignInNotice(connection: Pick<AiConnectionSummary, "signInEnds
   return `This sign-in ends ${days < 1 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`}. Reconnect to keep runs working.`;
 }
 
+export function aiSignInNoticeChangesAt(connection: Pick<AiConnectionSummary, "signInEndsAt">, now = Date.now()): number | null {
+  const endsAt = connection.signInEndsAt ? Date.parse(connection.signInEndsAt) : NaN;
+  if (!Number.isFinite(endsAt) || endsAt <= now) return null;
+  if (endsAt - now > SIGN_IN_NOTICE_MS) return endsAt - SIGN_IN_NOTICE_MS;
+  const today = new Date(now);
+  const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+  return Math.min(midnight, endsAt);
+}
+
 export function aiConnectionProblem(connection?: AiConnectionSummary) {
   if (!connection)
     return "No connection selected. Connect an account to continue.";
