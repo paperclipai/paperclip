@@ -23,6 +23,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 type WorkspaceFormState = {
   name: string;
@@ -84,16 +85,6 @@ const VISIBILITY_OPTIONS: Array<{ value: ProjectWorkspaceVisibility; label: stri
   { value: "default", label: "Default" },
   { value: "advanced", label: "Advanced" },
 ];
-
-function isSafeExternalUrl(value: string | null | undefined) {
-  if (!value) return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 function isAbsolutePath(value: string) {
   return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
@@ -700,7 +691,7 @@ export function ProjectWorkspaceDetail() {
               </DetailRow>
             )}
             <DetailRow label="Repo">
-              {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
+              {workspace.repoUrl && safeExternalHttpUrl(workspace.repoUrl) ? (
                 <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                   {workspace.repoUrl}
                   <ExternalLink className="h-3 w-3" />

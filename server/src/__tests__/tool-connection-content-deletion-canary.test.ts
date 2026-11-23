@@ -4,15 +4,18 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   agents,
+  assets,
   companies,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
+  issueConnectionContentDeletions,
   issues,
   issueThreadInteractions,
   toolAccessAuditEvents,
@@ -22,6 +25,7 @@ import {
   toolConnections,
   toolInvocations,
   toolMcpAppViews,
+  runnerApiResponseReservations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
@@ -29,6 +33,10 @@ import { composeRunLogStore, createDurableRunLogStore, type RunLogHandle, type R
 import { createObjectRunLogStore } from "../services/object-run-log-store.js";
 import { summarizeToolValue } from "../services/tool-content-guards.js";
 import type { StorageProvider } from "../storage/types.js";
+import { createStorageService } from "../storage/service.js";
+import { issueService } from "../services/issues.js";
+import { deleteCompany } from "../services/company-deletion.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,6 +44,7 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 const OUT_OF_SCOPE_COLUMNS = new Map([
   ["issue_comments.body", "Comments an agent wrote into the task. The user removes them by editing or deleting the comment or the task."],
 ]);
+const TASK_FILE_NAMESPACE = "/issues/";
 
 function memoryProvider() {
   const objects = new Map<string, Buffer>();
@@ -105,7 +114,8 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     const objects = memoryProvider();
     const local = createDurableRunLogStore({ basePath: dir, s3: { provider: mirror.provider } });
     const external = createObjectRunLogStore({ provider: objects.provider, keyPrefix: "run-logs", assertWriterAuthority: async () => undefined });
-    return { dir, mirror, objects, local, external, store: composeRunLogStore(local, external) };
+    const files = memoryProvider();
+    return { dir, mirror, objects, files, storage: createStorageService(files.provider), local, external, store: composeRunLogStore(local, external) };
   }
 
   async function writeLog(store: RunLogStore, ids: { companyId: string; agentId: string; runId: string }, text: string) {
@@ -195,6 +205,15 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
 
     await db.insert(issueComments).values({ companyId, issueId: base.issue.id, authorAgentId: base.agent.id, body: `Agent note: ${marker}` });
 
+    const saved = await logs.storage.putFile({ companyId, namespace: "runner-api", originalFilename: "response.json", contentType: "application/json",
+      body: Buffer.from(JSON.stringify({ text: `Oversized result ${marker}` })) });
+    const [savedAsset] = await db.insert(assets).values({ companyId, ...saved, createdByAgentId: base.agent.id }).returning();
+    await db.insert(runnerApiResponseReservations).values({ companyId, runId: callingRunId, assetId: savedAsset!.id, reservedBytes: saved.byteSize });
+    const attached = await logs.storage.putFile({ companyId, namespace: "issues", originalFilename: "notes.txt", contentType: "text/plain",
+      body: Buffer.from(`Attached copy of ${marker}`) });
+    const [attachedAsset] = await db.insert(assets).values({ companyId, ...attached, createdByAgentId: base.agent.id }).returning();
+    await db.insert(issueAttachments).values({ companyId, issueId: base.issue.id, assetId: attachedAsset!.id });
+
     return { connection: connection!, actionRequest: actionRequest!, result, callingRunId };
   }
 
@@ -225,13 +244,13 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     return runId;
   }
 
-  async function scan(markers: string[], logs: ReturnType<typeof stores>) {
+  async function scan(markers: string[], logs: ReturnType<typeof stores>, options: { taskOwnedCopies?: boolean } = {}) {
     const columns = await db.execute(sql`select table_name, column_name from information_schema.columns
       where table_schema = 'public' and data_type in ('text', 'character varying', 'jsonb', 'json')`);
     const hits: string[] = [];
     for (const row of columns as unknown as Array<{ table_name: string; column_name: string }>) {
       const name = `${row.table_name}.${row.column_name}`;
-      if (OUT_OF_SCOPE_COLUMNS.has(name)) continue;
+      if (!options.taskOwnedCopies && OUT_OF_SCOPE_COLUMNS.has(name)) continue;
       for (const marker of markers) {
         const found = await db.execute(sql`select 1 from ${sql.identifier(row.table_name)}
           where ${sql.identifier(row.column_name)}::text like ${`%${marker}%`} limit 1`);
@@ -239,17 +258,28 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
       }
     }
     for (const marker of markers) {
-      for (const [label, objects] of [["object store", logs.objects.objects], ["legacy mirror", logs.mirror.objects]] as const) {
-        for (const [key, bytes] of objects) if (bytes.includes(marker)) hits.push(`${label} ${key} contains ${marker}`);
+      for (const [label, objects] of [["object store", logs.objects.objects], ["legacy mirror", logs.mirror.objects], ["file storage", logs.files.objects]] as const) {
+        for (const [key, bytes] of objects) {
+          if (!options.taskOwnedCopies && key.includes(TASK_FILE_NAMESPACE)) continue;
+          if (bytes.includes(marker)) hits.push(`${label} ${key} contains ${marker}`);
+        }
       }
       for (const file of await filesContaining(logs.dir, marker)) hits.push(`file ${file} contains ${marker}`);
     }
     return hits;
   }
 
-  async function outOfScopeStillHolds(marker: string) {
+  async function outOfScopeStillHolds(marker: string, logs: ReturnType<typeof stores>) {
     const rows = await db.execute(sql`select 1 from issue_comments where body like ${`%${marker}%`}`);
-    return (rows as unknown as unknown[]).length > 0;
+    return (rows as unknown as unknown[]).length > 0
+      && [...logs.files.objects].some(([key, bytes]) => key.includes(TASK_FILE_NAMESPACE) && bytes.includes(marker));
+  }
+
+  async function drainPending(service: ReturnType<typeof createConnectionContentDeletion>) {
+    for (let i = 0; i < 200 && await service.nextDeadline() !== null; i++) {
+      await service.processPending(new AbortController().signal);
+    }
+    expect(await service.nextDeadline()).toBeNull();
   }
 
   async function drain(service: ReturnType<typeof createConnectionContentDeletion>, deletionIds: string[]) {
@@ -276,15 +306,239 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     await seedDeliveryRun(base, logs, [{ actionRequestId: flow.actionRequest.id, marker }]);
     await seenBefore([marker], logs);
 
-    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store });
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
     const before = await service.storedContent(flow.connection);
     expect(before.stored).toMatchObject({ toolCalls: 2, approvals: 1, appViews: 1, runs: 2, runsInProgress: 0 });
     const { deletion } = await service.request(flow.connection, { actorType: "user", actorId: "board-user" });
     await drain(service, [deletion.id]);
 
     expect(await scan([marker], logs)).toEqual([]);
-    expect(await outOfScopeStillHolds(marker)).toBe(true);
+    expect(await outOfScopeStillHolds(marker, logs)).toBe(true);
     expect((await service.storedContent(flow.connection)).stored).toEqual({ toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 });
+  });
+
+  it("leaves the marker nowhere after the task is deleted, and keeps another task's content", async () => {
+    const logs = stores(path.join(baseDir, "task"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const kept = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await seedDeliveryRun(base, logs, [{ actionRequestId: flow.actionRequest.id, marker }]);
+    const [otherIssue] = await db.insert(issues).values({ companyId: base.company.id, title: "Another task" }).returning();
+    const otherBase = { ...base, issue: otherIssue! };
+    const otherFlow = await seedConnectionFlow(otherBase, logs, kept);
+    await seedDeliveryRun(otherBase, logs, [{ actionRequestId: otherFlow.actionRequest.id, marker: kept }]);
+    await seenBefore([marker, kept], logs);
+    expect((await scan([marker], logs, { taskOwnedCopies: true })).filter((hit) => hit.startsWith("file storage"))).toHaveLength(2);
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+    const remaining = await scan([kept], logs, { taskOwnedCopies: true });
+    expect(remaining.some((hit) => hit.startsWith("tool_invocations."))).toBe(true);
+    expect(remaining.some((hit) => hit.startsWith("object store"))).toBe(true);
+    expect(remaining.some((hit) => hit.startsWith("file storage"))).toBe(true);
+    const [activity] = await db.execute(sql`select entity_type, entity_id, details from activity_log
+      where company_id = ${base.company.id} and action = 'issue.connection_content_deleted'`) as unknown as Array<{ entity_type: string; entity_id: string; details: Record<string, number> }>;
+    expect(activity).toMatchObject({ entity_type: "issue", entity_id: base.issue.id });
+    expect(activity!.details).toMatchObject({ toolCalls: 2, runs: 2 });
+  });
+
+  it("leaves the marker nowhere after deleting a task whose connection call had no run", async () => {
+    const logs = stores(path.join(baseDir, "task-runless"));
+    const base = await seedCompany();
+    const companyId = base.company.id;
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: base.application.id, name: "Docs runless", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    const args = summarizeToolValue({ query: marker });
+    const result = summarizeToolValue({ text: `Result ${marker}` });
+    const [call] = await db.insert(toolInvocations).values({
+      companyId, connectionId: connection!.id, runId: null, issueId: base.issue.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: args, resultSummary: result, createdAt: new Date(Date.now() - 30_000),
+    }).returning();
+    await db.insert(toolCallEvents).values([
+      { companyId, connectionId: connection!.id, issueId: base.issue.id, eventType: "policy_decision", argumentsSummary: args },
+      { companyId, connectionId: connection!.id, issueId: base.issue.id, invocationId: call!.id, eventType: "call_completed", resultSummary: result },
+    ]);
+    await db.insert(toolAccessAuditEvents).values({
+      companyId, connectionId: connection!.id, action: "tool_access.policy_decision", outcome: "success",
+      details: { decision: "allow", issueId: base.issue.id, runId: null, toolName: "read_doc", argumentsSummary: args },
+    });
+    expect((await scan([marker], logs)).length).toBeGreaterThan(0);
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("removes content a run of the task writes after the task is deleted", async () => {
+    const logs = stores(path.join(baseDir, "task-late"));
+    const base = await seedCompany();
+    const companyId = base.company.id;
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: base.application.id, name: "Docs late", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: base.agent.id, issueId: base.issue.id, status: "running" });
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+
+    const summary = summarizeToolValue({ text: `Late ${marker}` });
+    await db.insert(toolInvocations).values({
+      companyId, connectionId: connection!.id, runId, agentId: base.agent.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: summary, resultSummary: summary,
+    });
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId: base.agent.id, seq: 1, eventType: "tool.execution.completed", message: marker, payload: { output: marker } });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), stdoutExcerpt: `read_doc -> ${marker}` }).where(eq(heartbeatRuns.id, runId));
+    expect((await scan([marker], logs)).length).toBeGreaterThan(0);
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("waits for a run that is still going when the task is deleted, then removes its content", async () => {
+    const logs = stores(path.join(baseDir, "task-live"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, flow.callingRunId));
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [waiting] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(waiting).toMatchObject({ status: "pending", lastError: null });
+    expect(waiting!.notBefore.getTime()).toBeGreaterThan(Date.now());
+    expect((await scan([marker], logs)).some((hit) => hit.startsWith("object store"))).toBe(true);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, flow.callingRunId));
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, waiting!.id));
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("stops waiting a day after the task was deleted and records what was still in progress", async () => {
+    const logs = stores(path.join(baseDir, "task-stuck"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, flow.callingRunId));
+    await issueService(db).remove(base.issue.id);
+    const old = new Date(Date.now() - 25 * 60 * 60_000);
+    await db.update(issueConnectionContentDeletions).set({ requestedAt: old }).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(job!.status).toBe("completed");
+    const [activity] = await db.execute(sql`select details from activity_log
+      where company_id = ${base.company.id} and action = 'issue.connection_content_deletion_incomplete'`) as unknown as Array<{ details: Record<string, number> }>;
+    expect(activity!.details.runsInProgress + activity!.details.itemsInProgress).toBeGreaterThan(0);
+  });
+
+  it("finishes without an activity entry when the deleted task's open run never calls a connection", async () => {
+    const logs = stores(path.join(baseDir, "task-open-quiet"));
+    const base = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: base.company.id, agentId: base.agent.id, issueId: base.issue.id, status: "running" });
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [waiting] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(waiting!.status).toBe("pending");
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, waiting!.id));
+    await drainPending(service);
+    const [finished] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, waiting!.id));
+    expect(finished!.status).toBe("completed");
+    expect(await db.execute(sql`select 1 from activity_log where company_id = ${base.company.id}
+      and action like 'issue.connection_content_%'`)).toHaveLength(0);
+  });
+
+  it("queues nothing when the deleted task never used a connection", async () => {
+    const base = await seedCompany();
+    await issueService(db).remove(base.issue.id);
+    expect(await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id))).toEqual([]);
+  });
+
+  it("wakes the cleanup worker when the deleted task has files but never used a connection", async () => {
+    const logs = stores(path.join(baseDir, "task-files"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const attached = await logs.storage.putFile({ companyId: base.company.id, namespace: "issues", originalFilename: "notes.txt", contentType: "text/plain",
+      body: Buffer.from(`Attached copy of ${marker}`) });
+    const [asset] = await db.insert(assets).values({ companyId: base.company.id, ...attached }).returning();
+    await db.insert(issueAttachments).values({ companyId: base.company.id, issueId: base.issue.id, assetId: asset!.id });
+    let woken = 0;
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.toolConnectionContentDeletion, () => { woken += 1; });
+    try {
+      await issueService(db).remove(base.issue.id);
+    } finally {
+      unsubscribe();
+    }
+    expect(woken).toBeGreaterThan(0);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("leaves the marker nowhere after the company is deleted, and keeps another company's content", async () => {
+    const logs = stores(path.join(baseDir, "company"));
+    const base = await seedCompany();
+    const otherBase = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const kept = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await seedDeliveryRun(base, logs, [{ actionRequestId: flow.actionRequest.id, marker }]);
+    const otherFlow = await seedConnectionFlow(otherBase, logs, kept);
+    await seedDeliveryRun(otherBase, logs, [{ actionRequestId: otherFlow.actionRequest.id, marker: kept }]);
+    await seenBefore([marker, kept], logs);
+
+    await db.update(agents).set({ lifecycleState: "terminated" }).where(eq(agents.companyId, base.company.id));
+    await deleteCompany(db, base.company.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+    const remaining = await scan([kept], logs, { taskOwnedCopies: true });
+    expect(remaining.some((hit) => hit.startsWith("object store"))).toBe(true);
+    expect(remaining.some((hit) => hit.startsWith("file storage"))).toBe(true);
+    expect(remaining.some((hit) => hit.startsWith("file "))).toBe(true);
+  });
+
+  it("finishes removing a deleted company's files after storage fails once", async () => {
+    const logs = stores(path.join(baseDir, "company-retry"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    await seedConnectionFlow(base, logs, marker);
+    await db.update(agents).set({ lifecycleState: "terminated" }).where(eq(agents.companyId, base.company.id));
+    await deleteCompany(db, base.company.id);
+
+    let failures = 1;
+    const flaky = {
+      ...logs.storage,
+      deleteObject: async (...args: Parameters<typeof logs.storage.deleteObject>) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error("object storage unavailable");
+        }
+        return logs.storage.deleteObject(...args);
+      },
+    };
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => flaky, objectRetryMs: 0 });
+    await expect(service.processPending(new AbortController().signal)).rejects.toThrow("object storage unavailable");
+    expect(await service.nextDeadline()).not.toBeNull();
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
 
   it("leaves the marker nowhere after an interrupted deletion resumes", async () => {
@@ -306,7 +560,7 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
         return logs.store.remove!(handle, signal);
       },
     };
-    const service = createConnectionContentDeletion(db, { runLogStore: () => flaky });
+    const service = createConnectionContentDeletion(db, { runLogStore: () => flaky, storage: () => logs.storage });
     const { deletion } = await service.request(flow.connection, { actorType: "user", actorId: "board-user" });
     let interrupted = 0;
     for (let i = 0; i < 200; i++) {
@@ -318,7 +572,7 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     }
     expect(interrupted).toBe(2);
     expect(await scan([marker], logs)).toEqual([]);
-    expect(await outOfScopeStillHolds(marker)).toBe(true);
+    expect(await outOfScopeStillHolds(marker, logs)).toBe(true);
   });
 
   it("leaves no marker after two deletions for different connections run at the same time on one task", async () => {
@@ -334,13 +588,13 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     ]);
     await seenBefore([first, second], logs);
 
-    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store });
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
     const one = await service.request(flowOne.connection, { actorType: "user", actorId: "board-user" });
     const two = await service.request(flowTwo.connection, { actorType: "user", actorId: "board-user" });
     await drain(service, [one.deletion.id, two.deletion.id]);
 
     expect(await scan([first, second], logs)).toEqual([]);
-    expect(await outOfScopeStillHolds(first)).toBe(true);
-    expect(await outOfScopeStillHolds(second)).toBe(true);
+    expect(await outOfScopeStillHolds(first, logs)).toBe(true);
+    expect(await outOfScopeStillHolds(second, logs)).toBe(true);
   });
 });
