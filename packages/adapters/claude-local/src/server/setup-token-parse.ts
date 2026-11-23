@@ -188,6 +188,8 @@ const COPY_HINT_LINE_RE = /^Hold\s+(?:Shift|Option|Fn|Shift\s+\(Option\s+in\s+iT
 
 const MAX_COPY_HINT_LINES = 3;
 
+const LOGIN_METHOD_LINE_RE = /^Login\s+method\s+pre-selected:\s+[A-Za-z][A-Za-z0-9 ()/+.,-]{0,79}$/;
+
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
 // The parser accepts a URL start only inside this window, so a URL far from the
@@ -227,6 +229,12 @@ function stripTerminalControls(text: string): string {
 /** The CLI waits for another Enter after rejecting a code instead of exiting. */
 export function hasSetupTokenOAuthError(text: string): boolean {
   return /OAuth\s+error\s*:/.test(stripTerminalControls(text));
+}
+
+export function hasSetupTokenPromptLine(text: string): boolean {
+  return stripTerminalControls(text)
+    .split("\n")
+    .some((line) => PROMPT_LINE_RE.test(line.trim()));
 }
 
 /**
@@ -378,8 +386,10 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
  * copy hint before the prompt, so the parser skips the up to {@link
  * MAX_COPY_HINT_LINES} non-blank lines that together match {@link
- * COPY_HINT_LINE_RE}. The parser then binds the prompt on the first non-blank
- * line that is not a repeat and not the copy hint. That line must match the
+ * COPY_HINT_LINE_RE}. The `claude` 2.1.306 UI also prints a login-method status
+ * line, so the parser skips a line that matches {@link LOGIN_METHOD_LINE_RE}.
+ * The parser then binds the prompt on the first non-blank line that is not a
+ * repeat, the copy hint, or the login-method line. That line must match the
  * exact prompt shape. Returns null when that line is not the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
@@ -390,6 +400,7 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
+    if (LOGIN_METHOD_LINE_RE.test(trimmed)) continue;
     const hintEnd = copyHintEndLine(lines, i);
     if (hintEnd !== null) {
       i = hintEnd;
