@@ -720,6 +720,12 @@ const support = await getEmbeddedPostgresTestSupport();
 
     const opened = await startTask("task-opener", "opener");
     expect(opened.row).toMatchObject({ grantId: grants.get("task-opener"), createdByUserId: "task-opener", responsibleUserId: "task-opener" });
+    const toolCallsBefore = server.count("tools/call");
+    const agentSession = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: ctx.run.id });
+    const agentTool = (await ctx.gateway().listToolsForSession(agentSession.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    await expect(ctx.gateway().executeTool({ sessionToken: agentSession.token, tool: agentTool.name, parameters: { ref: "opener" }, timeoutMs: 400 }))
+      .rejects.toMatchObject({ reasonCode: "mcp_task_started_by_other_person" });
+    expect(server.count("tools/call")).toBe(toolCallsBefore);
     const openedAfter = await pollUntilSettled(opened.row.id, opened.taskId);
     expect(openedAfter.errorCode).not.toBe("access_removed");
     expect(openedAfter.status).toBe("completed");

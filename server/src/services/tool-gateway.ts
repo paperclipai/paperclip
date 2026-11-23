@@ -105,6 +105,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
@@ -7722,6 +7723,24 @@ export function createToolGatewayService(
     return row ?? null;
   }
 
+  async function findOtherPersonsMcpTask(input: {
+    session: ToolGatewaySession; connectionId: string; requestHash: string;
+  }): Promise<McpTaskRow | null> {
+    const opener = input.session.createdByUserId ?? null;
+    const [row] = await db.select().from(toolMcpTasks).where(and(
+      eq(toolMcpTasks.companyId, input.session.companyId),
+      eq(toolMcpTasks.connectionId, input.connectionId),
+      eq(toolMcpTasks.requestHash, input.requestHash),
+      input.session.agentId ? eq(toolMcpTasks.agentId, input.session.agentId) : isNull(toolMcpTasks.agentId),
+      input.session.issueId ? eq(toolMcpTasks.issueId, input.session.issueId) : isNull(toolMcpTasks.issueId),
+      opener
+        ? or(isNull(toolMcpTasks.createdByUserId), ne(toolMcpTasks.createdByUserId, opener))
+        : isNotNull(toolMcpTasks.createdByUserId),
+      mcpTaskCollectable(),
+    )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
+    return row ?? null;
+  }
+
   /**
    * The task a keyed retry should collect, checked before the call changes
    * anything. A call interrupted mid-wait (a crash) left its invocation
@@ -8561,6 +8580,11 @@ export function createToolGatewayService(
           if (!claimed) throw mcpTaskPendingError();
           return await completeRemoteMcpCall(await waitOnTask(claimed, attachedTaskId));
         }
+      }
+      if (taskIdentity && await findOtherPersonsMcpTask({ session, connectionId: connection.id, requestHash: taskIdentity.requestHash })) {
+        throw new ToolGatewayHttpError(409,
+          "This work is already running for another person on this task. Do not repeat the call; the person who started it collects the result.",
+          "mcp_task_started_by_other_person");
       }
       if (taskSignals.attachToTaskRecordId) {
         // The keyed retry's task is no longer collectable here (its grant or
