@@ -249,7 +249,7 @@ describe("AuditFeed", () => {
   it("shows connected Google activity as plain sentences without internal names or IDs", async () => {
     const connectionId = "7f3c2a10-5b4e-4d2a-9c1f-0e8d6b5a4c3d";
     const applicationId = "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9";
-    const google = { tool: "mcp.google-workspace-7f3c2a10.gmail-get-message", upstreamToolName: "gmail__get_message", connectionId, applicationId };
+    const google = { tool: "mcp.google-workspace-7f3c2a10:gmail-get-message", upstreamToolName: "gmail__get_message", connectionId, applicationId };
     const providerAccess = { provider: "google", result: "ended", outcomes: ["revoked"] };
     const row = (id: string, overrides: Record<string, unknown>) => record({
       id, actorType: "user", actorId: "user-1", agentId: null, runId: null, responsibleUserId: null,

@@ -168,7 +168,7 @@ describe("activity formatting", () => {
   });
   describe("connected app activity", () => {
     const connectionId = "7f3c2a10-5b4e-4d2a-9c1f-0e8d6b5a4c3d";
-    const gatewayName = "mcp.google-workspace-7f3c2a10.gmail-get-message";
+    const gatewayName = "mcp.google-workspace-7f3c2a10:gmail-get-message";
     const internalName = /__|[a-z]_[a-z]|[0-9a-f]{8}-[0-9a-f]{4}|7f3c2a10/i;
 
     it("names Google Workspace actions with the same label as the Permissions page", () => {
