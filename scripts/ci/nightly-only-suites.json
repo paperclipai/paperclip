@@ -1,0 +1,371 @@
+{
+  "$comment": "Real-clock soak, crash-recovery, lease-expiry, restart, workspace-recovery, and large-scale performance suites skipped in ordinary PR CI unless PAPERCLIP_CI_FULL=1. Always executed on master, release-verify, cloud-readiness, and local runs.",
+  "suites": [
+    {
+      "path": "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process native Codex runner integration soak (1 case, 224s); covered by release-verify/cloud-readiness",
+      "measuredMs": 224015
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-native-restart-suspension.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-clock native controller restart suspension & lease-lapse soak (75 cases, 223s)",
+      "measuredMs": 223420
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-checkpoint-cost.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process runner restart checkpoint-cost soak (2 cases, 187s)",
+      "measuredMs": 187000
+    },
+    {
+      "path": "server/src/services/native-runtime/external-chat-wait.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Long-running external chat wait & native restart soak (85 cases, 181s)",
+      "measuredMs": 181027
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process diskless runner restart soak (172s)",
+      "measuredMs": 172000
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-preparation.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process runner restart preparation soak (3 cases, 155s)",
+      "measuredMs": 155000
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-lease-renewal.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-clock runner restart lease-renewal soak (1 case, 119s)",
+      "measuredMs": 119000
+    },
+    {
+      "path": "server/src/services/native-runtime/preserved-native-response-wait.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Preserved native response wait/restart integration soak (19 cases, 107s)",
+      "measuredMs": 106952
+    },
+    {
+      "path": "server/src/services/native-runtime/native-harness-filesystem-independence.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process harness filesystem independence & volume-loss soak (49 cases, 98s)",
+      "measuredMs": 98077
+    },
+    {
+      "path": "server/src/services/native-runtime/native-harness-backup-storage.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Harness backup object-storage roundtrip soak (46 cases, 53s)",
+      "measuredMs": 52555
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process runner restart recovery matrix (107 cases, 51s)",
+      "measuredMs": 51000
+    },
+    {
+      "path": "server/src/services/native-runtime/native-preserved-monitor-wait.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-clock preserved monitor wait soak (11 cases, 49s)",
+      "measuredMs": 49316
+    },
+    {
+      "path": "server/src/services/native-runtime/native-controller-migration.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Volume-free native controller migration integration soak (14 cases, 41s)",
+      "measuredMs": 40595
+    },
+    {
+      "path": "server/src/services/native-runtime/native-harness-online-preservation.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Online harness preservation integration soak (9 cases, 40s)",
+      "measuredMs": 40303
+    },
+    {
+      "path": "server/src/__tests__/native-harness-backup-expiration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Harness backup retention/expiration soak (35s)",
+      "measuredMs": 34702
+    },
+    {
+      "path": "server/src/services/workspace-recovery-admission.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery admission & contention soak (65 cases, 220s)",
+      "measuredMs": 219865
+    },
+    {
+      "path": "server/src/services/workspace-recovery-warm-handoff.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery warm-handoff soak (20 cases, 215s)",
+      "measuredMs": 215408
+    },
+    {
+      "path": "server/src/__tests__/git-workspace-expiration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Git workspace TTL expiration & cleanup sweep soak (81 cases, 198s)",
+      "measuredMs": 198261
+    },
+    {
+      "path": "server/src/services/remote-workspaces.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace snapshot/restore integration soak (39 cases, 134s)",
+      "measuredMs": 134113
+    },
+    {
+      "path": "server/src/services/workspace-recovery-retry-copyback.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery retry copyback soak (27 cases, 126s)",
+      "measuredMs": 126213
+    },
+    {
+      "path": "server/src/services/remote-workspace-migration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Offline/online remote workspace migration soak (86 cases, 125s)",
+      "measuredMs": 124839
+    },
+    {
+      "path": "server/src/services/workspace-recovery-preparation.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery preparation soak (11 cases, 103s)",
+      "measuredMs": 102797
+    },
+    {
+      "path": "server/src/__tests__/isolated-repository-rehome.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Isolated git repository rehoming & clone soak (28 cases, 93s)",
+      "measuredMs": 93407
+    },
+    {
+      "path": "server/src/__tests__/nested-clone-migration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Nested git clone to worktree migration soak (19 cases, 78s)",
+      "measuredMs": 78158
+    },
+    {
+      "path": "server/src/services/remote-workspace-cohort-migration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace cohort migration soak (22 cases, 66s)",
+      "measuredMs": 65834
+    },
+    {
+      "path": "server/src/services/remote-workspace-online-source.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace online source capture soak (40 cases, 62s)",
+      "measuredMs": 61675
+    },
+    {
+      "path": "server/src/services/workspace-recovery-preparation-proof.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery preparation proof soak (3 cases, 61s)",
+      "measuredMs": 60597
+    },
+    {
+      "path": "server/src/services/workspace-recovery-preparation-dispatch.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery preparation dispatch soak (8 cases, 59s)",
+      "measuredMs": 59369
+    },
+    {
+      "path": "server/src/services/workspace-recovery-preparation-gates.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery preparation gates soak (13 cases, 55s)",
+      "measuredMs": 55229
+    },
+    {
+      "path": "server/src/services/remote-workspace-transport.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace transport archive soak (97 cases, 50s)",
+      "measuredMs": 49930
+    },
+    {
+      "path": "server/src/__tests__/git-restore-point-expiration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Git restore-point expiration sweep soak (35 cases, 49s)",
+      "measuredMs": 49208
+    },
+    {
+      "path": "server/src/services/remote-workspace-original-bare-source.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace original bare-source integration soak (5 cases, 40s)",
+      "measuredMs": 40278
+    },
+    {
+      "path": "server/src/services/remote-workspace-snapshot-reuse.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace snapshot reuse soak (39s)",
+      "measuredMs": 38856
+    },
+    {
+      "path": "server/src/services/workspace-recovery-fallback.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery fallback soak (30s)",
+      "measuredMs": 29586
+    },
+    {
+      "path": "server/src/services/workspace-recovery-passive-fairness.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery passive fairness soak (26s)",
+      "measuredMs": 25923
+    },
+    {
+      "path": "server/src/services/workspace-recovery-disk-full.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Workspace recovery disk-full soak (23s)",
+      "measuredMs": 23363
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (285 cases, 344s); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 344017
+    },
+    {
+      "path": "server/src/__tests__/deferred-execution-receipt-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Deferred execution receipt durable recovery soak (36 cases, 292s)",
+      "measuredMs": 292434
+    },
+    {
+      "path": "server/src/__tests__/maintenance-server-routes.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Assembled maintenance server real-clock soak with two 90s wall-clock sleeps (4 cases, 276s)",
+      "measuredMs": 276429
+    },
+    {
+      "path": "server/src/__tests__/live-recovery-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Residual live-recovery production matrix soak (36 cases, 208s)",
+      "measuredMs": 207953
+    },
+    {
+      "path": "server/src/__tests__/issue-recovery-dependencies.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Real-clock issue dependency recovery timer soak (4 cases, 178s)",
+      "measuredMs": 178002
+    },
+    {
+      "path": "server/src/__tests__/idle-sleep-safety.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Idle-sleep backup checkpoint & quietness soak (88 cases, 150s); fast unit idle-sleep-diagnostics.test.ts stays on PRs",
+      "measuredMs": 150013
+    },
+    {
+      "path": "server/src/__tests__/issue-recovery-deadlines.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Issue recovery deadline & 1000-issue scan bound soak (20 cases, 148s)",
+      "measuredMs": 148225
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Stale heartbeat queue invalidation recovery soak (36 cases, 145s)",
+      "measuredMs": 145134
+    },
+    {
+      "path": "server/src/__tests__/issue-recovery-assignments.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Issue assignment recovery & drain/resume soak (7 cases, 134s)",
+      "measuredMs": 133886
+    },
+    {
+      "path": "server/src/__tests__/idle-completed-history.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Idle completed-history 34-family retention soak (48 cases, 106s)",
+      "measuredMs": 105817
+    },
+    {
+      "path": "server/src/__tests__/native-status-arbiter-corpus.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Executable 53-fixture x 70-row status-authority corpus (68 cases, 98s)",
+      "measuredMs": 98250
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-repository-catalog-recovery.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heartbeat repository catalog recovery soak (6 cases, 79s)",
+      "measuredMs": 79077
+    },
+    {
+      "path": "server/src/__tests__/attention-retention-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Attention retention background sweep soak (77s)",
+      "measuredMs": 77085
+    },
+    {
+      "path": "server/src/__tests__/issue-recovery-conversations.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Issue recovery conversation drain/park soak (3 cases, 74s)",
+      "measuredMs": 74439
+    },
+    {
+      "path": "server/src/__tests__/ownership-reconciliation-report.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Report-only ownership reconciliation matrix soak (48 cases, 73s)",
+      "measuredMs": 73104
+    },
+    {
+      "path": "server/src/__tests__/plugin-scheduled-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Plugin scheduled-work real-clock deadline/quietness soak (70s)",
+      "measuredMs": 69649
+    },
+    {
+      "path": "server/src/__tests__/status-card-evaluation-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Status-card background evaluation debounce/quietness soak (68s)",
+      "measuredMs": 67793
+    },
+    {
+      "path": "server/src/__tests__/native-status-reassessment-work.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Native status reassessment background recovery soak (22 cases, 58s)",
+      "measuredMs": 57482
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Serialized heartbeat issue liveness escalation soak (29 cases, 55s)",
+      "measuredMs": 54768
+    },
+    {
+      "path": "server/src/__tests__/recovery-wake-herd.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Recovery wake-herd thundering-herd soak (37 cases, 52s)",
+      "measuredMs": 51736
+    },
+    {
+      "path": "server/src/__tests__/agent-timer-deadlines.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Real-clock agent timer deadline soak (43 cases, 49s)",
+      "measuredMs": 49401
+    },
+    {
+      "path": "server/src/__tests__/blocker-workspace-history-performance.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "55,000-row Postgres EXPLAIN ANALYZE query-plan benchmark (2 cases, 49s)",
+      "measuredMs": 48579
+    },
+    {
+      "path": "server/src/__tests__/idle-native-finalization.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Idle native finalization drain/quietness soak (15 cases, 47s)",
+      "measuredMs": 47149
+    },
+    {
+      "path": "server/src/__tests__/issue-recovery-actions.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Issue recovery action export/timeout soak (76 cases, 47s)",
+      "measuredMs": 46806
+    },
+    {
+      "path": "server/src/__tests__/idle-issue-schedule.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Idle issue schedule quietness soak (13 cases, 45s)",
+      "measuredMs": 45057
+    }
+  ]
+}
