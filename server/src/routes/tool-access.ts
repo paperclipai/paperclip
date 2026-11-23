@@ -797,12 +797,17 @@ function connectorEnrollmentPrincipal(req: Request): string {
         if (capabilities[i].allowed) editableAgentIds.push(companyAgents[i].id);
       }
     }
+    const canManageToolPolicies = (await management.capability(req.actor, "connections:profiles", {
+      type: "connection_management", companyId: connection.companyId, purpose: "tool",
+      operation: "PATCH /companies/:companyId/tools/policies/:policyId", readOnly: false,
+    }, { readContext: connectionRequestContext(req) })).allowed;
     return {
       canConfigure,
       management: manage,
       usage,
       canCreateOrganizationGrant: canConfigure,
       canSetCompanyInstall: canConfigure,
+      canManageToolPolicies,
       // Personal consent belongs to the person: it needs a named board user, and
       // it is never available to a viewer or to an unauthenticated principal.
       canConnectAsCurrentUser: Boolean(connectionRequestUserId(req)) && mutationCapable,

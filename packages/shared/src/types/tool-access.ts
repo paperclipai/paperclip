@@ -316,6 +316,8 @@ export interface ToolConnectionCapabilities {
   canConfigure: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
+  /** Mirrors the guard on the tool-policy routes (`connections:profiles`, resolved to `tools:manage_profiles`), independent of `canConfigure`. */
+  canManageToolPolicies: boolean;
   canConnectAsCurrentUser: boolean;
   canManageAgentInstalls: boolean;
   canViewOtherPersonalIdentities: boolean;

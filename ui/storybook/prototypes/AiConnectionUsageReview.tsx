@@ -115,7 +115,7 @@ function grants(row: AiManagedConnectionSummary): ConnectionGrantsResponse {
     members: [{ userId: currentUserId, name: "Alex", email: "alex@example.test" }],
     capabilities: {
       canConfigure: true, canCreateOrganizationGrant: true, canSetCompanyInstall: true,
-      canConnectAsCurrentUser: true, canManageAgentInstalls: true,
+      canConnectAsCurrentUser: true, canManageAgentInstalls: true, canManageToolPolicies: true,
       canViewOtherPersonalIdentities: true, editableAgentIds: [],
     },
     grants: [{
