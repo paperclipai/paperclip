@@ -1,0 +1,1 @@
+CREATE INDEX "native_run_finalizations_accepted_result_lease_idx" ON "native_run_finalizations" USING btree ("lease_expires_at") WHERE "native_run_finalizations"."result_id" is not null AND "native_run_finalizations"."lease_owner" is not null AND "native_run_finalizations"."phase" not in ('committed', 'terminal_failure', 'applied');

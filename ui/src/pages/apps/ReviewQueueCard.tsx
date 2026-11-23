@@ -9,9 +9,11 @@ import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
 import { issuesApi } from "@/api/issues";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { describeError } from "@/api/errors";
 
 /**
  * "Ask first" review queue (M1b float / M9 card, PAP-10859).
@@ -43,6 +45,7 @@ export function ReviewQueueCard({
     enabled: !!selectedCompanyId,
     refetchInterval: 20_000,
   });
+  const view = useQueryView(query);
 
   const items = useMemo(() => {
     const all = query.data?.actionRequests ?? [];
@@ -50,8 +53,8 @@ export function ReviewQueueCard({
   }, [query.data, connectionId]);
 
   if (!selectedCompanyId) return null;
-  if (query.isLoading) return null;
-  if (query.isError) return <p role="alert" className="text-sm text-destructive">Could not load connection reviews. Please refresh to try again.</p>;
+  if (query.isLoading || view.kind === "reconnecting") return null;
+  if (view.kind === "error") return <QueryErrorState error={query.error} action="load connection reviews" onRetry={view.retry} retrying={view.isFetching} />;
 
   if (items.length === 0) {
     if (emptyState === "hidden") return null;
@@ -223,7 +226,7 @@ function failToast(
 ) {
   pushToast({
     title: "Couldn’t save that",
-    body: error instanceof Error ? error.message : "Please try again.",
+    body: describeError(error).body,
     tone: "error",
   });
 }

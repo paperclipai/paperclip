@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, Terminal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { motionMilliseconds, motionNumber } from "@/lib/onboarding-motion-tokens";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 export interface AgentSetupPromptProps {
   /** The complete text to preview and copy; never truncated on the clipboard. */
@@ -23,10 +24,10 @@ export interface AgentSetupPromptProps {
   initialCopyStatus?: "idle" | "copied" | "failed";
   onCopied?: () => void;
   /** Brand a handoff for one recipient; omit for the general agent logo stack. */
-  agent?: { name: string; src: string; className?: string };
+  agent?: { name: string; className?: string } & ({ src: string; icon?: never } | { icon: ReactNode; src?: never });
 }
 
-const defaultAgents = [
+const defaultAgents: NonNullable<AgentSetupPromptProps["agent"]>[] = [
   { name: "Codex", src: "/brands/codex-color.svg", className: "" },
   { name: "ChatGPT", src: "/brands/apps/openai.svg", className: "dark:invert" },
   { name: "Claude", src: "/brands/claude-color.svg", className: "" },
@@ -38,7 +39,7 @@ function AgentLogos({ ref, hidden, agents }: { ref: Ref<HTMLSpanElement>; hidden
       {agents.map((agent) => (
         <span key={agent.name} className="agent-setup-logo-slot">
           <span className="agent-setup-logo">
-            <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} />
+            {agent.src ? <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} /> : agent.icon}
           </span>
         </span>
       ))}
@@ -244,7 +245,7 @@ export function AgentSetupPrompt({
                 className="agent-setup-preview resize-none rounded-lg bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed"
               />
             ) : (
-              <pre tabIndex={0} aria-label="Setup prompt" className="agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground">{prompt}</pre>
+              <pre tabIndex={0} aria-label="Setup prompt" className={cn("agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>{prompt}</pre>
             )}
           </div>
 
@@ -275,7 +276,7 @@ export function AgentSetupPrompt({
         <span ref={flyingLogos} className="agent-setup-flight-layer" aria-hidden="true">
           {agents.map((agent, index) => (
             <span key={agent.name} className="agent-setup-logo agent-setup-flying-logo" style={flight.origins[index]}>
-              <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} />
+              {agent.src ? <img src={agent.src} alt="" className={cn("size-5", agent.className)} draggable={false} /> : agent.icon}
             </span>
           ))}
         </span>,

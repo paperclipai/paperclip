@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, agentWakeupRequests, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
+  activityLog, agents, agentWakeupRequests, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
   issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issueWorkProducts, issues, statusDecisions,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -10,6 +10,7 @@ import { readTaskQuestionContext } from "../issue-question-context.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun, pendingNativeGovernance } from "./native-run-finalizer.js";
+import { enqueueOwnQuestionDismissalWake, ownQuestionWaitReleasedByDismissal } from "./own-question-wait.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -87,6 +88,65 @@ describe("historical task questions", () => {
       .toEqual([expect.objectContaining({ status: "pending", result: null, resolvedAt: null, payload: f.question.payload })]);
   });
 
+  it.each(["ask_user_questions", "request_confirmation", "request_checkbox_confirmation", "request_item_verdicts", "suggest_tasks"])("defers a human-dismissed %s without resolving it or waking the agent", async kind => {
+    const f = await fixture();
+    const payload = kind === "ask_user_questions" ? f.question.payload
+      : kind === "request_confirmation" ? { version: 1, prompt: "Provide app configuration", target: { type: "custom", key: "native_completion_review" } }
+      : kind === "request_checkbox_confirmation" ? { version: 1, prompt: "Choose items", options: [{ id: "one", label: "One" }] }
+      : kind === "request_item_verdicts" ? { version: 1, prompt: "Review items", items: [{ id: "one", label: "One" }] }
+      : { version: 1, tasks: [{ clientKey: "one", title: "One" }] };
+    await db.update(issueThreadInteractions).set({ kind, payload: payload as typeof f.question.payload }).where(eq(issueThreadInteractions.id, f.question.id));
+    const service = issueThreadInteractionService(db);
+    const task = { id: f.issueId, companyId: f.companyId };
+    expect(await gate(f)).not.toBeNull();
+    await expect(service.dismissInteraction(task, f.question.id, { agentId: f.agentId })).rejects.toMatchObject({ status: 403 });
+    await expect(service.dismissInteraction({ ...task, companyId: randomUUID() }, f.question.id, { userId: "board-user" })).rejects.toMatchObject({ status: 404 });
+    const dismissed = await service.dismissInteraction(task, f.question.id, { userId: "board-user" });
+    expect(dismissed).toMatchObject({ status: "pending", dismissedByUserId: "board-user", resolvedAt: null, result: null });
+    expect((await service.dismissInteraction(task, f.question.id, { userId: "board-user" })).dismissedAt).toEqual(dismissed.dismissedAt);
+    expect(await gate(f)).toBeNull();
+    expect(await nativeCompletionFeedback(db, f.runId, done)).not.toContain("Tell the user");
+    expect((await readTaskQuestionContext(db, f)).questions).toEqual([expect.objectContaining({ id: f.question.id, historical: true, dismissedAt: dismissed.dismissedAt })]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("keeps a dismissed protected request gated without demanding another reminder", async () => {
+    const f = await fixture();
+    await db.update(issueThreadInteractions).set({ kind: "request_confirmation", effectiveResolverPolicySource: "company_cap",
+      payload: { version: 1, prompt: "Approve deployment?" } }).where(eq(issueThreadInteractions.id, f.question.id));
+    await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+    expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });
+    const feedback = await nativeCompletionFeedback(db, f.runId, done);
+    expect(feedback).toContain("Dismissal does not authorize");
+    expect(feedback).not.toContain("Tell the user");
+  });
+
+  it.each(["request_confirmation", "request_checkbox_confirmation"])("enforces the current issue review policy when dismissing a %s", async kind => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "in_review", reviewPolicy: "not_creator", createdByUserId: "original-author" })
+      .where(eq(issues.id, f.issueId));
+    await db.update(issueThreadInteractions).set({ kind, createdByAgentId: null, createdByUserId: "review-requester",
+      payload: kind === "request_confirmation"
+        ? { version: 1, prompt: "Review completed work", target: { type: "custom", key: "native_completion_review" } }
+        : { version: 1, prompt: "Review completed work", options: [{ id: "verified", label: "Verified" }] },
+    }).where(eq(issueThreadInteractions.id, f.question.id));
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "user", actorId: "review-requester",
+      action: "issue.updated", entityType: "issue", entityId: f.issueId,
+      details: { status: "in_review", _previous: { status: "in_progress" }, reviewInteractionId: f.question.id },
+    });
+    const service = issueThreadInteractionService(db);
+    const staleTask = { id: f.issueId, companyId: f.companyId, status: "in_progress", reviewPolicy: "anyone" };
+    await expect(service.dismissInteraction(staleTask, f.question.id, { userId: "review-requester" }))
+      .rejects.toMatchObject({ status: 403, details: { code: "review_policy_denied" } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0])
+      .toMatchObject({ dismissedAt: null, status: "pending", resolvedAt: null, result: null });
+    expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });
+    expect(await service.dismissInteraction(staleTask, f.question.id, { userId: "original-author" }))
+      .toMatchObject({ dismissedByUserId: "original-author", status: "pending", resolvedAt: null, result: null });
+    expect(await gate(f)).toBeNull();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+  });
+
   it("keeps a real current question gated without commanding another reminder", async () => {
     const f = await fixture();
     expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });
@@ -96,9 +156,18 @@ describe("historical task questions", () => {
     expect(feedback).not.toContain("Tell the user");
   });
 
-  it.each([false, true])("commits the correct native task status with a retained question (historical=%s)", async historical => {
+  it.each(["current", "newer-message", "dismissed-question", "dismissed-review"])("commits the correct native task status (%s)", async mode => {
     const f = await fixture();
-    if (historical) await message(f);
+    const historical = mode !== "current";
+    if (mode === "newer-message") await message(f);
+    if (mode === "dismissed-review") {
+      await db.update(issueThreadInteractions).set({ kind: "request_confirmation", payload: { version: 1,
+        prompt: "Provide app configuration", target: { type: "custom", key: "native_completion_review" } } })
+        .where(eq(issueThreadInteractions.id, f.question.id));
+    }
+    if (mode.startsWith("dismissed-")) {
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+    }
     const contractId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
     const contractSha256 = "historical-question-contract";
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
@@ -126,7 +195,9 @@ describe("historical task questions", () => {
       .toEqual([expect.objectContaining({ status: historical ? "done" : "in_review" })]);
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId)))
       .toEqual([expect.objectContaining({ reasonCode: historical ? "completion_contract_satisfied" : "governed_gate_pending" })]);
-    if (historical) {
+    if (mode === "dismissed-review") {
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0]).toMatchObject({ status: "expired", dismissedByUserId: "board-user" });
+    } else if (historical) {
       expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))
         .toEqual([expect.objectContaining({ status: "pending", result: null, resolvedAt: null })]);
       const answered = await issueThreadInteractionService(db).answerQuestions(
@@ -139,6 +210,76 @@ describe("historical task questions", () => {
         .toEqual([]);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
         .toEqual([]);
+    }
+  });
+
+  it.each(["unreported", "unreported-dismissed", "unreported-answered", "verified"])("keeps the agent's own unanswered question open after an unreported turn (%s)", async mode => {
+    const f = await fixture();
+    await message(f);
+    if (mode === "unreported-dismissed") {
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+    }
+    if (mode === "unreported-answered") {
+      await db.update(issueThreadInteractions).set({ status: "answered", resolvedByUserId: "board-user", resolvedAt: new Date(),
+        result: { version: 1, answers: [{ questionId: "configuration", optionIds: ["configured"] }] } })
+        .where(eq(issueThreadInteractions.id, f.question.id));
+    }
+    const contractId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
+    const contractSha256 = "own-question-contract";
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+      revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "low",
+      completionAuthority: "agent_claim_policy", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "standalone-v1", objective: "Verify configuration", criteria: [{ id: "objective", requirement: "Verify configuration" }] },
+      canonicalSha256: contractSha256, createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ completionContractId: contractId, completionContractSha256: contractSha256,
+      nativeSessionId: sessionId, runnerInstanceId: runnerId }).where(eq(heartbeatRuns.id, f.runId));
+    const [verified] = await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
+      type: "artifact", provider: "test", title: "Configuration verification", status: "completed", reviewState: "approved" }).returning();
+    const workProductRef = `work_product:${verified.id}`;
+    const providerRef = "provider:opencode:agent-message";
+    const result: PrpStructuredRunResult = mode === "verified"
+      ? { ...CONTROL_PLANE_CONFORMANCE_RESULT,
+        completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [workProductRef] }] },
+        evidence: [{ kind: "work_product", ref: workProductRef }],
+        verification: [{ commandOrCheck: "Configuration verification", status: "passed", artifactRef: workProductRef }] }
+      : { ...CONTROL_PLANE_CONFORMANCE_RESULT,
+        summary: "I will not write the configuration until the answer arrives. Ending turn to await the answer.",
+        completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, objectiveSatisfied: true, remainingWork: [],
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [providerRef] }] },
+        evidence: [{ ref: providerRef }], verification: [], artifacts: [], attentionRequests: [] };
+    const port = new PaperclipControlPlanePort(db, { ...f, sessionId, completionContractId: contractId,
+      completionContractSha256: contractSha256, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: randomUUID() });
+    await port.openRun({ identity: { ...f, sessionId }, backendKind: "mock", sourceInstanceId: runnerId });
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: randomUUID() });
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded" });
+    const waits = mode === "unreported";
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.status).toBe(waits ? "in_review" : "done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId)))
+      .toEqual([expect.objectContaining({ toStatus: waits ? "in_review" : "done",
+        ...(waits ? { reasonCode: "own_question_unanswered" } : {}) })]);
+    if (waits) {
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0])
+        .toMatchObject({ status: "pending", resolvedAt: null });
+      const scope = { companyId: f.companyId, issueId: f.issueId, interactionId: f.question.id };
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      const [second] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+        kind: "ask_user_questions", status: "pending", sourceRunId: f.runId, createdByAgentId: f.agentId,
+        title: "Second question", payload: f.question.payload }).returning();
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      const wakeIds: Array<string | null> = [];
+      const dismissSecond = () => issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId },
+        second!.id, { userId: "board-user" }, async tx => {
+          wakeIds.push(await enqueueOwnQuestionDismissalWake(tx, { ...scope, interactionId: second!.id }));
+        });
+      await dismissSecond();
+      await dismissSecond();
+      expect(await ownQuestionWaitReleasedByDismissal(db, { ...scope, interactionId: second!.id })).toEqual({ agentId: f.agentId });
+      expect(wakeIds).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+        .toEqual([expect.objectContaining({ id: wakeIds[0], agentId: f.agentId, status: "queued", reason: "issue_question_dismissed",
+          requestedByActorId: "native-status-committer", idempotencyKey: `issue_question_dismissed:${second!.id}` })]);
     }
   });
 

@@ -52,7 +52,7 @@ Never sit silently on blocked work. Comment the blocker, update the status, and 
 
 ## Delegation Pattern
 
-Managers break down work into subtasks:
+If work is delegated, task creation supports a parent relationship:
 
 ```
 POST /api/companies/{companyId}/issues
@@ -99,7 +99,7 @@ When a plan needs approval before implementation:
 2. Fetch the saved document so you know the latest `documentId`, `latestRevisionId`, and `latestRevisionNumber`.
 3. Create a `request_confirmation` targeting that exact `plan` revision.
 4. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
-5. Wait for acceptance before creating implementation subtasks.
+5. Wait for acceptance before implementation.
 6. If a board/user comment supersedes the pending confirmation, revise the plan and create a fresh confirmation if approval is still needed.
 
 Plan approval targets look like this:
