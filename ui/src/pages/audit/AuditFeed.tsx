@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
+import type { Agent, CaseWorkflowTransition, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,6 +28,7 @@ import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -208,6 +209,13 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   return <span className="text-muted-foreground">{formatActivityEntityLabel(record.entityType, record.details)}</span>;
 }
 
+function auditOutcome(record: AuditActionRecord): string | null {
+  if (record.action === "tool_connection.archived" || record.action === "tool_connection.grant_revoked") {
+    return googleAccessRemovalNotice(record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined)?.body ?? null;
+  }
+  return formatActivityOutcome(record.action, record.details);
+}
+
 function AuditRow({
   record,
   agentMap,
@@ -220,7 +228,7 @@ function AuditRow({
   casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
-  const outcome = formatActivityOutcome(record.action, record.details);
+  const outcome = auditOutcome(record);
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
   const showOnBehalf = Boolean(

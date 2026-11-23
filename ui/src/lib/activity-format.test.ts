@@ -197,24 +197,22 @@ describe("activity formatting", () => {
     it("describes failed and delayed calls in words", () => {
       const details = { upstreamToolName: "calendar__list_events" };
       expect(formatActivityVerb("tool_gateway.call_failed", details)).toBe("could not use Calendar: List events on");
-      expect(formatActivityVerb("tool_gateway.call_deferred", details)).toBe("is still waiting for Calendar: List events on");
+      expect(formatActivityVerb("tool_gateway.call_deferred", details)).toBe("could not finish using Calendar: List events on");
+      expect(formatActivityVerb("tool_gateway.call_deferred", { ...details, source: "test" })).toBe("could not finish testing Calendar: List events on");
     });
 
-    it("says what happened to Google access when a connection or credential is removed", () => {
-      const removal = (result: string) => ({ transport: "remote_http", secretsRevoked: 2, providerAccess: { provider: "google", result, outcomes: [] } });
-      expect(formatActivityVerb("tool_connection.archived", removal("ended"))).toBe("removed");
-      expect(formatActivityEntityLabel("tool_connection", removal("ended"))).toBe("the Google Workspace connection");
+    it("drops the connection namespace when a row has only the gateway tool name", () => {
+      const verb = formatActivityVerb("tool_gateway.call_failed", { tool: gatewayName, connectionId });
+      expect(verb).toBe("could not use gmail get message on");
+      expect(verb).not.toMatch(internalName);
+    });
+
+    it("names a Google connection when its removal reports Google access", () => {
+      const providerAccess = { provider: "google", result: "ended", outcomes: [] };
+      expect(formatActivityVerb("tool_connection.archived", { transport: "remote_http", providerAccess })).toBe("removed");
+      expect(formatActivityEntityLabel("tool_connection", { providerAccess })).toBe("the Google Workspace connection");
       expect(formatActivityEntityLabel("tool_connection", { transport: "remote_http" })).toBe("the connection");
-      expect(formatActivityOutcome("tool_connection.archived", removal("ended"))).toBe("Google access was ended.");
-      expect(formatActivityOutcome("tool_connection.archived", removal("ended_unconfirmed")))
-        .toBe("Paperclip asked Google to end access, but Google did not confirm it.");
-      expect(formatActivityOutcome("tool_connection.archived", removal("other_connections_remain")))
-        .toBe("Google access stays on because another connection still uses it.");
-      expect(formatActivityOutcome("tool_connection.archived", removal("not_ended"))).toBe("Google access could not be ended.");
-      expect(formatActivityOutcome("tool_connection.grant_revoked", { connectionId, kind: "oauth", providerAccess: { provider: "google", result: "ended", outcomes: [] } }))
-        .toBe("Google access was ended.");
-      expect(formatActivityOutcome("tool_connection.archived", { transport: "remote_http" })).toBeNull();
-      expect(formatActivityOutcome("tool_connection.archived", removal("something_new"))).toBeNull();
+      expect(formatActivityOutcome("tool_connection.archived", { providerAccess })).toBeNull();
     });
 
     it("reads app removal as a sentence with the app's name", () => {

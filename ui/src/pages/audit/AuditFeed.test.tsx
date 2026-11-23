@@ -267,6 +267,8 @@ describe("AuditFeed", () => {
         row("evt-app-removed", { action: "tool_application.archived", entityType: "tool_application", entityId: applicationId, details: { type: "mcp", name: "Google Workspace", reason: "last_connection_removed" } }),
         row("evt-content-requested", { action: "tool_connection.content_deletion_requested", details: { toolCalls: 3 } }),
         row("evt-content-deleted", { actorType: "system", actorId: null, action: "tool_connection.content_deleted", details: { toolCalls: 3 } }),
+        row("evt-failed", { actorType: "agent", actorId: "agent-1", agentId: "agent-1", action: "tool_gateway.call_failed", entityType: "agent", entityId: "agent-1", details: { tool: google.tool, connectionId, reasonCode: "prompt_injection_blocked" } }),
+        row("evt-credential-revoked", { action: "tool_connection.grant_revoked", details: { connectionId, kind: "oauth", providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_error"] } } }),
       ],
       nextCursor: null,
       accessTier: "full",
@@ -275,7 +277,7 @@ describe("AuditFeed", () => {
     await render({ actionDomain: "tool_" });
 
     const rows = Array.from(container.querySelectorAll('ul[aria-label="Audit activity"] > li'));
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(11);
     const primary = rows.map((li) => {
       const copy = li.cloneNode(true) as HTMLElement;
       copy.querySelectorAll(".font-mono, time").forEach((node) => node.remove());
@@ -293,11 +295,14 @@ describe("AuditFeed", () => {
     expect(primary[3]).toContain("connected the connection");
     expect(primary[4]).toContain("reconnected the connection");
     expect(primary[5]).toContain("removed the Google Workspace connection");
-    expect(primary[5]).toContain("Google access was ended.");
+    expect(primary[5]).toContain("Paperclip's access to this Google account was also ended at Google.");
     expect(primary[6]).toContain("removed Google Workspace");
     expect(primary[6]).toContain("Its last connection was removed.");
     expect(primary[7]).toContain("asked to delete stored content from the connection");
     expect(primary[8]).toContain("deleted stored content from the connection");
+    expect(primary[9]).toContain("could not use gmail get message on the connection");
+    expect(primary[10]).toContain("revoked credentials from the Google Workspace connection");
+    expect(primary[10]).toContain("couldn't end its access at Google");
     expect(rows[0].textContent).toContain("tool_gateway.call_completed");
   });
 

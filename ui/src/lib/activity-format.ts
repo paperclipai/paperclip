@@ -233,13 +233,6 @@ const ENTITY_LABELS: Record<string, string> = {
   tool_application: "the app",
 };
 
-const GOOGLE_ACCESS_OUTCOMES: Record<string, string> = {
-  ended: "Google access was ended.",
-  ended_unconfirmed: "Paperclip asked Google to end access, but Google did not confirm it.",
-  other_connections_remain: "Google access stays on because another connection still uses it.",
-  not_ended: "Google access could not be ended.",
-};
-
 function readText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -250,7 +243,8 @@ function googleProviderAccessResult(details: ActivityDetails): string | null {
 }
 
 function formatToolLabel(details: ActivityDetails): string {
-  const name = readText(details?.upstreamToolName) ?? readText(details?.tool);
+  const name = readText(details?.upstreamToolName)
+    ?? readText(details?.tool)?.replace(/^(?:mcp|app)\.[a-z0-9-]*-[0-9a-f]{8}\./, "");
   const title = readText(details?.toolTitle);
   if (!name) return title ?? "an app action";
   return googleWorkspaceToolTitle(name, title) ?? name.replace(/[._-]+/g, " ");
@@ -265,10 +259,6 @@ export function formatActivityEntityLabel(entityType: string, details?: Record<s
 export function formatActivityOutcome(action: string, details?: Record<string, unknown> | null): string | null {
   if (action === "tool_application.archived" && details?.reason === "last_connection_removed") {
     return "Its last connection was removed.";
-  }
-  if (action === "tool_connection.archived" || action === "tool_connection.grant_revoked") {
-    const result = googleProviderAccessResult(details);
-    return result ? GOOGLE_ACCESS_OUTCOMES[result] ?? null : null;
   }
   return null;
 }
@@ -537,7 +527,7 @@ export function formatActivityVerb(
     if (action === "tool_gateway.call_denied") return `was blocked from using ${tool} on`;
     if (action === "tool_gateway.approval_requested") return `asked to use ${tool} on`;
     if (action === "tool_gateway.call_failed") return `could not ${isTest ? "test" : "use"} ${tool} on`;
-    if (action === "tool_gateway.call_deferred") return `is still waiting for ${tool} on`;
+    if (action === "tool_gateway.call_deferred") return `could not finish ${isTest ? "testing" : "using"} ${tool} on`;
     if (action === "tool_gateway.session_created") return "opened an app session for";
     if (action === "tool_gateway.session_rejected") return "was blocked from opening an app session for";
     if (action === "tool_gateway.discovery") return "discovered app actions for";
