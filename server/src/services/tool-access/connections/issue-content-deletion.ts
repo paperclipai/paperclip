@@ -42,7 +42,10 @@ export async function requestIssueConnectionContentDeletion(
       .from(toolAccessAuditEvents)
       .where(and(
         eq(toolAccessAuditEvents.companyId, input.companyId),
+        sql`${toolAccessAuditEvents.createdAt} >= (select created_at from issues where id = ${input.issueId})`,
         sql`${toolAccessAuditEvents.details}->>'issueId' = ${input.issueId}::text`,
+        sql`jsonb_typeof(${toolAccessAuditEvents.details}->'argumentsSummary') = 'object'`,
+        sql`${toolAccessAuditEvents.details}->'argumentsSummary'->>'contentDeletedAt' is null`,
       ))
       .limit(1);
     if (!audit) return null;

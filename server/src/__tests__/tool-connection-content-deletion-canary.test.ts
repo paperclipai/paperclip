@@ -406,7 +406,7 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
     await service.processPending(new AbortController().signal);
     const [first] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
-    expect((first!.progress as { phase: string }).phase).toBe("waiting");
+    expect(first!.progress).toMatchObject({ phase: "done", waiting: true });
 
     const late = summarizeToolValue({ text: `Late ${marker}` });
     const [lateCall] = await db.insert(toolInvocations).values({
@@ -416,12 +416,42 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, first!.id));
     await service.processPending(new AbortController().signal);
     const [rechecked] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, first!.id));
-    expect((rechecked!.progress as { phase: string }).phase).toBe("waiting");
+    expect(rechecked!.progress).toMatchObject({ phase: "done", waiting: true });
     const [untouched] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, lateCall!.id));
     expect(untouched!.resultSummary?.summary).toContain(marker);
 
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, openRunId));
     await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, first!.id));
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it.each(["approval", "wake"] as const)("waits while only an open %s remains, then clears the task's content", async (open) => {
+    const logs = stores(path.join(baseDir, `task-open-${open}`));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await seedDeliveryRun(base, logs, [{ actionRequestId: flow.actionRequest.id, marker }]);
+    const reopen = open === "approval"
+      ? () => db.update(toolActionRequests).set({ status: "pending" }).where(eq(toolActionRequests.id, flow.actionRequest.id))
+      : () => db.update(agentWakeupRequests).set({ status: "queued" }).where(eq(agentWakeupRequests.companyId, base.company.id));
+    const settle = open === "approval"
+      ? () => db.update(toolActionRequests).set({ status: "executed" }).where(eq(toolActionRequests.id, flow.actionRequest.id))
+      : () => db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.companyId, base.company.id));
+    await reopen();
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(job!.progress).toMatchObject({ phase: "done", waiting: true });
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, job!.id));
+    await service.processPending(new AbortController().signal);
+    const [still] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, job!.id));
+    expect(still!.progress).toMatchObject({ waiting: true });
+
+    await settle();
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, job!.id));
     await drainPending(service);
     expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
