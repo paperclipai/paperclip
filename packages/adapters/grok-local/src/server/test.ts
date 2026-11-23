@@ -15,6 +15,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
@@ -144,6 +145,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "grok_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -171,6 +173,8 @@ export async function testEnvironment(
           runId, target, adapterKey: "grok",
           workspaceLocalDir: runtimeWorkspaceLocalDir,
           workspaceRemoteDir: cwd,
+          // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+          workspaceRestoreRetryDelaysMs: [],
           assets: [{ key: "home", localDir: stagedHome, followSymlinks: true,
             restore: async ({ assetDir, readFile }) => { await copyBackGrokAuth({
               readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
@@ -202,6 +206,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "grok_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,

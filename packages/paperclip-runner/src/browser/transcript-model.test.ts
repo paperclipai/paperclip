@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { LiveConsoleScriptedDriver } from "../mock-core/live-console-scripted-driver";
+import { LiveConsoleScriptedDriver } from "../mock-core/live-console-scripted-driver.js";
 import {
   parseHarnessRuntimeRequestResolution,
   type HarnessSession,
-} from "../contracts/harness-driver";
-import type { PrpEvent } from "../protocol/replay-contract";
+} from "../contracts/harness-driver.js";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
   reduceSessionEvents,
   type SessionSnapshot,
-} from "../reducer/session-reducer";
+} from "../reducer/session-reducer.js";
 import type { RunnerCapabilities } from "./protocol.js";
 import {
   buildTranscript,
