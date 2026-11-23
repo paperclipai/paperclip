@@ -1,6 +1,7 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
 import type {
   InvokableAgentSnapshot,
+  IssueAttributionSnapshot,
   IssueSnapshot,
   PostCommitEffect,
   ReleaseOutcome,
@@ -44,7 +45,7 @@ export interface WakeQueueHost {
   resolveResponsibleUserId(input: {
     companyId: string;
     contextSnapshot: Record<string, unknown>;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
     /** From a prior `getRoutineEnv` call against the same issue; pass `{ routineId: null, env: null, responsibleUserId: null }` when the issue is not a routine execution. */
     routineEnvContext: { routineId: string | null; env: unknown; responsibleUserId: string | null };
     requestedByActorType: "user" | "agent" | "system" | null;
@@ -60,7 +61,7 @@ export interface WakeQueueHost {
    */
   getRoutineEnv(input: {
     companyId: string;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
   }): Promise<{ routineId: string | null; env: unknown; responsibleUserId: string | null }>;
   resolveSessionBeforeForWakeup(input: {
     companyId: string;
@@ -125,6 +126,8 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     finishingRunAgentId: string;
     queuedCommentIds: string[];
+    /** A resolved card still needs its live message edge for chat authorization. */
+    retainDeliveredCommentBindings?: boolean;
   }): Promise<{
     liveNonSelfCommentIds: string[];
     containedSelfAuthoredComment: boolean;
@@ -176,7 +179,7 @@ export interface WakeQueueTransaction {
     issueId: string;
     finishingRunId: string;
     commentIds: string[];
-  }): Promise<{ allSelfAuthored: boolean }>;
+  }): Promise<{ allSelfAuthored: boolean; includesPersonComment: boolean }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;
@@ -199,6 +202,13 @@ export interface WakeQueueTransaction {
   }): Promise<boolean>;
   /** Reopens to todo, or straight to in_progress for an owed answer, which continues the assignee's own execution. */
   reopenIssue(input: { companyId: string; issueId: string; runId: string; status?: "todo" | "in_progress" }): Promise<IssueSnapshot | null>;
+  /**
+   * Settles a deferred chat wake whose only news an earlier reply in the same conversation
+   * already reported (a delegated task's completion, or a declined tool action), so it ends
+   * with no run. Marks reported completions delivered by that reply and the wake `skipped`.
+   * Returns `false`, with no write to the wake, when anything is still owed to the person.
+   */
+  skipAlreadyReportedChatWake(input: { companyId: string; issueId: string; wake: DeferredWakeCandidate; now: Date }): Promise<boolean>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */
   isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
     reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
@@ -296,49 +306,6 @@ export interface RecoveryEscalationPort {
 
 export type { PostCommitEffect, ReleaseOutcome };
 
-/**
- * Temporary port: `heartbeat.ts` still opens and owns the transaction that
- * admits a wake behind an active issue execution; the module does not own
- * that transaction yet. A later change will decompose `enqueueWakeup` so
- * the module owns the transaction itself. That change removes this handle
- * and replaces it with a transaction the module opens on its own.
- *
- * Only this module builds a scope. `createWakeQueue` exposes a method that
- * builds one for a caller outside the module. That caller receives an
- * opaque handle back and never touches this class directly.
- */
-export class TransactionScope {
-  private constructor(
-    private readonly companyId: string,
-    private readonly rawTx: unknown,
-  ) {}
-
-  static create(companyId: string, rawTx: unknown): TransactionScope {
-    return new TransactionScope(companyId, rawTx);
-  }
-
-  /** Returns the bound transaction only when `companyId` matches the scope's own company. */
-  requireTx(companyId: string): unknown {
-    if (companyId !== this.companyId) {
-      throw new Error(
-        "wake-queue: the transaction scope belongs to a different company than the requested write",
-      );
-    }
-    return this.rawTx;
-  }
-}
-
-/** Reads a scope's bound transaction. Rejects a missing scope with the same clear error as a mismatched one; never falls back to any other executor. */
-export function requireTransactionScopeTx(
-  scope: TransactionScope | null | undefined,
-  companyId: string,
-): unknown {
-  if (!scope) {
-    throw new Error("wake-queue: this call carries no transaction scope");
-  }
-  return scope.requireTx(companyId);
-}
-
 /** The active execution run a new wake arrives behind. */
 export type WakeAdmissionActiveExecutionRun = {
   id: string;
@@ -352,6 +319,17 @@ export type WakeAdmissionActiveExecutionRun = {
 export type DurableWakeAdmissionReceipt = {
   id: string;
   requestedAt: Date;
+};
+
+export type WakeReceiptSeed = {
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
 };
 
 export type CoalescedDeferredAdmissionReceipt =
@@ -413,11 +391,10 @@ export type AdmitWakeBehindIssueExecutionResult =
   | { kind: "coalesced"; run: Record<string, unknown> }
   | { kind: "deferred" };
 
-/** Read-only lookups the admission use case needs, each scoped to a company. */
+/** Read-only admission lookups bound to the issue admission transaction. */
 export interface WakeAdmissionReader {
   /** A durable incoming request may share an active run only with the exact actor on its persisted wake receipt. */
   matchesActiveWakeActor(
-    scope: TransactionScope,
     input: {
       companyId: string;
       wakeupRequestId: string | null;
@@ -427,7 +404,6 @@ export interface WakeAdmissionReader {
   ): Promise<boolean>;
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent(
-    scope: TransactionScope,
     input: {
       companyId: string;
       activeExecutionRunAgentId: string;
@@ -436,7 +412,6 @@ export interface WakeAdmissionReader {
     },
   ): Promise<boolean>;
   findExistingDeferredWake(
-    scope: TransactionScope,
     input: {
       companyId: string;
       agentId: string;
@@ -452,7 +427,6 @@ export interface WakeAdmissionReader {
 export interface WakeAdmissionWriter {
   /** Merges the wake's context into the active execution run and records the wake as coalesced. Returns the updated run row. */
   coalesceIntoActiveExecutionRun(
-    scope: TransactionScope,
     input: {
       companyId: string;
       activeExecutionRunId: string;
@@ -470,7 +444,6 @@ export interface WakeAdmissionWriter {
   ): Promise<Record<string, unknown> | null>;
   /** Merges the wake's context into an already-queued deferred wake, guarded by its current status. */
   mergeIntoExistingDeferredWake(
-    scope: TransactionScope,
     input: {
       companyId: string;
       existingDeferredWakeId: string;
@@ -484,7 +457,6 @@ export interface WakeAdmissionWriter {
   ): Promise<void>;
   /** Queues a new deferred wake behind the active execution run. */
   insertNewDeferredWake(
-    scope: TransactionScope,
     input: {
       companyId: string;
       agentId: string;

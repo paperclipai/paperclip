@@ -9,6 +9,7 @@ pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
 pub mod acpx_sidecar_transport;
+mod acpx_tool_failure_feedback;
 mod acpx_turn_dispatch;
 mod attachment_download;
 pub mod aws_agentcore_provider;

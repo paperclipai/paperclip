@@ -10,7 +10,7 @@ import { getStorageService } from "../../storage/index.js";
 import { skillPackageStore, withSkillPackageReadScope } from "../skill-package-store.js";
 import { assertSkillSnapshotPath, snapshotFile, skillSnapshotHash } from "../skill-snapshot.js";
 import { ensureSkillCacheDirectory, skillRunNeedsFilesSql } from "../skill-version-cache.js";
-import { verifyFileManifest } from "../file-manifest-cache.js";
+import { inspectFileManifest, verifyFileManifest } from "../file-manifest-cache.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { withRuntimeAssetUse } from "./runtime-asset-retention.js";
 import { admittedRuntimeSkills, hasUnversionedRuntimeSkillInputSql, readRuntimeSkillPreservation,
@@ -41,13 +41,38 @@ function manifestFiles(asset: NativeRuntimeAssetReference, text: string): Manife
   if (hash(JSON.stringify(files)) !== asset.digest || files.reduce((n, f) => n + f.size, 0) !== asset.totalBytes) throw new Error("runtime_skill_manifest_invalid");
   return files;
 }
+/** The admitted bundle's source is not on this filesystem: its directory,
+ * manifest or a listed file is gone, or it was written under another instance
+ * root. Only the source readers throw it; every other failure is real. */
+export class RuntimeSkillSourceAbsent extends Error {
+  constructor(readonly reason: "path_mismatch" | "missing") { super(`runtime_skill_source_absent:${reason}`); }
+}
+const missingPath = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException | undefined)?.code ?? "");
+async function sourceRead<T>(read: () => Promise<T>): Promise<T> {
+  try { return await read(); }
+  catch (error) { throw missingPath(error) ? new RuntimeSkillSourceAbsent("missing") : error; }
+}
+type PackageRow = { contentHash: string; storage: typeof snapshots.$inferSelect.storage } | undefined;
+/** The one durability test for a preserved asset. "metadata" trusts the
+ * package row; "object" also reads the stored package back. A storage error
+ * during the object read propagates: it is not evidence either way. */
+function preservedAssetRowDurable(asset: PreservedRuntimeSkill, row: PackageRow) {
+  try { manifestFiles(asset.bundle, asset.manifestText); } catch { return false; }
+  return row?.storage?.provider === "s3" && row.storage.durable === true && row.contentHash === asset.packageContentHash;
+}
+async function preservedAssetDurable(store: ReturnType<typeof skillPackageStore>, companyId: string, asset: PreservedRuntimeSkill,
+  verify: "metadata" | "object", signal?: AbortSignal) {
+  const row = await store.descriptor(companyId, asset.packageSnapshotId).catch(() => undefined);
+  if (!preservedAssetRowDurable(asset, row)) return false;
+  return verify === "metadata" || await store.verifyDurable(companyId, asset.packageSnapshotId, signal);
+}
 async function readLocalManifest(asset: NativeRuntimeAssetReference) {
   const root = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
   const expected = path.join(root, "bundles", asset.digest);
-  if (asset.rootPath !== expected) throw new Error("runtime_skill_source_path_mismatch");
-  await ensureSkillCacheDirectory(expected);
-  await ensureSkillCacheDirectory(path.join(root, "manifests"));
-  const handle = await fs.open(path.join(root, "manifests", `${asset.digest}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  if (asset.rootPath !== expected) throw new RuntimeSkillSourceAbsent("path_mismatch");
+  await sourceRead(() => ensureSkillCacheDirectory(expected));
+  await sourceRead(() => ensureSkillCacheDirectory(path.join(root, "manifests")));
+  const handle = await sourceRead(() => fs.open(path.join(root, "manifests", `${asset.digest}.json`), constants.O_RDONLY | constants.O_NOFOLLOW));
   let text: string;
   try {
     const stat = await handle.stat();
@@ -59,10 +84,12 @@ async function readLocalManifest(asset: NativeRuntimeAssetReference) {
 }
 async function readSource(asset: NativeRuntimeAssetReference) {
   const { expected, manifestText, entries } = await readLocalManifest(asset);
-  if (!await verifyFileManifest(expected, entries.map(f => ({ ...f, executable: Boolean(f.mode & 0o111) })))) throw new Error("runtime_skill_source_changed");
+  const inspected = await inspectFileManifest(expected, entries.map(f => ({ ...f, executable: Boolean(f.mode & 0o111) })));
+  if (inspected === "missing") throw new RuntimeSkillSourceAbsent("missing");
+  if (inspected === "changed") throw new Error("runtime_skill_source_changed");
   const files = [];
   for (const entry of entries) {
-    const handle = await fs.open(path.join(expected, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const handle = await sourceRead(() => fs.open(path.join(expected, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW));
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.size || (stat.mode & 0o777) !== entry.mode) throw new Error("runtime_skill_source_changed");
@@ -90,8 +117,7 @@ async function captureSkills(db: Db, companyId: string, admitted: ReturnType<typ
 async function lockPackages(db: Db, companyId: string, assets: PreservedRuntimeSkill[]) {
   for (const asset of [...assets].sort((a, b) => a.packageSnapshotId.localeCompare(b.packageSnapshotId))) {
     const [row] = await db.select().from(snapshots).where(and(eq(snapshots.companyId, companyId), eq(snapshots.id, asset.packageSnapshotId))).for("update");
-    if (!row?.storage || row.storage.provider !== "s3" || row.storage.durable !== true
-      || row.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+    if (!preservedAssetRowDurable(asset, row)) throw new Error("runtime_skill_package_not_durable");
   }
 }
 
@@ -116,9 +142,7 @@ export async function stageNativeRuntimeSkillAssets(db: Db, input: Admission & {
   if (receipt) {
     const store = skillPackageStore(db, shared);
     for (const asset of receipt.assets) {
-      manifestFiles(asset.bundle, asset.manifestText);
-      const row = await store.descriptor(input.companyId, asset.packageSnapshotId);
-      if (row.storage?.provider !== "s3" || row.storage.durable !== true || row.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+      if (!await preservedAssetDurable(store, input.companyId, asset, "metadata")) throw new Error("runtime_skill_package_not_durable");
     }
   } else receipt = { schema: RUNTIME_SKILL_PRESERVATION_SCHEMA, inputDigest: admitted.inputDigest,
     bindingDigest: admitted.bindingDigest, assets: await captureSkills(db, input.companyId, admitted, shared, input.signal) };
@@ -144,23 +168,24 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
   const admitted = admittedRuntimeSkills(source);
   const store = skillPackageStore(db, storage);
   const existing = readRuntimeSkillPreservation(source);
-  if (source.runnerProfileJson?.[RUNTIME_SKILL_PRESERVATION_KEY] != null && !existing) throw new Error("runtime_skill_preservation_receipt_invalid");
   if (existing) {
-    for (const asset of existing.assets) {
-      manifestFiles(asset.bundle, asset.manifestText);
-      const row = await store.descriptor(input.companyId, asset.packageSnapshotId);
-      if (row.storage?.provider !== "s3" || row.storage.durable !== true || row.contentHash !== asset.packageContentHash
-        || !await store.verifyDurable(input.companyId, asset.packageSnapshotId, input.signal)) throw new Error("runtime_skill_package_not_durable");
-    }
-    return { preserved: existing.assets.length };
+    let durable = true;
+    for (const asset of existing.assets) if (durable) durable = await preservedAssetDurable(store, input.companyId, asset, "object", input.signal);
+    if (durable) return { preserved: existing.assets.length };
   }
+  // No receipt, an invalid one, or one whose package is not durable: copy the
+  // admitted bytes again and replace it. A missing source throws RuntimeSkillSourceAbsent.
+  const previousReceipt = JSON.stringify(source.runnerProfileJson?.[RUNTIME_SKILL_PRESERVATION_KEY] ?? null);
   const assets = await captureSkills(db, input.companyId, admitted, storage, input.signal);
   if (!assets.length) return { preserved: 0 };
   const publications: ActivityPublication[] = [];
   await db.transaction(async tx => {
     const [current] = await tx.select().from(heartbeatRuns).where(where).for("update");
     if (!current || admittedRuntimeSkills(current).inputDigest !== admitted.inputDigest || current.status !== source.status
-      || current.finishedAt?.getTime() !== source.finishedAt?.getTime()) throw new Error("runtime_skill_preservation_binding_changed");
+      || current.finishedAt?.getTime() !== source.finishedAt?.getTime()
+      || JSON.stringify(current.runnerProfileJson?.[RUNTIME_SKILL_PRESERVATION_KEY] ?? null) !== previousReceipt) {
+      throw new Error("runtime_skill_preservation_binding_changed");
+    }
     await lockPackages(tx as unknown as Db, input.companyId, assets);
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...current.runnerProfileJson,
       [RUNTIME_SKILL_PRESERVATION_KEY]: { schema: RUNTIME_SKILL_PRESERVATION_SCHEMA, inputDigest: admitted.inputDigest,
@@ -173,9 +198,21 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
   return { preserved: assets.length };
 }
 
-export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> {
+/** Retained runs whose admitted local skill bundles have no durable receipt. */
+async function* localRuntimeSkillObligations(db: Db): AsyncGenerator<{ id: string; companyId: string }> {
   let after: string | undefined;
-  const checkedPackages = new Map<string, { hash: string; storage: typeof snapshots.$inferSelect.storage }>();
+  const checkedPackages = new Map<string, NonNullable<PackageRow>>();
+  // Metadata only: this scan runs before every volume-free start.
+  const durable = async (companyId: string, asset: PreservedRuntimeSkill) => {
+    const key = `${companyId}:${asset.packageSnapshotId}`;
+    let snapshot = checkedPackages.get(key);
+    if (!snapshot) {
+      [snapshot] = await db.select({ contentHash: snapshots.contentHash, storage: snapshots.storage }).from(snapshots)
+        .where(and(eq(snapshots.companyId, companyId), eq(snapshots.id, asset.packageSnapshotId)));
+      if (snapshot) checkedPackages.set(key, snapshot);
+    }
+    return preservedAssetRowDurable(asset, snapshot);
+  };
   for (;;) {
     const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object(
@@ -184,24 +221,43 @@ export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> 
       .from(heartbeatRuns).where(and(retainedRuntimeSkillsSql(), after ? gt(heartbeatRuns.id, after) : undefined))
       .orderBy(asc(heartbeatRuns.id)).limit(100);
     for (const row of rows) {
-      let receipt;
-      try { receipt = readRuntimeSkillPreservation(row); } catch { return true; }
-      if (!receipt) return true;
-      for (const asset of receipt.assets) {
-        try { manifestFiles(asset.bundle, asset.manifestText); } catch { return true; }
-        const key = `${row.companyId}:${asset.packageSnapshotId}`;
-        let snapshot = checkedPackages.get(key);
-        if (!snapshot) {
-          [snapshot] = await db.select({ hash: snapshots.contentHash, storage: snapshots.storage }).from(snapshots)
-            .where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, asset.packageSnapshotId)));
-          if (snapshot) checkedPackages.set(key, snapshot);
-        }
-        if (snapshot?.storage?.provider !== "s3" || snapshot.storage.durable !== true || snapshot.hash !== asset.packageContentHash) return true;
-      }
+      let receipt: RuntimeSkillPreservation | null;
+      try { receipt = readRuntimeSkillPreservation(row); } catch { receipt = null; }
+      let settled = receipt !== null;
+      for (const asset of receipt?.assets ?? []) if (settled) settled = await durable(row.companyId, asset);
+      if (!settled) yield { id: row.id, companyId: row.companyId };
     }
-    if (rows.length < 100) return false;
+    if (rows.length < 100) return;
     after = rows.at(-1)!.id;
   }
+}
+
+export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> {
+  for await (const _ of localRuntimeSkillObligations(db)) return true;
+  return false;
+}
+
+/** Copies every retained bundle this filesystem still holds into durable
+ * storage: the same copy the skill package maintenance command makes. A run
+ * whose bundle source is not here is reported as unsaved, never guessed at.
+ * Any other failure (a changed source, storage) propagates to the caller. */
+export async function preserveLocalRuntimeSkillObligations(db: Db, options: { signal?: AbortSignal } = {}, storage?: StorageService) {
+  let bundles = 0;
+  const unsaved: string[] = [];
+  await withSkillPackageReadScope(db, async () => {
+    for await (const run of localRuntimeSkillObligations(db)) {
+      options.signal?.throwIfAborted();
+      try {
+        const { preserved } = await preserveRuntimeSkillAssets(db, { companyId: run.companyId, runId: run.id, signal: options.signal }, storage);
+        if (preserved) bundles += preserved;
+        else unsaved.push(run.id);
+      } catch (error) {
+        if (!(error instanceof RuntimeSkillSourceAbsent)) throw error;
+        unsaved.push(run.id);
+      }
+    }
+  });
+  return { bundles, unsaved };
 }
 
 /** Existing bounded skill maintenance owns this optional online conversion;
@@ -231,9 +287,7 @@ export async function rehydratePreservedRuntimeSkill(db: Db, row: Parameters<typ
   if (!asset) throw new Error("runtime_skill_preservation_required");
   const files = manifestFiles(asset.bundle, asset.manifestText);
   const store = skillPackageStore(db);
-  const descriptor = await store.descriptor(row.companyId, asset.packageSnapshotId);
-  if (descriptor.storage?.provider !== "s3" || descriptor.storage.durable !== true
-    || descriptor.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+  if (!await preservedAssetDurable(store, row.companyId, asset, "metadata")) throw new Error("runtime_skill_package_not_durable");
   // An intact disposable cache remains useful during a storage outage. Only
   // use the current host's canonical cache, never the old host's recorded path.
   const local = { ...skill.bundle, rootPath: path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", skill.bundle.digest) };
@@ -242,7 +296,7 @@ export async function rehydratePreservedRuntimeSkill(db: Db, row: Parameters<typ
       const { expected, entries } = await readLocalManifest(local);
       return await verifyFileManifest(expected, entries.map(file => ({ ...file, executable: Boolean(file.mode & 0o111) })));
     } catch (error) {
-      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")
+      if (error instanceof RuntimeSkillSourceAbsent || missingPath(error)
         || error instanceof SyntaxError || (error instanceof Error && error.message.startsWith("runtime_skill_manifest_"))) return false;
       throw error;
     }

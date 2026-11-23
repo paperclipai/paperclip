@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { filterRunMessageInteractionDelivery, hasAutomaticInteractionDeliveryHold, preparedRunInteractionDeliveryDenied, recheckQueuedCommentInteractionDelivery,
   recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "./agent-interaction-delivery.js";
@@ -9,7 +9,7 @@ import { createHeartbeatQueue } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { recoveryService } from "./recovery/service.js";
-import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("pending agent interaction delivery", () => {
@@ -113,8 +113,7 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       const context = { issueId: f.issueId, wakeReason: reason, ...(assignmentFirst ? { wakeCommentId: messageId, wakeCommentIds: [messageId] } : {}) };
       const actorType = assignmentFirst ? "user" : "agent", actorId = assignmentFirst ? "human" : f.sender;
       const payload = withInteractionDeliveryOrigin({ issueId: f.issueId, _paperclipWakeContext: context }, actorType, actorId);
-      await db.transaction(tx => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
-        createAdmissionTransactionScope(f.companyId, tx as unknown as Db), {
+      await db.transaction(tx => createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
           companyId: f.companyId, agentId: f.recipient, activeExecutionRunId: f.run.id, activeExecutionRunStatus: "queued",
           mergedContextSnapshot: { ...context, wakeCommentId: messageId, wakeCommentIds: [messageId] },
           source: "assignment", triggerDetail: "system", payload, requestedByActorType: actorType,
@@ -317,14 +316,12 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     const f = await seed(); await wake(f);
     await restriction(f.recipient, { canReceiveAssignmentsFromAgents: false });
     const callbacks = createHeartbeatQueueTestDependencies(db);
-    callbacks.setRunStatus.mockImplementation(async (id, status, values) =>
-      (await db.update(heartbeatRuns).set({ ...values, status }).where(eq(heartbeatRuns.id, id)).returning())[0] ?? null);
     callbacks.setWakeupStatus.mockImplementation(async (id, status, values) => {
       if (id) await db.update(agentWakeupRequests).set({ ...values, status }).where(eq(agentWakeupRequests.id, id));
     });
     const queue = createHeartbeatQueue(db, callbacks);
     expect(await queue.claimQueuedRun(await readRun(f.run.id))).toBeNull();
-    expect(callbacks.setRunStatus).toHaveBeenCalledWith(f.run.id, "cancelled", expect.objectContaining({ errorCode: "agent_interaction_delivery_denied" }));
+    expect(callbacks.setRunStatusFromLive).toHaveBeenCalledWith(f.run.id, "cancelled", ["queued"], expect.objectContaining({ errorCode: "agent_interaction_delivery_denied" }));
     expect(callbacks.executeRun).not.toHaveBeenCalled();
     expect((await readRun(f.run.id)).status).toBe("cancelled");
     expect(callbacks.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),

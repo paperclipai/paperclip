@@ -394,6 +394,124 @@ fn ordinary_recovery_restores_a_completed_idle_session() {
 }
 
 #[test]
+fn a_fresh_runner_waits_for_run_attach_before_restoring_a_saved_session() {
+    let directory = temporary_directory("fresh-runner-attach");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_fresh_durable_state().unwrap();
+    assert_waits_for_run_attach(&mut executor, &directory);
+
+    let attached = executor
+        .execute(&command(
+            "attach",
+            2,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach the new run to the saved session");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Continue the saved conversation."}),
+        ))
+        .expect("start the new run's turn");
+    wait_for_executor_event(&mut executor, "turn.completed");
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn assert_waits_for_run_attach(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
+    assert!(poll_and_ack(executor).unwrap().is_empty());
+    executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .expect("a snapshot reads the saved session without restoring it");
+    let refused = executor
+        .execute(&command(
+            "early-turn",
+            1,
+            "turn.start",
+            json!({"text": "Start before attachment."}),
+        ))
+        .expect_err("a fresh runner must not start work before run.attach");
+    assert!(
+        refused
+            .to_string()
+            .contains("requires run.attach before commands from a new run"),
+        "unexpected refusal: {refused}"
+    );
+    assert_eq!(call_count(directory, "process-start"), 1);
+}
+
+#[test]
+fn a_fresh_runner_restarted_before_run_attach_still_waits_for_it() {
+    let directory = temporary_directory("fresh-runner-restart");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first.observe_fresh_durable_state().unwrap();
+    assert_waits_for_run_attach(&mut first, &directory);
+    drop(first);
+
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
+    let attached = restarted
+        .execute(&command(
+            "attach",
+            2,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach the new run after the restart");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    restarted.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_runner_lost_right_after_a_fresh_start_keeps_the_attach_wait() {
+    let directory = temporary_directory("fresh-runner-lost");
+    let (config, _) = dormant_source_fixture(&directory);
+    NativeProviderCommandExecutor::with_runner_config(&directory, &config)
+        .observe_fresh_durable_state()
+        .unwrap();
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
+    restarted.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_recovered_runner_restores_a_saved_session_before_run_attach() {
+    let directory = temporary_directory("recovered-runner-attach");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let snapshot = executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .expect("a recovered runner serves its own saved session");
+    assert_eq!(
+        snapshot.result["status"], "session_open",
+        "{}",
+        snapshot.result
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
     for fault in ["active", "goal"] {
         let directory = temporary_directory("dormant-live-recovery");
@@ -781,6 +899,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 
@@ -5850,6 +5969,176 @@ fn durable_backend_settles_tools_before_a_natural_terminal_event() {
     assert_eq!(late.result["status"], "settled_after_turn");
 
     executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn start_turn_with_pending_tool(executor: &mut CodexCommandExecutor, config: CodexProviderConfig) {
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Call the tool."}),
+        ))
+        .unwrap();
+}
+
+#[test]
+fn a_rejected_recorded_result_still_answers_the_provider_and_frees_the_session() {
+    // Chat-eval cohort 13: the controller recorded a REST-shaped result whose
+    // `{ ok, operationId }` the bridge reads as a mismatched semantic envelope.
+    // The rejected delivery left OpenCode waiting ~290 s and the call pending,
+    // so the next run's run.attach failed with durable_pending_tool_calls.
+    let directory = temporary_directory("rejected-recorded-result");
+    let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    start_turn_with_pending_tool(&mut executor, config);
+    let deadline = event_deadline();
+    let mut input_seen = false;
+    while !input_seen && std::time::Instant::now() < deadline {
+        input_seen = poll_and_ack(&mut executor)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "semantic_tool.input");
+    }
+    assert!(input_seen, "the provider requests its tool");
+
+    let rejected = json!({
+        "callId": "semantic-call-1", "operationId": "get_task_context", "isError": false,
+        "result": {"ok": true, "status": 200, "operationId": "GET /api/companies/{companyId}/workflows",
+            "contentType": "application/json; charset=utf-8", "data": []},
+    });
+    let delivered = executor
+        .execute(&command(
+            "result",
+            4,
+            "semantic_tool.result",
+            rejected.clone(),
+        ))
+        .expect("a recorded result must settle its call even when the bridge rejects it");
+    assert_eq!(delivered.result["status"], "delivered");
+    let mut observed = Vec::new();
+    let deadline = event_deadline();
+    while !observed.iter().any(|event: &PolledEvent| {
+        event.event_type == "turn.failed" || event.event_type == "turn.completed"
+    }) && std::time::Instant::now() < deadline
+    {
+        observed.extend(poll_and_ack(&mut executor).unwrap());
+    }
+    let diagnostic = delivered
+        .events
+        .iter()
+        .find(|(_, _, payload)| payload["code"] == "semantic_tool_result_undeliverable")
+        .map(|(_, _, payload)| payload)
+        .expect("the rejected delivery is named");
+    assert_eq!(diagnostic["callId"], "semantic-call-1");
+    assert!(diagnostic["reason"]
+        .as_str()
+        .unwrap()
+        .contains("envelope does not match"));
+    let settled = observed
+        .iter()
+        .find(|event| event.event_type == "semantic_tool.result")
+        .expect("the call has a recorded settlement");
+    assert_eq!(settled.payload["semantic_tool"]["outcome"], "failed");
+    let calls = fs::read_to_string(directory.join("calls.log")).unwrap();
+    assert!(
+        calls.contains("tool-response:failure"),
+        "the provider must receive an answer, not wait for its client timeout: {calls}"
+    );
+
+    // A crash before the command finished replays the same delivery.
+    let replay = executor
+        .execute(&command(
+            "result-replay",
+            5,
+            "semantic_tool.result",
+            rejected,
+        ))
+        .expect("an exact replay of the rejected delivery is a duplicate");
+    assert_eq!(replay.result["status"], "duplicate");
+
+    executor
+        .execute(&command(
+            "attach",
+            6,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("the next run attaches to the same session");
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn run_attach_expires_a_call_left_pending_by_a_closed_turn() {
+    // The provider stopped waiting when its turn ended, and the next run's
+    // controller never delivers the old run's result. Attachment records the
+    // call as expired instead of refusing every later run.
+    let directory = temporary_directory("closed-turn-pending-attach");
+    let config = provider_config(
+        &directory,
+        &[
+            "--require-dynamic-tool",
+            "--emit-tool-call",
+            "--finish-turn-with-pending-tool",
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    start_turn_with_pending_tool(&mut first, config);
+    let mut observed = Vec::new();
+    let deadline = event_deadline();
+    while !observed.iter().any(|event| event == "turn.completed")
+        && std::time::Instant::now() < deadline
+    {
+        observed.extend(
+            poll_and_ack(&mut first)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_type),
+        );
+    }
+    assert!(observed.iter().any(|event| event == "semantic_tool.input"));
+    assert!(!observed.iter().any(|event| event == "semantic_tool.result"));
+    // A deploy lands here: the next Runner restores this saved state.
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut resumed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let attached = resumed
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("a call left by a closed turn must not block the next run");
+    let expired = attached
+        .events
+        .iter()
+        .find(|(event_type, _, payload)| {
+            event_type == "harness.diagnostic" && payload["code"] == "semantic_tool_result_expired"
+        })
+        .map(|(_, _, payload)| payload.clone())
+        .expect("the expired call is named");
+    assert_eq!(
+        expired["calls"],
+        json!([{"callId": "semantic-call-1", "operationId": "get_task_context"}])
+    );
+    resumed.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 

@@ -369,8 +369,7 @@ refuses any archive whose manifest names an absolute or escaping link. Omitting
 a tracked link shows as a deletion in `git status` after restore.
 
 Saves that recovery exhausted before this policy (capture policy version 1) are
-retried once automatically; see the capture-policy re-arm in
-`doc/execution-semantics.md`.
+retried once automatically.
 
 ## Automatic unsafe archive recovery
 
@@ -455,6 +454,10 @@ delay that sweep until the claim expires. Neither an unconfirmed stop nor a
 stale receipt grants admission, and a changed lease or competing sandbox owner
 prevents cleanup from taking ownership. Retry export after the lease has a new
 confirmed stopped receipt. No provider turn is created by this recovery.
+Once recovery has saved the files and queued destruction of the stopped sandbox,
+the cleanup worker admits its first attempt without the five-minute retry delay.
+The shared worker spacing and any in-flight claim deadline still apply. A failed
+first attempt keeps the existing retry delay, attempt limit and ownership checks.
 Cleanup and its readiness probe use the plugin ID recorded on that lease. Another
 plugin with the same provider name cannot take over; an unavailable original
 plugin defers cleanup without consuming an attempt. Stop-only cleanup requires the exact plugin worker to advertise `environmentStopLease`. Older plugins without that hook receive neither release nor destroy; resume admission also defers until safe compensation is available.
@@ -573,11 +576,15 @@ receipts fail closed. Older sessions without a receipt retain the strict current
 release gate; a sandbox's own manifest cannot supply missing launch authority.
 
 Remote provider-pack verification retries an interrupted read at most once.
+The retry waits one second so a fast gateway failure has time to recover.
 Each command retains its 30-second transport timeout. A timeout, signal, absent
 exit status, or transport exception does not prove artifact incompatibility.
-Two inconclusive attempts hold the original run with
-`runner_remote_provider_verification_unavailable`. Reattachment does not spend
-a new provider attempt, so it cannot renew this exhausted read budget. A
+Two inconclusive attempts on a fresh launch prove that no provider session
+started, so the same run retries its startup with backoff within its provider
+attempt budget. On any other attempt, two inconclusive attempts hold the
+original run with `runner_remote_provider_verification_unavailable`.
+Reattachment does not spend a new provider attempt, so it cannot renew this
+exhausted read budget. A
 completed nonzero verification, digest mismatch, or
 wrong OpenCode version remains incompatible and cannot authorize a new provider
 turn. Recovery retains the exact source workspace and existing ownership gates;

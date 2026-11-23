@@ -202,3 +202,38 @@ when that evidence is missing, an administrator manages their privacy.
 ### Task privacy management hints
 
 `GET /api/issues/:id/privacy-constraints` is available only to a principal who can read and manage that task. It returns the blocked scope kind and whether publishing leaves a personal project. It does not return protected parent or project names, identifiers, owners, or contents. This lets task owners manage their task without requiring access to its surrounding project. Visibility writes still enforce the canonical rules under the privacy-tree lock; these hints do not authorize a write.
+
+## Rollout switch and run-history reads
+
+`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the canonical opt-in issue/project privacy predicate:
+
+- `enforce` (default): return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
+- `shadow`: log structured would-deny decisions but preserve existing reads; use only for rollout diagnosis
+- `off`: skip the predicate and shadow logging
+
+Grant checks read current database state; there is no positive privacy cache.
+
+A run-history list is one read operation. It checks each distinct company,
+run scope, and task binding once, then applies that decision to the related
+rows in the same response. Every new list operation reads permissions again.
+
+Sharing a task grants access to that task and its private descendants. Parents
+and siblings need separate grants. An agent's access is intersected with its
+run's responsible user's current access.
+
+`enforce` is the production default. `shadow` and `off` disclose private data and
+are only temporary diagnostic overrides. The old branch's historical sign-off
+does not qualify the current runtime. See the sections above
+for the model, validation coverage, break-glass behavior, and residual risks.
+
+Issue-bound heartbeat runs inherit the same read predicate through the stored
+`heartbeat_runs.scope_kind = 'issue'` and `issue_id` binding. Issue deletion
+nulls the foreign key but preserves the explicit issue scope as a fail-closed
+tombstone. Workspace-operation history is either deleted with its direct issue
+or run binding, or remains bound to that fail-closed run tombstone, so it cannot
+become company-level maintenance data through foreign-key nulling. In enforce mode, direct run detail, transcript,
+event, log, and workspace-operation reads return `404` to non-members. Company
+run-history and live-run lists retain a metadata-only row with timing, status,
+token usage, and cost for budget oversight; issue identifiers, summaries, and
+run content are omitted. Runs without an issue binding keep company-level
+maintenance-run visibility.

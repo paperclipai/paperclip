@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { runTaskContextColumn } from "./run-task-binding.js";
 import {
   agentWakeupRequests,
@@ -197,6 +197,7 @@ export async function readChatControlRecoveryStop(
         nativeIssueId: heartbeatRuns.nativeIssueId,
         wakeupRequestId: heartbeatRuns.wakeupRequestId,
         retryOfRunId: heartbeatRuns.retryOfRunId,
+        createdAt: heartbeatRuns.createdAt,
         contextSnapshot: runTaskContextColumn,
       })
       .from(heartbeatRuns)
@@ -287,8 +288,29 @@ export async function readChatControlRecoveryStop(
             wake.reason ?? "",
           ));
       if (!automatic) return { kind: "clear" };
-      if (!id(run.retryOfRunId)) return { kind: "unresolved" };
-      runId = run.retryOfRunId;
+      if (id(run.retryOfRunId)) {
+        runId = run.retryOfRunId;
+        continue;
+      }
+      const [previous] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, scope.companyId),
+            ne(heartbeatRuns.id, run.id),
+            lt(heartbeatRuns.createdAt, run.createdAt),
+            or(
+              eq(heartbeatRuns.issueId, scope.issueId),
+              eq(heartbeatRuns.nativeIssueId, scope.issueId),
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${scope.issueId}`,
+            ),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1);
+      if (!previous) return { kind: "clear" };
+      runId = previous.id;
       continue;
     }
     const payload = record(action.payload);

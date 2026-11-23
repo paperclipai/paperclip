@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { act } from "react";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { describe, expect, it, vi } from "vitest";
@@ -874,14 +875,14 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
   });
   it.each([false, true])("keeps other native setup links gated when the experiment is disabled (cloud=%s)", async (cloud) => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud, availableHarnesses: cloud ? sampleHarnesses : undefined } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     await render("paperclip_runner", "grok");
     expect(container.textContent).toContain("This adapter is unavailable");
     expect(api.hire).not.toHaveBeenCalled();
   });
   it.each([false, true])("restores native Claude setup intent and its connection flow with experiment=false (cloud=%s)", async cloud => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud, availableHarnesses: cloud ? sampleHarnesses : undefined } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     await render("paperclip_runner", "claude");
     expect(container.textContent).not.toContain("This adapter is unavailable");
@@ -894,7 +895,7 @@ describe("New agent setup", () => {
   it("blocks direct setup links for unsupported Cloud adapters", async () => {
     cache.setQueryData(queryKeys.health, {
       status: "ok",
-      cloud: { managed: true },
+      cloud: { managed: true, availableHarnesses: sampleHarnesses },
     });
     await render("pi_local");
     expect(container.textContent).toContain("This adapter is unavailable");
@@ -906,7 +907,7 @@ describe("New agent setup", () => {
   ])("configures %s Grok on Cloud with an xAI %s connection", async (adapterType, method) => {
     cache.setQueryData(queryKeys.health, {
       status: "ok",
-      cloud: { managed: true },
+      cloud: { managed: true, availableHarnesses: sampleHarnesses },
     });
     envApi.list.mockResolvedValue([
       { id: "sandbox-1", name: "Paperclip Cloud", driver: "sandbox", config: { provider: "daytona" } },

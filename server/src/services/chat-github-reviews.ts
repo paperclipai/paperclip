@@ -16,7 +16,7 @@ import { githubReviewSummary } from "./chat-channels/github/review-heading.js";
 import { githubPublicationRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 import { createHash } from "node:crypto";
 import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
-import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   toolInvocations,
@@ -43,12 +43,13 @@ import {
 } from "@paperclipai/shared";
 import { HttpError, conflict, forbidden, notFound } from "../errors.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import {
   effectiveGitHubReviewPolicy,
+  githubCompleteCoverageGap,
   githubReviewConclusion,
   githubReviewPathIsExcluded,
   githubReviewLineIsInPatch,
@@ -316,7 +317,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     source: Awaited<ReturnType<typeof scope>>,
     requestFetch = fetchImpl,
   ) {
-    const token = await githubBotRepositoryToken(
+    const github = await githubBotRepositoryClient(
       db,
       source.endpoint.companyId,
       source.endpoint.id,
@@ -330,8 +331,48 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         path: string,
         options?: Parameters<typeof githubBotRequest>[3],
       ) =>
-        githubBotRequest<T>(requestFetch, token, `${prefix}${path}`, options),
+        github<T>(`${prefix}${path}`, options),
     };
+  }
+  async function supersededAutomaticReview(
+    source: Awaited<ReturnType<typeof scope>>,
+    requestedCommit: string,
+    currentCommit: string,
+  ) {
+    const [newer] = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.companyId, source.endpoint.companyId),
+          eq(chatDeliveries.endpointId, source.endpoint.id),
+          or(
+            eq(chatDeliveries.conversationId, source.conversation.id),
+            isNull(chatDeliveries.conversationId),
+          ),
+          gt(chatDeliveries.createdAt, source.delivery.createdAt),
+          inArray(chatDeliveries.state, ["received", "processing", "processed", "retry"]),
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'repositoryId' = ${source.repositoryId}`,
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'pullNumber' = ${String(source.number)}`,
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'headSha' = ${currentCommit}`,
+        ),
+      )
+      .limit(1);
+    const next = newer
+      ? "a newer automatic review for that commit is already queued on this task"
+      : "no newer automatic review is queued for it. An authorized person can request a manual review";
+    return conflict(
+      `This automatic review was requested for an older pull request head (${requestedCommit.slice(0, 7)}). ` +
+        `The pull request now points to ${currentCommit.slice(0, 7)}, and ${next}. ` +
+        "Stop this review: do not call review tools again and do not post the review as an ordinary comment.",
+      {
+        reasonCode: "github_review_superseded",
+        retryable: false,
+        requestedCommit,
+        currentCommit,
+        newerReviewQueued: !!newer,
+      },
+    );
   }
   async function reviewForHead(
     source: Awaited<ReturnType<typeof scope>>,
@@ -632,9 +673,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     const automatic = source.delivery.normalizedEvent.githubAutomatic as
       { context: GitHubReviewEventContext } | undefined;
     if (automatic && automatic.context.headSha !== pull.head.sha)
-      throw conflict(
-        "This automatic review was requested for an older pull request head. Continue with the newest authorized PR event or an authorized manual request.",
-      );
+      throw await supersededAutomaticReview(source, automatic.context.headSha, pull.head.sha);
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {
@@ -832,17 +871,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         throw conflict(
           "Assessment coverage and findings must refer to this PR's allowed changed files",
         );
-      if (
-        assessment.complete &&
-        (assessment.coverage.omittedPaths.some((path) => paths.has(path)) ||
-          permittedFiles.some(
-            (file) =>
-              !assessment.coverage.reviewedPaths.includes(file.filename),
-          ))
-      )
-        throw conflict(
-          "A complete assessment must cover every non-excluded changed file",
-        );
+      const coverageGap = assessment.complete
+        ? githubCompleteCoverageGap(
+            permittedFiles.map((file) => file.filename),
+            assessment.coverage,
+          )
+        : null;
+      if (coverageGap) throw conflict(coverageGap);
       // Commit the immutable assessment and its publication together. A restart
       // must never leave a stored result with no durable publication intent.
       const actionId = await db.transaction(async (tx) => {

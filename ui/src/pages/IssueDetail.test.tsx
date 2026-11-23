@@ -1,6 +1,7 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
+import { LEGACY_WITHHELD_RUN_COMMENT } from "@/lib/run-answer-visibility";
 import type { Breadcrumb } from "../context/BreadcrumbContext";
 
 import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
@@ -40,6 +41,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { TaskCancellationProvider } from "../context/TaskCancellationContext";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
@@ -51,7 +53,7 @@ import {
   readIssueDetailBreadcrumb,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
+import { getRecentTasksStorageKey, readRecentTasks, recordRecentTask } from "../lib/recent-tasks";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
@@ -60,6 +62,8 @@ import type { issuesApi } from "../api/issues";
 // persistence have their own hook tests; keep their readiness explicit here.
 const coordinatorPreference = vi.hoisted(() => ({ enabled: false, loaded: true }));
 const inlineEditorFixture = vi.hoisted(() => ({ real: false }));
+// Reads deferred until the page settles start at once in these tests.
+vi.mock("@/hooks/usePageSettled", () => ({ usePageSettled: () => true, PAGE_SETTLED_MAX_WAIT_MS: 0 }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => coordinatorPreference,
 }));
@@ -1532,6 +1536,7 @@ describe("IssueDetail", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await act(async () => {
       root.unmount();
     });
@@ -2090,7 +2095,39 @@ describe("IssueDetail", () => {
 
   });
 
-  it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
+  it("uses task breadcrumbs for a conversation's unnumbered backing task", async () => {
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const task = createIssue({
+      id: "12345678-1234-4abc-8abc-0123456789ab",
+      identifier: null,
+      issueNumber: null,
+      title: "Chat with Demo Planner",
+      status: "in_review",
+      conversationAgentId: agent.id,
+      conversationUserId: "user-1",
+    });
+    mockRouteParams.issueId = task.id;
+    mockLocation.pathname = `/PAP/issues/${task.id}`;
+    mockIssuesApi.get.mockResolvedValue(task);
+    mockAgentsApi.list.mockResolvedValue([agent]);
+
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(queryClient.getQueryData(queryKeys.agents.list(task.companyId))).toEqual([agent]));
+    await flushReact();
+
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      expect.objectContaining({
+        label: task.title,
+        identifier: "12345678",
+        leading: expect.objectContaining({ props: expect.objectContaining({ status: "in_review" }) }),
+      }),
+    ]);
+  });
+
+  it.each(["message", "attachment", "plain HTTP message"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
+    if (kind === "plain HTTP message") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     mockIssuesApi.markRead.mockClear();
     const agent = createAgent();
     const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
@@ -2108,7 +2145,7 @@ describe("IssueDetail", () => {
       onAdd: (body: string) => Promise<void>;
       onAttachImage: (file: File) => Promise<IssueAttachment>;
     };
-    if (kind === "message") {
+    if (kind !== "attachment") {
       await act(async () => { await props.onAdd("Clarify this goal"); });
       expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Clarify this goal", undefined, undefined, undefined, expect.any(String));
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments(canonical.id) });
@@ -2416,6 +2453,29 @@ describe("IssueDetail", () => {
       expect(props?.linkedRuns).toMatchObject([next, latest, older]);
       expect(props?.historyControl).toBeNull();
       expect(props?.compactHistory).toBe(false);
+    });
+  });
+
+  it.each([
+    { status: "succeeded", answered: true, disclosed: false },
+    { status: "succeeded", answered: false, disclosed: true },
+    { status: "failed", answered: true, disclosed: true },
+    { status: "succeeded", answered: true, disclosed: true, body: LEGACY_WITHHELD_RUN_COMMENT },
+  ])("discloses an omitted $status run only when its answer is not visible (answered: $answered)", async ({ status, answered, disclosed, body = "Earlier answer" }) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const latest = { runId: "latest", status: "succeeded", agentId: "agent-1", createdAt: new Date().toISOString() };
+    const older = { ...latest, runId: "older", status };
+    const answer = createIssueComment({ id: "answer", authorType: "agent", authorAgentId: "agent-1", authorUserId: null,
+      body, createdByRunId: answered ? "older" : "unrelated" });
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [answer], latestCommentId: answer.id, hasMore: false });
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([latest, older]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.linkedRuns).toMatchObject([latest]);
+      expect(props?.comments).toMatchObject([{ id: "answer" }]);
+      expect(Boolean(props?.historyControl)).toBe(disclosed);
     });
   });
 
@@ -3141,7 +3201,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("uses task activity for recency and ignores passive revisits", async () => {
+  it.each(["first open", "reopen"])("moves the task to the top on %s and keeps snapshot refreshes from changing the order", async (visit) => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3151,6 +3211,10 @@ describe("IssueDetail", () => {
       status: "todo",
       updatedAt: new Date(100),
     });
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    const other = createIssue({ id: "other-task" });
+    if (visit === "reopen") recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(other, "user-1", 20);
     mockAuthApi.getSession.mockReturnValue(authRequest.promise);
     mockIssuesApi.get.mockResolvedValue(issue);
 
@@ -3172,19 +3236,12 @@ describe("IssueDetail", () => {
     });
     await waitForAssertion(() => {
       expect(
-        readRecentTasks(
-          getRecentTasksStorageKey("company-1", "user-1"),
-          "company-1",
-        ),
-      ).toEqual([
-        expect.objectContaining({
-          id: "issue-1",
-          title: "Initial recent title",
-          status: "todo",
-          recordedAt: 100,
-        }),
-      ]);
+        readRecentTasks(storageKey, "company-1").map((task) => task.id),
+      ).toEqual([issue.id, other.id]);
     });
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    expect(openedAt).toBeGreaterThan(20);
+    await act(async () => recordRecentTask(other, "user-1", openedAt + 1));
 
     act(() => {
       queryClient.setQueryData(queryKeys.issues.detail("PAP-1"), {
@@ -3196,16 +3253,45 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", "user-1"),
-        "company-1",
-      )[0],
-    ).toMatchObject({
-      title: "Snapshot refresh title",
-      status: "in_progress",
-      recordedAt: 200,
+    expect(readRecentTasks(storageKey, "company-1")).toMatchObject([
+      { id: other.id },
+      { id: issue.id, title: "Snapshot refresh title", status: "in_progress", recordedAt: openedAt },
+    ]);
+  });
+
+  it.each(["reassignment", "run settings"])("advances recency only after a comment with %s saves", async (mode) => {
+    const issue = createIssue({ updatedAt: new Date(10) });
+    const save = createDeferred<Issue & { comment: IssueComment }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getCore.mockResolvedValue(issue);
+    mockIssuesApi.update.mockReturnValue(save.promise);
+    recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", 20);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    await waitForAssertion(() => expect(entries()[0]?.id).toBe(issue.id));
+    const openedAt = entries()[0]!.recordedAt;
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", openedAt + 1);
+    const comment = createIssueComment({ createdAt: new Date(openedAt + 2) });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = props.onAdd(comment.body, false,
+        mode === "reassignment" ? { assigneeAgentId: "agent-1", assigneeUserId: null } : undefined,
+        undefined, "recency-comment",
+        mode === "run settings" ? { model: "gpt-6-astra", effort: "high", fast: false } : undefined);
     });
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalled());
+    expect(entries().map(entry => entry.id)).toEqual(["newer-work", issue.id]);
+    await act(async () => {
+      save.resolve({ ...issue, updatedAt: new Date(15), comment });
+      await pending;
+    });
+    expect(entries().map(entry => entry.id)).toEqual([issue.id, "newer-work"]);
+    expect(entries()[0]?.recordedAt).toBe(openedAt + 2);
   });
 
   it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {
@@ -3353,6 +3439,46 @@ describe("IssueDetail", () => {
       state: { from: "inbox", taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname: "/PAP/issues/PAP-1" } },
     });
     expect(mockIssuesApi.get).toHaveBeenCalledTimes(getCalls);
+  });
+
+  it.each([
+    ["issue-1", "#document-plan&revision=saved-revision"],
+    ["PAP-2", "#document-plan&revision=saved-revision&documentIssue=PAP-2"],
+  ])("opens the saved plan from %s in the current agent chat", async (sourceTask, hash) => {
+    const pathname = "/PAP/chats/codex";
+    mockLocation.pathname = pathname;
+    mockPanelState.panelVisible = false;
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const issue = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    const conversation = { agent, issue, ensureIssue: async () => issue };
+    const renderChat = () => renderIssueView(<TaskDetailSurface conversation={conversation} />);
+    await act(async () => renderChat());
+    await waitForAssertion(() => expect(mockOpenPanel).toHaveBeenCalled());
+
+    const link = document.createElement("a");
+    link.href = `/PAP/issues/${sourceTask}#document-plan&revision=saved-revision`;
+    link.dataset.sidebarDocumentLink = "true";
+    container.appendChild(link);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.addEventListener("click", (click) => click.preventDefault(), { once: true });
+    await act(async () => { link.dispatchEvent(event); });
+    expect(mockNavigate).toHaveBeenCalledWith(`${pathname}${hash}`, {
+      preventScrollReset: true,
+      state: { taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname } },
+    });
+
+    mockLocation.hash = hash;
+    await act(async () => renderChat());
+    await waitForAssertion(() => {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children.props).toMatchObject({
+        documentDeepLink: { documentKey: "plan", tab: "document" },
+        showDocumentSourceTask: true,
+      });
+    });
+    expect(mockLocation.pathname).toBe(pathname);
   });
 
   it.each(["modifier", "new-tab", "download"])("preserves native document-link behavior for %s", async (kind) => {
@@ -5612,6 +5738,42 @@ describe("IssueDetail", () => {
     expect(props().queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual([waiting.id]);
   });
 
+  it("keeps a message the running turn already took out of the queue after the live queue closes", async () => {
+    // Posted while the run was still starting; its first turn took it.
+    const taken = createIssueComment({ id: "first-turn-message", body: "Include the word PINEAPPLE" });
+    const run = {
+      id: "run-native", runtimeMode: "native" as const, status: "running",
+      invocationSource: "issue", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:01.000Z", finishedAt: null,
+      createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
+      agentName: "Runner", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: run.id }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(run);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([run]);
+    mockIssuesApi.listComments.mockResolvedValue([taken]);
+    // The deferred wake has retired, so the live queue no longer lists it.
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, entries: [],
+    }));
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: run.id, agentId: "agent-1", adapterType: "paperclip_runner",
+      status: "running", startedAt: run.startedAt, finishedAt: null,
+      createdAt: run.createdAt, wakeCommentIds: null, firstTurnCommentIds: [taken.id],
+      wakeupRequestId: "wake-start", contextIssueId: "issue-1",
+    }]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+      expect(props.queuedCommentQueue?.entries ?? []).toEqual([]);
+      const comment = props.comments.find((comment: IssueComment) => comment.id === taken.id);
+      expect(comment).toMatchObject({ consumedByRunId: run.id });
+      expect(comment?.queueState).toBeUndefined();
+    });
+  });
+
   it("keeps an admitted message pending until its queued run starts", async () => {
     const queued = createIssueComment({ id: "not-started" });
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-queued" }));
@@ -5834,7 +5996,9 @@ describe("IssueDetail", () => {
     expect(optimisticComment).toMatchObject({ clientStatus: "pending" });
     expect(optimisticComment?.queueState).toBeUndefined();
 
-    const postedAt = new Date("2026-04-21T00:00:10.000Z");
+    const storageKey = getRecentTasksStorageKey("company-1", null);
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    const postedAt = new Date(openedAt + 10_000);
     await act(async () => {
       postedComment.resolve(
         createIssueComment({
@@ -5846,12 +6010,7 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", null),
-        "company-1",
-      )[0],
-    ).toMatchObject({
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({
       id: "issue-1",
       recordedAt: postedAt.getTime(),
     });
@@ -6508,6 +6667,36 @@ describe("IssueDetail", () => {
     );
   });
 
+  it.each(["Cancel task only", "Cancel task and subtasks"])("waits for the subtask choice before Stop and cancel: %s", async (choice) => {
+    const parent = createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" });
+    const child = createIssue({ id: "child-1", identifier: "PAP-2", title: "Active child", status: "todo", parentId: parent.id });
+    mockHeartbeatsApi.cancel.mockClear().mockResolvedValue(undefined);
+    mockIssuesApi.get.mockResolvedValue(parent);
+    mockIssuesApi.getCore.mockImplementation(async id => id === child.id ? child : parent);
+    mockIssuesApi.listAll.mockResolvedValue([child]);
+    mockIssuesApi.update.mockImplementation(async (id, data) => ({ ...(id === child.id ? child : parent), status: data.status }));
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    await act(async () => renderIssueView(<TaskCancellationProvider><IssueDetail /></TaskCancellationProvider>));
+    await flushReact();
+    const stop = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Stop and cancel");
+    expect(stop).toBeTruthy();
+    await act(async () => stop!.click());
+    await flushReact();
+    const dialog = container.querySelector('[data-slot="dialog-content"]')!;
+    expect(dialog.textContent).toContain("Cancel 1 active subtask?");
+    expect(dialog.textContent).toContain(child.title);
+    expect(dialog.querySelector("a")).toBeNull();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    const confirm = Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === choice)!;
+    await act(async () => confirm.click());
+    await flushReact();
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledExactlyOnceWith("run-active-1");
+    expect(mockIssuesApi.update.mock.calls.map(call => call[0])).toEqual(choice === "Cancel task only" ? ["PAP-1"] : ["PAP-1", child.id]);
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[0]).toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[0]!);
+  });
+
   it("reports partial success when run finalization stops the run but task status update fails", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
@@ -6751,6 +6940,17 @@ describe("IssueDetail", () => {
         delete window.isSecureContext;
       }
     }
+  });
+
+  it.each([false, true])("marks only desktop-width classic chat pages for keyboard viewport sizing (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector('[data-classic-task-shell]') !== null).toBe(!isMobile);
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {

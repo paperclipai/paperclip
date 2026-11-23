@@ -232,4 +232,10 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
     expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
+  it("does not continue a run that filled its sandbox disk", () => {
+    const run = { errorCode: "sandbox_disk_full",
+      error: "internal server error: failed to create session config directory: mkdir /home/daytona/.daytona/sessions/x: no space left on device",
+      resultJson: null };
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
 });

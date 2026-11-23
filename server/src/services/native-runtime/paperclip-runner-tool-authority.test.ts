@@ -2,12 +2,14 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { RESPONSIBILITY_TOOL_NAMES } from "../responsibility-tools.js";
 import { createServer } from "node:http";
 import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   authUsers,
   approvals,
@@ -30,6 +32,8 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { TOOL_CALL_LOOP_HINT, ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { cancelStoppedRunContinuation } from "./native-tool-receipt-limit.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
@@ -187,6 +191,19 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.delete(agents).where(eq(agents.id, claudeId));
   });
 
+  it("advertises the responsibility tools only while the instance has them on", async () => {
+    const tools = [...RESPONSIBILITY_TOOL_NAMES];
+    const off = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    expect(off.definitions().map(tool => tool.name)).not.toEqual(expect.arrayContaining([tools[0]]));
+    // A hidden tool called by name says the feature is off, so the agent does not report an empty list.
+    await expect(off.execute({ tool: "list_responsibilities", callId: randomUUID(), arguments: {} }))
+      .rejects.toThrow("Areas and responsibilities are turned off");
+
+    const on = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, responsibilitiesEnabled: true });
+    expect(on.definitions()).toHaveLength(off.definitions().length + tools.length);
+    expect(on.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining(tools));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -194,10 +211,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(54);
+    expect(authority.definitions()).toHaveLength(57);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
-      "search_skills", "load_skill",
+      "search_skills", "load_skill", "list_routines", "update_routine", "update_skill_details",
     ]));
     // The read-only response export is its own tool, so call_api offers no save flag on writes.
     const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
@@ -1098,9 +1115,10 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("relays assigned MCP calls only while the native run still owns its task", async () => {
     const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
     const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
+    const close = vi.fn();
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId, agentId, issueId, runId,
-      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute },
+      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute, close },
     });
     expect(authority.definitions()).toContainEqual(tool);
     const call = { tool: tool.name, callId: "assigned-mcp", arguments: { query: "compass" } };
@@ -1121,6 +1139,9 @@ describe("PaperclipRunnerToolAuthority", () => {
     } finally {
       await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
     }
+    expect(close).not.toHaveBeenCalled();
+    authority.close();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("does not advertise delegation tools during pre-acceptance planning", () => {
@@ -1604,6 +1625,79 @@ describe("PaperclipRunnerToolAuthority", () => {
 
     await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
       .rejects.toThrow(/conversation cannot be a parent/i);
+  });
+
+  it.each([
+    ["the assignee", null],
+    ["a completion reviewer", { nativeReviewInteractionId: "7f0b4f3e-2c1d-4a5b-8c6d-0e1f2a3b4c5d", nativeReviewDecisionId: "8a1c5e4f-3d2e-4b6c-9d7e-1f2a3b4c5d6e" }],
+  ] as const)("queues one fresh-session continuation outbox for %s stopped by a tool-call loop", async (_who, nativeReview) => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId, workMode: "standard", ...(nativeReview ? { nativeReview } : {}),
+    });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId", "pathParams"], 400, "refused");
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      agentId, status: "queued", runId: null, requestedByActorType: "system", requestedByActorId: "native-status-committer",
+      reason: nativeReview ? "native_completion_review" : "issue_continuation_needed",
+      payload: {
+        issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop", tool: "call_api", argumentNames: ["operationId", "pathParams"],
+        ...(nativeReview ?? {}),
+        _paperclipWakeContext: { issueId, forceFreshSession: true, livenessContinuationSourceRunId: runId,
+          livenessContinuationReason: "agent_tool_call_loop", livenessContinuationInstruction: TOOL_CALL_LOOP_HINT, ...(nativeReview ?? {}) },
+      },
+    });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+  });
+
+  it("queues no tool-call loop continuation for a run a person stopped, and cancels one queued before the Stop", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId"], 400, "refused");
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const stopped = { ...before!, resultJson: { ...before!.resultJson, cancelledByActorType: "user", cancelledByUserId: "board-user" } };
+    await db.update(heartbeatRuns).set({ resultJson: stopped.resultJson }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(cancelStoppedRunContinuation(db, stopped, key)).resolves.toBe(1);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key)))
+        .map(row => row.status)).toEqual(["cancelled"]);
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+      await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(0);
+    } finally {
+      await db.update(heartbeatRuns).set({ resultJson: before!.resultJson }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    }
+  });
+
+  it("orders the loop continuation's locks task first, like Stop, so a concurrent Stop wins without a deadlock", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId"], 400, "refused");
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    let holdingTask!: () => void;
+    const taskLocked = new Promise<void>(resolve => { holdingTask = resolve; });
+    try {
+      const stop = db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        holdingTask();
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await tx.update(heartbeatRuns).set({ resultJson: { ...before!.resultJson, cancelledByActorType: "user", cancelledByUserId: "board-user" } })
+          .where(eq(heartbeatRuns.id, runId));
+      });
+      await taskLocked;
+      const scheduled = authority.scheduleToolCallLoopContinuation(loop);
+      await expect(stop).resolves.toBeUndefined();
+      await expect(scheduled).resolves.toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(0);
+    } finally {
+      await db.update(heartbeatRuns).set({ resultJson: before!.resultJson }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    }
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {

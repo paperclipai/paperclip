@@ -1,3 +1,5 @@
+import { dashboardConversationCondition, dashboardConversationReadable } from "./responsibility-privacy.js";
+import { readOncePerRequest } from "./authorization-read-scope.js";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentInteractionDenial, type AgentInteractionDenial, type AgentInteractionOperation } from "./agent-interaction-policy.js";
@@ -171,6 +173,7 @@ export type AuthorizationDecision = {
     | "deny_agent_interaction"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
+    | "deny_dashboard_conversation_private"
     | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
@@ -188,6 +191,54 @@ type PrincipalGrantDecision = AuthorizationDecision & {
 
 function companyIdForResource(resource: AuthorizationResource) {
   return resource.companyId;
+}
+
+function plainAuthorizationActionPhrase(action: AuthorizationAction): string {
+  switch (action) {
+    case "tasks:assign": return "assign this task";
+    case "issue:mutate": return "change this task";
+    case "issue:comment": return "comment on this task";
+    case "issue:read": return "view this task";
+    case "agent_config:read": return "view this agent's settings";
+    case "agent_config:update": return "change this agent's settings";
+    case "agent_instructions:update": return "change this agent's instructions";
+    case "skill_config:update": return "change skills";
+    case "secrets:read": return "read secrets";
+    case "secrets:propose": return "propose secrets";
+    case "project:read": return "view this project";
+    case "project:write_workspace": return "change this project's workspace";
+    default: return "do this";
+  }
+}
+
+const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+
+type AuthorizationDenialReason = Exclude<AuthorizationDecision["reason"], `allow_${string}`>;
+
+const PLAIN_DELEGATED_USER_DENIALS: Record<AuthorizationDenialReason, (subject: string, action: string) => string> = {
+  deny_missing_membership: (subject) => `${subject} is no longer an active member of this company.`,
+  deny_company_boundary: (subject) => `${subject} cannot act in this company.`,
+  deny_unauthenticated: (subject) => `Paperclip could not confirm who ${lowerFirst(subject)} is.`,
+  deny_missing_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_no_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_scope: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_unsupported_action: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_missing_consent: (subject) => `${subject} can propose this change, but it needs approval before it is applied.`,
+  deny_policy_restricted: (subject, action) => `This company's access policy does not let ${lowerFirst(subject)} ${action}.`,
+  deny_low_trust_boundary: (subject, action) => `This company's limits for this agent do not let ${lowerFirst(subject)} ${action}.`,
+  deny_agent_interaction: (_subject, action) => `Agents are not allowed to ${action} in this company; a person who manages permissions can change this.`,
+  deny_issue_private: (subject) => `${subject} cannot see this private task.`,
+  deny_dashboard_conversation_private: (subject) => `${subject} cannot see this personal dashboard conversation.`,
+  deny_project_private: (subject) => `${subject} cannot see this private project.`,
+  inbox_target_user_unresolved: () => "Paperclip could not tell whose inbox this is.",
+  inbox_management_disabled: () => "This person has turned off agent management of their inbox.",
+  inbox_agent_not_allowed: () => "This agent is not on the list of agents this person allows to manage their inbox.",
+};
+
+export function plainDelegatedUserDenial(subject: string, decision: Pick<AuthorizationDecision, "reason">, action: AuthorizationAction): string {
+  const phrase = plainAuthorizationActionPhrase(action);
+  const explain = decision.reason.startsWith("allow_") ? null : PLAIN_DELEGATED_USER_DENIALS[decision.reason as AuthorizationDenialReason];
+  return explain ? explain(subject, phrase) : `${subject} does not have permission to ${phrase}.`;
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
@@ -631,7 +682,12 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
     where p.id = n.project_id and p.company_id = n.company_id and p.visibility = 'private'
       and m.subject_type = ${principal.type} and m.subject_id = ${principal.id}
   )` : sql`false`;
-  return sql<boolean>`exists (
+  // A standalone open task without a project has no restricted ancestor.
+  // Keep the recursive predicate for every other shape, including inherited
+  // privacy and delegated principals. This avoids one recursive walk per row
+  // in large readable-child aggregates.
+  return sql<boolean>`((${issues.visibility} = 'open'
+    and ${issues.privacyParentIssueId} is null and ${issues.projectId} is null) or exists (
     with recursive privacy_ancestors as (
       select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
         p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
@@ -658,7 +714,7 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
           and private_project.company_id = restricted.company_id
         where restricted.visibility = 'private' or private_project.visibility = 'private'
       )
-  )`;
+  ))`;
 }
 
 function issuePrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
@@ -678,15 +734,23 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
 }
 
 /** Filter every externally reachable task query with the same privacy predicate. */
+export async function readInstanceAdmin(db: Db | DbTransaction, userId: string): Promise<boolean> {
+  return db
+    .select({ id: instanceUserRoles.id })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+}
+
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return issuePrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  const personal = dashboardConversationCondition(actor);
+  if (actor.authorizingUserId) return sql<boolean>`(${personal} and ${issuePrivacyCondition(actor)})`;
+  if (issuePrivacyMode() !== "enforce") return personal;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return personal;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
-    && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
-  return issuePrivacyCondition(actor);
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return personal;
+  return sql<boolean>`(${personal} and ${issuePrivacyCondition(actor)})`;
 }
 
 /** SQL equivalent used for project list/search pushdown. */
@@ -698,15 +762,7 @@ export async function projectReadSqlCondition(db: Db | DbTransaction, actor: Aut
     actor.type === "board"
     && !actor.ignoreInstanceAdmin
     && actor.source !== "cloud_tenant"
-    && Boolean(await db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(
-        eq(instanceUserRoles.userId, actor.userId ?? ""),
-        eq(instanceUserRoles.role, "instance_admin"),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null))
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))
   ) return sql<boolean>`true`;
   return projectPrivacyCondition(actor);
 }
@@ -881,18 +937,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
-    return batchRead(`admin:${userId}`, async () => {
-      if (
-        await db
-          .select({ id: instanceUserRoles.id })
-          .from(instanceUserRoles)
-          .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-          .then((rows) => rows[0] ?? null)
-      ) {
-        return true;
-      }
-      return false;
-    });
+    return batchRead(`admin:${userId}`, () => readOncePerRequest(`admin:${userId}`, () => readInstanceAdmin(db, userId)));
   }
 
   async function getActiveMembership(
@@ -900,7 +945,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     principalType: PrincipalType,
     principalId: string,
   ) {
-    return batchRead(`membership:${companyId}:${principalType}:${principalId}`, async () => {
+    const key = `membership:${companyId}:${principalType}:${principalId}`;
+    return batchRead(key, () => readOncePerRequest(key, async () => {
       return db
         .select()
         .from(companyMemberships)
@@ -913,7 +959,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           ),
         )
         .then((rows) => rows[0] ?? null);
-    });
+    }));
   }
 
   async function loadResponsibleUserSnapshot(companyId: string, userId: string): Promise<ResponsibleUserSnapshot> {
@@ -1017,7 +1063,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       return deny({
         action: input.action,
         reason: "deny_missing_membership",
-        explanation: `${input.principalType} principal ${input.principalId} is not an active member of company ${input.companyId}.`,
+        explanation: input.principalType === "agent" ? "This agent is not an active member of this company." : "This user is not an active member of this company.",
       });
     }
 
@@ -2223,7 +2269,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         if (
@@ -2265,7 +2311,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         return deny({
@@ -2441,7 +2487,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Inbox target user ${targetUserId} is not an active member of company ${companyId}.`,
+          explanation: "The person whose inbox was requested is not an active member of this company.",
         });
       }
 
@@ -2486,14 +2532,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "inbox_management_disabled",
-            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+            explanation: "This person has turned off agent management of their inbox.",
           });
         }
         if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
           return deny({
             action: input.action,
             reason: "inbox_agent_not_allowed",
-            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+            explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
           });
         }
         if (policy?.mode === "open" || policy?.mode === "allowlist") {
@@ -2531,14 +2577,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "inbox_management_disabled",
-          explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          explanation: "This person has turned off agent management of their inbox.",
         });
       }
       if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
         return deny({
           action: input.action,
           reason: "inbox_agent_not_allowed",
-          explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
         });
       }
 
@@ -2822,7 +2868,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       : deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
+          explanation: "The person this agent acts for is no longer an active member of this company.",
         });
 
     if (
@@ -2841,8 +2887,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       code: denyCode,
       explanation:
         denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
-          ? `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`
-          : `Responsible user ${responsibleUserId} is not authorized for ${input.action}: ${userDecision.explanation}`,
+          ? "The person this agent acts for is no longer an active member of this company."
+          : plainDelegatedUserDenial("The person this agent acts for", userDecision, input.action),
       grant: userDecision.grant,
     });
 
@@ -2893,7 +2939,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return deny({
       action: input.action,
       reason: userDecision.reason,
-      explanation: `Authorizing user is not authorized for ${input.action}: ${userDecision.explanation}`,
+      explanation: plainDelegatedUserDenial("The person who authorized this agent", userDecision, input.action),
       grant: userDecision.grant,
     });
   }
@@ -2975,9 +3021,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       || input.resource.type !== "issue"
       || !input.resource.issueId
       || !intersectedDecision.allowed
-      || intersectedDecision.reason === "allow_instance_admin"
-      || intersectedDecision.reason === "allow_local_board"
-      || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")
     ) return intersectedDecision;
 
     const resource = input.resource;
@@ -2987,6 +3030,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          originKind: issues.originKind, originId: issues.originId,
           visibility: issues.visibility,
           privacyRootIssueId: issues.privacyRootIssueId,
           responsibleUserId: issues.responsibleUserId,
@@ -2998,6 +3042,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .from(issues)
         .where(and(eq(issues.id, resource.issueId!), eq(issues.companyId, resource.companyId)))
         .then((rows) => rows[0] ?? null);
+      if (issue && !dashboardConversationReadable(input.actor, issue)) {
+        return deny({
+          action: input.action,
+          reason: "deny_dashboard_conversation_private",
+          explanation: "This personal dashboard conversation is private.",
+        });
+      }
+      if (intersectedDecision.reason === "allow_instance_admin" || intersectedDecision.reason === "allow_local_board"
+        || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")) return intersectedDecision;
       if (!issue || (retainedIssue?.companyId === resource.companyId
         ? retainedIssue.readable : await canActorReadIssuePrivacy(db, input.actor, issue))) return intersectedDecision;
 

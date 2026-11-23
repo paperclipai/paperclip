@@ -1,4 +1,3 @@
-import { instanceSettingsService } from "../instance-settings.js";
 import { managedMcpDeviceScope } from "./device-cutover.js";
 import { pendingLegacyMcpDevicePredicate } from "./idle-device-cutover.js";
 import { pendingMcpCodePredicate, pendingMcpDevicePredicate } from "./idle-authorization-handoffs.js";
@@ -24,7 +23,7 @@ export function startMcpIngressHandoffExpiry(db: Db, coordinator: Pick<ReturnTyp
       signal.throwIfAborted();
       const [device] = await db.select({expiresAt:mcpOauthDeviceRequests.expiresAt}).from(mcpOauthDeviceRequests).where(pendingMcpDevicePredicate(Date.now())).orderBy(asc(mcpOauthDeviceRequests.expiresAt)).limit(1);
       signal.throwIfAborted();
-      const legacyEnabled=managedMcpDeviceScope()?(await instanceSettingsService(db).getExperimentalReadOnly()).enablePublicMcp:false;
+      const legacyEnabled=Boolean(managedMcpDeviceScope());
       const legacyPredicate=legacyEnabled?pendingLegacyMcpDevicePredicate(db,Date.now()):undefined;
       const [legacy]=legacyPredicate?await db.select({expiresAt:mcpOauthDeviceRequests.expiresAt}).from(mcpOauthDeviceRequests).where(legacyPredicate).orderBy(asc(mcpOauthDeviceRequests.expiresAt)).limit(1):[];
       signal.throwIfAborted();

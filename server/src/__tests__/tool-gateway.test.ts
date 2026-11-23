@@ -1,8 +1,15 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
+import type { LiveEvent } from "@paperclipai/shared";
+import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -47,6 +54,7 @@ import {
 } from "@paperclipai/db";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -65,6 +73,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { grantLegacyPluginTools } from "./helpers/legacy-plugin-tools.js";
+import { recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
+import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 
 const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -1515,7 +1526,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .expect(200);
       expect(initialized.body.result).toMatchObject({
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        _meta: { "paperclip/mcp-app-ui": "unsupported" },
+        _meta: { "paperclip/mcp-app-ui": "host_rendered" },
       });
       const setupLimited = await request(app)
         .post(endpoint)
@@ -1913,6 +1924,164 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       status: "idle",
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
+    });
+  });
+
+  describe("local stdio MCP protocol versions", () => {
+    // Each script records every message it receives, one JSON line per message,
+    // so the tests can see exactly what Paperclip sent to each process.
+    function stdioScript(logPath: string, behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing") {
+      return `
+const fs = require("node:fs");
+const readline = require("node:readline");
+// "upgrading" is a legacy server until the marker file exists, then stateless.
+// "downgrading" is stateless until the marker exists, then a strict handshake server.
+const switched = fs.existsSync(${JSON.stringify(`${logPath}.upgraded`)});
+const behavior = ${JSON.stringify(behavior)} === "upgrading" ? (switched ? "modern" : "legacy-quick")
+  : ${JSON.stringify(behavior)} === "downgrading" ? (switched ? "legacy-strict" : "modern")
+  : ${JSON.stringify(behavior)} === "modern-failing" ? "modern"
+  : ${JSON.stringify(behavior)};
+const failsCalls = ${JSON.stringify(behavior)} === "modern-failing";
+let initialized = false;
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(message) + "\\n");
+  if (message.method === "server/discover") {
+    if (behavior === "modern") send({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
+    if (behavior === "exit-on-probe" || behavior === "broken") process.exit(1);
+    if (behavior === "legacy-quick" || behavior === "legacy-strict") send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+    return;
+  }
+  if (message.method === "initialize") {
+    if (behavior === "broken") process.exit(1);
+    if (behavior === "modern") { send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }); return; }
+    initialized = true;
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "legacy-stdio", version: "1" } } });
+    return;
+  }
+  if (message.method === "tools/call") {
+    if (behavior === "legacy-strict" && !initialized) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32002, message: "Server not initialized" } });
+      return;
+    }
+    if (failsCalls) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error after writing" } });
+      return;
+    }
+    const meta = message.params && message.params._meta;
+    if (behavior === "modern" && !(meta && meta["io.modelcontextprotocol/protocolVersion"] === "2026-07-28")) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Required per-request metadata is missing" } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: behavior + ":" + String(message.params.arguments.message) }], resultType: behavior === "modern" ? "complete" : undefined } });
+  }
+});
+`;
+    }
+
+    async function runStdio(behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing", calls: number, beforeCall?: (index: number, logPath: string) => void) {
+      const dir = mkdtempSync(join(tmpdir(), "paperclip-stdio-protocol-"));
+      const logPath = join(dir, "messages.jsonl");
+      try {
+        const company = await createCompany(db);
+        const agent = await createAgent(db, company.id);
+        const { run } = await createIssueAndRun(db, company.id, agent.id);
+        const applicationKey = `stdio-${behavior}`;
+        const localTool = await createLocalStdioMcpTool(db, company.id, { applicationKey, toolName: "echo", stdioScript: stdioScript(logPath, behavior) });
+        const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+        await db.insert(toolProfileEntries).values({
+          companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: localTool.catalogEntry.id,
+        });
+        const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+        const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+        const tool = expectedConnectedToolName({ applicationKey, connectionId: localTool.connection.id, toolName: "echo" });
+        const results = [];
+        for (let index = 0; index < calls; index += 1) {
+          beforeCall?.(index, logPath);
+          results.push(await gateway.executeTool({ sessionToken: session.token, tool, parameters: { message: `hello-${index}` } })
+            .catch((error: unknown) => ({ result: { error } })));
+        }
+        const messages = existsSync(logPath)
+          ? readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { method?: string; params?: Record<string, any> })
+          : [];
+        return { results, messages, methods: messages.map((message) => message.method) };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("calls a 2026-07-28 stdio server without a handshake and with per-request metadata", async () => {
+      const { results, messages, methods } = await runStdio("modern", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "modern:hello-1"]);
+      // Probed once; the second process is called directly.
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+      const call = messages.find((message) => message.method === "tools/call")!;
+      expect(call.params!._meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/ui"]).toBeTruthy();
+    });
+
+    it("starts a legacy stdio server again for the handshake when it exits on the probe", async () => {
+      const { results, methods } = await runStdio("exit-on-probe", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["exit-on-probe:hello-0", "exit-on-probe:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover",
+        "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered handshake server is replaced by a stateless one", async () => {
+      const { results, methods } = await runStdio("upgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["legacy-quick:hello-0", "modern:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        // Remembered as legacy, refused, probed again, then called statelessly.
+        "initialize", "server/discover", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered stateless server is rolled back to a handshake build", async () => {
+      const { results, methods } = await runStdio("downgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "legacy-strict:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "tools/call",
+        // Remembered as stateless, refused before running, probed again, then the handshake.
+        "tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("never replays a call that a stateless stdio server failed after it may have run", async () => {
+      const { results, methods } = await runStdio("modern-failing", 2);
+      for (const result of results) {
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_protocol_error");
+      }
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+    });
+
+    it("gives up after one restart when a stdio server exits on both the probe and the handshake", async () => {
+      const { results, methods } = await runStdio("broken", 2);
+      for (const result of results) {
+        expect((result.result as { error?: unknown }).error).toBeInstanceOf(ToolGatewayHttpError);
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_process_exited");
+      }
+      // Two processes per call at most: one recovery restart, never a loop.
+      expect(methods).toEqual(["server/discover", "initialize", "server/discover", "initialize"]);
+    });
+
+    it("falls back to the handshake when a legacy stdio server ignores the probe", async () => {
+      const started = Date.now();
+      const { results, methods } = await runStdio("silent", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["silent:hello-0", "silent:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+      // Only the first process waits out the probe; the answer is remembered.
+      expect(Date.now() - started).toBeLessThan(10_000);
     });
   });
 
@@ -2360,6 +2529,158 @@ rl.on("line", (line) => {
     ]));
   });
 
+  it("loads only candidate catalog rows for a live exact connected name", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(({ body }) => ({
+      body: { jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "found" }] } },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "exact-demo", toolName: " READ__Item ", url: fake.url, riskLevel: "read",
+      });
+      const connectionPrefix = connection.id.slice(0, 8);
+      const peerId = connectionPrefix + randomUUID().slice(8);
+      await db.insert(toolConnections).values({
+        ...connection, id: peerId, uid: "exact-lookup-peer", name: "Name collision peer",
+      });
+      const [peer, unicode, natural] = await db.insert(toolCatalogEntries).values([
+        { ...catalogEntry, id: randomUUID(), connectionId: peerId, name: "read-item", toolName: "read-item" },
+        { ...catalogEntry, id: randomUUID(), name: "unicode-name", toolName: "Key_İtem" },
+        { ...catalogEntry, id: randomUUID(), name: "natural-suffix", toolName: "natural-deadbeef" },
+        { ...catalogEntry, id: randomUUID(), name: "unrelated-name", toolName: "unrelated-name" },
+      ]).returning();
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const recorded = recordingDb(db);
+      const gateway = createTestToolGatewayService(recorded.db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const call = (tool: string) => gateway.executeTool({ sessionToken: session.token, tool, parameters: {} });
+      const baseName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: "read_item" });
+      const collidingName = baseName + "-" + catalogEntry.id.slice(0, 8);
+      const list = await gateway.listToolsForSession(session.token);
+      expect(list.find((tool) => tool.catalogEntryId === catalogEntry.id)?.name).toBe(collidingName);
+      expect(list.find((tool) => tool.catalogEntryId === peer.id)?.name).toBe(baseName + "-" + peer.id.slice(0, 8));
+      expect(list.find((tool) => tool.catalogEntryId === unicode.id)?.name).toBe(`mcp.exact-demo-${connectionPrefix}:key-i-tem`);
+
+      recorded.statements.length = 0;
+      recorded.statementParams.length = 0;
+      await expect(call(collidingName)).resolves.toMatchObject({ status: "completed" });
+      const catalogRead = recorded.statements.findIndex((sql) => sql.includes('"input_schema"') &&
+        sql.includes('order by "tool_connections"."name", "tool_catalog_entries"."name"'));
+      expect(catalogRead).toBeGreaterThanOrEqual(0);
+      expect(recorded.statements[catalogRead]).toContain("regexp_replace");
+      expect(recorded.statementParams[catalogRead]).toEqual(expect.arrayContaining([
+        connectionPrefix, "read-item", collidingName.split(":")[1],
+      ]));
+      for (const entry of [unicode, natural]) {
+        await expect(call(list.find((tool) => tool.catalogEntryId === entry.id)!.name))
+          .resolves.toMatchObject({ status: "completed" });
+        expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: entry.toolName } });
+      }
+
+      const summary = await gateway.summarizeConnectionAccessForAgent({ companyId: company.id,
+        connectionId: connection.id, agentId: agent.id, heartbeatRunId: run.id });
+      expect(summary.tools.map((tool) => tool.gatewayToolName)).toEqual(expect.arrayContaining([collidingName]));
+      expect(summary.tools.some((tool) => tool.gatewayToolName === baseName + "-" + peer.id.slice(0, 8))).toBe(false);
+
+      // A natural slug can also be another entry's disambiguated name.
+      const [duplicate] = await db.insert(toolCatalogEntries).values({
+        ...catalogEntry, id: randomUUID(), name: "zz-duplicate-alias", toolName: collidingName.split(":")[1]!,
+      }).returning();
+      await expect(call(collidingName)).resolves.toMatchObject({ status: "completed" });
+      expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: catalogEntry.toolName } });
+      await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, duplicate.id));
+
+      // With the peer quarantined, the surviving entry loses its suffix.
+      await db.update(toolCatalogEntries).set({ status: "quarantined", quarantinedAt: new Date() })
+        .where(eq(toolCatalogEntries.id, peer.id));
+      const versionHash = randomUUID();
+      await db.update(toolCatalogEntries).set({ toolName: "Read.Item", versionHash, schemaHash: randomUUID() })
+        .where(eq(toolCatalogEntries.id, catalogEntry.id));
+      await expect(call(collidingName)).rejects.toMatchObject({ reasonCode: "tool_not_found" });
+      const updated = await call(baseName);
+      expect(updated.status).toBe("completed");
+      const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, updated.invocationId));
+      expect(invocation?.catalogVersionHash).toBe(versionHash);
+      expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: "Read.Item" } });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("finds the same GitHub account's tool on a different connection after credential failure", async () => {
+    const { seed, grant } = githubCredentialsFixture(() => db);
+    const context = await seed();
+    const { companyId, agentId, runId, issueId } = context;
+    const older = await grant(context, "A");
+    const newer = await grant(context, "A");
+    const alternateCredential = "synthetic-alternate-credential";
+    const secrets = secretService(db);
+    await secrets.rotateCurrentUserSecretValue(companyId, "A", older.secretId, { value: alternateCredential });
+    await secrets.syncUserSecretDeclarationsForTarget(companyId,
+      { targetType: "tool_connection", targetId: older.connectionId },
+      [{ definitionKey: older.definitionId, configPath: "oauth.access_token", envKey: "Authorization", required: true }],
+      { replaceAll: true });
+    const upstreamToolName = "list_issues";
+    const olderUrl = "https://github-mcp-fixture.invalid/older";
+    const newerUrl = "https://github-mcp-fixture.invalid/newer";
+    let requestedName = "";
+    for (const [candidate, url, createdAt] of [
+      [older, olderUrl, new Date(0)],
+      [newer, newerUrl, new Date(1)],
+    ] as const) {
+      const [connection] = await db.update(toolConnections)
+        .set({ authKind: "oauth", config: { sourceTemplateKey: "github", url } })
+        .where(eq(toolConnections.id, candidate.connectionId)).returning();
+      await db.update(connectionGrants).set({ createdAt }).where(eq(connectionGrants.id, candidate.id));
+      await db.insert(toolCatalogEntries).values({
+        companyId, applicationId: connection.applicationId, connectionId: connection.id,
+        name: upstreamToolName, toolName: upstreamToolName, riskLevel: "read", versionHash: randomUUID(),
+      });
+      if (candidate === newer) {
+        const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+        requestedName = expectedConnectedToolName({
+          applicationKey: application.applicationKey ?? connection.name, connectionId: connection.id, toolName: upstreamToolName,
+        });
+      }
+    }
+    await allowAllToolsForAgent(db, companyId, agentId);
+    const refresh = vi.fn(async ({ grantId }: { grantId: string }) => {
+      if (grantId === newer.id) throw new Error("Synthetic credential acquisition failure");
+      const [current] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
+      return current;
+    });
+    const remoteHttpRequest = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      expect(request.params.name).toBe(upstreamToolName);
+      expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${alternateCredential}`);
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "alternate ok" }] } });
+    });
+    const recorded = recordingDb(db);
+    const catalogReads = () => recorded.statements.filter((query) => query.includes('"input_schema"') &&
+      query.includes('order by "tool_connections"."name", "tool_catalog_entries"."name"'));
+    const gateway = createTestToolGatewayService(recorded.db, { oauthGrantRefresher: refresh, remoteHttpRequest });
+    const session = await gateway.createSession({ companyId, agentId, runId, issueId });
+    const result = await gateway.executeTool({ sessionToken: session.token, tool: requestedName, parameters: {} });
+
+    expect(result).toMatchObject({ status: "completed", result: { content: "alternate ok" } });
+    expect(refresh.mock.calls.map(([input]) => input.grantId)).toEqual([newer.id, older.id]);
+    expect(remoteHttpRequest.mock.calls.map(([url]) => url)).toEqual([olderUrl]);
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, result.invocationId));
+    expect(invocation?.connectionId).toBe(older.connectionId);
+    expect(catalogReads()).toHaveLength(2);
+    expect(catalogReads().every((query) => query.includes("regexp_replace"))).toBe(true);
+
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, newer.id));
+    recorded.statements.length = 0;
+    recorded.statementParams.length = 0;
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: invocation.toolName, parameters: {} }))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(catalogReads()).toHaveLength(1);
+  });
+
   it("dispatches a bounded alias to the original long upstream tool name", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -2659,7 +2980,11 @@ rl.on("line", (line) => {
     }
   });
 
-  it("starts with another user's personal app and requests authorization only when used", async () => {
+  it.each([
+    { longIdentity: false, existing: false },
+    { longIdentity: true, existing: false },
+    { longIdentity: true, existing: true },
+  ])("requests another user's personal authorization only when used (long: $longIdentity, existing: $existing)", async ({ longIdentity, existing }) => {
     const originalApiUrl = process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_API_URL = "http://paperclip.example.test";
     const company = await createCompany(db);
@@ -2684,6 +3009,7 @@ rl.on("line", (line) => {
       // may be unable to authenticate even though this user's grant is valid.
       // The cached catalog must remain visible so grant resolution can happen.
       await db.update(toolConnections).set({
+        ...(longIdentity ? { uid: `https://mcp.example.test/${"connection/".repeat(25)}`, name: "Personal connection ".repeat(10) } : {}),
         credentialPolicy: "per_user",
         healthStatus: "error",
         healthMessage: "This app needs you to sign in.",
@@ -2717,7 +3043,7 @@ rl.on("line", (line) => {
       const call = () => request(app).post(endpoint).set("authorization", `Bearer ${runtime[0]!.token}`)
         .send({ jsonrpc: "2.0", id: "call", method: "tools/call", params: { name: tool.name, arguments: {} } });
 
-      await db.insert(issueThreadInteractions).values({
+      if (existing) await db.insert(issueThreadInteractions).values({
         companyId: company.id,
         issueId: issue.id,
         kind: "request_confirmation",
@@ -2748,10 +3074,14 @@ rl.on("line", (line) => {
         effectiveResolverPolicy: "human_only",
         addresseeUserId: "carol",
       });
-      expect(interaction!.payload).toMatchObject({
-        prompt: `Connect your ${connection.name} account to continue`,
-        target: { key: `connection:${connection.uid}:user:carol` },
-      });
+      const payload = requestConfirmationPayloadSchema.parse(interaction!.payload);
+      expect(payload.target?.type).toBe("custom");
+      expect(payload.target && "key" in payload.target && payload.target.key.length).toBeLessThanOrEqual(120);
+      // A repeated refused call refreshes the same request, with a stable target.
+      await call().expect(409);
+      const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(cards).toHaveLength(1);
+      expect(cards[0].payload).toEqual(interaction!.payload);
 
       await db.insert(connectionGrants).values({
         companyId: company.id,
@@ -3338,6 +3668,13 @@ rl.on("line", (line) => {
           }),
         }),
       ]));
+
+      await db.update(toolConnections).set({ config: { url: fake.url } })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: "search_tools", parameters: { query: "kv" } }))
+        .rejects.toMatchObject({ reasonCode: "tool_not_found" });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: targetToolName,
+        parameters: { key: "direct-key", value: "direct-value" } })).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();
     }
@@ -3422,6 +3759,7 @@ rl.on("line", (line) => {
         "kv_get",
         "kv_list",
         "kv_set",
+        "slow_with_progress",
       ]);
 
       await allowAllToolsForAgent(db, company.id, agent.id);
@@ -3452,6 +3790,61 @@ rl.on("line", (line) => {
         expect.objectContaining({ key: "streamable-key", value: "streamable-value" }),
       ]);
     } finally {
+      await kvDemo.close();
+    }
+  });
+
+  it("shows a run's viewers the provider's progress for a long call, saves it on the call, and returns the same result", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const kvDemo: KvDemoHttpServer = createKvDemoHttpServer();
+    const port = await kvDemo.listen(0, "127.0.0.1");
+    const events: LiveEvent[] = [];
+    const otherEvents: LiveEvent[] = [];
+    const stop = subscribeCompanyLiveEvents(company.id, (event) => { events.push(event); });
+    const stopOther = subscribeCompanyLiveEvents(other.id, (event) => { otherEvents.push(event); });
+    try {
+      const access = toolAccessService(db);
+      const connection = await access.createConnection(company.id, {
+        name: "KV demo progress fixture", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none",
+        ownership: "customer", connectionKind: "managed",
+        config: { url: `http://127.0.0.1:${port}/mcp` }, transportConfig: { url: `http://127.0.0.1:${port}/mcp` },
+        credentialSecretRefs: [], enabled: true, status: "active",
+      });
+      await access.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
+      const slowTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.upstreamToolName === "slow_with_progress");
+      expect(slowTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { steps: 6, stepMs: 200 },
+      });
+      expect(result).toMatchObject({ status: "completed", result: { data: { isError: false, transport: "mcp_http" } } });
+
+      const progress = events.filter((event) => event.type === "heartbeat.run.tool_progress");
+      // Throttled: six provider updates over ~1.2s, a handful of events, the last one marks the end.
+      expect(progress.length).toBeGreaterThanOrEqual(3);
+      expect(progress.length).toBeLessThanOrEqual(7);
+      expect(progress.every((event) => event.companyId === company.id && event.payload.runId === run.id
+        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name
+        && event.payload.nativeToolName === nativeAssignedToolName(slowTool!.name))).toBe(true);
+      expect(progress[0]!.payload).toMatchObject({ progress: 1, total: 6, message: "Finished step 1 of 6", done: false });
+      expect(progress.at(-1)!.payload).toMatchObject({ done: true });
+      expect(otherEvents.filter((event) => event.type === "heartbeat.run.tool_progress")).toEqual([]);
+      const [invocation] = await db.select().from(toolInvocations)
+        .where(eq(toolInvocations.id, String(progress[0]!.payload.invocationId)));
+      expect(invocation).toMatchObject({ companyId: company.id, runId: run.id, status: "succeeded" });
+      expect(invocation!.progress).toMatchObject({ total: 6 });
+    } finally {
+      stop();
+      stopOther();
       await kvDemo.close();
     }
   });
@@ -6360,6 +6753,7 @@ rl.on("line", (line) => {
       },
     };
     const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    await grantLegacyPluginTools(db, company.id, "demo-plugin");
 
     await expect(gateway.listPluginToolsForAgent({ companyId: company.id, agentId: agent.id })).resolves.toEqual([]);
     await gateway.executePluginTool({
@@ -6431,5 +6825,55 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+
+  it("advertises on initialize only the capabilities that the gateway token may list", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `capability-gateway-${randomUUID()}`,
+      name: `Capability gateway ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Capability gateway", profileId: profile!.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const createToken = (allowedActions?: ToolMcpGatewayTokenAction[]) =>
+      gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: {
+          name: `Token ${randomUUID()}`,
+          clientLabel: "Capability client",
+          ownerNote: "Capability fixture token",
+          ...(allowedActions ? { allowedActions } : {}),
+        },
+      });
+    const capabilitiesFor = async (allowedActions?: ToolMcpGatewayTokenAction[]) => {
+      const token = await createToken(allowedActions);
+      const initialized = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
+        .expect(200);
+      return initialized.body.result.capabilities;
+    };
+
+    expect(await capabilitiesFor(["tools/list", "tools/call"])).toEqual({ tools: {} });
+    expect(await capabilitiesFor(["tools/list", "tools/call", "prompts/list"])).toEqual({ tools: {}, prompts: {} });
+    expect(await capabilitiesFor(["tools/list", "resources/list", "resources/read"])).toEqual({ tools: {}, resources: {} });
+    expect(await capabilitiesFor(["tools/call", "resources/read", "prompts/get"])).toEqual({});
+    expect(await capabilitiesFor()).toEqual({ tools: {}, resources: {}, prompts: {} });
+
+    const toolsOnly = await createToken(["tools/list", "tools/call"]);
+    const resources = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${toolsOnly.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "resources/list" })
+      .expect(403);
+    expect(resources.body.error.data.reasonCode).toBe("gateway_token_action_denied");
   });
 });

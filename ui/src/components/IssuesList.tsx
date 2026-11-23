@@ -1,3 +1,4 @@
+import { PERSONAL_ARCHIVE_QUERY_KEY } from "@/lib/inboxArchiveCache";
 import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
@@ -59,7 +60,7 @@ import {
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -73,7 +74,7 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
-import { IssueRow, type IssueRowPresentation } from "./IssueRow";
+import { IssueRow, type IssueRowPresentation, type IssueRowArchiveAction } from "./IssueRow";
 import { CollectionToolbar, type CollectionToolbarProps } from "./CollectionToolbar";
 import { IssuesList as LegacyIssuesList } from "./LegacyIssuesList";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
@@ -454,6 +455,7 @@ type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>
 
 interface IssuesListProps {
   issues: Issue[];
+  getArchiveAction?: (issue: Issue) => IssueRowArchiveAction | undefined;
   /** Preload the chat of the top visible rows. Only the top-level tasks page sets this. */
   preloadTaskChats?: boolean;
   isLoading?: boolean;
@@ -714,6 +716,7 @@ export function IssuesList(props: IssuesListProps) {
 
 function StreamlinedIssuesList({
   issues,
+  getArchiveAction,
   preloadTaskChats = false,
   isLoading,
   error,
@@ -940,6 +943,7 @@ function StreamlinedIssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      ...(searchFilters?.inboxArchive ? [PERSONAL_ARCHIVE_QUERY_KEY] : []),
       creationRequestFilters,
       enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" ? "index" : "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
@@ -1147,7 +1151,8 @@ function StreamlinedIssuesList({
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
   const subtreeLiveCounts = useMemo(
-    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    // The row chip counts only started sub-tasks; waiting ones are not running below.
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>(), { startedOnly: true }),
     [issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
@@ -2298,6 +2303,7 @@ function StreamlinedIssuesList({
                     >
                       <IssueRow
                         issue={issue}
+                        archiveAction={getArchiveAction?.(issue)}
                         presentation={rowPresentation}
                         stableLayout={enableAgentCreatedVisibilityFilter}
                         issueLinkState={issueLinkState}
@@ -2376,6 +2382,7 @@ function StreamlinedIssuesList({
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                             subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                             showStatus={false}
                             showIdentifier={false}
@@ -2411,6 +2418,7 @@ function StreamlinedIssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
                               subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

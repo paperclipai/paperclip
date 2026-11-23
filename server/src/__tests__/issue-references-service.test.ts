@@ -218,6 +218,110 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     expect(mentions[0]?.targetIssueId).toBe(targetIssueId);
   });
 
+  it("does not block mention foreign-key checks while an issue sync holds its lock", async () => {
+    const companyId = randomUUID();
+    const heldIssueId = randomUUID();
+    const mentioningIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Reference Locks",
+      issuePrefix: `L${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: heldIssueId,
+        companyId,
+        title: "Held issue",
+        description: "Depends on LCK-2.",
+        status: "todo",
+        priority: "medium",
+        identifier: "LCK-1",
+      },
+      {
+        id: mentioningIssueId,
+        companyId,
+        title: "Mentioning issue",
+        description: "Blocked by LCK-1.",
+        status: "todo",
+        priority: "medium",
+        identifier: "LCK-2",
+      },
+    ]);
+
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let markHolderLocked!: () => void;
+    const holderLocked = new Promise<void>((resolve) => { markHolderLocked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await refs.syncIssue(heldIssueId, tx);
+      markHolderLocked();
+      await holderReleased;
+    });
+
+    try {
+      await holderLocked;
+      const otherSync = refs.syncIssue(mentioningIssueId);
+      const outcome = await Promise.race([
+        otherSync.then(() => "completed" as const),
+        new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 1_500)),
+      ]);
+      releaseHolder();
+      await otherSync;
+      expect(outcome).toBe("completed");
+    } finally {
+      releaseHolder();
+      await holder;
+    }
+
+    const mentions = await db.select().from(issueReferenceMentions);
+    expect(mentions.map((row) => `${row.sourceIssueId}->${row.targetIssueId}`).sort()).toEqual([
+      `${heldIssueId}->${mentioningIssueId}`,
+      `${mentioningIssueId}->${heldIssueId}`,
+    ].sort());
+  });
+
+  it("syncs issues that mention each other concurrently without deadlocking", async () => {
+    const companyId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Mutual References",
+      issuePrefix: `M${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "Parent MUT-2",
+        description: "Track MUT-2 until it lands.",
+        status: "todo",
+        priority: "medium",
+        identifier: "MUT-1",
+      },
+      {
+        id: secondIssueId,
+        companyId,
+        title: "Child of MUT-1",
+        description: "Reports back to MUT-1.",
+        status: "todo",
+        priority: "medium",
+        identifier: "MUT-2",
+      },
+    ]);
+
+    await expect(Promise.all(
+      Array.from({ length: 10 }, () => [refs.syncIssue(firstIssueId), refs.syncIssue(secondIssueId)]).flat(),
+    )).resolves.toHaveLength(20);
+
+    const mentions = await db.select().from(issueReferenceMentions);
+    expect(mentions).toHaveLength(4);
+  });
+
   it("backfills existing references for a company without requiring write-time sync", async () => {
     const companyId = randomUUID();
     const sourceIssueId = randomUUID();

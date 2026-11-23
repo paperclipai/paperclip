@@ -164,11 +164,22 @@ denying profile access; in that case the screen explains that Anthropic did not
 permit reading the account email. A profile denial does not mark a connected
 credential as disconnected.
 
+OpenAI subscription connections also show the selected **ChatGPT workspace**.
+The lookup uses OpenAI's Codex accounts endpoint and matches the workspace ID
+saved with that connection. It does not select the first or default workspace,
+or infer a workspace from an email or Paperclip access. A personal workspace
+without a provider name shows **Personal workspace** only when OpenAI reports
+its type. Missing names, ambiguous matches, and denied lookups show an unavailable
+state while keeping the saved email and connection controls. API keys and routed
+connections do not use this lookup.
+The endpoint and response formats follow OpenAI's [Codex backend client](https://github.com/openai/codex/blob/58627e6feac9f69cbbb405d85f4f7343eca75a35/codex-rs/backend-client/src/client.rs#L525)
+and [account response types](https://github.com/openai/codex/blob/58627e6feac9f69cbbb405d85f4f7343eca75a35/codex-rs/backend-client/src/types.rs#L130).
+
 `GET /api/companies/:companyId/ai-connections/:connectionId/identity?grantId=...`
 checks company membership, connection-management authority, and the selected
 credential's human audience before opening the credential. The response contains
-only safe account labels and bounded status messages. The Anthropic profile read
-has a 15-second headers/body deadline and no redirects. It runs separately from
+only safe account labels and bounded status messages. The provider profile reads
+have a 15-second headers/body deadline and no redirects. Each runs separately from
 the account/grants reads, so profile loading or failure cannot block account
 maintenance. The UI reuses an observation for five minutes, scoped to the company,
 connection, grant, and grant update time. Reconnect requires a new observation.
@@ -432,6 +443,98 @@ explicit closure. Each follow-up rechecks current authorization and account
 identity before reusing the session; changing identity retires the previous owner.
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
+
+New SSH environments use the agent's configured AI account, including
+subscriptions. Account selection and
+authorization remain in Paperclip. The remote computer supplies the harness
+executable and workspace. In this mode, the SSH user's provider login is not a
+fallback, and Paperclip does not replace that user's saved credentials. A
+missing or unavailable agent account prevents execution and provider probes.
+
+The **Use authentication configured on the remote machine** option under
+**Advanced** selects the remote user's provider login instead. New environments
+save `useHostAuth: false`; enabling it saves `true`, skips the agent's managed AI
+credential projection, and uses the preconfigured home for native Runner.
+Existing environments without the field default to the remote machine's
+configured authentication and display the option as enabled when edited. No
+migration rewrites existing SSH records. Changing an explicit authentication source invalidates the saved
+SSH provider session identity for future runs; already admitted native recovery
+retains its original home contract. Fresh native Runner launch uses the effective
+SSH authentication choice. Native Codex Test uses that remote user's login in
+preconfigured mode, without reading or staging controller credentials. Remote
+home discovery uses the SSH shell, including on machines without `getent`.
+Native preconfigured homes support Codex and ACPX Claude with `approve-all`.
+Other native providers, and Claude with stricter permissions, retain their
+supported isolated home mode on SSH. Explicitly unsupported preconfigured
+provider configurations outside this SSH compatibility choice still fail.
+
+Codex CLI host-auth runs also receive the current Paperclip MCP configuration
+and authorized skills. Paperclip merges its managed block into the remote
+user's configuration and preserves other settings and manually installed skills.
+The native remote home retains authentication and conversation files; they are
+not uploaded from or copied back to the controller. This mode shares the remote
+user's configuration. Use separate SSH users when independent configuration is
+required. Run-specific skill files are removed at teardown, and the next run
+replaces or removes the managed skill links. Host-auth runtime files use private
+SSH staging, with cleanup registered before upload so partial uploads are removed.
+When company tracing is enabled with a selected remote Codex profile, the overlay
+reads that profile from the remote home and preserves its other settings. Missing
+or linked profile files disable export for that run; execution continues.
+
+Managed SSH runs stage the selected account into a randomly allocated directory
+with owner-only access and set the harness's home/configuration paths there.
+Credential-bearing launch commands travel through SSH stdin instead of SSH
+process arguments. The existing account-specific refresh merge runs before
+per-turn directories are removed, including after provider or setup failure.
+Environment tests use the selected account and remove their temporary homes
+after probing. Managed Codex probes copy refreshed credentials to that account's
+local home before cleanup, even when the provider request fails. Managed Codex
+ACP runs also copy back subscription refreshes when the controller has an API
+key; the selected run's authentication decides whether copyback is needed. The merge rejects
+credentials from another account. Routed accounts can omit `auth.json`; the SSH
+reader reports confirmed file absence as `ENOENT`, which needs no copyback.
+Connection and file-read failures still fail the probe. A disconnected target can prevent remote cleanup; the run reports
+the resulting failure rather than silently selecting another account.
+
+Claude and Codex CLI runs in an in-place SSH workspace keep conversation files
+(and Codex's native SQLite indexes) in a private remote home scoped to the company, agent, AI account,
+and conversation. The home path stays stable across turns and token refreshes.
+Each turn installs the current managed files, copies refreshed authentication
+back, and removes everything except conversation state, including on provider
+failure. Credentials and managed MCP configuration do not remain there between
+turns. Switching accounts selects a different home and starts a new conversation.
+The cache lives below the environment's remote workspace root. Removing that
+root also removes the retained conversation state.
+Older SSH host-auth sessions keep their existing remote home. A managed SSH
+session saved before conversation retention has no retained state reference and
+starts a fresh conversation instead of reusing an unavailable thread. This reset
+is recorded as `claude_ssh_session_state_unavailable` or
+`codex_ssh_session_state_unavailable`; existing saved files remain. Claude retains
+only its `projects` transcript directory, removing credentials and configuration
+after every turn. Saved CLI sessions preserve normalized remote identity and
+account-scoped conversation references across server persistence.
+
+ACP SSH sessions use the existing remote process bridge and session reuse
+lifecycle. Both provider adapters admit managed SSH through their public
+execution entry points. SSH ACP needs
+an agent-managed account and a copied workspace. Host authentication, in-place
+SSH workspaces, and local filesystem/network confinement require the CLI engine.
+The SSH prerequisite check retains only the controller's `PATH` to resolve the
+local SSH client; it excludes controller credentials. The ACP server command
+must be installed on the remote machine and is started there by the process bridge.
+A compatible session can retain its private remote home; workspace
+sync and credential refresh run at turn teardown, and the session disposal hook
+removes the home on retirement. Workspace identity includes the company, agent,
+task and execution fingerprint. The fingerprint normalizes temporary managed-home
+paths and credential refreshes against the stable account session identity.
+Switching accounts or changing other adapter environment values starts a fresh
+conversation. The launch still receives the current credentials. When a Codex
+ACP session reuses its staged remote home, credential copyback and logging bind
+to the current run's local managed home before the remote environment is applied.
+Refreshed credentials cannot recreate a retired run's local home.
+Older managed SSH ACP sessions used a different
+working-directory identity and start fresh after this change. Native runner
+session identities and sandbox staging are unchanged.
 
 After a verified provider resume, plain-text Slack follow-ups send the new
 authorized message delta instead of repeating the full task framing. The saved
