@@ -1,6 +1,8 @@
+import fs from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/index.js";
+import { RUNTIME_SKILL_ASSETS_BLOCKER } from "./ephemeral-server-contract.js";
 import { resetOnlineDurableDataMigrationProgressForTests, runOnlineDurableDataMigration } from "./online-durable-data-migration.js";
 
 const db = {} as Db;
@@ -303,6 +305,26 @@ describe("online durable-data migration pass", () => {
       const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: ["workspaces_require_migration"] }) });
       const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
       expect(result.deferred).toMatchObject({ "workspaces:pending_inspection": 1 });
+    });
+
+    it("names every durable-data blocker that readiness can report", async () => {
+      const source = await fs.readFile(new URL("./ephemeral-server-contract.ts", import.meta.url), "utf8");
+      const blockers = [...new Set([...source.matchAll(/blockers\.push\("([a-z_]+)"\)/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
+      expect(blockers).toEqual(expect.arrayContaining(["workspaces_require_migration", "local_instruction_copies_require_settlement", "external_agent_instructions"]));
+      for (const blocker of blockers) {
+        resetOnlineDurableDataMigrationProgressForTests();
+        const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: [blocker] }) });
+        const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+        expect(Object.keys(result.deferred), blocker).not.toEqual([]);
+      }
+    });
+
+    it("names a local instruction copy that still needs settlement after the agent files are durable", async () => {
+      const fixture = owners({ agentFiles: async () => ({ results: [{ agentId: "a1", state: "durable" }], next: null }),
+        eligibility: async () => ({ eligible: false, blockers: ["local_instruction_copies_require_settlement"] }) });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toEqual({ "skill_objects:owner_busy": 1, "skills:linked_local": 1, "native_harness:source_active": 2,
+        "agent_files:instruction_copy_unsettled": 1 });
     });
 
     it("drops codes from an earlier round once the workspaces are inspected again", async () => {
