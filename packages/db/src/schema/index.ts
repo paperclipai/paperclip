@@ -305,3 +305,9 @@ export { issueConnectionContentDeletions } from "./issue_connection_content_dele
 export { storedObjectDeletions } from "./stored_object_deletions.js";
 export { googlePendingRevocations } from "./google_pending_revocations.js";
 export * from "./plugin_connector_legacy_access.js";
+export {
+  agentSetupProgress,
+  type AgentSetupProgressStatus,
+  type AgentSetupProgressItemStatus,
+  type AgentSetupProgressItemRecord,
+} from "./agent_setup_progress.js";
