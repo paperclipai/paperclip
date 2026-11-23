@@ -83,6 +83,10 @@ describeEmbeddedPostgres("company portability adapter config secrets", () => {
   async function importAsNewCompany(
     exported: Awaited<ReturnType<typeof exportHermesGatewayCompany>>["exported"],
     secretValues?: Record<string, string>,
+    adapterOverrides?: Record<string, {
+      adapterType?: string;
+      adapterConfig?: Record<string, unknown>;
+    }>,
   ) {
     const result = await companyPortabilityService(db).importBundle(
       {
@@ -91,6 +95,7 @@ describeEmbeddedPostgres("company portability adapter config secrets", () => {
         target: { mode: "new_company", newCompanyName: `Hermes Target ${randomUUID()}` },
         collisionStrategy: "rename",
         secretValues,
+        adapterOverrides,
       },
       "user-1",
     );
@@ -157,5 +162,37 @@ describeEmbeddedPostgres("company portability adapter config secrets", () => {
       { adapterType: "hermes_gateway" },
     );
     expect(resolved.config.apiKey).toBe("hermes-imported-key");
+  });
+
+  it("keeps a provided gateway credential when the adapter config is overridden", async () => {
+    const { exported } = await exportHermesGatewayCompany();
+
+    const { companyId, agent } = await importAsNewCompany(
+      exported,
+      { "agent:hermes-gateway:apiKey": "hermes-override-key" },
+      {
+        "hermes-gateway": {
+          adapterConfig: { apiBaseUrl: "https://override.example" },
+        },
+      },
+    );
+
+    const importedApiKey = (agent.adapterConfig as Record<string, unknown>).apiKey as {
+      type: string;
+      secretId: string;
+    };
+    expect(agent.adapterConfig).toMatchObject({
+      apiBaseUrl: "https://override.example",
+      apiKey: { type: "secret_ref" },
+    });
+
+    const resolved = await secretService(db).resolveAdapterConfigForRuntime(
+      companyId,
+      agent.adapterConfig as Record<string, unknown>,
+      { consumerType: "agent", consumerId: agent.id },
+      { adapterType: "hermes_gateway" },
+    );
+    expect(resolved.config.apiKey).toBe("hermes-override-key");
+    expect(importedApiKey.secretId).toBeTruthy();
   });
 });

@@ -2082,7 +2082,7 @@ describe("company portability", () => {
     );
   });
 
-  it("writes an imported adapter config secret input to the adapter config field", async () => {
+  it("keeps an imported adapter config secret when adapter config is overridden", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([]);
     agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
@@ -2153,6 +2153,13 @@ describe("company portability", () => {
         "agent:hermes:apiKey": "hermes-imported-key",
         "agent:hermes:GH_TOKEN": "gh-imported-token",
       },
+      adapterOverrides: {
+        hermes: {
+          adapterConfig: {
+            apiBaseUrl: "https://override.example",
+          },
+        },
+      },
     }, "user-1");
 
     const importedSecretRef = {
@@ -2164,7 +2171,7 @@ describe("company portability", () => {
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "hermes_gateway",
       adapterConfig: expect.objectContaining({
-        apiBaseUrl: "https://hermes.example",
+        apiBaseUrl: "https://override.example",
         apiKey: importedSecretRef,
         env: {
           GH_TOKEN: importedSecretRef,

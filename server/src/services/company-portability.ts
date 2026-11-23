@@ -5783,6 +5783,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             runner,
             existingImportAgent?.defaultEnvironmentId,
           );
+          const finalAdapterSecretFields = await secrets.listAdapterSchemaSecretFieldKeys(
+            normalizedAdapter.adapterType,
+          );
+          const materializedAgentInputs = importEnvInputs.filter((envInput) => (
+            envInput.agentSlug === manifestAgent.slug
+            && (envInputValue(envInput, input.secretValues)?.trim().length ?? 0) > 0
+          ));
+          const manifestAdapterEnv = isPlainRecord(manifestAgent.adapterConfig.env)
+            ? manifestAgent.adapterConfig.env
+            : {};
+          for (const envInput of materializedAgentInputs) {
+            const binding = manifestAgent.adapterConfig[envInput.key] ?? manifestAdapterEnv[envInput.key];
+            if (binding === undefined) continue;
+            if (finalAdapterSecretFields.includes(envInput.key)) {
+              normalizedAdapter.adapterConfig[envInput.key] = binding;
+              continue;
+            }
+            const normalizedEnv = isPlainRecord(normalizedAdapter.adapterConfig.env)
+              ? normalizedAdapter.adapterConfig.env
+              : {};
+            normalizedAdapter.adapterConfig.env = { ...normalizedEnv, [envInput.key]: binding };
+          }
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
