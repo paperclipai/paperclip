@@ -332,6 +332,15 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="openai"]')).toBeNull();
   });
 
+  it("titles the Google AI connector after Antigravity and Gemini", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("google")] });
+    await renderBrowse(false);
+    const google = container.querySelector('[data-app-slug="google"]');
+    expect(google?.querySelector("h2")?.textContent).toBe("Google Antigravity and Gemini");
+    expect(google?.textContent).toContain("Connect Google Antigravity accounts or Gemini API keys for your agents.");
+    expect(container.querySelector('[aria-label="Connect Google Antigravity and Gemini"]')).not.toBeNull();
+  });
+
   it("does not advertise Tailscale setup or request tailnets for non-instance-admin members", async () => {
     boardAccessMock.mockResolvedValue({ source: "session", isInstanceAdmin: false });
     await renderBrowse(false);

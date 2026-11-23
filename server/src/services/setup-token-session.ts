@@ -320,6 +320,21 @@ export interface SetupTokenReapResult {
   failed: number;
 }
 
+function releaseFailureLink(error: unknown): string {
+  const name = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : "unknown error";
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? `${name} (${code})` : name;
+}
+
+function releaseFailureCause(error: unknown): string {
+  const links: string[] = [];
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 4; depth++) {
+    links.push(releaseFailureLink(current));
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return links.join(" > ");
+}
+
 /**
  * The shared setup-token reap logic. It reads the durable store and releases any
  * lease whose session is terminal, past its deadline, or already consumed. It
@@ -350,9 +365,9 @@ export async function reapSetupTokenLeases(
         adapterType: record.adapterType,
       });
       released += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      log(`[paperclip] Setup-token reaper: a lease release failed; it stays retryable. Cause: ${releaseFailureCause(error)}.`);
     }
   }
   return { released, failed };
