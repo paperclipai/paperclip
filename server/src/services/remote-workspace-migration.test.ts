@@ -586,8 +586,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const inventory = await inventoryRemoteWorkspaceMigration(db, f);
     if (mode !== "finalized") {
-      expect(inventory).toMatchObject({ eligible: false, details: expect.arrayContaining([mode === "prepared" ? expect.any(String)
-        : `execution_finalization_unresolved:${mode === "leased" ? "finalizer_leased" : "sync_finalized_without_receipt"}`]) });
+      expect(inventory).toMatchObject({ eligible: false, details: expect.arrayContaining([`execution_finalization_unresolved:${
+        mode === "leased" ? "finalizer_leased" : mode === "prepared" ? "sync_prepared" : "sync_finalized_without_receipt"}`]) });
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow(/execution_finalization_unresolved|remote_copyback_unresolved/);
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     } else {
@@ -598,6 +598,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         .toMatchObject({ kind: "completed", operation: { id: operationId } });
     }
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+  });
+  it("keeps an online move blocked while a settled run still has to save another workspace of the task", async () => {
+    const f = await failedCopybackFixture(), otherId = randomUUID(), cwd = path.join(root, "other-run-workspace"); await fs.mkdir(cwd);
+    await db.insert(executionWorkspaces).values({ id: otherId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Run workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd });
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, workspaceId: otherId, state: "prepared" } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      details: expect.arrayContaining(["execution_finalization_unresolved:sync_other_workspace"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("execution_finalization_unresolved");
   });
   it("refuses an online move when the finalizer takes its lease during the upload", async () => {
     const f = await failedCopybackFixture();

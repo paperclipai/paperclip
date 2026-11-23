@@ -252,7 +252,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       )).limit(1);
       if (finalized) { settledFinalizationRunIds.push(row.id); continue; }
     }
-    if (settled && reference && reference.workspaceId !== workspace.id) {
+    if (stopped && reference && reference.workspaceId !== workspace.id) {
       const [other] = await db.select({ providerType: executionWorkspaces.providerType, cwd: executionWorkspaces.cwd,
         sourceIssueId: executionWorkspaces.sourceIssueId, metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
         eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.id, reference.workspaceId)));
@@ -272,8 +272,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       continue;
     }
     detail("execution_finalization_unresolved", !native ? "not_native" : !ended ? `run_${row.run.status}` : controllerLeased ? "controller_leased"
-      : finalizerLeased ? "finalizer_leased" : reference?.state === "prepared" ? "sync_prepared"
-      : reference?.state === "finalized" ? "sync_finalized_without_receipt" : reference ? "sync_unrelated_workspace"
+      : finalizerLeased ? "finalizer_leased" : reference && reference.workspaceId !== workspace.id ? "sync_other_workspace"
+      : reference?.state === "prepared" ? "sync_prepared" : reference ? "sync_finalized_without_receipt"
       : row.run.runnerProfileJson?.remoteWorkspace != null ? "remote_run" : row.resultId !== null ? "result_recorded"
       : ["observed", "retryable_failure"].includes(row.phase) ? "legacy_finalizer_needs_maintenance" : `phase_${row.phase}`);
   }
