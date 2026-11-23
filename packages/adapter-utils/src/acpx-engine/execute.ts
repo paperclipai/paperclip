@@ -2321,6 +2321,7 @@ async function buildRuntime(input: {
   // The 17 fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
+  const sessionIdentityEnv = input.deps.sessionEnvironmentIdentity?.(resolvedAdapterEnv, config) ?? resolvedAdapterEnv;
   let fingerprintIdentity: SessionFingerprintIdentity = {
     ...(input.ctx.agentIdentity ? { agentIdentityKeyId: input.ctx.agentIdentity.keyId } : {}),
     acpxAgent,
@@ -2360,14 +2361,14 @@ async function buildRuntime(input: {
     // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
     // Managed SSH identity uses the selected account's stable session identity;
     // temporary credential homes and token refreshes affect only the launch env.
-    adapterEnvHash: shortHash(input.deps.sessionEnvironmentIdentity?.(resolvedAdapterEnv, config) ?? (
-      useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
-        ? managedAiSessionFingerprintConfig(
-          { env: resolvedAdapterEnv, managedAiConnection: config.managedAiConnection },
-          asString(resolvedAdapterEnv.HOME, "") || undefined,
-        )
-        : resolvedAdapterEnv
-    )),
+    // An adapter projection is applied first, so it adds to that normalization
+    // instead of replacing it.
+    adapterEnvHash: shortHash(useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      ? managedAiSessionFingerprintConfig(
+        { env: sessionIdentityEnv, managedAiConnection: config.managedAiConnection },
+        asString(resolvedAdapterEnv.HOME, "") || undefined,
+      )
+      : sessionIdentityEnv),
   };
   if (useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && config.managedAiConnection && env.HOME) {
     const managedHome = path.resolve(env.HOME);

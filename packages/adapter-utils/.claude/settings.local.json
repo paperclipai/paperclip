@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/csteeg/Projects/paperclip-draft-ci/packages/adapter-utils/scripts/paperclip-issue-update.sh:*)",
+      "Bash(/home/csteeg/Projects/paperclip-draft-ci/packages/adapter-utils/scripts/paperclip:*)",
+      "Bash(curl:*)",
+      "Bash(env)",
+      "Bash(env:*)"
+    ],
+    "additionalDirectories": [
+      "/home/csteeg/.local/share/paperclip/instances/default/companies/company-1",
+      "/home/csteeg/.local/share/paperclip/instances/default/companies/company-1/acp-engine/agents/agent-1",
+      "/tmp/paperclip-acpx-skills-0J7M3J/state",
+      "/tmp/paperclip-acpx-skills-51meoA/state",
+      "/tmp/paperclip-acpx-skills-7nSCTD/state",
+      "/tmp/paperclip-acpx-skills-EjEXJK/state",
+      "/tmp/paperclip-acpx-skills-dJHnjn/state",
+      "/tmp/paperclip-acpx-skills-jbdG32/state",
+      "/tmp/paperclip-acpx-skills-lvRMwQ/state"
+    ],
+    "defaultMode": "default"
+  }
+}

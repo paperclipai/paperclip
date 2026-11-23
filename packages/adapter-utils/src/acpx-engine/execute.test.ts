@@ -4728,7 +4728,10 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
           XDG_DATA_HOME: path.join(homes[turn]!, "data"), OPENAI_API_KEY: `fixture-token-${turn}`, USER_OPTION: "kept" }, mode: "persistent" });
       const config = configForTurn(0);
       let failTurn = false;
+      // An adapter identity projection (Claude installs one for every ACP run)
+      // must add to the SSH managed-home normalization, not replace it.
       const options = { authToken: "run-fixture", executionTarget, prepareRemoteManagedHome: seam, stagedRuntimes,
+        sessionEnvironmentIdentity: (env: Readonly<Record<string, string>>) => ({ ...env }),
         onStartTurn: () => { if (failTurn) throw new Error("fixture SSH turn failed"); } };
       const result = await runExecutor(config, options);
       let savedParams = result.result.sessionParams;
