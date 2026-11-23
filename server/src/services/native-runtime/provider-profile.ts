@@ -455,7 +455,11 @@ export function claudeRunnerUnsupportedSettings(config: Record<string, unknown>)
  */
 export function resolvePaperclipRunnerProviderProfile(
   adapterConfig: unknown,
-  context: { companyId?: string } = {},
+  context: {
+    companyId?: string;
+    /** The execution target's platform, when known: a pending Antigravity grant must name it. */
+    candidateTarget?: { platform: string; architecture: string };
+  } = {},
 ): PaperclipRunnerProviderProfile {
   const config = asRecord(adapterConfig);
   const candidate = config.provider ?? "codex";
@@ -608,7 +612,7 @@ export function resolvePaperclipRunnerProviderProfile(
     if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
     if (pendingAcpxProfile.value === "antigravity") {
       try {
-        if (resolveAntigravityCandidateAdmission({ companyId: context.companyId, model }, process.env)) {
+        if (resolveAntigravityCandidateAdmission({ companyId: context.companyId, model, target: context.candidateTarget }, process.env)) {
           return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: "antigravity" };
         }
       } catch {

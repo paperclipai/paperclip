@@ -45,6 +45,11 @@ COPY cli/package.json ./cli/package.json
 ARG PAPERCLIP_RUNNER_LOCK_SHA256
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
+# `antigravity` downloads its pinned ~274 MB archive into memory, patches it
+# (about 2.4 GB peak, outside the JS heap bound below) and keeps only the
+# ~850 MB patched closure in /provider-pack; the archive never touches disk.
+# Its patcher refuses group- or world-writable inputs, so the RUN below drops
+# shared write bits a umask-002 build context would otherwise carry in.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 # pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
 # Subtract all available CPUs to select its minimum (one tarball worker).
@@ -58,6 +63,7 @@ RUN if ! printf '%s' "${PAPERCLIP_RUNNER_LOCK_SHA256}" | grep -Eqx '[0-9a-f]{64}
     && export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
     && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
+    && chmod -R go-w /workspace \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...' \
     && pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
@@ -169,8 +175,8 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.160.0"; \
-    test "$(claude --version)" = "2.1.286 (Claude Code)"; \
+    test "$(codex --version)" = "codex-cli 0.170.0"; \
+    test "$(claude --version)" = "2.1.328 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.34"; \
     test "$(acpx --version)" = "0.22.0"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \

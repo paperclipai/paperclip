@@ -208,6 +208,11 @@ vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/agentChats", () => ({ agentChatsApi: mockAgentChatsApi }));
+const mockCaptureProductEvent = vi.hoisted(() => vi.fn());
+vi.mock("../lib/analytics/product-analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analytics/product-analytics")>()),
+  captureProductAnalyticsEvent: mockCaptureProductEvent,
+}));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
@@ -1462,6 +1467,26 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(mockCompany.setSelectedCompanyId).toHaveBeenCalledWith("c1", { source: "route_sync" });
         expect(mockIssuesApi.create).not.toHaveBeenCalled();
         expect(mockProjectsApi.create).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("keeps onboarding analytics on the new company when the old launch settles late", async () => {
+      let settleLaunch!: (value: { id: string }) => void;
+      mockAgentChatsApi.startOnboarding.mockImplementationOnce(() => new Promise((resolve) => { settleLaunch = resolve; }));
+      const { root, queryClient } = await openSavedReview("/SC/onboarding");
+      try {
+        await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Get started")!.click());
+        mockRouterState.pathname = "/OTHER/onboarding";
+        await renderWizardView(root, queryClient);
+        for (let tick = 0; tick < 8; tick++) await flushReact();
+        await act(async () => settleLaunch({ id: "onboarding-chat" }));
+        for (let tick = 0; tick < 4; tick++) await flushReact();
+        expect(mockNavigate).not.toHaveBeenCalled();
+        mockCaptureProductEvent.mockClear();
+        mockRouterState.pathname = "/OTHER/dashboard";
+        await renderWizardView(root, queryClient);
+        for (let tick = 0; tick < 4; tick++) await flushReact();
+        expect(mockCaptureProductEvent).toHaveBeenCalledWith("onboarding_dismissed", { step: "create_agent" });
       } finally { await act(async () => root.unmount()); }
     });
 

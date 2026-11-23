@@ -1,3 +1,9 @@
+import {
+  hasVisibleRunAnswer,
+  LEGACY_WITHHELD_RUN_COMMENT,
+  presentationDecisionCommentId,
+  semanticProgressCommentIds,
+} from "@/lib/run-answer-visibility";
 import { imagePreparationReceiptIds } from "./task-chat/image-resources";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
@@ -306,8 +312,6 @@ function isNativePaperclipRunnerRun(
     run?.runtimeMode === "native" && run.adapterType === "paperclip_runner"
   );
 }
-const LEGACY_WITHHELD_RUN_COMMENT =
-  "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
 function acceptedSemanticResult(
   value: unknown,
@@ -348,42 +352,6 @@ function acceptedSemanticResultDisposition(value: unknown): string | null {
     : null;
 }
 
-function presentationDecisionCommentId(
-  value: unknown,
-): string | null | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const decision = (value as Record<string, unknown>).presentationDecision;
-  if (!decision || typeof decision !== "object" || Array.isArray(decision))
-    return undefined;
-  const record = decision as Record<string, unknown>;
-  if (record.schema !== "paperclip.run_presentation_decision.v1")
-    return undefined;
-  return typeof record.commentId === "string" && record.commentId.trim()
-    ? record.commentId
-    : null;
-}
-
-function semanticProgressCommentIds(value: unknown): Set<string> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return new Set();
-  const receipts = (value as Record<string, unknown>).semanticToolReceipts;
-  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts))
-    return new Set();
-  const ids = new Set<string>();
-  for (const receipt of Object.values(receipts)) {
-    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
-      continue;
-    const record = receipt as Record<string, unknown>;
-    if (record.operationId !== "report_progress") continue;
-    const result = record.result;
-    if (!result || typeof result !== "object" || Array.isArray(result))
-      continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId) ids.add(commentId);
-  }
-  return ids;
-}
 
 function acceptedSemanticResultVerificationCaveats(value: unknown) {
   const runResult =
@@ -1046,14 +1014,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const meta = linkedRunMetaById.get(run.id);
       if (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
         interactions?.some(interaction => interaction.sourceRunId === run.id && interaction.status === "pending")) continue;
-      const presentationCommentId = presentationDecisionCommentId(meta?.resultJson);
-      const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
-      if (projectedComments.some(comment =>
-        comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
-        comment.body !== LEGACY_WITHHELD_RUN_COMMENT && !progressCommentIds.has(comment.id) &&
-        (comment.runId ?? comment.createdByRunId ?? comment.derivedCreatedByRunId) === run.id &&
-        (presentationCommentId === undefined || presentationCommentId === comment.id),
-      )) deferred.add(run.id);
+      if (hasVisibleRunAnswer(projectedComments, run.id, meta?.resultJson)) deferred.add(run.id);
     }
     return deferred;
   }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);

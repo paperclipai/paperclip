@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { classifyWorkspaceRestorationError, GitCacheRestorationFailure } from "../services/git-workspace-restoration.js";
+import type { heartbeatRuns } from "@paperclipai/db";
+import {
+  classifyWorkspaceRestorationError,
+  GIT_CACHE_RESTORATION_FAILED_CODE,
+  GitCacheRestorationFailure,
+} from "../services/git-workspace-restoration.js";
+import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { failureCauseFromError } from "../services/heartbeat/run-failure-cause.js";
 import { workspaceReopenDiagnostic } from "../services/execution-workspaces.js";
 import { GitConnectionFailureError } from "../services/git-connection-failure.js";
 
@@ -55,5 +62,21 @@ describe("workspace restoration diagnostic", () => {
     expect(classifyWorkspaceRestorationError(Object.assign(new Error("timeout"), { name: "TimeoutError" }))).toBe("timeout");
     expect(classifyWorkspaceRestorationError(gitError("", { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }))).toBe("git_command");
     expect(classifyWorkspaceRestorationError(Object.assign(new Error("unknown"), { code: "EUNRECOGNIZED" }))).toBe("unknown");
+  });
+
+  it("gives every restoration failure a stable code that run diagnostics and failure causes record", () => {
+    const run = { id: "run-restore", companyId: "company-restore", errorCode: "setup_failed", resultJson: null } as typeof heartbeatRuns.$inferSelect;
+    for (const failure of [
+      new GitCacheRestorationFailure(),
+      new GitCacheRestorationFailure({ step: "saved_commit", kind: "commit_unavailable" }),
+    ]) {
+      expect(failure.code).toBe(GIT_CACHE_RESTORATION_FAILED_CODE);
+      expect(failureCauseFromError(failure)).toBe(GIT_CACHE_RESTORATION_FAILED_CODE);
+      expect(failureCauseFromError(new Error("Workspace reopen failed", { cause: failure }))).toBe(GIT_CACHE_RESTORATION_FAILED_CODE);
+      const exceptions = collectRunFailureDiagnostics(run, { error: failure, phase: "setup" }).exceptions;
+      expect(exceptions.at(-1)?.code).toBe(GIT_CACHE_RESTORATION_FAILED_CODE);
+      expect(classifyWorkspaceRestorationError(failure)).toBe(failure.kind ?? "verification");
+      expect(failure.message).toBe("The saved workspace commit could not be restored. Check repository access and retry.");
+    }
   });
 });

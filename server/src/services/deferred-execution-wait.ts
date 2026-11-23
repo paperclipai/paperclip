@@ -19,13 +19,18 @@ export class PersistedExecutionWaitRefusal extends HttpError {
  * reloading. Pass `publications` when the caller's transaction is still open;
  * they must be published after it commits.
  */
-export async function writeDeferredExecutionWait(db: Db, scope: { companyId: string; requestId: string },
+export async function writeDeferredExecutionWait(db: Db, scope: { companyId: string; requestId: string; issueId?: string; agentId?: string },
   condition: Record<string, unknown>, options: { replace?: boolean; publications?: ActivityPublication[] } = {}) {
   const pending: ActivityPublication[] = [];
+  const receipt = and(
+    eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
+    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    scope.issueId ? sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}` : undefined,
+    scope.agentId ? eq(agentWakeupRequests.agentId, scope.agentId) : undefined,
+  );
   const saved = await db.transaction(async tx => {
     const [current] = await tx.select({ payload: agentWakeupRequests.payload, agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests)
-      .where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
-        eq(agentWakeupRequests.status, "deferred_issue_execution"))).for("update");
+      .where(receipt).for("update");
     if (!current) return false;
     const previous = current.payload?.executionWait;
     const previousReason = previous && typeof previous === "object" && !Array.isArray(previous)
@@ -37,8 +42,7 @@ export async function writeDeferredExecutionWait(db: Db, scope: { companyId: str
         ${options.replace ? sql`'{}'::jsonb` : sql`coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb)`}
           || ${JSON.stringify(condition)}::jsonb)`,
       updatedAt: new Date(),
-    }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
-      eq(agentWakeupRequests.status, "deferred_issue_execution"))).returning({ id: agentWakeupRequests.id });
+    }).where(receipt).returning({ id: agentWakeupRequests.id });
     const issueId = current.payload?.issueId;
     if (saved && reasonChanged && typeof issueId === "string" && issueId && typeof condition.reason === "string") {
       const { publication } = await persistActivity(tx as unknown as Db, { companyId: scope.companyId, actorType: "system",

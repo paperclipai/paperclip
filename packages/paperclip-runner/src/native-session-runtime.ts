@@ -3103,7 +3103,9 @@ export async function executeNativeSession(
       if (await requestContinuationDisposition(event, signal)) return true;
       const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
         event.turnId === persistedSession?.activeTurnId;
-      const restoredInThisExecution = !recovered && ownTurnId !== null && event.turnId === ownTurnId;
+      // The task turn this execution started is its own, whether the session
+      // was opened fresh or resumed from a warm or recovered checkpoint.
+      const restoredInThisExecution = ownTurnId !== null && event.turnId === ownTurnId;
       if (restartContinuationStarted || !(restoredAtStartup || restoredInThisExecution) ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
@@ -3428,7 +3430,7 @@ export async function executeNativeSession(
           // the fenced checkpoint right before the submit. A new session's
           // normal path adds nothing before turn.start.
           if (recovered) await checkpoint();
-          ({ turnId: ownTurnId } = await session.startTurn({
+          const startedTaskTurn = await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
@@ -3438,7 +3440,10 @@ export async function executeNativeSession(
               input.provider.kind === "cursor_cloud"
                 ? "default"
                 : "executionMode" in input ? input.executionMode : "default",
-          }));
+          });
+          // Only a turn carrying this run's task work can be continued after a
+          // mid-run runnerd restore. A disposition-only recovery turn cannot.
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) ownTurnId = startedTaskTurn.turnId;
           await checkpoint();
         }
         settleStartupDecision();

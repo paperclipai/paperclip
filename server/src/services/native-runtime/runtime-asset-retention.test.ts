@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { materializeAsset } from "./runtime-context.js";
-import { removeRuntimeAssetTree, runtimeAssetRetention, RUNTIME_ASSET_RETENTION_MS } from "./runtime-asset-retention.js";
+import { removeRuntimeAssetTree, runtimeAssetRetention, RUNTIME_ASSET_RETENTION_MS, withRuntimeAssetUse } from "./runtime-asset-retention.js";
 
 let home: string;
 const originalHome = process.env.PAPERCLIP_HOME;
@@ -53,5 +53,35 @@ describe("runtime asset retention", () => {
     await worker.tick(new AbortController().signal);
     expect((await fs.stat(asset.rootPath)).isDirectory()).toBe(true);
     expect(worker.nextRunAt()).toBeNull();
+  });
+  it("refreshes a cold lease once for concurrent turns instead of queueing each on the lock", async () => {
+    const digest = "a".repeat(64);
+    const manifests = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "manifests");
+    await fs.mkdir(manifests, { recursive: true });
+    await fs.writeFile(path.join(manifests, `${digest}.json`), "{}");
+    const modes: boolean[] = [];
+    const use = () => withRuntimeAssetUse(digest, async locked => {
+      modes.push(locked);
+      if (locked) await new Promise(resolve => setTimeout(resolve, 50));
+      return locked;
+    });
+    const results = await Promise.all(Array.from({ length: 8 }, use));
+    expect(modes.filter(Boolean)).toHaveLength(1);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await withRuntimeAssetUse(digest, async locked => locked, true)).toBe(true);
+  });
+  it("lets waiters take the lock themselves when the shared refresh records no lease", async () => {
+    const digest = "b".repeat(64);
+    const modes: boolean[] = [];
+    let first = true;
+    const use = () => withRuntimeAssetUse(digest, async locked => {
+      modes.push(locked);
+      if (first) { first = false; await new Promise(resolve => setTimeout(resolve, 20)); throw new Error("refresh failed"); }
+      return locked;
+    });
+    const [leader, ...waiters] = await Promise.allSettled(Array.from({ length: 4 }, use));
+    expect(leader.status).toBe("rejected");
+    expect(waiters).toEqual(Array.from({ length: 3 }, () => ({ status: "fulfilled", value: true })));
+    expect(modes).toEqual([true, true, true, true]);
   });
 });

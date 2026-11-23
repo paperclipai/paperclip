@@ -1,5 +1,5 @@
 import { canonicalRemoteCopilotCommand, copilotDeathArguments, selectOwnedCopilotProcess } from "./copilot-provider-death.js";
-import { expectedNativeBootstrap, expectedNativeModuleGuard, KIMI_FAULT_SNAPSHOT, kimiFaultRuntimeContract, validateKimiProviderDeathReceipt, type KimiProviderDeathReceipt } from "./kimi-provider-fault-contract.js";
+import { expectedNativeBootstrap, expectedNativeModuleGuard, KIMI_FAULT_LAUNCH, KIMI_FAULT_SNAPSHOT, kimiFaultRuntimeContract, validateKimiProviderDeathReceipt, type KimiProviderDeathReceipt } from "./kimi-provider-fault-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { watch, lstatSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
@@ -587,7 +587,7 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       kimiFaultAttempted = true;
       const contract = kimiFaultRuntimeContract("linux-x64");
       const receipt = await rpc({ op: "kimi-provider-death", runtimeEnvironmentLeaseId, contract,
-        bootstrapTemplate: expectedNativeBootstrap(KIMI_FAULT_SNAPSHOT, contract.nodeSha256), guardTemplate: expectedNativeModuleGuard(KIMI_FAULT_SNAPSHOT, []) });
+        bootstrapTemplate: expectedNativeBootstrap(KIMI_FAULT_LAUNCH, KIMI_FAULT_SNAPSHOT, contract.nodeSha256), guardTemplate: expectedNativeModuleGuard(KIMI_FAULT_SNAPSHOT, []) });
       return validateKimiProviderDeathReceipt(receipt, binding!, baseline.processes.root!, runtimeEnvironmentLeaseId);
     },
     async readFile(path) {

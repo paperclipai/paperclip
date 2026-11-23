@@ -1,10 +1,11 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
 export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
-export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
+export { ANTIGRAVITY_DISTRIBUTION_PINS, ANTIGRAVITY_RUNTIME_VERSION, CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { readCodexSkillHomeMarker, removeCodexSkillHomeTree } from "./drivers/codex-skill-home.js";
 export { removeAbandonedSkillStaging } from "./drivers/runtime-context-materializer.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
+export { COPILOT_CLOSURE_SHA256 } from "./drivers/acpx/copilot-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
@@ -85,7 +86,7 @@ export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
-export { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
+export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
@@ -100,6 +101,8 @@ export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  isSettledReleasedRunnerCut,
+  revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,

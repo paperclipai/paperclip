@@ -20,15 +20,14 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The October 2026 refreshes pin Codex 0.160.0, Claude Agent SDK
-0.3.286 (Claude Code 2.1.286), and OpenCode 1.18.34 in the shared provider
-pack. Claude Code 2.1.280 is the minimum for
-[Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
-minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Fable 5.2
-needs Claude Code 2.1.321, so it does not run on Paperclip Runner with this
-image until the provider pack moves past that version. Codex 0.160.0 ships bundled metadata for the
-[GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models);
-GPT-6.2 Sol and Astra need Codex 0.169.1.
+The November 19, 2026 refresh pins Codex 0.170.0 and Claude Agent SDK
+0.3.328 (Claude Code 2.1.328) in the shared provider pack; OpenCode stays at
+1.18.34. Claude Code 2.1.280 is the minimum for
+[Opus 5.5](https://code.claude.com/docs/en/model-config), 2.1.284 for Sonnet 5.5,
+and 2.1.321 for Fable 5.2, so the pinned runtime supports all three and Fable 5.1.
+Codex 0.170.0 ships bundled metadata for
+[GPT-6.2 Sol and Astra](https://learn.chatgpt.com/docs/models) (minimum 0.169.1)
+as well as GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna.
 The sandbox layer pins Grok CLI 1.0.89, Gemini CLI 0.68.0, Kimi Code 2.3.3,
 Cursor CLI 2026.11.17-f532c45, and GitHub CLI 2.105.0 (November 2026
 refresh). The native Cursor provider uses its separately verified distribution,
@@ -180,6 +179,17 @@ Compute its content ID with the same selection:
 `pnpm --silent test:e2e:runner:image-id --candidate-providers=cursor`.
 Candidate assets and the default pack have distinct image identities. Never reuse
 the default image's content ID for a candidate build.
+
+Google Antigravity (`antigravity`) is built only for Linux x64. The builder
+downloads the pinned ~274 MB archive into memory, patches it and keeps only the
+~850 MB patched closure under `provider-assets/antigravity/linux-x64`; it then
+starts the closure once, without credentials, to confirm the runtime version and
+native admission patch. While the profile is pending the pack lists it under
+`candidateProviders`; once the profile is released it moves to `providers` and
+is included without the flag. The controller pack
+(`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`) must be built with the same
+candidate selection and source revision as the image, or the image pack is not
+reused.
 Use each provider branch's recorded version and explicit model. Keep credentials
 out of images. Paid qualification requires bound provider and Daytona credentials,
 inspectable spend, and the shared $100 ceiling recorded in the capability report.

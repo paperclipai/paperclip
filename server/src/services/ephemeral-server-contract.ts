@@ -18,7 +18,8 @@ export { ephemeralServerEnabled };
 
 /** Validate before consumers can generate a replacement local identity. Error
  * messages name settings only, never credential values or connection URLs. */
-export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" | "storageProvider">, env = process.env): string | null {
+export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" | "storageProvider">, env = process.env,
+  options: { allowMissingListener?: boolean } = {}): string | null {
   if (env.PAPERCLIP_EPHEMERAL_SERVER !== "true") return null;
   const refuse = (reason: string): never => { throw new Error(`Volume-free server configuration: ${reason}`); };
   if (config.storageProvider !== "s3" || env.PAPERCLIP_DURABLE_AGENT_FILES !== "true" || env.PAPERCLIP_SHARED_UI_ASSETS !== "true") {
@@ -31,7 +32,16 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
     refuse("a stable PAPERCLIP_DECISION_SIGNING_SECRET of at least 32 characters is required; preserve the existing decision key during migration");
   }
   let runtime: URL, listener: URL;
-  try { runtime = new URL(config.databaseUrl ?? ""); listener = new URL(env.PAPERCLIP_DATABASE_LISTEN_URL ?? ""); }
+  const waiveListener = options.allowMissingListener === true && !env.PAPERCLIP_DATABASE_LISTEN_URL?.trim();
+  const runtimeRequired = waiveListener ? "an external postgres DATABASE_URL is required"
+    : "external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required";
+  try { runtime = new URL(config.databaseUrl ?? ""); }
+  catch { return refuse(runtimeRequired); }
+  if (waiveListener) {
+    if (!["postgres:", "postgresql:"].includes(runtime.protocol)) refuse(runtimeRequired);
+    return null;
+  }
+  try { listener = new URL(env.PAPERCLIP_DATABASE_LISTEN_URL ?? ""); }
   catch { return refuse("external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required"); }
   if (![runtime, listener].every(url => ["postgres:", "postgresql:"].includes(url.protocol))
     || runtime.username !== listener.username || runtime.password !== listener.password || runtime.pathname !== listener.pathname

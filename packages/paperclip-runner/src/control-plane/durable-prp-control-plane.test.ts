@@ -220,7 +220,9 @@ it("resumes a checkpoint saved for the parked build on a relaunched newer build,
       expectedRunnerVersion: checkpoint.runnerVersion, expectedRunnerDigest: checkpoint.runnerDigest });
     claiming.setCheckpointPersistence(async value => { checkpoint = value; });
     const ticket = claiming.issueBootstrapTicket();
+    expect(claiming.expectedRunner()).toEqual({ version: expectedRunnerVersion, digest: expectedRunnerDigest });
     claiming.acceptRelaunchedRunner(ticket, relaunched);
+    expect(claiming.expectedRunner()).toEqual(relaunched);
     await claiming.flushCheckpoint();
     expect(checkpoint).toMatchObject({ runnerVersion: relaunched.version, runnerDigest: relaunched.digest });
     await claiming.stop();

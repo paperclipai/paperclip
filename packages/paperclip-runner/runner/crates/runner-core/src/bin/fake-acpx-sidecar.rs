@@ -225,6 +225,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         }
+        // `--open-rejection <file>`: while the file holds `<scope> <code>`,
+        // reject `session.open` with that sidecar error code. Scope `any`
+        // rejects every open; `recovering` only an open that reloads a saved
+        // conversation (one that names its expected identity).
+        if command == "session.open" {
+            let rejection = args
+                .windows(2)
+                .find(|pair| pair[0] == "--open-rejection")
+                .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
+                .unwrap_or_default();
+            if let Some((scope, code)) = rejection.trim().split_once(' ') {
+                if scope == "any"
+                    || (scope == "recovering" && !request["params"]["expectedIdentity"].is_null())
+                {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                            "error":{"code":code,"message":"The saved conversation cannot be reloaded.","retryable":false}}),
+                    )?;
+                    continue;
+                }
+            }
+        }
         if command == "turn.cancel"
             && provider_turn_tokens()
                 .iter()
@@ -935,6 +958,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
+            | "resolutions-error-detail"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
             | "resolutions-snapshot-wrong-session"
@@ -1614,6 +1638,15 @@ fn bootstrap_success(
                     && params.pointer("/error/message").and_then(Value::as_str)
                         == Some("Paperclip semantic operation failed")
                     && !params.to_string().contains("violet-internal-diagnostic-4821")
+            } else if mode == "resolutions-error-detail" {
+                params.get("callId").and_then(Value::as_str) == Some("call-1")
+                    && params.get("result").is_none()
+                    && params.pointer("/error/message").and_then(Value::as_str)
+                        == Some(
+                            "Paperclip semantic operation failed: invalid input: \
+                             payload.prompt: too_big, string max 1000",
+                        )
+                    && !params.to_string().contains("violet-prompt-value-4821")
             } else {
                 mode != "resolutions-wrong-ack"
             }
