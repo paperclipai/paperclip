@@ -15,7 +15,7 @@ Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `agentId` | Filter by actor agent |
+| `agentId` | Filter by actor agent. Must be a UUID; an empty value applies no filter. A malformed value returns `400` with validation details. |
 | `entityType` | Filter by entity type (`issue`, `agent`, `approval`) |
 | `entityId` | Filter by specific entity |
 

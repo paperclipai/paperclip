@@ -1,3 +1,5 @@
+import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
+
 export const SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES = [
   "workspace.ready",
   "research.started",
@@ -80,4 +82,26 @@ export function safeNativeChatProgressForEvent(
   if (!isSafeNativeChatProgressEventType(eventType)) return null;
   const phase = SAFE_NATIVE_CHAT_PROGRESS_PHASES[eventType];
   return { phase, text: SAFE_NATIVE_CHAT_PROGRESS_TEXT[phase](agentName) };
+}
+
+export function publicNativeChatProgressText(
+  eventType: string,
+  payload: Record<string, unknown> | null,
+  runId: string,
+): string | null {
+  if (eventType !== "item.completed") return null;
+  const event = payload?.prpEvent as Record<string, unknown> | undefined;
+  if (!event || event.schema !== "paperclip.prp.event.v1" || event.eventType !== eventType || event.runId !== runId) return null;
+  const item = event.payload as Record<string, unknown> | undefined;
+  if (!item || item.kind !== "agentMessage" || item.channel !== "progress" || typeof item.text !== "string" || item.text.length > 16_000) return null;
+  const text = projectSafeChatPublicationText(item.text).replace(/\s+/g, " ").trim();
+  if (!text || text === "Update available in Paperclip.") return null;
+  const sentences = text.match(/.+?(?:[.!?](?=\s|$)|$)/g) ?? [];
+  let note = "";
+  for (const sentence of sentences.slice(0, 2)) {
+    const next = [note, sentence.trim()].filter(Boolean).join(" ");
+    if (next.length > 400) break;
+    note = next;
+  }
+  return note || null;
 }
