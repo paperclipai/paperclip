@@ -133,6 +133,11 @@ model to answer is therefore NOT RUN, not failed and not passed.
 4. Not supported: Google sign-in in a cloud sandbox, warm sessions,
    Orchestrator mode, darwin-x64.
 
+While the profile is pending, a cloud (Daytona) run needs an operator grant
+for the company and exact model that names linux-x64 and the patched linux-x64
+closure, with an API-key connection, per-turn. The runner E2E harness stages
+that grant for Daytona cells; a local cell's grant names the host instead.
+
 ### Launch integrity follow-up (2026-11-22)
 
 The sealed verified store removed the per-launch closure copy, but its first
