@@ -16,7 +16,7 @@ export {
   AGY_GLOBAL_SKILLS_HOME_SEGMENTS,
   AGY_AGENT_SKILL_ROOT_SEGMENTS,
 } from "./skills.js";
-export { listAgyModels, inferModelProvider } from "./models.js";
+export { listAgyModels, refreshAgyModels, inferModelProvider } from "./models.js";
 export { listAgyAgents as listAgents, listAgyAgents, parseAgyAgentsOutput } from "./agents.js";
 export {
   parseAgyJsonl,

@@ -144,6 +144,7 @@ import {
   testEnvironment as agyTestEnvironment,
   sessionCodec as agySessionCodec,
   listAgyModels,
+  refreshAgyModels,
 } from "@paperclipai/adapter-agy-local/server";
 import {
   agentConfigurationDoc as agyAgentConfigurationDoc,
@@ -1037,6 +1038,7 @@ const agyLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("agy_local") ?? undefined,
   models: agyModels,
   listModels: listAgyModels,
+  refreshModels: refreshAgyModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",

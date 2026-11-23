@@ -1,5 +1,61 @@
+import { createHash } from "node:crypto";
 import { models as fallbackModels } from "../index.js";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  runChildProcess,
+  sanitizeInheritedPaperclipEnv,
+} from "@paperclipai/adapter-utils/server-utils";
+
+// Model discovery spawns the host CLI, so repeated catalog reads share one
+// result for a short window instead of spawning a process per request (the
+// same 60-second TTL the opencode-local and pi-local adapters use). Any
+// company member can hit the catalog route, so an uncached read is a cheap
+// way to exhaust host process capacity.
+const MODELS_CACHE_TTL_MS = 60_000;
+
+type AgyModel = { id: string; label: string };
+
+const discoveryCache = new Map<string, { expiresAt: number; models: AgyModel[] }>();
+const discoveryInFlight = new Map<string, Promise<AgyModel[]>>();
+const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
+const VOLATILE_ENV_KEY_EXACT = new Set([
+  "PWD",
+  "OLDPWD",
+  "SHLVL",
+  "_",
+  "TERM_SESSION_ID",
+  "HOME",
+]);
+
+function isVolatileEnvKey(key: string): boolean {
+  if (VOLATILE_ENV_KEY_EXACT.has(key)) return true;
+  return VOLATILE_ENV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
+  const envKey = Object.entries(env)
+    .filter(([key]) => !isVolatileEnvKey(key))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${createHash("sha256").update(value).digest("hex")}`)
+    .join("\n");
+  return `${command}\n${cwd}\n${envKey}`;
+}
+
+function pruneExpiredDiscoveryCache(now: number) {
+  for (const [key, value] of discoveryCache.entries()) {
+    if (value.expiresAt <= now) discoveryCache.delete(key);
+  }
+}
+
+// The discovery probe runs with a sanitized copy of the server environment:
+// no Paperclip control-plane variables and no agent identity variables leak
+// into the spawned CLI (mirrors pi-local).
+function resolveDiscoveryEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(sanitizeInheritedPaperclipEnv(process.env))) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
 
 export function parseAgyModelsOutput(output: string): { id: string; label: string }[] {
   const models: { id: string; label: string }[] = [];
@@ -30,18 +86,20 @@ export function parseAgyModelsOutput(output: string): { id: string; label: strin
   return models;
 }
 
-export async function listAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
+export async function discoverAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
   try {
-    const runId = `agy-models-${Date.now()}`;
-    const proc = await runChildProcess(runId, command, ["models"], {
-      cwd: process.cwd(),
-      env: Object.fromEntries(
-        Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string"),
-      ),
-      timeoutSec: 15,
-      graceSec: 3,
-      onLog: async () => {},
-    });
+    const proc = await runChildProcess(
+      `agy-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["models"],
+      {
+        cwd: process.cwd(),
+        env: resolveDiscoveryEnv(),
+        timeoutSec: 15,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
 
     if (proc.exitCode === 0 && proc.stdout.trim().length > 0) {
       const discovered = parseAgyModelsOutput(proc.stdout);
@@ -54,6 +112,43 @@ export async function listAgyModels(command = "agy"): Promise<{ id: string; labe
   }
 
   return fallbackModels;
+}
+
+export async function listAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
+  const cwd = process.cwd();
+  const key = discoveryCacheKey(command, cwd, resolveDiscoveryEnv());
+  const now = Date.now();
+  pruneExpiredDiscoveryCache(now);
+  const cached = discoveryCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.models;
+
+  // Concurrent cache misses share one spawn instead of each starting its own.
+  const inFlight = discoveryInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const promise = discoverAgyModels(command)
+    .then((models) => {
+      discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });
+      return models;
+    })
+    .finally(() => {
+      if (discoveryInFlight.get(key) === promise) discoveryInFlight.delete(key);
+    });
+  discoveryInFlight.set(key, promise);
+  return promise;
+}
+
+export async function refreshAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
+  const cwd = process.cwd();
+  const key = discoveryCacheKey(command, cwd, resolveDiscoveryEnv());
+  const models = await discoverAgyModels(command);
+  discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });
+  return models;
+}
+
+export function resetAgyModelsCacheForTests() {
+  discoveryCache.clear();
+  discoveryInFlight.clear();
 }
 
 export function inferModelProvider(model: string): string {
