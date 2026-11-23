@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues,
-  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolInvocations,
+  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations,
 } from "@paperclipai/db";
 import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
@@ -64,7 +64,29 @@ function googleDocument(text: string) {
 
 const MCP_TOOLS: Record<string, string[]> = {
   "gmailmcp.googleapis.com": ["get_message", "search_threads", "create_draft"],
-  "docsmcp.googleapis.com": ["read_doc"],
+  "docsmcp.googleapis.com": ["read_doc", "update_doc"],
+};
+
+const GOOGLE_MCP_SCHEMAS: Record<string, Record<string, unknown>> = {
+  read_doc: {
+    type: "object",
+    properties: { documentId: { type: "string" }, commentsIncluded: { type: "boolean" } },
+    required: ["documentId"],
+  },
+  update_doc: {
+    type: "object",
+    properties: {
+      documentId: { type: "string" },
+      requests: { type: "array", items: { type: "object" } },
+      writeControl: { type: "object", properties: { requiredRevisionId: { type: "string" }, targetRevisionId: { type: "string" } } },
+    },
+    required: ["documentId", "requests"],
+  },
+  get_message: {
+    type: "object",
+    properties: { messageId: { type: "string" }, messageFormat: { type: "string", enum: ["MINIMAL", "FULL_CONTENT", "METADATA_ONLY"] } },
+    required: ["messageId"],
+  },
 };
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -93,7 +115,7 @@ const support = await getEmbeddedPostgresTestSupport();
     GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] = transport;
   }
 
-  async function connectWorkspace(options: { permissions?: string[]; askFirst?: string[] } = {}) {
+  async function connectWorkspace(options: { permissions?: string[]; askFirst?: string[]; off?: string[] } = {}) {
     const permissions = (options.permissions ?? ["gmail.readonly", "gmail.compose", "documents.readonly"]).map(scope);
     const [company] = await db.insert(companies).values({ name: `Google REST ${randomUUID()}`, issuePrefix: `GR${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
     const userId = `google-rest-${randomUUID()}`;
@@ -159,7 +181,9 @@ const support = await getEmbeddedPostgresTestSupport();
       const result = body.method === "initialize"
         ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "google-fixture", version: "1" } }
         : body.method === "tools/list"
-          ? { tools: (MCP_TOOLS[url.hostname] ?? []).map((name) => ({ name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: name !== "create_draft" } })) }
+          ? { tools: (MCP_TOOLS[url.hostname] ?? []).map((name) => ({ name, description: `Google's ${name}.`,
+            inputSchema: GOOGLE_MCP_SCHEMAS[name] ?? { type: "object", properties: {} },
+            annotations: { readOnlyHint: name !== "create_draft" && name !== "update_doc" } })) }
           : { content: [{ type: "text", text: "ok from Google MCP" }] };
       return Response.json({ jsonrpc: "2.0", id: body.id, result });
     });
@@ -181,7 +205,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: `Inbox ${randomUUID()}`, role: "engineer",
       adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
     await service.finishGalleryAppConnection(company!.id, connected.connectionId, {
-      enabledCatalogEntryIds: completed.catalog.map((entry) => entry.id),
+      enabledCatalogEntryIds: completed.catalog.filter((entry) => !options.off?.includes(entry.toolName)).map((entry) => entry.id),
       askFirstCatalogEntryIds: completed.catalog.filter((entry) => options.askFirst?.includes(entry.toolName)).map((entry) => entry.id),
       access: { agentIds: [agent!.id] },
     }, actor);
@@ -567,6 +591,56 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.call("gmail__list_threads", { labelIds: ["INBOX"] })).resolves.toMatchObject({ status: "completed" });
       await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
       expect(f.restRequests.map((request) => request.path)).toContain("/gmail/v1/users/me/messages/msg1");
+    });
+
+    it("advertises the REST definitions to agents for a connection saved with Google's MCP schemas, with no refresh, and the edit succeeds", async () => {
+      for (const service of LAUNCH_SERVICES) useTransport(service, "google_mcp");
+      const f = await connectWorkspace({ permissions: ["gmail.readonly", "documents.readonly", "documents"] });
+      const saved = f.catalog.find((entry) => entry.toolName === "docs__update_doc")!;
+      expect(saved.inputSchema).toEqual(GOOGLE_MCP_SCHEMAS.update_doc);
+      const before = await f.toolNamed("docs__update_doc");
+      expect(before.parametersSchema).toMatchObject({ required: ["documentId", "requests"] });
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      f.restRequests.length = 0;
+      const refreshesBefore = f.mcpRequests.length;
+
+      const update = await f.toolNamed("docs__update_doc");
+      const restDefinition = restDispatch.listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc")!;
+      expect(update.parametersSchema).toEqual(restDefinition.inputSchema);
+      expect((update.parametersSchema as { required: string[] }).required).toContain("writeControl");
+      expect(update.description).toBe(restDefinition.description);
+      expect(update.description).toContain("requiredRevisionId");
+      const read = await f.toolNamed("docs__read_doc");
+      expect(read.parametersSchema).toEqual(restDispatch.listGoogleWorkspaceRest("docs").find((tool) => tool.name === "read_doc")!.inputSchema);
+
+      const document = await f.call("docs__read_doc", { documentId: "doc1" });
+      expect(JSON.stringify(document.result)).toContain("rev-1");
+      await expect(f.call("docs__update_doc", { documentId: "doc1", requests: [{ insertText: { text: "Hi", location: { index: 1 } } }],
+        writeControl: { requiredRevisionId: "rev-1" } })).resolves.toMatchObject({ status: "completed" });
+      expect(f.restRequests.map((request) => `${request.method} ${request.path}`)).toEqual(["GET /v1/documents/doc1", "POST /v1/documents/doc1:batchUpdate"]);
+      expect(f.mcpRequests).toHaveLength(refreshesBefore);
+    });
+
+    it("on the first refresh after the switch, releases actions held for review and keeps Off and Ask first", async () => {
+      for (const service of LAUNCH_SERVICES) useTransport(service, "google_mcp");
+      const f = await connectWorkspace({ off: ["gmail__search_threads"], askFirst: ["gmail__create_draft"] });
+      const held = f.catalog.find((entry) => entry.toolName === "gmail__get_message")!;
+      await db.update(toolCatalogEntries).set({ status: "quarantined", quarantineReason: "pending_review", quarantinedAt: new Date() })
+        .where(eq(toolCatalogEntries.id, held.id));
+      const listed = async () => (await f.gateway.listToolsForSession(f.session.token))
+        .filter((tool) => tool.connectionId === f.connectionId).map((tool) => tool.upstreamToolName).sort();
+      expect(await listed()).toEqual(["docs__read_doc", "gmail__create_draft"]);
+
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(refreshed.catalog.find((entry) => entry.toolName === "gmail__get_message")).toMatchObject({ status: "active", quarantineReason: null });
+      expect(refreshed.catalog.filter((entry) => entry.status !== "active")).toEqual([]);
+      const after = await listed();
+      expect(after).toContain("gmail__get_message");
+      expect(after).not.toContain("gmail__search_threads");
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
+        .rejects.toMatchObject({ reasonCode: "approval_required" });
     });
   });
 

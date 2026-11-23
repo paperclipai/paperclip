@@ -42,7 +42,7 @@ Last updated: November 23, 2026.
 | Nov 17 | **The gateway sets the REST result size limit** | The REST tools enforce the number the gateway passes: the gateway's MCP response limit less framing, 999,885 bytes. A result Google's MCP server could deliver is also delivered over REST. See the folder README's "Result size". |
 | Nov 23 | **All six launch services switched to REST now** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `paperclip_rest`. This replaces the Nov 17 "one service at a time after a live test" rule: live testing happens on the staging tester right after the switch deploys, and problems are fixed forward. Chat, People and Search stay on `google_mcp`. |
 | Nov 23 | **Write actions default to "Allowed"** | No approval step by default, including actions labelled destructive. Operators can still set Ask first per action. |
-| Nov 23 | **Images by public web address are allowed in Docs and Slides** | `insertInlineImage`, `replaceImage`, `createImage` and `replaceAllShapesWithImage` may use any public link. Links to Drive or Docs files stay refused (Nov 17 rule). |
+| Nov 23 | **Images by public web address are allowed in Docs and Slides** | `insertInlineImage`, `replaceImage`, `createImage` and `replaceAllShapesWithImage` may use any public link. Links to Drive or Docs files stay refused (Nov 17 rule). Accepted risk: Google, not Paperclip, fetches the address, and Paperclip's own requests still go only to the allowed Google hosts. What remains is that an agent could put data in the address it chooses. Owner decision; do not restrict it. |
 
 ## What has shipped
 

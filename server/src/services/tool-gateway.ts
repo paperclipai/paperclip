@@ -33,7 +33,7 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
+import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint, googleWorkspaceRestToolDefinition } from "./google-workspace-rest-dispatch.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -2018,13 +2018,16 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
+        const currentDefinition = connection.config.sourceTemplateKey === "google-workspace"
+          ? googleWorkspaceRestToolDefinition(catalogEntry.toolName) : null;
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
-          catalogEntry.inputSchema ?? {},
+          (currentDefinition?.inputSchema as Record<string, unknown> | undefined) ?? catalogEntry.inputSchema ?? {},
           catalogEntry.toolName,
         );
-        const outputSchema = catalogEntry.outputSchema ?? null;
-        const annotations = catalogEntry.annotations ?? {};
+        const outputSchema = (currentDefinition?.outputSchema as Record<string, unknown> | undefined) ?? catalogEntry.outputSchema ?? null;
+        const annotations = (currentDefinition?.annotations as Record<string, unknown> | undefined) ?? catalogEntry.annotations ?? {};
+        const description = currentDefinition?.description ?? catalogEntry.description;
         const risk = riskFromCatalogEntry(catalogEntry);
         const onDemandTools = readOnDemandToolsEnabled(connection);
         const providerMetadata: ConnectedMcpGatewayMetadata = {
@@ -2056,7 +2059,7 @@ export function createToolGatewayService(
             gmailArchiveToolDescription(
               connection,
               catalogEntry.toolName,
-              googleChatToolDescription(connection, catalogEntry.toolName, catalogEntry.description),
+              googleChatToolDescription(connection, catalogEntry.toolName, description),
             ) ??
             `Connected MCP tool ${catalogEntry.toolName} from ${connection.name}.`,
           parametersSchema: inputSchema,

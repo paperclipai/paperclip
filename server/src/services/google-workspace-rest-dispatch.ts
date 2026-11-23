@@ -2,6 +2,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   GOOGLE_WORKSPACE_TOOL_TRANSPORT,
   googleWorkspaceServiceToolNames,
+  googleWorkspaceToolTarget,
   type GoogleWorkspaceService,
   type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
@@ -39,6 +40,12 @@ export function googleWorkspaceRestAuditEndpoint(service: GoogleWorkspaceService
 
 export function listGoogleWorkspaceRest(service: GoogleWorkspaceService): Tool[] {
   return listGoogleWorkspaceRestTools(restService(service));
+}
+
+export function googleWorkspaceRestToolDefinition(toolName: string): Tool | null {
+  const target = googleWorkspaceToolTarget(toolName);
+  if (!target || target.transport !== "paperclip_rest" || !isGoogleWorkspaceRestService(target.service)) return null;
+  return listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf) ?? null;
 }
 
 export async function callGoogleWorkspaceRest(

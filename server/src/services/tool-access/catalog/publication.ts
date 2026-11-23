@@ -232,8 +232,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       const changed =
         existing &&
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
-      const paperclipDefined = sourceTemplateKey === "google-workspace"
-        && googleWorkspaceToolTarget(descriptor.name)?.transport === "paperclip_rest";
+      const paperclipDefined = descriptor.paperclipDefined === true;
       const shouldQuarantine =
         quarantineOnRefresh &&
         !paperclipDefined &&
@@ -250,7 +249,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
           ? "quarantined"
           : existing?.status === "disabled" && existing.quarantineReason !== "mcp_tool_removed"
             ? "disabled"
-            : quarantineOnRefresh && existing?.status === "quarantined"
+            : quarantineOnRefresh && existing?.status === "quarantined" && !paperclipDefined
               ? "quarantined"
               : "active";
       if (shouldQuarantine && !providerPermanentlyBlocked) quarantinedCount += 1;

@@ -144,7 +144,8 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     }
     if (!probe.ok) throw new HttpError(502, probe.message, { code: "google_workspace_rest_probe_failed", service });
     return listGoogleWorkspaceRest(service).map((tool) => normalizeToolDescriptor(tool))
-      .filter((tool): tool is McpToolDescriptor => tool !== null);
+      .filter((tool): tool is McpToolDescriptor => tool !== null)
+      .map((tool) => ({ ...tool, paperclipDefined: true }));
   }
   async function remoteTools(
     connection: typeof toolConnections.$inferSelect,

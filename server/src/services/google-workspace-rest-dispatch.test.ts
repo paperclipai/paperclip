@@ -2,7 +2,9 @@ import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames } from
 import { describe, expect, it, vi } from "vitest";
 import {
   callGoogleWorkspaceRest,
+  googleWorkspaceRestToolDefinition,
   googleWorkspaceRestTransportGaps,
+  listGoogleWorkspaceRest,
   probeGoogleWorkspaceRest,
 } from "./google-workspace-rest-dispatch.js";
 
@@ -19,6 +21,23 @@ describe("Google Workspace REST transport eligibility", () => {
   it("names every missing tool of a service with no REST tools", () => {
     expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, chat: "paperclip_rest" }))
       .toEqual([{ service: "chat", missing: googleWorkspaceServiceToolNames("chat") }]);
+  });
+});
+
+describe("googleWorkspaceRestToolDefinition", () => {
+  it("returns this folder's definition for a tool of a service on paperclip_rest, and nothing otherwise", () => {
+    expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual(listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc"));
+    expect(googleWorkspaceRestToolDefinition("docs__update_doc")?.inputSchema.required).toContain("writeControl");
+    expect(googleWorkspaceRestToolDefinition("chat__list_messages")).toBeNull();
+    expect(googleWorkspaceRestToolDefinition("gmail__send_message")).toBeNull();
+    expect(googleWorkspaceRestToolDefinition("update_doc")).toBeNull();
+    const saved = GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs;
+    GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = "google_mcp";
+    try {
+      expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toBeNull();
+    } finally {
+      GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = saved;
+    }
   });
 });
 

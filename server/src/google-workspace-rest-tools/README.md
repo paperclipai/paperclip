@@ -239,11 +239,56 @@ result and 0.24 ms for a 700 KB one.
 `google-workspace-rest-dispatch.test.ts`, fails while any service set to
 `paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
 
-The tool definitions of a `paperclip_rest` service come from this folder, not
-from a remote server, so a catalog refresh does not hold them for review when
-they differ from what Google's MCP server listed before. An existing connection
-keeps its actions active through a switch and gains the actions the MCP server
-did not offer (Gmail `list_threads` and `search_messages`).
+### Connections saved before a switch
+
+A connection keeps the tool definitions its last catalog refresh saved. After
+a service switches to `paperclip_rest`, the saved definitions of an existing
+connection are still Google's MCP definitions. Two things keep such a
+connection working with no user action:
+
+- **Agents see this folder's definitions at once.** When the gateway lists a
+  connection's tools for an agent, it takes the input schema, output schema,
+  description and annotations of a `paperclip_rest` tool from this folder
+  (`googleWorkspaceRestToolDefinition` in the adapter), not from the saved row.
+  Routing and the advertised definition read the same transport setting in
+  the same process, so an agent never gets Google's MCP schema for a call that
+  goes to REST. This is an in-memory lookup: no request and no refresh before
+  the turn starts.
+- **The next catalog refresh saves this folder's definitions.** Discovery
+  marks each descriptor of a `paperclip_rest` service `paperclipDefined`.
+  Catalog publication never holds a `paperclipDefined` action for review, and
+  it makes an action active again when it was held for review
+  (`quarantined`, `pending_review`) only because a remote definition changed.
+  An action a person turned Off (left out of the connection's profile) stays
+  Off, and an Ask first policy stays in force; refresh does not change
+  either. New actions (Gmail `list_threads` and `search_messages`) are added
+  as for any refresh.
+
+The saved risk level of an action changes only on that refresh. Until then,
+`docs__update_doc`, `slides__update_presentation`, `sheets__update_spreadsheet`
+and `calendar__update_event` keep the level saved from Google's MCP
+definition (`write`); after it they are `destructive`. Write actions are
+Allowed by default at either level.
+
+### Input differences an agent meets after a switch
+
+Checked against Google's published MCP references, since no `tools/list`
+from Google's servers is recorded yet. These are the cases where a call that
+Google's saved schema allowed is refused by this folder; each is also stated
+in the tool's own description and schema, which agents now receive:
+
+| Tool | Google's schema | This folder |
+| --- | --- | --- |
+| `docs__update_doc`, `slides__update_presentation` | `writeControl` optional; `targetRevisionId` allowed | `writeControl.requiredRevisionId` required (read the document first); `targetRevisionId` refused |
+| `docs__update_doc`, `slides__update_presentation` | any request kind | closed list of request kinds; kinds that read another file refused |
+| `sheets__update_spreadsheet` | `writeControl` allowed | `writeControl` refused (no revision check in Sheets REST) |
+| `sheets__get_spreadsheet` | `commentsIncluded: true` allowed | refused (not in the Sheets API) |
+| `sheets__insert_dimension` | `DIMENSION_UNSPECIFIED` in the enum | refused |
+| `calendar__delete_event` | a recurring series ID deletes the series | refused; pass one occurrence |
+| `gmail__create_draft` | attachments | refused, as Google's tool does today |
+| `drive__search_files` | full MCP query language and `orderBy` | terms without a Drive `q` equivalent refused; `orderBy` limited |
+
+Each refusal is a tool error that says what to do, and nothing is changed.
 
 ## Known differences from Google's MCP tools
 

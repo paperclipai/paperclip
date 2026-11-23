@@ -74,8 +74,10 @@ allowlisted actions for a full read and write grant. Chat, People and Search,
 which new setup does not offer, stay on `google_mcp`. A service can move to
 `paperclip_rest` only when Paperclip implements every tool on its allowlist; a
 test enforces that. Actions of a service on `paperclip_rest` are Paperclip's
-own definitions, so a catalog refresh after a switch keeps them active instead
-of holding them for review. The setting applies only to the combined `google-workspace`
+own definitions. Agents receive them at once, also for a connection saved
+before the switch, and the next catalog refresh saves them without holding
+any for review. That refresh also releases actions held for review; actions
+turned Off and Ask first settings stay as they are. The setting applies only to the combined `google-workspace`
 connection; saved individual product connections (for example the Gmail app)
 still call Google's MCP servers directly. On either transport, the same grant scope checks, approvals,
 audit, token refresh and reconnection, prompt-injection screening, cancellation
