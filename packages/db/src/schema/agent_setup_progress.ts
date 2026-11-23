@@ -35,7 +35,8 @@ export const agentSetupProgress = pgTable("agent_setup_progress", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
-  companySubjectIdx: index("agent_setup_progress_company_subject_idx").on(table.companyId, table.purpose, table.subjectId),
+  companyIdx: index("agent_setup_progress_company_idx").on(table.companyId),
+  /** Cleanup removes checklists a day past expiry. */
   expiresIdx: index("agent_setup_progress_expires_idx").on(table.expiresAt),
   statusCheck: check(
     "agent_setup_progress_status_check",

@@ -63,6 +63,9 @@ export function agentSetupProgressBoardRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const body = req.body as CreateAgentSetupProgress;
     const { actorId } = getActorInfo(req);
+    // The response carries the agent's token: never cache it.
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
     res.status(201).json(await service.create({
       companyId, purpose: body.purpose, subjectId: body.subjectId ?? null, userId: actorId, origin: agentOrigin(req),
     }));

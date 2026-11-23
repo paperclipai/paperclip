@@ -19,5 +19,5 @@ DO $$ BEGIN
   ALTER TABLE "agent_setup_progress" ADD CONSTRAINT "agent_setup_progress_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "agent_setup_progress_company_subject_idx" ON "agent_setup_progress" USING btree ("company_id","purpose","subject_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_setup_progress_company_idx" ON "agent_setup_progress" USING btree ("company_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agent_setup_progress_expires_idx" ON "agent_setup_progress" USING btree ("expires_at");

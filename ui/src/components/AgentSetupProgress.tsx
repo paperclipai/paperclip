@@ -37,6 +37,28 @@ export interface AgentSetupStep {
   title: string;
 }
 
+/**
+ * The handoff for one setup, kept in this tab so a reload follows the checklist the copied prompt writes to.
+ * Session storage stays in this tab only; the token can do nothing but update this checklist until it expires.
+ */
+function storedHandoff(key: string): AgentSetupProgressHandoff | null {
+  try {
+    const value = window.sessionStorage.getItem(key);
+    const parsed = value ? JSON.parse(value) as AgentSetupProgressHandoff : null;
+    return parsed && Date.parse(parsed.progress.expiresAt) > Date.now() ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function storeHandoff(key: string, handoff: AgentSetupProgressHandoff | null) {
+  try {
+    if (handoff) window.sessionStorage.setItem(key, JSON.stringify(handoff));
+    else window.sessionStorage.removeItem(key);
+  } catch {
+    // Storage can be unavailable (private windows); the checklist then lasts until the page reloads.
+  }
+}
+
 /** While the agent is working, a slow check backs up the live updates in case the page missed one. */
 const SAFETY_REFETCH_MS = 20_000;
 
@@ -55,18 +77,20 @@ export function useAgentSetupProgress({
 }: CreateAgentSetupProgress & { companyId: string | null | undefined; enabled?: boolean; client?: AgentSetupProgressClient }) {
   const queryClient = useQueryClient();
   const handoffKey = ["agent-setup-progress-handoff", companyId ?? null, purpose, subjectId ?? null] as const;
+  const storageKey = `paperclip:agent-setup-progress:${companyId ?? ""}:${purpose}:${subjectId ?? ""}`;
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
-      const created = await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
-      queryClient.setQueryData(queryKeys.agentSetupProgress(created.progress.id), created.progress);
+      const created = storedHandoff(storageKey)
+        ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
+      storeHandoff(storageKey, created);
       return created;
     },
     enabled: Boolean(companyId) && enabled,
-    // Creating is not idempotent: never re-create on its own, only through renew.
+    // Created once per setup: never re-created on its own (renew does that). A failed create
+    // follows the app's retry defaults; at worst a retry leaves an unused checklist that expires.
     staleTime: Infinity,
     gcTime: AGENT_SETUP_PROGRESS_LIMITS.lifetimeMs,
-    retry: false,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -94,7 +118,10 @@ export function useAgentSetupProgress({
     progress,
     expired,
     error: handoffQuery.error ? describeError(handoffQuery.error).body : null,
-    renew: () => { void handoffQuery.refetch(); },
+    renew: () => {
+      storeHandoff(storageKey, null);
+      void handoffQuery.refetch();
+    },
   };
 }
 

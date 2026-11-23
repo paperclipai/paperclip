@@ -177,7 +177,7 @@ export function AwsRoleSetup({
                 prompt={awsAgentSetupPrompt(ready, agentProgress.handoff ? agentSetupProgressInstructions(agentProgress.handoff, AWS_AGENT_SETUP_STEPS) : null)}
                 label="Set it up with your agent"
                 title="Set up AWS with your agent"
-                description="Paste this into an agent such as Claude Code or Codex, on a computer signed in to the AWS account agents should use."
+                description="Paste this into your own agent, such as Claude Code or Codex, on a computer signed in to the AWS account agents should use. It includes a short-lived link for this setup, so don’t share it."
                 side="bottom"
               />
             ) : (
@@ -324,8 +324,10 @@ export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: t
 
 /**
  * A prompt for the user's own agent (on a machine already signed in to AWS) to
- * deploy this connection's template and report the role ARN. It holds no
- * secrets: AWS trusts the connection's signed identity, so it is safe to paste anywhere.
+ * deploy this connection's template and report the role ARN. It holds no AWS
+ * credential (AWS trusts the connection's signed identity). With progress
+ * instructions it carries a short-lived token that can update this setup's
+ * checklist, so it is for the person's own agent, not for sharing.
  */
 export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>, progressInstructions: string | null = null): string {
   // One stack per connection, like the role, so two connections never share (and replace) a stack.

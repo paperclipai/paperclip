@@ -127,6 +127,56 @@ describe("agent setup progress", () => {
     await request(server).put(checklist).set(auth).send(items).expect(410);
   });
 
+  it("finishes as failed, keeps finished final, never loses a concurrent update, and cleans up old checklists", async () => {
+    const org = await company();
+    const server = app([org.id]);
+    const create = async () => (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
+    const handoff = await create();
+    const auth = { Authorization: `Bearer ${handoff.token}` };
+    const item = (key: string) => path(handoff.urls.item.replace("{key}", key));
+    await request(server).put(path(handoff.urls.checklist)).set(auth).send({ items: [
+      { key: "a", title: "A" }, { key: "b", title: "B" }, { key: "c", title: "C" },
+    ] }).expect(200);
+
+    // Concurrent writes either land or answer 409 to be sent again: none is silently lost.
+    const results = await Promise.all(["a", "b", "c"].map((key) => request(server).post(item(key)).set(auth).send({ status: "in_progress" })));
+    expect(results.every((res) => res.status === 200 || res.status === 409)).toBe(true);
+    const [afterRace] = await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, handoff.progress.id));
+    expect(afterRace!.updateCount).toBe(1 + results.filter((res) => res.status === 200).length);
+    expect(afterRace!.items.filter((entry) => entry.status === "in_progress")).toHaveLength(results.filter((res) => res.status === 200).length);
+
+    await request(server).post(item("b")).set(auth).send({ status: "failed", detail: "No permission" }).expect(200);
+    const failed = await request(server).post(path(handoff.urls.finish)).set(auth).send({ status: "failed", summary: "Stopped: no permission" }).expect(200);
+    expect(failed.body).toMatchObject({ status: "failed", summary: "Stopped: no permission" });
+    expect(failed.body.items.find((entry: { key: string }) => entry.key === "b")).toMatchObject({ status: "failed", detail: "No permission" });
+    // A late or retried write cannot reopen a finished setup.
+    const late = await request(server).post(item("a")).set(auth).send({ status: "done" }).expect(409);
+    expect(late.body.details).toMatchObject({ code: "agent_setup_progress_finished" });
+    await request(server).post(path(handoff.urls.finish)).set(auth).send({ status: "done" }).expect(409);
+
+    // Finishing done is the agent's verdict: every step is ticked off, including one that failed along the way.
+    const second = await create();
+    const auth2 = { Authorization: `Bearer ${second.token}` };
+    await request(server).put(path(second.urls.checklist)).set(auth2).send({ items: [{ key: "a", title: "A" }, { key: "b", title: "B" }] }).expect(200);
+    await request(server).post(path(second.urls.item.replace("{key}", "a"))).set(auth2).send({ status: "failed" }).expect(200);
+    const done = await request(server).post(path(second.urls.finish)).set(auth2).send({ status: "done" }).expect(200);
+    expect(done.body.items.map((entry: { status: string }) => entry.status)).toEqual(["done", "done"]);
+
+    // Checklists a day past expiry are removed as new ones are created; recent ones stay.
+    await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 25 * 3600_000) }).where(eq(agentSetupProgress.id, handoff.progress.id));
+    await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 3600_000) }).where(eq(agentSetupProgress.id, second.progress.id));
+    await create();
+    expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, handoff.progress.id))).toHaveLength(0);
+    expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, second.progress.id))).toHaveLength(1);
+  });
+
+  it("does not let a cache keep the agent's token", async () => {
+    const org = await company();
+    const res = await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers.pragma).toBe("no-cache");
+  });
+
   it("keeps checklists inside their company", async () => {
     const org = await company();
     const outsider = await company();

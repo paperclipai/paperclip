@@ -5,7 +5,7 @@ summary: A live checklist a person's own agent fills in while it sets something 
 
 When Paperclip offers "Set it up with your agent", the setup page can show a live checklist of what the person's own agent (for example Claude Code on their computer) is doing. The page creates the checklist and puts its URLs and a token in the setup prompt. The agent sets the checklist, updates each step and finishes; each change appears on the page right away.
 
-The agent needs no Paperclip sign-in. Its token can only write to this one checklist, works for six hours, and allows up to 300 updates. Paperclip keeps only a hash of the token.
+The agent needs no Paperclip sign-in. Its token can only write to this one checklist, works for six hours, and allows up to 300 updates. Paperclip keeps only a hash of the token. The prompt that carries the token is a credential for this checklist: it is meant for the person's own agent, not for sharing. The create response is sent with `Cache-Control: no-store`. A finished checklist refuses further updates (`409`), and checklists are deleted a day after they expire.
 
 ## Create a Checklist (Board)
 
@@ -38,11 +38,11 @@ Each request sends `Authorization: Bearer <token>` and JSON.
 | --- | --- | --- |
 | `PUT …/checklist` | `{ "items": [{ "key": "check-account", "title": "Check the AWS account" }] }` | Replaces the checklist: 1 to 20 items; keys are lowercase letters, numbers, `-` and `_` (up to 40); titles up to 120 characters. |
 | `POST …/items/{key}` | `{ "status": "in_progress", "detail": "…" }` | Sets one step's status (`pending`, `in_progress`, `done` or `failed`) and an optional detail (up to 500 characters). |
-| `POST …/finish` | `{ "status": "done", "summary": "…" }` | Finishes the setup. `done` ticks off any open steps; `failed` keeps them. The summary is shown on the page. |
+| `POST …/finish` | `{ "status": "done", "summary": "…" }` | Finishes the setup. `done` ticks off every step (the agent's verdict); `failed` keeps the steps as they were. The summary is shown on the page. After either, further updates get `409`. |
 
 The checklist stays `in_progress` until the agent finishes, even with every step done, because only the finish carries the summary. Each change is recorded on the activity history (never the token). The setup page keeps the same checklist if the person leaves the step and comes back, and offers to start again once a prompt expires.
 
-Errors: `400` for an invalid body, `401` when the token is missing or does not open this checklist, `404` for an unknown item, `409` when another update changed the checklist at the same time (send it again), `410` once the token expired, and `429` after 300 updates.
+Errors: `400` for an invalid body, `401` when the token is missing or does not open this checklist, `404` for an unknown item, `409` when another update changed the checklist at the same time (send it again) or the setup already finished, `410` once the token expired, and `429` after 300 updates.
 
 ## Adding It to Another Setup Page
 

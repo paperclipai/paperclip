@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentSetupProgress, type AgentSetupProgressItemRecord } from "@paperclipai/db";
 import {
@@ -75,6 +75,10 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
     if (row.expiresAt.getTime() <= now().getTime()) {
       throw new HttpError(410, "This setup progress link expired. Copy the setup prompt from Paperclip again.", { code: "agent_setup_progress_expired" });
     }
+    if (row.status === "done" || row.status === "failed") {
+      // Finished is final: a late or retried update must not make the page show work in progress again.
+      throw conflict("This setup already finished.", { code: "agent_setup_progress_finished" });
+    }
     if (row.updateCount >= AGENT_SETUP_PROGRESS_LIMITS.maxUpdates) {
       throw new HttpError(429, "This setup checklist has had too many updates.", { code: "agent_setup_progress_update_limit" });
     }
@@ -112,6 +116,10 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       userId: string | null;
       origin: string;
     }): Promise<AgentSetupProgressHandoff> {
+      // Expired checklists are only history: drop those a day past expiry, a few at a time, as new ones are made.
+      const stale = await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress)
+        .where(lt(agentSetupProgress.expiresAt, new Date(now().getTime() - 24 * 60 * 60 * 1000))).limit(100);
+      if (stale.length > 0) await db.delete(agentSetupProgress).where(inArray(agentSetupProgress.id, stale.map((row) => row.id)));
       const token = `pcsp_${randomBytes(32).toString("base64url")}`;
       const [row] = await db.insert(agentSetupProgress).values({
         companyId: input.companyId,
@@ -165,9 +173,10 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       if (row.items.length === 0 && input.status === "done") {
         throw unprocessable("Set the checklist before finishing.", { code: "agent_setup_progress_empty" });
       }
-      // Finishing done ticks off what is left, so the page never shows a finished setup with open steps.
+      // The agent's finish is the verdict: done ticks off every step (it recovered from any that failed),
+      // so a finished setup never shows open or failed steps; failed keeps the steps as they were.
       const items = input.status === "done"
-        ? row.items.map((item) => item.status === "failed" ? item : { ...item, status: "done" as const })
+        ? row.items.map((item) => ({ ...item, status: "done" as const }))
         : row.items;
       return save(row, { items, status: input.status, summary: input.summary ?? null }, {
         action: "agent_setup_progress.finished", details: { status: input.status },

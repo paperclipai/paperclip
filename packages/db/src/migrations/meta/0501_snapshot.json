@@ -1,5 +1,5 @@
 {
-  "id": "1ee14e11-ccf1-4e80-85e2-c4fba1590d8c",
+  "id": "e7d9cd7f-338e-479a-a2e7-766c59141e17",
   "prevId": "51525362-c4bc-44be-b4a7-95cb4aae7748",
   "version": "7",
   "dialect": "postgresql",
@@ -3403,23 +3403,11 @@
         }
       },
       "indexes": {
-        "agent_setup_progress_company_subject_idx": {
-          "name": "agent_setup_progress_company_subject_idx",
+        "agent_setup_progress_company_idx": {
+          "name": "agent_setup_progress_company_idx",
           "columns": [
             {
               "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "purpose",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

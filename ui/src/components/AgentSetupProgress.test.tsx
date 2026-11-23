@@ -34,6 +34,7 @@ describe("agent setup progress", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    window.sessionStorage.clear();
   });
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -132,5 +133,20 @@ describe("agent setup progress", () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-testid="token"]')?.textContent).toBe("pcsp_fresh");
     expect(container.textContent).toContain("Paste the prompt into your agent.");
+  });
+
+  it("keeps following the same checklist after the page reloads", async () => {
+    const client: AgentSetupProgressClient = { create: vi.fn(async () => HANDOFF), get: vi.fn(async () => WAITING) };
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness client={client} /></QueryClientProvider>); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => root.unmount());
+    // A reload starts with an empty query cache; this tab still has the handoff the copied prompt uses.
+    root = createRoot(container);
+    const reloaded = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root.render(<QueryClientProvider client={reloaded}><Harness client={client} /></QueryClientProvider>); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(client.create).toHaveBeenCalledOnce();
+    expect(client.get).toHaveBeenCalledWith(ID);
+    expect(container.textContent).toContain("Your agent is setting up AWS");
   });
 });
