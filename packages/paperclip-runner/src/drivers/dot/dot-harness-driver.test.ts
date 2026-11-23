@@ -11,7 +11,7 @@ const result = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "do
 async function fixture(overrides: Partial<DotDriverOptions> = {}) {
   const identity = { companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
   const principal = { companyId: identity.companyId, grantId: randomUUID() };
-  const publish = vi.fn(async () => {});
+  const publish = vi.fn<DotDriverOptions["publish"]>(async () => {});
   const executeTool = vi.fn(async () => ({ saved: true }));
   const assertAuthority = vi.fn(async () => {});
   const driver = new DotHarnessDriver({ identity, principal, expiresAt: Date.now() + 60_000,

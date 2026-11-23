@@ -11,6 +11,10 @@ export const inboxDismissals = pgTable(
     kind: text("kind").$type<"dismiss" | "snooze">().notNull().default("dismiss"),
     dismissedAt: timestamp("dismissed_at", { withTimezone: true }).notNull().defaultNow(),
     snoozedUntil: timestamp("snoozed_until", { withTimezone: true }),
+    // Important-change fingerprint of the attention card the user hid
+    // (PAP-749 Rule 9). The card returns only when the current fingerprint
+    // differs; legacy rows without one keep the activity-timestamp rule.
+    fingerprint: text("fingerprint"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

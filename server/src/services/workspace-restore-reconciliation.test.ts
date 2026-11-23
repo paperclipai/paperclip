@@ -80,6 +80,53 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(validateExecutionReconciliation({ db, ...f })).resolves.toMatchObject({ id: f.sourceRunId });
   });
 
+  it("shows machine recovery progress without asking the task user to certify repair", async () => {
+    const f = await seed();
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, workspaceRecovery: {
+      schema: "paperclip.workspace-recovery.v1", runId: f.sourceRunId, status: "recovering",
+      stage: "restoring_files", attempt: 1, requestIds: [],
+    } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      workspaceRepairRequired: true,
+      workspaceRecovery: { status: "recovering", stage: "restoring_files", canRetry: false },
+      nextAction: "Recovering saved work…",
+    });
+  });
+
+  it("repairs retained files from a succeeded run without reopening or replaying its completed work", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    const repaired = await validateExecutionReconciliation({ db, ...f, workspaceRepairOnly: true });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    await markExecutionReconciliation(db, action, f.decision, "board", undefined, { workspaceRepairOnly: true });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect(repaired.status).toBe("succeeded");
+    const [recorded] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(recorded.evidence.continuationDelivery).toBe("not_requested");
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task).toMatchObject({ status: "todo", assigneeAgentId: f.agentId, executionRunId: null });
+  });
+
+  it.each(["running", "queued", "succeeded"])("does not authorize a normal continuation of a %s retained run", async status => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await expect(validateExecutionReconciliation({ db, ...f })).rejects.toThrow("source or task owner changed");
+  });
+
+  it.each(["running", "queued"])("does not accept file repair while the source run is %s", async status => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await expect(validateExecutionReconciliation({ db, ...f, workspaceRepairOnly: true })).rejects.toThrow("source or task owner changed");
+  });
+
+  it("does not replace native finalization with legacy success repair", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await expect(validateExecutionReconciliation({ db, ...f, workspaceRepairOnly: true })).rejects.toThrow("source or task owner changed");
+  });
+
   it.each(["pending_stop", "wrong_receipt", "missing_source", "unrecorded_source", "empty_sources"])("rejects repair with %s even when releasedAt is populated", async scenario => {
     const f = await seed();
     if (scenario === "pending_stop") {
