@@ -1530,13 +1530,7 @@ export function connectionIntentService(db: Db) {
     // Controller-only entry point. Runtime tokens still require a running run.
     requestForRunAuthFailure: async (runId: string) => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-      if (!run || run.status !== "failed" || !isAiAuthenticationRepairable(run) || !run.responsibleUserId) return null;
-      const context = await loadRunContext({ sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId }, "failed_auth");
-      const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, run.companyId),
-        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${context.issue.id}`,
-      )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-      if (latest?.id !== run.id) return null;
+      if (!run || run.status !== "failed" || !isAiAuthenticationRepairable(run)) return null;
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
       if (!agent) return null;
       const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
@@ -1550,11 +1544,28 @@ export function connectionIntentService(db: Db) {
       // a driver's provider name can identify the upstream protocol instead.
       if (!attribution && !isAiAuthenticationRepairable(run, binding.provider)) return null;
       if (attribution && attribution.provider !== binding.provider) return null;
-      if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
-        await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
-          runStartedAt: run.startedAt ?? run.createdAt,
-          attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
-      }
+      const markRejected = async () => {
+        if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
+          await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
+            runStartedAt: run.startedAt ?? run.createdAt,
+            attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
+        }
+      };
+      // A Claude subscription token that the provider rejected is recorded
+      // before the checks that decide on a repair card. A run with no task, no
+      // responsible user, or a later run on its task gets no card, but the
+      // next run must not receive the same token. The mark applies only if the
+      // saved token is still the one this run used.
+      const claudeSubscription = attribution?.provider === "anthropic" && attribution.method === "subscription";
+      if (claudeSubscription) await markRejected();
+      if (!run.responsibleUserId) return null;
+      const context = await loadRunContext({ sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId }, "failed_auth");
+      const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${context.issue.id}`,
+      )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+      if (latest?.id !== run.id) return null;
+      if (!claudeSubscription) await markRejected();
       return requestWithContext(context, binding.provider, { purpose: "ai" });
     },
     // Controller-only entry point. Runtime tokens still require a running run.

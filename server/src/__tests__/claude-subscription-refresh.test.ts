@@ -15,6 +15,7 @@ import * as secretModule from "../services/secrets.js";
 import { secretService } from "../services/secrets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleLocalWork } from "../services/idle-local-work.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn() }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -292,6 +293,23 @@ describe("Claude subscription idle renewal", () => {
     exchange.mockImplementation(async () => new Response("refused", { status: 400 }));
     await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_unavailable" } });
     expect(await status()).toBe("needs_reauthorization");
+  });
+
+  it("marks a rejected token spent for a failed run that has no task, so the next run does not receive it", async () => {
+    const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
+    const timerAgent = randomUUID();
+    await db.insert(agents).values({ id: timerAgent, companyId, name: "Timer", adapterType: "claude_local", runtimeConfig: { aiConnection: binding(account) } });
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId: timerAgent, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    await run.cleanup();
+    const failedRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: timerAgent, invocationSource: "timer", status: "failed", errorCode: "claude_auth_required",
+      startedAt: new Date(Date.now() + 1000), contextSnapshot: { aiConnection: { ...run.attribution, identity: run.identity } } });
+    // No task and no responsible user: no repair card can be made.
+    expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toBeNull();
+    expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    expect(await service.credential(row)).toBe("renewed");
+    expect(exchange).toHaveBeenCalledOnce();
   });
 
   it("defers an early renewal while another run holds the token", async () => {
