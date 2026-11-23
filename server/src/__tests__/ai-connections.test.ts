@@ -17,7 +17,7 @@ import { promises as fs } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, inArray } from "drizzle-orm";
 import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
@@ -2639,6 +2639,28 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await read()).toMatchObject({ status: "timed_out", expiresAt: null });
       await expect(stat(directory)).rejects.toThrow();
     } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("reaches later expired sign-ins while older ones continue to fail their cleanup", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const attempt = (provider: "anthropic" | "openai", age: number) => {
+      const id = randomUUID();
+      return { id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: `batch-${id}`, adapterType: provider === "anthropic" ? "claude_local" : "codex_local",
+        aiConnection: { provider, method: "subscription" as const, ownership: "personal" as const, name: "Expired sign-in", allAgents: false, agentIds: [] as string[] },
+        connectionMethod: "local_subscription" as const, status: "waiting_for_user" as const, expiresAt: new Date(Date.now() - age) };
+    };
+    const stuck = Array.from({ length: 16 }, (_, index) => attempt("anthropic", 120_000 - index));
+    const later = attempt("openai", 1000);
+    await db.insert(adapterAuthSessions).values([...stuck, later]);
+    const status = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, later.id)))[0]!.status;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(false);
+    try {
+      const login = localAiLoginService(db);
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await status()).toBe("waiting_for_user");
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await status()).toBe("timed_out");
+      expect(await login.nextCleanupAt()).not.toBeNull();
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(inArray(adapterAuthSessions.id, [...stuck, later].map(row => row.id))); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });

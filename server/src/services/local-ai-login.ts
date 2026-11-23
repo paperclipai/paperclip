@@ -184,6 +184,18 @@ export function localAiLoginService(db: Db) {
       const retirement = stopBrowserLogin(id);
       const retired = await Promise.race([retirement.then(() => true, () => false), budget]);
       if (!retired) { retainRetirement(id, retirement); return; }
+      try { await remove(id); }
+      catch (error) {
+        // Keep the attempt due, but move it behind the other due attempts.
+        // A cleanup that continues to fail must not fill each batch.
+        await db.update(adapterAuthSessions).set({ expiresAt: new Date() }).where(and(
+          eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+          lte(adapterAuthSessions.expiresAt, new Date()))).catch(() => undefined);
+        throw error;
+      }
+      deferredRetirements.delete(id);
+    }
+    async function remove(id: string) {
       await db.transaction(async (tx) => {
         const [session] = await tx.select().from(adapterAuthSessions)
           .where(eq(adapterAuthSessions.id, id)).for("update");
@@ -199,7 +211,6 @@ export function localAiLoginService(db: Db) {
           expiresAt: null, finishedAt: session.finishedAt ?? new Date(), updatedAt: new Date(),
         }).where(eq(adapterAuthSessions.id, id));
       });
-      deferredRetirements.delete(id);
     }
     try {
       const failures: unknown[] = [];
