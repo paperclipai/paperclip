@@ -222,6 +222,8 @@ export async function prepareManagedAiRuntime(
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
+    /** The run this runtime is prepared for, so its own token never defers a Claude renewal. */
+    currentRunId?: string;
   },
 ) {
   const configuredEnv =
@@ -297,7 +299,7 @@ export async function prepareManagedAiRuntime(
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const value = await service.runtimeCredential(selection);
+        const value = await service.runtimeCredential(selection, { currentRunId: input.currentRunId });
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };
@@ -339,6 +341,7 @@ export async function prepareManagedAiRuntime(
       );
     if (!routing && subscriptionFile && !antigravitySubscription) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing && !subscriptionFile) env[capability.envKey] = value;
+    const claudeSubscription = !routing && input.binding.provider === "anthropic" && selection.attribution.method === "subscription";
     if (
       !routing && input.binding.provider === "openai" && harness === "codex_local" &&
       selection.attribution.method === "api_key"
@@ -555,6 +558,9 @@ export async function prepareManagedAiRuntime(
           // recovery handoff must own the refresh before deleting its home.
           removalOnly = true;
           await removeHome();
+          // This run no longer holds the token. If no other run does, renew a
+          // token that is close to expiry now instead of under the next run.
+          if (claudeSubscription) void service.runtimeCredential(selection, { currentRunId: input.currentRunId }).catch(() => undefined);
         } catch (error) {
           if (!durableGoogleRefresh && !removalOnly) throw error;
           // Once native retirement and encrypted fsync transfer ownership, the

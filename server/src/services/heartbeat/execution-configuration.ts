@@ -227,7 +227,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   identityRedactor.addSecretValues(secretEnvironmentValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
-      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig }));
+      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig, currentRunId: run.id }));
       onManagedAiRuntimeAcquired(managedAiRuntime);
     } catch (error) {
       // Only fresh executions can receive a pre-provider wait receipt. A

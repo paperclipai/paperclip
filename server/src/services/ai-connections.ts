@@ -1,5 +1,5 @@
-import { claudeAccessTokenOf } from "./claude-oauth-credential.js";
-import { refreshClaudeSubscription } from "./claude-subscription-refresh.js";
+import { claudeAccessTokenOf, parseStoredClaudeOauth } from "./claude-oauth-credential.js";
+import { hasPendingClaudeExchange, refreshClaudeSubscription } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -629,12 +629,12 @@ export function aiConnectionService(db: Db) {
     }
     return value;
   }
-  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2]): Promise<string> {
+  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2], options: { currentRunId?: string } = {}): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return credentialRaw(row, retry, audit);
     // Resolve under the credential lock too: resolution records lastResolvedAt,
     // so concurrent pre-lock reads would contend with the rotating writer.
-    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected, retry, audit));
+    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected, retry, audit), options);
   }
   async function save(
     companyId: string,
@@ -1047,9 +1047,9 @@ export function aiConnectionService(db: Db) {
     return pending.value;
   }
 
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], options: { currentRunId?: string } = {}) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row, 0, undefined, options);
     if (!(await quotaCredentialRecovery(row.connection.companyId, row.grant.id).read())) return credential(row);
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
@@ -1158,6 +1158,19 @@ export function aiConnectionService(db: Db) {
         // database commit. Save its working replacement instead of revoking it.
         recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
         if (recovered) return;
+        const renewable = metadata.data.provider === "anthropic" && metadata.data.method === "subscription" ? parseStoredClaudeOauth(value) : null;
+        if (renewable) {
+          // A renewable Claude login is not shown to need sign-in by one run's
+          // rejected access token: that token may simply have expired under a
+          // long run. Mark it spent, so the next use renews it; only the
+          // provider refusing that renewal requests sign-in. An exchanged pair
+          // that still awaits its save already replaces this token: rotating the
+          // secret here would discard that pair and reuse a spent refresh token.
+          if (renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id)) {
+            await secretService(tx).rotate(ref.secretId, { value: JSON.stringify({ claudeAiOauth: { ...renewable, expiresAt: 0 } }), preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+          }
+          return;
+        }
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })

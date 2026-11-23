@@ -1,18 +1,20 @@
-import { and, eq } from "drizzle-orm";
-import { companySecrets, connectionGrants, toolConnections, type Db } from "@paperclipai/db";
+import { and, eq, ne, sql } from "drizzle-orm";
+import { companySecrets, connectionGrants, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
+import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
 type Replacement = { value: string; base: string; secretId: string; epoch: number; version: number };
 // One pending obligation per grant. No timer or secondary credential store.
 // A temporary vault outage must not discard a single-use provider exchange.
 const pendingExchanges = new Map<string, Replacement>();
 const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
+/** True while an exchanged pair awaits its vault save. The stored credential must not change under it. */
+export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pendingExchanges.has(pendingKey(companyId, grantId));
 
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
@@ -21,6 +23,7 @@ export async function refreshClaudeSubscription(
   db: Db,
   row: Selection,
   readRaw: (tx: Db, selection: Selection) => Promise<string>,
+  options: { currentRunId?: string } = {},
 ): Promise<string> {
   const companyId = row.connection.companyId;
   return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
@@ -57,6 +60,18 @@ export async function refreshClaudeSubscription(
           }
           const stored = parseStoredClaudeOauth(current);
           if (!stored || (!replacement && !claudeRefreshDue(stored))) return { value: current };
+          // The provider revokes the previous access token the moment it issues a
+          // new one, and a run cannot replace the token it started with. Renew
+          // early only while no other run holds this token; once it is about to
+          // expire those runs lose it either way.
+          if (!replacement && claudeScopesAllowRun(stored) && stored.expiresAt - CLAUDE_REFRESH_FORCE_MS > Date.now()) {
+            const [held] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"),
+              sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
+              ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
+            )).limit(1);
+            if (held) return { value: current };
+          }
           const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
           if (!refreshed) {

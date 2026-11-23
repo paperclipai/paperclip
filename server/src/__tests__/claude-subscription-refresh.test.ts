@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { companies, agents, companyMemberships, companySecrets, connectionGrants, toolConnections, createDb } from "@paperclipai/db";
+import { companies, agents, companyMemberships, companySecrets, connectionGrants, heartbeatRuns, toolConnections, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -160,6 +160,27 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe(reconnect ? "reconnected-refresh" : "pending-refresh");
   });
 
+  it("keeps an exchanged pair when a run that holds the replaced token then reports a rejected token", async () => {
+    const { service, row, owner, account } = await connect(document(Date.now() + 30 * 60_000));
+    const realService = secretModule.secretService;
+    const failingVault = vi.spyOn(secretModule, "secretService").mockImplementation((...args) => ({
+      ...realService(...args), rotate: async () => { throw new Error("vault is temporarily unavailable"); },
+    }));
+    const exchange = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "pending-access", refresh_token: "pending-refresh", expires_in: 28800 })))
+      .mockResolvedValue(new Response("{}", { status: 400 }));
+    await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
+    failingVault.mockRestore();
+    await service.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+      connectionId: account.connectionId, grantId: account.grantId, provider: "anthropic", method: "subscription", mode: "delegated", responsibleUserId: owner,
+      identity: `${account.grantId}:${owner}:${createHash("sha256").update("old-access").digest("hex").slice(0, 16)}`,
+    } });
+    expect(await aiConnectionService(db).credential(row)).toBe("pending-access");
+    expect(exchange).toHaveBeenCalledOnce();
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("active");
+    expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe("pending-refresh");
+  });
+
   it.each([false, true])("renews an expired retained pair after recovery before starting a run (already saved=%s)", async alreadySaved => {
     const { service, row, secretId, owner, account } = await connect(document(Date.now() - 60_000));
     const realService = secretModule.secretService;
@@ -226,5 +247,71 @@ describe("Claude subscription renewal through the managed runtime", () => {
     await secretService(db).rotate(secretId, { value: document(Date.now() + 28800_000, "reconnected", "reconnected-refresh") }, { userId: owner });
     expect(await service.credential(row)).toBe("reconnected");
     expect((await state()).aiSessionEpoch).toBeGreaterThan(before.aiSessionEpoch);
+  });
+});
+
+describe("Claude subscription idle renewal", () => {
+  const binding = (account: { connectionId: string; grantId: string }) => ({ provider: "anthropic" as const, method: "subscription" as const, mode: "delegated" as const, ...account });
+  const holdingRun = async (grantId: string, status = "running") => {
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId, agentId, invocationSource: "assignment", status, contextSnapshot: { aiConnection: { grantId } } });
+    return id;
+  };
+
+  it("renews instead of requesting sign-in when a run's access token is rejected, and requests sign-in only if renewal is refused", async () => {
+    const { account, owner, row, service } = await connect(document(Date.now() + 3600_000));
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    const failed = { companyId, runStartedAt: new Date(Date.now() + 1000), attribution: { ...run.attribution, identity: run.identity } };
+    await run.cleanup();
+    await service.markAuthenticationFailed(failed);
+    const status = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status;
+    expect(await status()).toBe("active");
+    expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    expect(await service.credential(row)).toBe("renewed");
+    expect(exchange).toHaveBeenCalledOnce();
+    // The same failure on a login the provider no longer renews does request sign-in.
+    await service.markAuthenticationFailed({ ...failed, attribution: { ...failed.attribution, identity: failed.attribution.identity.replace(/[^:]+$/, createHash("sha256").update("renewed").digest("hex").slice(0, 16)) } });
+    exchange.mockImplementation(async () => new Response("refused", { status: 400 }));
+    await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_unavailable" } });
+    expect(await status()).toBe("needs_reauthorization");
+  });
+
+  it("defers an early renewal while another run holds the token", async () => {
+    const { service, row, state, account } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const other = await holdingRun(account.grantId);
+    await holdingRun(account.grantId, "queued");
+    expect(await service.credential(row)).toBe("old-access");
+    expect(exchange).not.toHaveBeenCalled();
+    expect((await state()).latestVersion).toBe(1);
+    // The run that holds the token does not defer its own renewal, and a finished run defers nothing.
+    expect(await service.credential(row, 0, undefined, { currentRunId: other })).toBe("renewed");
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it("renews without waiting once the token is about to expire, and when the holder has finished", async () => {
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const closing = await connect(document(Date.now() + 120_000));
+    await holdingRun(closing.account.grantId);
+    expect(await closing.service.credential(closing.row)).toBe("renewed");
+    const finished = await connect(document(Date.now() + 3600_000));
+    const run = await holdingRun(finished.account.grantId);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run));
+    expect(await finished.service.credential(finished.row)).toBe("renewed");
+    expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
+  it("renews a nearly expired token when its last run ends", async () => {
+    const { account, owner, state } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const other = await holdingRun(account.grantId);
+    const current = await holdingRun(account.grantId);
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: current });
+    expect(run.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("old-access");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    await run.cleanup();
+    await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
+    expect(exchange).toHaveBeenCalledOnce();
   });
 });

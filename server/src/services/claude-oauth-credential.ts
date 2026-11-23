@@ -7,6 +7,8 @@ export const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 export const CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 /** Renew early so a long run does not outlive the token it started with. */
 export const CLAUDE_REFRESH_MARGIN_MS = 2 * 60 * 60 * 1000;
+/** Below this remaining lifetime a renewal no longer waits for other runs to finish. */
+export const CLAUDE_REFRESH_FORCE_MS = 5 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 60_000;
 
 export interface StoredClaudeOauth {

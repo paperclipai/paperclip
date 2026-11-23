@@ -187,6 +187,20 @@ format. The discarded refresh token cannot be recovered from a bare access token
 Reconnect an affected connection once to obtain a renewable credential. An
 unexpired long-lived setup token needs no change.
 
+### Renewal waits for running work
+
+The provider revokes the previous access token as soon as it issues a new one,
+and a running Claude process cannot replace the token it started with. An early
+renewal therefore waits while another run of the same grant is `running`: the
+new run receives the current token, which is still valid. The server renews when
+no other run holds the token, both when a run starts and when a run's runtime is
+cleaned up, so a busy connection is renewed in the gap after its last run ends.
+Once less than five minutes remain, renewal no longer waits; the other runs would
+lose the token at expiry either way. A run that outlasts the token it started
+with fails with an authentication error and can be retried. That failure does
+not request sign-in: the stored token is marked spent, the next use renews it,
+and only the provider refusing the renewal marks the connection for sign-in.
+
 ## Storage and API
 
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.
