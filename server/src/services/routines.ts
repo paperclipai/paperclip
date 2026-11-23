@@ -2180,6 +2180,7 @@ export function routineService(
         responsibleUserId?: string;
         /** Filed under this responsibility, directly or through its project. */
         responsibilityId?: string;
+        ownerUserId?: string;
         /** Filed under no proposed or active responsibility, directly or through its project. */
         unfiled?: boolean;
       },
@@ -2197,7 +2198,7 @@ export function routineService(
       const filedUnder = (responsibility: SQL) => sql`exists (
         select 1 from ${responsibilityLinks} fl
         join ${responsibilities} fr on fr.id = fl.responsibility_id
-        where ${responsibility} and fr.company_id = ${companyId}
+        where ${responsibility} and fr.company_id = ${companyId} and fr.owner_user_id = ${filters?.ownerUserId ?? null}
           and (fl.routine_id = ${routines.id} or (${routines.projectId} is not null and fl.project_id = ${routines.projectId})))`;
       if (filters?.responsibilityId) conditions.push(filedUnder(sql`fr.id = ${filters.responsibilityId}`));
       if (filters?.unfiled) conditions.push(sql`not ${filedUnder(sql`fr.status in ('proposed', 'active')`)}`);

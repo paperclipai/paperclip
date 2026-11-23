@@ -1,5 +1,5 @@
 {
-  "id": "7e487b1f-9906-4ddf-945f-4d12e529b8f3",
+  "id": "51525362-c4bc-44be-b4a7-95cb4aae7748",
   "prevId": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "version": "7",
   "dialect": "postgresql",
@@ -4748,7 +4748,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5221,7 +5221,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false
@@ -52761,6 +52761,23 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "responsibilities_owned_area_fk": {
+          "name": "responsibilities_owned_area_fk",
+          "tableFrom": "responsibilities",
+          "tableTo": "responsibility_areas",
+          "columnsFrom": [
+            "company_id",
+            "owner_user_id",
+            "area_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "owner_user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -52802,6 +52819,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "title": {
           "name": "title",
@@ -52879,11 +52902,44 @@
           "method": "btree",
           "with": {}
         },
-        "responsibility_areas_company_title_uq": {
-          "name": "responsibility_areas_company_title_uq",
+        "responsibility_areas_identity_uq": {
+          "name": "responsibility_areas_identity_uq",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_areas_owner_title_uq": {
+          "name": "responsibility_areas_owner_title_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

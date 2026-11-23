@@ -1507,7 +1507,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       });
       expect(selectedCopilot.grant.id).toBe(copilot.grantId);
     } finally {
-      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0500_marvelous_black_bolt.sql", import.meta.url), "utf8");
+      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0501_marvelous_black_bolt.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
         for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));
