@@ -85,7 +85,7 @@ describe("setupLiveEventsWebSocketServer", () => {
     server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
     const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
-      run({ execute: async () => [{ blocked: false }] }) };
+      run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) };
     const report = () => readIdleSleepSafety(emptyDb as never,
       () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }), Date.now, hold.ownerId, async () => "none");
     try {

@@ -12,6 +12,7 @@ import {
   chatGitHubConfigurations,
   chatGitHubReviews,
   companyMemberships,
+  instanceUserRoles,
   connectionGrants,
   toolConnections,
   type Db,
@@ -24,11 +25,13 @@ import {
 import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { toolAccessService } from "./tool-access.js";
 import { logActivity } from "./activity-log.js";
-import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
 import { githubBotRequest } from "./chat-github-client.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-policy.js";
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export function githubChatManagementService(db: Db, fetchImpl = fetch) {
   async function endpoint(id: string) {
@@ -42,8 +45,8 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       throw notFound("GitHub bot not found");
     return row;
   }
-  async function member(companyId: string, userId: string) {
-    const [row] = await db
+  async function member(companyId: string, userId: string, executor: Db | DbTransaction = db) {
+    const [row] = await executor
       .select()
       .from(companyMemberships)
       .where(
@@ -53,7 +56,8 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
           eq(companyMemberships.principalId, userId),
           eq(companyMemberships.status, "active"),
         ),
-      );
+      )
+      .for("share");
     if (!row || row.membershipRole === "viewer")
       throw forbidden(
         "An active company member with permission to start work is required",
@@ -96,15 +100,10 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
   ) {
     await managementContext?.reauthorize();
     const bot = await endpoint(endpointId);
-    await member(bot.companyId, userId);
     const parsed = updateGitHubChatConfigurationSchema.parse(input);
     const config = parsed.configuration;
-    await member(bot.companyId, config.responsibleUserId);
     for (const person of config.people) {
-      if (person.kind === "guest") {
-        await member(bot.companyId, person.sponsorUserId);
-        continue;
-      }
+      if (person.kind === "guest") continue;
       await member(bot.companyId, person.userId);
       const [linked] = await db
         .select({ externalId: chatExternalPrincipals.externalId })
@@ -162,10 +161,25 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         .for("update");
       if ((current?.revision ?? 0) !== parsed.expectedRevision)
         throw conflict("This configuration changed. Refresh before saving.");
+      const actorMembership = await member(bot.companyId, userId, tx);
+      const sponsorIds = new Set([
+        config.responsibleUserId,
+        ...config.people.flatMap((person) => person.kind === "guest" ? [person.sponsorUserId] : []),
+      ]);
+      if ([...sponsorIds].some((sponsorId) => sponsorId !== userId) &&
+          actorMembership.membershipRole !== "owner" && actorMembership.membershipRole !== "admin") {
+        const [admin] = await tx.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+          .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+          .for("share");
+        if (!admin) throw forbidden("Only company owners, company admins, and instance admins can select another person as a task sponsor or responsible member");
+      }
+      for (const sponsorId of [...sponsorIds].sort()) {
+        if (sponsorId !== userId) await member(bot.companyId, sponsorId, tx);
+      }
       const allowUnlinkedPeople = config.people.some((p) => p.kind === "guest");
       if ((!currentEndpoint.allowUnlinkedPeople && allowUnlinkedPeople) ||
           (allowUnlinkedPeople && currentEndpoint.sponsorUserId !== config.responsibleUserId)) {
-        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId: bot.companyId });
       }
       const values = {
         companyId: bot.companyId,
@@ -335,7 +349,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         updatedAt: new Date(),
       };
       if (prior?.status !== "linked") {
-        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId: bot.companyId });
       }
       await tx
         .insert(chatIdentityLinks)

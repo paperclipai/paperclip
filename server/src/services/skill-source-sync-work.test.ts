@@ -9,6 +9,7 @@ import { companies, companySkills, companySkillSources, createDb, applyPendingMi
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from '../__tests__/helpers/embedded-postgres.js';
 import { githubFixture } from '../__tests__/helpers/github-skills.js';
 import { skillSourceSyncService } from './skill-source-sync.js';
+import { readIdleSkillSourceSchedule } from './skill-source-idle-schedule.js';
 import { skillSourceService, type SkillSourceContext } from './skill-sources.js';
 import { enqueueProjectSkillSource, detachProjectSkillSource } from './project-skill-source-bindings.js';
 import { createDeliveryWorkCoordinator } from './delivery-work-coordinator.js';
@@ -121,6 +122,8 @@ describe.skipIf(!support.supported)('skill source committed work and deadlines',
 
   it('stays SQL-quiet empty and with paused sources and retained bindings', async () => {
     await start(); await quiet();
+    expect(service.reconciliationSnapshot().reconciled).toBe(true);
+    expect(await readIdleSkillSourceSchedule(db, Date.now(), service.reconciliationSnapshot)).toMatchObject({ blocked: false, deadlines: [] });
     await coordinator.stop(); await service.stop();
     const row = await source({ automaticUpdates: false });
     const ws = await workspace();
@@ -130,6 +133,20 @@ describe.skipIf(!support.supported)('skill source committed work and deadlines',
     expect(coordinator.nextWakeAt()).toBeNull();
     expect(reads).not.toHaveBeenCalled();
     expect((await sleepSafety()).backgroundWork).toBe('none');
+  });
+
+  it('reconciles a direct tick and invalidates its certificate on coordinator stop', async () => {
+    await start(); await settle();
+    const before = service.reconciliationSnapshot();
+    expect(before.reconciled).toBe(true);
+    await service.tick();
+    expect(service.reconciliationSnapshot().reconciled).toBe(false);
+    await settle();
+    expect(service.reconciliationSnapshot().reconciled).toBe(true);
+    expect(service.reconciliationSnapshot().revision).not.toBe(before.revision);
+    await quiet();
+    await coordinator.stop();
+    expect(service.reconciliationSnapshot().reconciled).toBe(false);
   });
 
   it('imports the first real attachment after quiet only when its outer transaction commits', async () => {
@@ -150,6 +167,10 @@ describe.skipIf(!support.supported)('skill source committed work and deadlines',
     expect(await db.select().from(companySkills)).toHaveLength(1);
     expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now() + 250_000);
     await quiet();
+    expect(service.reconciliationSnapshot().reconciled).toBe(true);
+    const deadline = await readIdleSkillSourceSchedule(db, Date.now(), service.reconciliationSnapshot);
+    expect(deadline.blocked).toBe(false);
+    expect(deadline.deadlines).toHaveLength(1);
     expect((await sleepSafety()).backgroundWork).toBe('present');
   });
 
@@ -172,8 +193,10 @@ describe.skipIf(!support.supported)('skill source committed work and deadlines',
     else expect(idleWorkSnapshot().active).toBeGreaterThan(0);
     await quiet(20_000);
     expect(contextFor).not.toHaveBeenCalled();
+    expect(service.reconciliationSnapshot().reconciled).toBe(false);
     draining = false; standby = false;
     await vi.advanceTimersByTimeAsync(5_000); await imported(binding!.id);
+    expect(service.reconciliationSnapshot().reconciled).toBe(true);
   });
 
   it('recovers a failed sweep after drain without losing its request', async () => {

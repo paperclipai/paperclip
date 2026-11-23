@@ -23,10 +23,7 @@ export const readWorkflowAction = caseDataAction({
       offsetBytes: { type: "integer", minimum: 0, maximum: 9007199254740991 },
       limitBytes: { type: "integer", minimum: 4, maximum: 24576 },
     } },
-  }, allOf: [{
-    if: { properties: { responseText: { type: "object", properties: { offsetBytes: { type: "integer", minimum: 1 } }, required: ["offsetBytes"] } }, required: ["responseText"] },
-    then: { properties: { snapshot: {} }, required: ["snapshot"] },
-  }] }, example: { workflowId: "00000000-0000-4000-8000-000000000001" },
+  } }, example: { workflowId: "00000000-0000-4000-8000-000000000001" },
 });
 export const createWorkflowAction = caseDataAction({
   id: "create_workflow", title: "Create workflow", order: 57, write: true, binding,
@@ -38,7 +35,6 @@ export const updateWorkflowAction = caseDataAction({
   id: "update_workflow", title: "Update workflow", order: 58, write: true, binding,
   description: "Edit a company-shared definition's name or prompt for future adoptions. Existing cases keep their task copy. To explicitly refresh a case, handoff_case with this workflowId (even when already current). Reuse the retry key with identical arguments after response loss in this run.",
   schema: { type: "object", additionalProperties: false, required: ["workflowId", "idempotencyKey"],
-    properties: { workflowId, idempotencyKey, name, prompt },
-    anyOf: [{ properties: { name: {} }, required: ["name"] }, { properties: { prompt: {} }, required: ["prompt"] }] },
+    properties: { workflowId, idempotencyKey, name: { ...name, description: "Send name, prompt, or both." }, prompt: { ...prompt, description: `${prompt.description} Send name, prompt, or both.` } } },
   example: { workflowId: "00000000-0000-4000-8000-000000000001", idempotencyKey: "research-citations", prompt: "Research the question and save cited findings before review." },
 });

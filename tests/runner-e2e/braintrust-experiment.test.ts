@@ -118,8 +118,9 @@ it("imports original grades when report evidence validation changes the selected
   expect(() => buildBraintrustExperiment(projectId, adjusted, changed)).toThrow();
 });
 
-it("accepts current catalog model names including Cursor qualification parameters", () => {
-  for (const model of new Set(runnerMatrix.map(cell => cell.profile.model))) {
+it("accepts configured catalog model names including Cursor qualification parameters", () => {
+  const configured = runnerMatrix.filter(cell => cell.profile.provider !== "cursor_cloud" || cell.profile.model !== "");
+  for (const model of new Set(configured.map(cell => cell.profile.model))) {
     const { campaign, originals } = fixture();
     const changed = originals.map(original => ({ ...original, model }));
     const selected = { ...campaign, results: campaign.results.map(result => ({ ...result, model })) };

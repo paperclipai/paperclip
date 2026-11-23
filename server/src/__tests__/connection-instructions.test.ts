@@ -48,15 +48,17 @@ async function createRunFixture(db: ReturnType<typeof createDb>) {
   return { company, agent, issue, run };
 }
 
-async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, companyId: string) {
+async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, companyId: string, id?: string) {
+  const applicationKey = `remote-${randomUUID().slice(0, 8)}`;
   const application = await db.insert(toolApplications).values({
     companyId,
-    applicationKey: `remote-${randomUUID().slice(0, 8)}`,
-    name: "Remote MCP",
+    applicationKey,
+    name: `Remote MCP ${applicationKey}`,
     type: "mcp_http",
     status: "active",
   }).returning().then((rows) => rows[0]!);
   const connection = await db.insert(toolConnections).values({
+    id,
     companyId,
     applicationId: application.id,
     name: "Remote connection",
@@ -101,9 +103,9 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
   let temp: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => { temp = await startEmbeddedPostgresTestDatabase("paperclip-connection-instructions-"); db = createDb(temp.connectionString); }, 30000);
   afterAll(async () => { await temp?.cleanup(); });
-  async function fixture() {
+  async function fixture(connectionId?: string) {
     const run = await createRunFixture(db);
-    const connection = await createRemoteMcpToolFixture(db, run.company.id);
+    const connection = await createRemoteMcpToolFixture(db, run.company.id, connectionId);
     const service = toolAccessService(db);
     await service.updateConnection(connection.connection.id, { agentInstructions: { enabled: true, text: paragraph } });
     await service.finishGalleryAppConnection(run.company.id, connection.connection.id, {
@@ -129,6 +131,40 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
       release();
       await Promise.all(listings);
     }
+  });
+
+  it("preserves tool-name approval and block policies for UUID prefix collisions", async () => {
+    const f = await fixture("00000000-1000-4000-8000-000000000001");
+    const peer = await createRemoteMcpToolFixture(db, f.company.id, "00000000-ffff-4fff-bfff-ffffffffffff");
+    const unrelated = await createRemoteMcpToolFixture(db, f.company.id, "00000001-0000-4000-8000-000000000000");
+    for (const { connection } of [f, peer, unrelated]) {
+      await db.update(toolConnections).set({
+        config: { ...connection.config, paperclipPeerToolNamespace: "Shared namespace" },
+      }).where(eq(toolConnections.id, connection.id));
+    }
+    await f.service.finishGalleryAppConnection(f.company.id, unrelated.connection.id, {
+      enabledCatalogEntryIds: [unrelated.catalogEntry.id], askFirstCatalogEntryIds: [], access: { agentIds: [f.agent.id] },
+    });
+
+    const snapshot = await f.resolve();
+    expect(snapshot?.text).toContain(paragraph);
+
+    const session = await f.gateway.createSession(f.binding);
+    const tools = await f.gateway.listToolsForSession(session.token);
+    expect(tools.some((tool) => tool.connectionId === unrelated.connection.id)).toBe(true);
+    expect(tools.some((tool) => tool.connectionId === peer.connection.id)).toBe(false);
+    const candidateName = tools.find((tool) => tool.connectionId === f.connection.id)?.name;
+    expect(candidateName).toMatch(/^mcp\.shared-namespace-00000000:needs-input-[\da-f]{8}$/);
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: f.company.id, name: "Protect the exact collision name", policyType: "require_approval", priority: 1000,
+      selectors: { toolName: candidateName },
+    }).returning();
+    expect(await f.resolve()).toEqual(snapshot);
+    await db.update(toolPolicies).set({ policyType: "block" }).where(eq(toolPolicies.id, policy!.id));
+    expect(await f.resolve()).toBeNull();
+
+    await db.update(toolCatalogEntries).set({ quarantinedAt: new Date() }).where(eq(toolCatalogEntries.id, peer.catalogEntry.id));
+    expect(await f.resolve()).toEqual(snapshot);
   });
 
   it("persists a non-memory paragraph and captures it in actual process input and both prompt composers", async () => {
@@ -240,7 +276,7 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
 
 describe("Honcho workspace configuration", () => {
   const schema = { type: "object", properties: { workspace_id: { type: "string" }, query: { type: "string" } }, required: ["workspace_id", "query"] };
-  const connection = { config: { sourceTemplateKey: "honcho", connectionMethodKey: "mcp-api-key", methodConfig: { workspaceId: "team-workspace" } } } as typeof toolConnections.$inferSelect;
+  const connection = { transport: "mcp_remote" as const, config: { sourceTemplateKey: "honcho", connectionMethodKey: "mcp-api-key", methodConfig: { workspaceId: "team-workspace" } } };
   it("projects the workspace and hides its argument while keeping old unconfigured tools usable", () => {
     expect(projectedConnectionToolArguments(connection, { workspace_id: "forged", query: "decisions" }, "query", schema)).toEqual({ workspace_id: "team-workspace", query: "decisions" });
     expect(projectedConnectionToolInputSchema(connection, schema, "query")).toEqual({ type: "object", properties: { query: { type: "string" } }, required: ["query"] });

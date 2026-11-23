@@ -1,3 +1,4 @@
+import { budgetServiceInTransaction } from "../../services/budgets.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { withExternalAdmissionGuard, withExternalExecutionAdmission } from "./admission.js";
 import { createNativeExternalBroker } from "./native-broker.js";
@@ -82,20 +83,19 @@ function createBroker(db: Db) {
         || !coordinator || coordinator.controllerGeneration !== a.controllerGeneration || !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= new Date()
         || ["terminal_failure", "turn_stopping", "turn_stopped"].includes(run.nativePhase ?? "")
         || !company || company.status !== "active" || !agent || ["paused", "terminated", "pending_approval"].includes(agent.status)
-        || (company.budgetMonthlyCents > 0 && company.spentMonthlyCents >= company.budgetMonthlyCents)
-        || (agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents)) {
+        || await budgetServiceInTransaction(queryDb).getInvocationBlock(a.companyId, a.agentId, { issueId: run.nativeIssueId })) {
       throw fail("The run no longer owns this task or its execution authority.");
     }
     return { binding, assignment: a };
   }
 
-  const nativeBroker = createNativeExternalBroker<McpPrincipal>(db, "openai_dot", { enabled, authorize: authorizeAssignment });
+  const nativeBroker = createNativeExternalBroker<McpPrincipal>(db, "openai_dot", { enabled: (database, provider) => externalBotEnabled(db, provider ?? "openai_dot", database), authorize: authorizeAssignment });
 
   return {
     enabled,
     async createPairing(input: { companyId: string; agentId: string; operatorId: string; provider?: "openai_dot" | "grok_bot"; dotUrl?: string; replaceBindingId?: string }) {
       const provider = input.provider ?? "openai_dot";
-      if (!await enabled(provider)) throw fail("Enable the external provider and Assistant connections (MCP) in experimental settings.");
+      if (!await enabled(provider)) throw fail("Enable the external provider in experimental settings.");
       if (provider === "grok_bot") await authorizeExternalBotOperator(db, input.companyId, input.operatorId);
       if (input.dotUrl && !/^https:\/\/chatgpt\.com\/dots\/[A-Za-z0-9-]+$/.test(input.dotUrl)) throw fail("Use the Dot's ChatGPT URL.");
       const code = randomBytes(24).toString("base64url");
@@ -342,8 +342,7 @@ function createBroker(db: Db) {
         const [company] = await tx.select().from(companies).where(eq(companies.id, b.companyId));
         const [agent] = await tx.select().from(agents).where(eq(agents.id, b.agentId));
         if (company?.status !== "active" || !agent || ["paused", "terminated", "pending_approval"].includes(agent.status)
-          || (company.budgetMonthlyCents > 0 && company.spentMonthlyCents >= company.budgetMonthlyCents)
-          || (agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents)) throw fail("Company, agent, or budget authority is unavailable.");
+          || await budgetServiceInTransaction(tx as unknown as Db).getInvocationBlock(b.companyId, b.agentId, { projectId })) throw fail("Company, agent, or budget authority is unavailable.");
         const decision = await authorizationService(tx as unknown as Db).decide({
           actor: { type: "agent", source: "agent_jwt", companyId: b.companyId, agentId: b.agentId, onBehalfOfUserId: b.operatorId },
           action: "tasks:assign", resource: { type: "issue", companyId: b.companyId, assigneeAgentId: b.agentId, assigneeUserId: null, projectId: projectId ?? null, parentIssueId: null },

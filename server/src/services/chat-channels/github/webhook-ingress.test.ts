@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, chatActions, createDb } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../../__tests__/helpers/full-database-response-capture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { cleanupIngressFixture, githubIngressFixture as createFixture } from "../../../__tests__/helpers/github-webhook-ingress.js";
@@ -36,7 +36,7 @@ describe.skipIf(!support.supported)("GitHub webhook ingress claim PostgreSQL beh
     const f = await githubIngressFixture(db, createGitHubWebhookIngress, 768 * 1024);
     const action = await f.insertAction();
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { chatActions }, capture);
     try { expect((await f.service.processGitHubWebhookIngress(action.id))?.status).toBe(202); }
     finally { capture.flush(); }
@@ -59,7 +59,7 @@ describe.skipIf(!support.supported)("GitHub webhook ingress claim PostgreSQL beh
     // A corrupt body must not let a nonclaimant overwrite a live or delayed claim.
     const action = await f.insertAction({ status, result, payload: { ...f.payload, bodySha256: "0".repeat(64) } });
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { chatActions }, capture);
     let response: Response | null;
     try { response = await f.service.processGitHubWebhookIngress(action.id); }
@@ -67,7 +67,7 @@ describe.skipIf(!support.supported)("GitHub webhook ingress claim PostgreSQL beh
     expect(response?.status ?? null).toBe(accepted ? 202 : null);
     expect(await f.readAction(action.id)).toEqual(action);
     expect(f.calls).toEqual([]);
-    expect(events.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.responseValueBytes).toBeLessThan(1024);
+    expect(events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")?.responseValueBytes).toBeLessThan(1024);
   });
 
   it.each(["received", "failed", "processing"])("settles eligible malformed %s payloads without replay", async status => {

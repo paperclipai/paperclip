@@ -51,6 +51,16 @@ describe.each(ADAPTER_MESSAGE_PAIRS)("createWorkspaceRestoreTeardown ($adapter)"
     } });
   });
 
+  it("restores workspace and credentials even when the run log has closed", async () => {
+    let restored = false;
+    const outcome = await createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace: async () => { restored = true; } },
+      onLog: async () => { throw new Error("fixture log closed"); }, startMessage, failurePrefix,
+    })();
+    expect(restored).toBe(true);
+    expect(outcome).toEqual({ ok: true });
+  });
+
   it("logs the start message to stdout and returns ok on a clean restore", async () => {
     const logLines: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
     const teardown = createWorkspaceRestoreTeardown({

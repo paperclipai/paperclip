@@ -5,8 +5,64 @@ import {
   WORKSPACE,
   collectUntilTerminal,
 } from "./codex-app-server-driver.test-support.js";
+import { codexUsageBaselineForNextRun } from "./codex-usage-baseline.js";
 
 describe("Codex resume accounting through the production driver", () => {
+  it("measures each run from the prior run's total across cold restarts", async () => {
+    const transports = [new FakeCodexTransport(), new FakeCodexTransport(), new FakeCodexTransport()];
+    const driver = makeDriver(transports, { conversationMode: "direct" });
+    const runTurn = async (
+      session: Awaited<ReturnType<typeof driver.openSession>>,
+      transport: FakeCodexTransport,
+      turnId: string,
+      total: { inputTokens: number; outputTokens: number },
+    ) => {
+      await session.startTurn({ message: { role: "user", text: turnId } });
+      transport.push("thread/tokenUsage/updated", {
+        threadId: "thread-1", turnId, tokenUsage: { total, last: total },
+      });
+      transport.push("turn/completed", {
+        threadId: "thread-1", turn: { id: turnId, status: "completed", items: [] },
+      });
+      const events = await collectUntilTerminal(session.events());
+      const usage = events.filter(event => event.payload.kind === "usage").at(-1);
+      return (usage?.payload.usage as { runDelta: unknown }).runDelta;
+    };
+    const coldRestart = async (
+      session: Awaited<ReturnType<typeof driver.openSession>>,
+      transport: FakeCodexTransport,
+      runId: string,
+      turnId: string,
+    ) => {
+      const saved = JSON.parse(JSON.stringify(await session.snapshot!()));
+      await session.close({ reason: "test complete" });
+      transport.readResponse = {
+        thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] },
+      };
+      transport.turnStartResponse = Promise.resolve({
+        turn: { id: turnId, status: "inProgress", items: [] },
+      });
+      const recovered = await driver.recoverSession({
+        ...saved, runId, activeTurnId: null, terminalTurns: [],
+        codexUsageBaseline: codexUsageBaselineForNextRun(saved.codexUsageBaseline),
+      });
+      expect(recovered.recovered).toBe(true);
+      return recovered.session!;
+    };
+    let session = await driver.openSession({
+      runId: "first", normalizedSessionId: "cold-restart-usage", workingDirectory: WORKSPACE,
+    });
+    await expect(runTurn(session, transports[0]!, "turn-1", { inputTokens: 100, outputTokens: 10 }))
+      .resolves.toEqual({ inputTokens: 100, outputTokens: 10 });
+    session = await coldRestart(session, transports[1]!, "second", "turn-2");
+    await expect(runTurn(session, transports[1]!, "turn-2", { inputTokens: 140, outputTokens: 16 }))
+      .resolves.toEqual({ inputTokens: 40, outputTokens: 6 });
+    session = await coldRestart(session, transports[2]!, "third", "turn-3");
+    await expect(runTurn(session, transports[2]!, "turn-3", { inputTokens: 170, outputTokens: 20 }))
+      .resolves.toEqual({ inputTokens: 30, outputTokens: 4 });
+    await session.close({ reason: "test complete" });
+  });
+
   it.each(["thread", "snapshot"] as const)(
     "retains the same run delta through an active cold reconciliation: %s",
     async (usageLocation) => {
@@ -81,7 +137,7 @@ describe("Codex resume accounting through the production driver", () => {
         expect(await session.usage!()).toMatchObject({
           runDelta: { inputTokens: 40, outputTokens: 6 },
         });
-        await session.close();
+        await session.close({ reason: "fixture complete" });
         second.readResponse = readResponse(140, 16);
         const recovery = await driver.recoverSession(persisted);
         expect(recovery.recovered).toBe(true);
@@ -125,12 +181,13 @@ describe("Codex resume accounting through the production driver", () => {
         expect(advanced.codexUsageBaseline).toEqual({
           baseline: { inputTokens: 100, outputTokens: 10 },
           latest: { inputTokens: 150, outputTokens: 19 },
+          accounted: { inputTokens: 150, outputTokens: 19 },
         });
         expect(persisted.codexUsageBaseline.latest).toEqual({
           inputTokens: 140,
           outputTokens: 16,
         });
-        await recoveredSession.close();
+        await recoveredSession.close({ reason: "fixture complete" });
         third.readResponse = readResponse(150, 19);
         const secondRecovery = await driver.recoverSession(advanced);
         expect(secondRecovery.recovered).toBe(true);
@@ -148,8 +205,8 @@ describe("Codex resume accounting through the production driver", () => {
           ),
         ).toEqual([]);
       } finally {
-        await recoveredSession?.close();
-        await session.close();
+        await recoveredSession?.close({ reason: "fixture complete" });
+        await session.close({ reason: "fixture complete" });
       }
     },
   );
@@ -188,7 +245,7 @@ describe("Codex resume accounting through the production driver", () => {
             baseline: { inputTokens: 100 },
             latest: { inputTokens: 140 },
           };
-        await session.close();
+        await session.close({ reason: "fixture complete" });
         const tokenUsage = {
           total: { inputTokens: 150 },
           last: { inputTokens: 10 },
@@ -213,8 +270,8 @@ describe("Codex resume accounting through the production driver", () => {
           second.calls.filter((call) => call.method === "turn/start"),
         ).toEqual([]);
       } finally {
-        await recoveredSession?.close();
-        await session.close();
+        await recoveredSession?.close({ reason: "fixture complete" });
+        await session.close({ reason: "fixture complete" });
       }
     },
   );
@@ -243,7 +300,7 @@ describe("Codex resume accounting through the production driver", () => {
     });
     await collectUntilTerminal(session.events());
     const persisted = JSON.parse(JSON.stringify(await session.snapshot!()));
-    await session.close();
+    await session.close({ reason: "fixture complete" });
     second.readResponse = {
       thread: {
         id: "thread-1",
@@ -277,6 +334,7 @@ describe("Codex resume accounting through the production driver", () => {
     expect((await session.snapshot!()).codexUsageBaseline).toEqual({
       baseline: { inputTokens: 100, outputTokens: 10 },
       latest: { inputTokens: 100, outputTokens: 10 },
+      accounted: { inputTokens: 100, outputTokens: 10 },
     });
     second.turnStartResponse = Promise.resolve({
       turn: { id: "turn-2", status: "inProgress", items: [] },
@@ -326,7 +384,36 @@ describe("Codex resume accounting through the production driver", () => {
         .filter((call) => call.method === "thread/read")
         .every((call) => call.params.includeTurns === false),
     ).toBe(true);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("keeps usage reported between runs in the next run's delta after a restore", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second], { conversationMode: "direct" });
+    const session = await driver.openSession({ runId: "first", normalizedSessionId: "between-runs-restore", workingDirectory: WORKSPACE });
+    await session.startTurn({ message: { role: "user", text: "First" } });
+    first.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    // The first run's charge is final at 100; this report arrives after it.
+    first.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    const persisted = JSON.parse(JSON.stringify(await session.snapshot!()));
+    expect(persisted.codexUsageBaseline).toMatchObject({ latest: { inputTokens: 130 }, accounted: { inputTokens: 100 } });
+    await session.close({ reason: "test complete" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "turn-1", status: "completed", items: [] }], tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } } };
+    const recovery = await driver.recoverSession(persisted);
+    expect(recovery.recovered).toBe(true);
+    const recovered = recovery.session!;
+    await recovered.attachRun!({ runId: "second" });
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await recovered.startTurn({ message: { role: "user", text: "Second" } });
+    second.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-2", tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of recovered.events()) if (event.payload.kind === "usage") break;
+    expect(await recovered.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+    await recovered.close({ reason: "test complete" });
   });
 
   it("keeps the startup external sandbox profile on subsequent turns", async () => {
@@ -352,6 +439,6 @@ describe("Codex resume accounting through the production driver", () => {
       transport.calls.find((call) => call.method === "turn/start")?.params
         .permissions,
     ).toBe(start.params.permissions);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
   });
 });

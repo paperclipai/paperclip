@@ -42,9 +42,9 @@ vi.mock("../dev-server-status.js", () => ({
 
 function createApp(
   db?: Db,
-  serverInfo = testServerInfo,
-  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
-  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
+  serverInfo: NonNullable<Parameters<typeof healthRoutes>[1]>["serverInfo"] = testServerInfo,
+  databaseBackupHealth?: NonNullable<Parameters<typeof healthRoutes>[1]>["databaseBackupHealth"],
+  runtimeEnv?: NonNullable<Parameters<typeof healthRoutes>[1]>["runtimeEnv"],
 ) {
   const app = express();
   app.use(
@@ -114,6 +114,20 @@ describe("GET /health", () => {
       stackSlug: "acme",
       cloudBaseUrl: "https://app.paperclip.app",
     });
+  });
+
+  it("publishes deployment harness policy and reflects configuration updates", async () => {
+    const env = {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: "example.paperclip.app",
+      PAPERCLIP_AVAILABLE_HARNESSES: '["gemini_local","plugin:example"]',
+    };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual(["gemini_local", "plugin:example"]);
+    env.PAPERCLIP_AVAILABLE_HARNESSES = "[]";
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual([]);
+    env.PAPERCLIP_AVAILABLE_HARNESSES = "invalid";
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual([]);
   });
 
   it("lists operator-hidden settings and drops unknown keys", async () => {
@@ -407,7 +421,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -450,7 +464,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -489,7 +503,7 @@ describe("GET /health", () => {
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

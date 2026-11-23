@@ -17,6 +17,20 @@ function validWorker(worker: unknown): worker is WorkspaceWorker {
   return value.provider === "railway" && ["projectId", "environmentId", "serviceId", "deploymentId"].every(key =>
     typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 200);
 }
+export function isRetainedWorkspaceWorkerStopProof(value: unknown, runId: string): value is WorkspaceWorkerStopProof {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proof = value as Record<string, unknown>;
+  return proof.v === 1 && proof.iss === "paperclip-cloud" && proof.aud === "paperclip-workspace-worker-stop/v1"
+    && proof.runId === runId && proof.stopped === true
+    && typeof proof.sub === "string" && proof.sub.length > 0 && proof.sub.length <= 200
+    && typeof proof.ownerToken === "string" && proof.ownerToken.length > 0 && proof.ownerToken.length <= 200
+    && Number.isInteger(proof.iat) && Number.isInteger(proof.exp)
+    && Number(proof.exp) > Number(proof.iat) && Number(proof.exp) - Number(proof.iat) <= 60
+    && validWorker(proof.worker)
+    && Object.keys(proof.worker).every(key => ["provider", "projectId", "environmentId", "serviceId", "deploymentId"].includes(key))
+    && Object.keys(proof).every(key => ["v", "iss", "aud", "sub", "stopped", "iat", "exp", "runId", "ownerToken", "worker"].includes(key));
+}
+
 export function currentWorkspaceWorker(env: NodeJS.ProcessEnv = process.env): WorkspaceWorker | undefined {
   const ids = [env.RAILWAY_PROJECT_ID, env.RAILWAY_ENVIRONMENT_ID, env.RAILWAY_SERVICE_ID, env.RAILWAY_DEPLOYMENT_ID];
   if (ids.some(id => !id?.trim())) return undefined;
@@ -43,23 +57,40 @@ export function verifyWorkspaceWorkerStopReceipt(
     return proof;
   } catch { return null; }
 }
-/** Unsupported platforms, legacy receipts and unavailable evidence never authorize takeover. */
+export type WorkspaceWorkerStopCheck =
+  | { status: "verified"; proof: WorkspaceWorkerStopProof }
+  | { status: "pending" }
+  | { status: "unsupported" };
+
+export function workspaceWorkerStopProofSupported(worker: WorkspaceWorker | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  const context = getCloudStackContext(env);
+  if (!context?.stackId || !context.cloudOrigin || !env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim() || !validWorker(worker)) return false;
+  try {
+    const origin = new URL(context.cloudOrigin);
+    return origin.protocol === "https:" && !origin.username && !origin.password;
+  } catch { return false; }
+}
+
+
 export async function requestWorkspaceWorkerStopProof(binding: WorkspaceStopBinding, options: {
   env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; now?: Date;
-} = {}): Promise<WorkspaceWorkerStopProof | null> {
+} = {}): Promise<WorkspaceWorkerStopCheck> {
   const env = options.env ?? process.env;
   const context = getCloudStackContext(env);
   const token = env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!context?.stackId || !context.cloudOrigin || !token || !validWorker(binding.worker)) return null;
+  if (!workspaceWorkerStopProofSupported(binding.worker, env) || !context?.stackId || !context.cloudOrigin || !token) return { status: "unsupported" };
+  let origin: URL;
+  try { origin = new URL(context.cloudOrigin); } catch { return { status: "unsupported" }; }
+  if (origin.protocol !== "https:" || origin.username || origin.password) return { status: "unsupported" };
   try {
-    const origin = new URL(context.cloudOrigin);
-    if (origin.protocol !== "https:" || origin.username || origin.password) return null;
     const response = await (options.fetchImpl ?? fetch)(`${origin.origin}/v1/tenant/workspace-worker-stop`, {
       method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "x-paperclip-cloud-stack-id": context.stackId, "content-type": "application/json" },
       body: JSON.stringify(binding), signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { status: "pending" };
     const payload = await response.json() as { receipt?: unknown };
-    return typeof payload.receipt === "string" ? verifyWorkspaceWorkerStopReceipt(payload.receipt, binding, env, options.now) : null;
-  } catch { return null; }
+    const proof = typeof payload?.receipt === "string"
+      ? verifyWorkspaceWorkerStopReceipt(payload.receipt, binding, env, options.now) : null;
+    return proof ? { status: "verified", proof } : { status: "pending" };
+  } catch { return { status: "pending" }; }
 }

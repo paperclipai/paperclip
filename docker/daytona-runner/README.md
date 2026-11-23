@@ -8,7 +8,7 @@ it runs explicitly on the execution host and is never an npm installation hook.
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.22.0 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and records the runner source revision as provenance. Its interface declaration
 allows compatible app releases to reuse it without uploading or installing a pack.
@@ -20,18 +20,19 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The October 2026 refreshes pin Codex 0.160.0, Claude Agent SDK
-0.3.286 (Claude Code 2.1.286), and OpenCode 1.18.34 in the shared provider
-pack. Claude Code 2.1.280 is the minimum for
-[Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
-minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Codex
-0.160.0 ships bundled metadata for the current
-[GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models).
-The sandbox layer pins Grok CLI 1.0.70, Gemini CLI 0.65.0, Kimi Code 2.3.3,
-Cursor CLI 2026.10.22-27dcf5f, and GitHub CLI 2.103.3 (October 2026
+The November 19, 2026 refresh pins Codex 0.170.0 and Claude Agent SDK
+0.3.328 (Claude Code 2.1.328) in the shared provider pack; OpenCode stays at
+1.18.34. Claude Code 2.1.280 is the minimum for
+[Opus 5.5](https://code.claude.com/docs/en/model-config), 2.1.284 for Sonnet 5.5,
+and 2.1.321 for Fable 5.2, so the pinned runtime supports all three and Fable 5.1.
+Codex 0.170.0 ships bundled metadata for
+[GPT-6.2 Sol and Astra](https://learn.chatgpt.com/docs/models) (minimum 0.169.1)
+as well as GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna.
+The sandbox layer pins Grok CLI 1.0.89, Gemini CLI 0.68.0, Kimi Code 2.3.3,
+Cursor CLI 2026.11.17-f532c45, and GitHub CLI 2.105.0 (November 2026
 refresh). The native Cursor provider uses its separately verified distribution,
 pinned to 2026.09.26-dd393fe; it does not use the sandbox layer’s global Cursor
-executable. Grok CLI 1.0.70 supports the current
+executable. Grok CLI 1.0.89 supports the current
 [Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family. Hermes stays
 at 0.19.0, the newest release on PyPI.
 
@@ -61,6 +62,7 @@ docker buildx build \
   --platform linux/amd64 \
   --build-arg PAPERCLIP_RUNNER_CONTENT_ID="${content_id}" \
   --build-arg PAPERCLIP_RUNNER_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg PAPERCLIP_RUNNER_LOCK_SHA256="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)" \
   --tag "paperclip-daytona-runner:e2e-content-${content_id}" \
   --load \
   --file docker/daytona-runner/Dockerfile \
@@ -104,6 +106,19 @@ fall back to host-local processes.
 `src/live/provider-pack-contract.json` in the Runner package declares the
 OpenCode and ACPX interface revisions. Change a revision only for an incompatible
 runner/pack boundary change, and qualify the new pack before publishing it.
+Bumping a revision also retires every older image pack.
+The pack build also records a `contractDigest`, computed by
+`scripts/contracts/contract-fingerprints.mjs` from the JSON contracts under
+`protocol/` and `generated/`, from Rust serde shapes, payload keys, match
+literals and env keys, and from the Runner's ACPX patch, rather than from
+source bytes. An image pack is reused
+only when its digest equals the controller's bundled pack; comments and
+refactors leave it unchanged, so a mismatch means a contract changed and the
+controller uploads its bundled pack. Packs without a digest are not reused.
+Define a new runner/pack contract in a schema under `protocol/` and generate the
+TypeScript from it, as the sidecar's `session.open` parameter allowlist is
+generated from `acpx-sidecar.schema.json`; TypeScript-only definitions are not
+part of the digest.
 Dependency versions and Git SHAs remain build provenance. ACPX retains its
 selected agent's qualified profile checks.
 
@@ -137,9 +152,11 @@ with source dependency changes; registry-time resolution drift fails closed.
 The Product E2E workflow resolves one lockfile before the image build. It
 verifies the downloaded artifact, then passes that artifact's SHA-256 as the
 `PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
-lock against this value before installation. The fixed Dockerfile default is
-for standalone builds; it must not replace a campaign's verified lock digest.
-Refresh the default from the clean tracked lockfile using the exact
+lock against this value before installation. The Dockerfile has no default
+digest: standalone builds pass the SHA-256 of the lockfile in their build
+context, and a missing or malformed value fails before installation instead of
+surfacing as a checksum mismatch. When a source change needs a fresh lockfile,
+resolve it from the clean tracked lockfile using the exact
 `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile` command,
 and verify a second resolution preserves the digest. A lockfile left by a
 filtered or incremental install can retain stale importer patch identities.

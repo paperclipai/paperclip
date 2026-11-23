@@ -26,6 +26,7 @@ const mockUseIssueDocuments = vi.hoisted(() =>
   vi.fn((): { data: IssueDocument[] } => ({ data: [] })),
 );
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => ({ enabled: false, loaded: true }) }));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
   useLocation: () => ({ hash: "" }),

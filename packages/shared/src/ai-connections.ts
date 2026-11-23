@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
+import { aiConnectionCatalogSlug, aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
 
 /** Runtime authentication is a separate transport, never a tool or channel. */
 export const connectionPurposeTransportSchema = z.discriminatedUnion(
@@ -7,7 +7,7 @@ export const connectionPurposeTransportSchema = z.discriminatedUnion(
   [
     z.object({
       connectionPurpose: z.literal("tool"),
-      transport: z.enum(["mcp_remote", "rest_api", "local_stdio"]),
+      transport: z.enum(["mcp_remote", "rest_api", "local_stdio", "plugin"]),
     }),
     z.object({
       connectionPurpose: z.literal("channel"),
@@ -70,6 +70,18 @@ export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
+/**
+ * Catalog source of a saved AI connection. It reads the AI metadata, not the
+ * application, so accounts saved under an earlier catalog entry still resolve.
+ */
+export function aiConnectionSourceSlug(
+  connection: { connectionPurpose?: string | null; config?: Record<string, unknown> | null } | null | undefined,
+): string | null {
+  if (connection?.connectionPurpose !== "ai") return null;
+  const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+  return metadata.success ? aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing) : null;
+}
+
 /** Existing integrations only. This table describes compatibility, never routing. */
 export const AI_CONNECTION_CAPABILITIES: Record<
   AiProvider,
@@ -84,7 +96,10 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     name: "GitHub Copilot",
     methods: { api_key: { adapters: ["copilot_runtime"], envKey: "COPILOT_GITHUB_TOKEN" } },
   },
-  google: { name: "Google", methods: { api_key: { adapters: ["gemini_local", "pi_local"], envKey: "GEMINI_API_KEY" } } },
+  google: { name: "Google", methods: {
+    api_key: { adapters: ["gemini_local", "pi_local", "antigravity_runtime"], envKey: "GEMINI_API_KEY" },
+    subscription: { adapters: ["antigravity_runtime"], envKey: "GEMINI_HOME" },
+  } },
   anthropic: {
     name: "Claude",
     methods: {
@@ -124,6 +139,11 @@ export function isAiConnectionCompatible(
   acpxAgent?: unknown,
 ): boolean {
   adapterType = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  // Antigravity uses its own Google runtime sign-in or a Gemini API key.
+  // Tool OAuth and API-compatible endpoints cannot authenticate this harness.
+  if (adapterType === "antigravity_runtime") return requirement.provider === "google"
+    && (requirement.method === "api_key" || requirement.method === "subscription")
+    && !("routing" in requirement && requirement.routing);
   if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
@@ -178,9 +198,21 @@ export interface AiManagedConnectionSummary {
   ownerUserId?: string;
   ownerName?: string;
   isDefault: boolean;
+  canSetDefault?: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
   usageProbeSupported?: boolean;
+}
+/** Safe provider account details for one authorized saved credential. */
+export interface AiConnectionAccountIdentity {
+  connectionId: string;
+  grantId: string;
+  status: "available" | "unavailable" | "error";
+  checkedAt: string;
+  accountLabel: string | null;
+  organizationLabel: string | null;
+  errorCode?: "unsupported" | "connection_unavailable" | "authentication_required" | "permission_denied" | "rate_limited" | "provider_unavailable" | "invalid_response";
+  message?: string;
 }
 export interface AiConnectionList {
   currentUserId: string;
@@ -229,7 +261,7 @@ export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
 export const aiConnectionLoginIntentSchema = z
   .object({
-    provider: z.enum(["anthropic", "openai", "xai"]),
+    provider: z.enum(["anthropic", "openai", "xai", "google"]),
     method: z.literal("subscription"),
     name: z.string().trim().min(1).max(160),
     ownership: z.enum(["personal", "shared"]),
@@ -251,6 +283,7 @@ export interface LocalAiLoginStatus {
   authorizationUrl?: string;
   code?: string;
   error?: string;
+  accountLabel?: string;
 }
 export interface LocalAiLoginAttempt {
   sessionId: string;
@@ -263,6 +296,6 @@ export interface LocalAiLoginAttempt {
 export function aiSubscriptionNeedsIsolatedLogin(config: Record<string, unknown> | undefined): boolean {
   const metadata = aiConnectionMetadataSchema.safeParse(config?.ai);
   return metadata.success && metadata.data.method === "subscription" &&
-    (metadata.data.provider === "openai" || metadata.data.provider === "xai") &&
+    (["openai", "xai", "google"].includes(metadata.data.provider)) &&
     config?.aiIsolatedSubscription !== true;
 }

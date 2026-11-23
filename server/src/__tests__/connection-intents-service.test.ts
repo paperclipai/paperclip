@@ -1,7 +1,7 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -11,6 +11,7 @@ import {
   issueComments,
   companies,
   companyMemberships,
+  principalPermissionGrants,
   companySecretBindings,
   companySecrets,
   connectionGrantDelegations,
@@ -40,7 +41,10 @@ import { materializeNativeInteractionResponses } from "../services/native-runtim
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { attentionService } from "../services/attention.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -201,6 +205,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(serialized).not.toContain(claims.sub);
   });
 
+  it("tells the agent to configure a single match only when the person asked to set it up", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = String(run!.contextSnapshot?.issueId);
+    const say = (body: string) => db.insert(issueComments).values({
+      companyId: claims.company_id, issueId, authorUserId: "responsible-user", body,
+      createdAt: new Date(Date.now() + 1000),
+    }).returning().then(rows => rows[0]!);
+    const said: string[] = [];
+    try {
+      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?",
+        "Connect Slack, then read my Notion."]) {
+        said.push((await say(body)).id);
+        const result = await connectionIntentService(db).search(claims, "Notion");
+        expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);
+        expect(result.instruction).not.toMatch(/^The person asked you to set up/);
+        expect(result.instruction).toContain("call connection_request with service notion");
+        expect(result.instruction).toMatch(/\[Connect Notion\]\(\/[A-Z0-9]+\/apps\/connect\?source=notion\)/);
+        expect(result.instruction).toContain("Do not create a connection or a saved draft yourself");
+      }
+      said.push((await say("Connect Notion, then continue the launch summary here.")).id);
+      const requested = await connectionIntentService(db).search(claims, "Notion");
+      expect(requested.instruction).toMatch(/^The person asked you to set up this connection\. If method\.management\.allowed, use search_api\/call_api/);
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, said));
+    }
+  });
+
   it("discovers GitHub review bots independently from chat connectors", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
@@ -222,6 +253,42 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         enableGitHubReviewBots: previous.enableGitHubReviewBots,
       });
     }
+  });
+
+  it("names the instance setting and its page when a requested chat channel is turned off", async () => {
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    const service = connectionIntentService(db);
+    try {
+      await settings.updateExperimental({ enableChatConnectors: false });
+      expect((await service.search(claims, "iMessage chat messaging with a contact")).results.find(item => item.service === "imessage-photon")?.state).toBe("unavailable");
+      const off = await service.search(claims, "iMessage");
+      const imessage = off.results.find(item => item.service === "imessage-photon");
+      expect(imessage).toMatchObject({ state: "unavailable", methods: [] });
+      expect(imessage?.reason).toMatch(/\[Experimental settings\]\(\/[A-Z0-9]+\/company\/settings\/instance\/experimental\)/);
+      expect(off.instruction).toContain("Explain the reason");
+      expect((await service.search(claims, "slack")).results.some(item => item.state === "unavailable" && item.methods.length === 0)).toBe(false);
+      expect((await service.search(claims, "discord")).results.some(item => item.service === "discord" && item.state === "unavailable")).toBe(false);
+      const partial = await service.search(claims, "imess");
+      expect(partial.results.map(item => item.service)).toEqual(["imessage-photon"]);
+      expect(partial.instruction).toContain("Explain the reason");
+      await settings.updateExperimental({ enableChatConnectors: true });
+      const on = (await service.search(claims, "iMessage")).results.find(item => item.service === "imessage-photon");
+      expect(on?.state).not.toBe("unavailable");
+      expect(on?.methods.some(method => method.purpose === "channel")).toBe(true);
+    } finally {
+      await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors });
+    }
+  });
+
+  it("points a service the catalog does not list at the secure own-server setup page", async () => {
+    const ranked = await connectionIntentService(db).search(claims, "Synthetic notes service connect my account with an API key");
+    expect(ranked.results.length).toBeGreaterThan(1);
+    expect(ranked.instruction).toMatch(/^These are ranked connection matches[\s\S]*\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(ranked.instruction).toMatch(/for a catalog app \(a service without the connection: prefix\), link its setup page as \[Connect <app name>\]\(\/[A-Z0-9]+\/apps\/connect\?source=<service>\) instead, because connection_request ends your turn[\s\S]*A saved connection \(service connection:<id>\) has no catalog setup page: use connection_request for it\./);
+    const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
+    expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(result.instruction).toContain("Do not create the connection yourself, ask for the key in chat");
   });
 
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {
@@ -391,6 +458,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("was not found");
     expect((await service.search(claims, "github")).results).toEqual([
       expect.objectContaining({ service: "github", state: "available" }),
+      expect.objectContaining({ service: "github-copilot", state: "available" }),
     ]);
     await expect(service.request(claims, "github")).resolves.toMatchObject({
       state: "needs_user_action",
@@ -411,10 +479,17 @@ describeEmbeddedPostgres("connectionIntentService", () => {
             auth: "api_key",
             purpose: "tool",
           }),
+        ],
+      }),
+    );
+    const copilot = search.results.find((result) => result.service === "github-copilot");
+    expect(copilot).toEqual(
+      expect.objectContaining({
+        methods: [
           expect.objectContaining({
             key: "copilot-token",
             purpose: "ai",
-            setupPath: expect.stringContaining("/apps/connect?source=github"),
+            setupPath: expect.stringMatching(/\/apps\/connect\?source=github-copilot$/),
           }),
         ],
       }),
@@ -848,6 +923,49 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+  it("resumes transferred AI authentication with the recipient's account without sharing it with the original person", async () => {
+    const companyId = claims.company_id, agentId = randomUUID(), issueId = randomUUID(), sourceRunId = randomUUID();
+    const recipient = `recipient-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: recipient, name: "Recipient", email: `${recipient}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: recipient, status: "active", membershipRole: "member" });
+    const binding = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(agents).values({ id: agentId, companyId, name: "Transferred agent", adapterType: "codex_local", runtimeConfig: { aiConnection: binding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Transferred authentication", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: recipient });
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const origin = await initializeRunIdentity(db, { companyId, runId: sourceRunId, issueId, responsibleUserId: claims.responsible_user_id!, cause: "company_default" });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: `handoff-${agentId}`, name: "OpenAI", type: "mcp_http", metadata: { sourceTemplateKey: "openai" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Recipient account", uid: `handoff-${agentId}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "openai", ai: { provider: "openai", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: recipient, createdByUserId: recipient }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId, userId: recipient, provider: "openai", grantId: grant!.id });
+    const service = connectionIntentService(db);
+    const sourceClaims = { ...claims, sub: agentId, run_id: sourceRunId };
+    const pending = await service.request(sourceClaims, "openai", { purpose: "ai" });
+    expect(pending.state).toBe("needs_user_action");
+    await attentionService(db).transfer(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: pending.interactionId!, toUserId: recipient,
+      actor: { type: "board", source: "session", userId: claims.responsible_user_id! },
+    });
+    await expect(service.complete(pending.interactionId!, connection!.id, claims.responsible_user_id!)).rejects.toThrow("Only the addressed user");
+    await service.complete(pending.interactionId!, connection!.id, recipient);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(pending.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const contextSnapshot = wakeup.mock.calls[0][1].contextSnapshot;
+    expect(contextSnapshot).toMatchObject({ interactionId: pending.interactionId, forceFreshSession: true });
+    const continuedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: continuedRunId, companyId, agentId, status: "running", contextSnapshot });
+    const continued = await initializeRunIdentity(db, {
+      companyId, runId: continuedRunId, issueId, interactionId: contextSnapshot.interactionId,
+      responsibleUserId: claims.responsible_user_id!, cause: contextSnapshot.wakeReason,
+    });
+    expect(continued).toMatchObject({ responsibleUserId: recipient, parentContextId: origin.id, cause: "connection_handoff" });
+    expect(await service.request({ ...sourceClaims, run_id: continuedRunId, responsible_user_id: recipient }, "openai", { purpose: "ai" }))
+      .toMatchObject({ state: "ready", connectionId: connection!.id });
+    expect(await service.usableConnectionForAgent({ companyId, agentId, responsibleUserId: claims.responsible_user_id!, serviceSlug: "openai", purpose: "ai" })).toBeNull();
+    const [saved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    expect(saved).toMatchObject({ sourceIdentityContextId: origin.id, addresseeUserId: recipient, resolvedByUserId: recipient });
+  });
+
   it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
     const companyId = claims.company_id;
     const agentId = randomUUID();
@@ -912,15 +1030,106 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   });
 
 
-  async function accessFixture() {
+  it("requests Copilot authentication through the GitHub Copilot connector", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const service = connectionIntentService(db);
+    const aiRequest = await service.request({ ...claims, sub: agentId, run_id: aiRunId }, "github", { purpose: "ai" });
+    expect(aiRequest).toMatchObject({ service: "github-copilot", state: "needs_user_action" });
+    const setup = await service.setupOptions(aiRequest.interactionId!);
+    expect(setup.service).toMatchObject({ service: "github-copilot", name: "GitHub Copilot" });
+    expect(setup.service.methods.map((method) => method.key)).toEqual(["copilot-token"]);
+    expect(setup.aiConnection).toMatchObject({ provider: "github", method: "api_key" });
+  });
+
+  async function copilotAccountFixture(agentRuntimeConfig: Record<string, unknown>, run: { status: "running" | "failed"; errorCode?: string }) {
+    const companyId = claims.company_id;
+    const userId = claims.responsible_user_id!;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const [agent] = await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }, runtimeConfig: agentRuntimeConfig }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: run.status, errorCode: run.errorCode ?? null, responsibleUserId: userId, contextSnapshot: { issueId } });
+    const [application] = await db.insert(toolApplications).values({ companyId, applicationKey: `app-gallery:github:${randomUUID()}`, name: `GitHub ${randomUUID()}`, type: "mcp_http", metadata: { sourceTemplateKey: "github" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id, name: "Older Copilot account", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: userId, createdByUserId: userId }).returning();
+    await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId), eq(aiProviderDefaults.provider, "github")));
+    await db.insert(aiProviderDefaults).values({ companyId, userId, provider: "github", grantId: grant!.id });
+    return { companyId, userId, agent: agent!, issueId, runId, connection: connection! };
+  }
+
+  it("completes a Copilot request saved before the connector split with an older Copilot account", async () => {
+    const f = await copilotAccountFixture({ aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } }, { status: "running" });
+    const card = await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null, requestingAgentId: f.agent.id,
+        requestingAgentName: f.agent.name, phase: "requested", purpose: "ai" },
+      sourceRunId: f.runId,
+      addresseeUserId: f.userId,
+      idempotencyKey: `connection-intent:${f.runId}:${f.userId}:github:ai`,
+    });
+    expect((await connectionIntentService(db).setupOptions(card.id)).service).toMatchObject({ service: "github-copilot" });
+    await expect(connectionIntentService(db).complete(card.id, f.connection.id, f.userId)).resolves.toMatchObject({ status: "accepted" });
+  });
+
+  it("keeps a Copilot request declined before the connector split declined in its continuation", async () => {
+    const companyId = claims.company_id;
+    const userId = claims.responsible_user_id!;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const continuationRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId } });
+    const intents = connectionIntentService(db);
+    const card = await issueThreadInteractionService(db).createConnectionIntent({ id: issueId, companyId }, {
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null, requestingAgentId: agentId,
+        requestingAgentName: "Copilot Agent", phase: "requested", purpose: "ai" },
+      sourceRunId: runId,
+      addresseeUserId: userId,
+      idempotencyKey: `connection-intent:${runId}:${userId}:github:ai`,
+    });
+    await intents.decline(card.id, userId);
+    await db.insert(heartbeatRuns).values({ id: continuationRunId, companyId, agentId, status: "running", responsibleUserId: userId,
+      contextSnapshot: { issueId, interactionId: card.id } });
+    await expect(intents.request({ ...claims, sub: agentId, run_id: continuationRunId }, "github", { purpose: "ai" }))
+      .rejects.toThrow("The user declined this connection");
+  });
+
+  it("adopts a Copilot account for an agent without a saved AI connection", async () => {
+    const f = await copilotAccountFixture({}, { status: "failed", errorCode: "copilot_auth_required" });
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(f.runId);
+    expect(card).toMatchObject({ service: "github-copilot", state: "needs_user_action" });
+    const setup = await intents.setupOptions(card!.interactionId!);
+    expect(setup).toMatchObject({ aiConnectionRequiresAdoption: true, aiConnection: { provider: "github", mode: "responsible_user" } });
+    await expect(intents.complete(card!.interactionId!, f.connection.id, f.userId, {
+      validatedAdoption: { agentUpdatedAt: f.agent.updatedAt, binding: setup.aiConnection! },
+    })).resolves.toMatchObject({ status: "accepted" });
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0]!.runtimeConfig.aiConnection).toMatchObject({ provider: "github", mode: "responsible_user" });
+  });
+
+  async function accessFixture(source = "composio") {
     const [company] = await db.insert(companies).values({ name: "Grant fixture", issuePrefix: `G${randomUUID().slice(0, 7)}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Default agent", role: "general", adapterType: "process" }).returning();
     const [otherAgent] = await db.insert(agents).values({ companyId: company.id, name: "Other agent", role: "general", adapterType: "process" }).returning();
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "grant-user", membershipRole: "owner", status: "active" });
+    await db.insert(principalPermissionGrants).values({ companyId: company.id, principalType: "user", principalId: "grant-user", permissionKey: "agents:configure" });
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Connect Circleback", status: "in_progress", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running", responsibleUserId: "grant-user", contextSnapshot: { issueId: issue.id } }).returning();
-    const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "Composio", type: "mcp_http", metadata: { sourceTemplateKey: "composio" } }).returning();
-    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application.id, uid: randomUUID(), name: "Saved Composio", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "composio" } }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: source, type: "mcp_http", metadata: { sourceTemplateKey: source } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application.id, uid: randomUUID(), name: `Saved ${source}`, transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: source } }).returning();
     await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "organization", status: "active" });
     await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "company", targetId: company.id });
     const catalog = await db.insert(toolCatalogEntries).values([
@@ -930,6 +1139,179 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     ].map(tool => ({ ...tool, companyId: company.id, connectionId: connection.id, name: tool.toolName, versionHash: "v1", entryKind: "tool" as const, status: "active" as const }))).returning();
     return { company, agent, otherAgent, issue, connection, catalog, service: connectionIntentService(db), claims: { ...claims, sub: agent.id, company_id: company.id, run_id: run.id, responsible_user_id: "grant-user" } };
   }
+
+  it("keeps GitHub permission saves aligned with credential admission for existing and future agents", async () => {
+    const f = await accessFixture("github");
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "grant-user" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    const access = toolAccessService(db);
+    const save = (audience: "all_agents" | { agentIds: string[] }) => access.finishGalleryAppConnection(f.company.id, f.connection.id, {
+      enabledCatalogEntryIds: f.catalog.map(tool => tool.id), askFirstCatalogEntryIds: [], access: audience,
+    }, { actorType: "user", actorId: "grant-user" });
+    const select = (agentId: string) => resolveManagedGitHubIdentitySelection(db, f.company.id, {
+      agentId, responsibleUserId: "grant-user",
+    });
+    await save({ agentIds: [f.agent.id] });
+    await expect(select(f.otherAgent.id)).resolves.toMatchObject({ configured: false });
+    await save("all_agents");
+    await expect(select(f.otherAgent.id)).resolves.toMatchObject({ configured: true, grant: { connectionId: f.connection.id } });
+    const [newHire] = await db.insert(agents).values({ companyId: f.company.id, name: "New engineer", role: "engineer", adapterType: "process" }).returning();
+    await expect(select(newHire.id)).resolves.toMatchObject({ configured: true, grant: { connectionId: f.connection.id } });
+    await expect(f.service.usableConnectionForAgent({ companyId: f.company.id, agentId: newHire.id,
+      responsibleUserId: "grant-user", serviceSlug: "github" })).resolves.toMatchObject({ id: f.connection.id });
+    await save({ agentIds: [f.agent.id] });
+    await expect(select(newHire.id)).resolves.toMatchObject({ configured: false });
+    await save({ agentIds: [] });
+    await expect(select(f.agent.id)).resolves.toMatchObject({ configured: false });
+    expect(await access.listConnectionInstalls(f.connection.id, f.company.id)).toEqual([]);
+    expect((await access.getConnection(f.connection.id, f.company.id))?.config?.mcpAgentAccessConfigured).toBe(true);
+  });
+
+  it("keeps installations with a separate narrow profile when account completion is additive", async () => {
+    const f = await accessFixture("github");
+    const access = toolAccessService(db);
+    await access.finishGalleryAppConnection(f.company.id, f.connection.id, {
+      enabledCatalogEntryIds: f.catalog.map(tool => tool.id), askFirstCatalogEntryIds: [], access: { agentIds: [f.agent.id] },
+    });
+    const [appProfile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${f.connection.id}`));
+    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, appProfile.id));
+    const [narrow] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Narrow existing access", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: narrow.id, selectorType: "catalog_entry", catalogEntryId: f.catalog[0].id, effect: "include" });
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: narrow.id, targetType: "agent", targetId: f.agent.id });
+    await access.finishGalleryAppConnection(f.company.id, f.connection.id, {
+      enabledCatalogEntryIds: f.catalog.map(tool => tool.id), askFirstCatalogEntryIds: [], access: { agentIds: [f.otherAgent.id] }, preserveExistingAccess: true,
+    });
+    expect((await access.listConnectionInstalls(f.connection.id, f.company.id)).map(install => install.targetId).sort()).toEqual([f.agent.id, f.otherAgent.id].sort());
+    const effective = await access.getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id);
+    expect(effective.installedConnections.map(connection => connection.id)).toContain(f.connection.id);
+    expect(effective.allowedTools.map(tool => tool.id)).toEqual([f.catalog[0].id]);
+    expect((await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, appProfile.id))).map(binding => binding.targetId)).toEqual([f.otherAgent.id]);
+  });
+
+  it("creates and resolves an access card for a 46-tool connector without model-supplied tool names", async () => {
+    const f = await accessFixture("notion");
+    await db.insert(toolCatalogEntries).values(Array.from({ length: 43 }, (_, i) => ({
+      companyId: f.company.id, connectionId: f.connection.id, name: `read_${i}`, toolName: `read_${i}`,
+      entryKind: "tool" as const, status: "active" as const, riskLevel: "read" as const, versionHash: "v1",
+    })));
+    const request = await f.service.request(f.claims, "notion");
+    const loaded = await f.service.loadIntent(request.interactionId!);
+    expect(loaded.interaction.payload.accessRequest?.tools).toHaveLength(46);
+    await expect(f.service.complete(request.interactionId!, f.connection.id, "grant-user", { canManageOrganizationGrant: true }))
+      .resolves.toMatchObject({ status: "accepted" });
+    expect((await f.service.search(f.claims, "notion")).results[0]).toMatchObject({ state: "ready", connectionId: f.connection.id });
+    expect(await f.service.usableConnectionForAgent({ companyId: f.company.id, agentId: f.otherAgent.id,
+      responsibleUserId: "grant-user", serviceSlug: "notion" })).toBeNull();
+  });
+
+  it("saves a human audience before OAuth without granting access and rechecks sharing authority", async () => {
+    const f = await accessFixture("notion");
+    const interaction = await issueThreadInteractionService(db).createConnectionIntent(f.issue, {
+      payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", requestingAgentId: f.agent.id,
+        requestingAgentName: f.agent.name, phase: "requested" },
+      sourceRunId: f.claims.run_id, addresseeUserId: "grant-user", idempotencyKey: randomUUID(),
+    });
+    const setupAccess = { connectionId: f.connection.id, access: "all_agents" as const };
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "another-user", { setupAccess, canManageOrganizationGrant: true }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", {
+      setupAccess: { connectionId: f.connection.id, access: { agentIds: [f.otherAgent.id] } },
+      canManageOrganizationGrant: true,
+    })).rejects.toThrow("Select the requesting agent");
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toBeUndefined();
+    const incompleteDraft = { connectionId: f.connection.id, access: { agentIds: [] } };
+    await f.service.updatePhase(interaction.id, "requested", "grant-user", { setupAccess: incompleteDraft });
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(incompleteDraft);
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess: incompleteDraft }))
+      .rejects.toThrow("Select the requesting agent");
+    const restrictedSetup = { connectionId: f.connection.id, access: { agentIds: [f.agent.id] } };
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess: restrictedSetup });
+    await f.service.updatePhase(interaction.id, "needs_retry", "grant-user");
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(restrictedSetup);
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess, canManageOrganizationGrant: true });
+    await f.service.updatePhase(interaction.id, "needs_retry", "grant-user");
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(setupAccess);
+    expect(await f.service.usableConnectionForAgent({ companyId: f.company.id, agentId: f.agent.id,
+      responsibleUserId: "grant-user", serviceSlug: "notion" })).toBeNull();
+    await expect(f.service.complete(interaction.id, f.connection.id, "grant-user", { oauthCompletion: true }))
+      .rejects.toMatchObject({ status: 403 });
+  });
+
+  it("checks agent edit scope when saving task audiences and again at OAuth completion", async () => {
+    const f = await accessFixture("notion");
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.companyId, f.company.id));
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, f.company.id));
+    const interaction = await issueThreadInteractionService(db).createConnectionIntent(f.issue, {
+      payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", requestingAgentId: f.agent.id, requestingAgentName: f.agent.name, phase: "requested" },
+      sourceRunId: f.claims.run_id, addresseeUserId: "grant-user", idempotencyKey: randomUUID(),
+    });
+    const setupAccess = { connectionId: f.connection.id, access: { agentIds: [f.agent.id] } };
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess })).rejects.toMatchObject({ status: 403 });
+    await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: "grant-user", permissionKey: "agents:configure", scope: { targetAgentIds: [f.agent.id] } });
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess });
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", {
+      setupAccess: { connectionId: f.connection.id, access: { agentIds: [f.agent.id, f.otherAgent.id] } }, canManageOrganizationGrant: true,
+    })).rejects.toMatchObject({ status: 403 });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, f.company.id));
+    await expect(f.service.complete(interaction.id, f.connection.id, "grant-user", { oauthCompletion: true, canManageOrganizationGrant: true }))
+      .rejects.toMatchObject({ status: 403 });
+    expect((await f.service.loadIntent(interaction.id)).interaction.status).toBe("pending");
+  });
+
+  it("applies the selected audience for an organization OAuth grant without requiring personal credentials", async () => {
+    const f = await accessFixture("notion");
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSecretRefs: [
+      { secretId: randomUUID(), configPath: "oauth.access_token", versionSelector: "latest" },
+    ] }).where(eq(toolConnections.id, f.connection.id));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    const interaction = await issueThreadInteractionService(db).createConnectionIntent(f.issue, {
+      payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", requestingAgentId: f.agent.id,
+        requestingAgentName: f.agent.name, phase: "requested" },
+      sourceRunId: f.claims.run_id, addresseeUserId: "grant-user", idempotencyKey: randomUUID(),
+    });
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", {
+      setupAccess: { connectionId: f.connection.id, access: "all_agents" }, canManageOrganizationGrant: true,
+    });
+    await expect(f.service.complete(interaction.id, f.connection.id, "grant-user", {
+      oauthCompletion: true, canManageOrganizationGrant: true,
+    })).resolves.toMatchObject({ status: "accepted" });
+    await expect(f.service.usableConnectionForAgent({ companyId: f.company.id, agentId: f.otherAgent.id,
+      responsibleUserId: "grant-user", serviceSlug: "notion" })).resolves.toMatchObject({ id: f.connection.id });
+  });
+
+  it("names a shared connection whose sign-in must be renewed instead of a generic attention reason", async () => {
+    const f = await accessFixture("sentry");
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Sentry", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
+    const sentry = async () => (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(await sentry()).toMatchObject({ state: "ready", connectionId: f.connection.id });
+    // The rows a rejected refresh writes for an organization grant: the grant
+    // needs reauthorization and the connection is disabled. lastError is unchanged.
+    await db.update(connectionGrants).set({ status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.update(toolConnections).set({ authKind: "oauth", status: "draft", enabled: false })
+      .where(eq(toolConnections.id, f.connection.id));
+    const result = await sentry();
+    expect(result).toMatchObject({ state: "needs_user_action", connectionId: null });
+    expect(result?.reason).toContain("Saved sentry");
+    expect(result?.reason).toMatch(/sign in again|signed in again/i);
+    expect(result?.reason).toMatch(/reconnect/i);
+  });
+
+  it("does not name another person's private connection that must be renewed", async () => {
+    const f = await accessFixture("sentry");
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user", status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    await db.update(toolConnections).set({
+      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user", status: "draft", enabled: false,
+    }).where(eq(toolConnections.id, f.connection.id));
+    const result = (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(result).toBeDefined();
+    expect(result?.reason).not.toContain("Private Sentry of another person");
+  });
 
   it("creates a scoped access card and atomically accepts repeated clicks without granting other agents", async () => {
     const f = await accessFixture();
@@ -980,7 +1362,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const access = toolAccessService(db);
     const effective = await access.getEffectiveProfilesForAgent(f.company.id, f.agent.id);
     const profile = effective.profiles.find(profile => profile.profileKey.startsWith("connection-intent:"))!;
-    await access.deleteProfile(profile.id, {});
+    await access.deleteProfile(profile.id, { force: false });
     expect((await access.getEffectiveProfilesForAgent(f.company.id, f.agent.id)).allowedTools).toEqual([]);
     for (const tool of f.catalog.slice(0, 2)) {
       const decision = await toolAccessPolicyService(db).decide({
@@ -999,6 +1381,47 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Explicit block", policyType: "block", selectors: { catalogEntryId: f.catalog[1].id } });
     await expect(f.service.complete(request.interactionId!, f.connection.id, "grant-user", { canManageOrganizationGrant: true })).rejects.toThrow("existing policy blocks");
     await expect(f.service.request({ ...f.claims, company_id: randomUUID() }, "composio", { connectionId: f.connection.id })).rejects.toThrow();
+  });
+
+  it("lets an agent outside a GitHub grant request scoped access beyond the access-card catalog bound", async () => {
+    // A personal grant was delegated and installed for the CEO only. An engineer
+    // outside it still needs scoped discovery when a catalog exceeds 500 tools.
+    const [company] = await db.insert(companies).values({ name: "GitHub grant fixture", issuePrefix: `H${randomUUID().slice(0, 7)}` }).returning();
+    const [ceo] = await db.insert(agents).values({ companyId: company.id, name: "CEO", role: "ceo", adapterType: "process" }).returning();
+    const [engineer] = await db.insert(agents).values({ companyId: company.id, name: "Frontend Engineer", role: "engineer", adapterType: "process" }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "github-owner", membershipRole: "owner", status: "active" });
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Build storefront prototype (GitHub repo)", status: "in_progress", assigneeAgentId: engineer.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: engineer.id, status: "running", responsibleUserId: "github-owner", contextSnapshot: { issueId: issue.id } }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", metadata: { sourceTemplateKey: "github" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application.id, uid: randomUUID(), name: "GitHub", transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "github" } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user", subjectUserId: "github-owner", status: "active" }).returning();
+    await db.insert(connectionGrantDelegations).values({ companyId: company.id, grantId: grant.id, agentId: ceo.id, createdByUserId: "github-owner" });
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: ceo.id });
+    const readTools = ["get_file_contents", "get_me", "list_commits", ...Array.from({ length: 483 }, (_, index) => `read_tool_${index}`)];
+    const writeTools = ["create_or_update_file", "create_repository", "push_files", ...Array.from({ length: 12 }, (_, index) => `write_tool_${index}`)];
+    await db.insert(toolCatalogEntries).values([
+      ...readTools.map(toolName => ({ toolName, riskLevel: "read" as const })),
+      ...writeTools.map(toolName => ({ toolName, riskLevel: "write" as const })),
+    ].map(tool => ({ ...tool, companyId: company.id, connectionId: connection.id, name: tool.toolName, versionHash: "v1", entryKind: "tool" as const, status: "active" as const })));
+    const service = connectionIntentService(db);
+    const engineerClaims = { ...claims, sub: engineer.id, company_id: company.id, run_id: run.id, responsible_user_id: "github-owner" };
+
+    const search = await service.search(engineerClaims, "GitHub create private repository and push code");
+    expect(search.results.find(result => result.service === "github")).toMatchObject({ state: "needs_user_action", connectionId: null });
+
+    // The engineer follows the tool guidance and asks for GitHub. The refusal must
+    // name the connection and its tools so the agent can make the scoped request.
+    const refusal = await service.request(engineerClaims, "github").then(() => null, (error: Error) => error);
+    expect(refusal).toMatchObject({ status: 422 });
+    expect(refusal?.message).toContain(connection.id);
+    for (const toolName of ["create_repository", "push_files", "read_tool_1"]) expect(refusal?.message).toContain(toolName);
+    expect(refusal?.message).toContain("first 100 of 501");
+    expect(refusal?.message).toContain("No access was granted");
+
+    const scoped = await service.request(engineerClaims, "github", { connectionId: connection.id, toolNames: ["get_me", "create_repository", "push_files"] });
+    expect(scoped.state).toBe("needs_user_action");
+    await service.complete(scoped.interactionId!, connection.id, "github-owner", { canManageOrganizationGrant: true });
+    expect(await service.request(engineerClaims, "github")).toMatchObject({ state: "ready", connectionId: connection.id });
   });
 
   it("declines access without changing permissions and expires requests after reassignment", async () => {
