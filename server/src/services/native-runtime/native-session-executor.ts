@@ -112,6 +112,7 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
+import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
 import { antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
@@ -9318,6 +9319,9 @@ function classifyNativeSessionFailure(
   if (findNativePredecessorRetirementUnproven(error)) return NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE;
   if (findNativeFailedBeforeProviderTurn(error)) return NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE;
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
+  // A saved connection its target cannot use: no provider work began, and a
+  // retry would meet the same configuration.
+  if (error instanceof AntigravityConnectionConfigurationError) return NATIVE_PROVIDER_STARTUP_REJECTED;
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
   if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
