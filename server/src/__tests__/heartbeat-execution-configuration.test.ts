@@ -393,8 +393,10 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const opening = await configuration(f, { provider: "codex" }, saved, "paperclip_runner", false, "shared_workspace", null, undefined, live === "remote", binding, live !== "none");
     await opening.prepare().catch(() => undefined);
     const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, opening.run.id));
-    expect((row!.contextSnapshot as { aiConnection: { identity: string } }).aiConnection.identity)
-      .toBe(`${binding.grantId}:shared:${live === "none" ? "renewed" : "delivered"}`);
+    const recorded = (row!.contextSnapshot as { aiConnection: { identity: string; preparedIdentity?: string } }).aiConnection;
+    expect(recorded.identity).toBe(`${binding.grantId}:shared:${live === "none" ? "renewed" : "delivered"}`);
+    // The prepared identity is kept for the case that recovery replaces the runner.
+    expect(recorded.preparedIdentity).toBe(live === "none" ? undefined : `${binding.grantId}:shared:renewed`);
   });
 
   it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {

@@ -8,19 +8,18 @@ import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { AI_CREDENTIAL_HOLDER_KEY } from "./run-ai-credential-holder.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
+import { hasPendingClaudeExchange, pendingClaudeExchanges, type PendingClaudeExchange } from "./claude-pending-exchanges.js";
 import { isTransientLockContention, retryTransientLockContention } from "./transient-lock-contention.js";
 import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
-type Replacement = { value: string; base: string; secretId: string; epoch: number; version: number };
-// One pending obligation per grant. No timer or secondary credential store.
-// A temporary vault outage must not discard a single-use provider exchange.
-const pendingExchanges = new Map<string, Replacement>();
-const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
-/** True while an exchanged pair awaits its vault save. The stored credential must not change under it. */
-export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pendingExchanges.has(pendingKey(companyId, grantId));
+type Replacement = PendingClaudeExchange;
+// One pending obligation per grant, kept in `claude-pending-exchanges.ts`. No
+// timer or secondary credential store. A temporary vault outage must not
+// discard a single-use provider exchange.
+export { hasPendingClaudeExchange };
 // An unsaved pair is the only working refresh token of its sign-in. An idle
 // shutdown must wait for its save.
-registerIdleLocalWorkProbe(() => pendingExchanges.size ? "present" : "none");
+registerIdleLocalWorkProbe(() => pendingClaudeExchanges.any() ? "present" : "none");
 
 /**
  * An account test or an agent verification holds a token like a run does, but
@@ -44,8 +43,9 @@ export async function refreshClaudeSubscription(
   return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
     // Retain a successful exchange across a failed commit. Never exchange the
     // same single-use refresh token a second time during a save retry.
-    const key = pendingKey(companyId, row.grant.id);
-    let replacement = pendingExchanges.get(key);
+    const grantId = row.grant.id;
+    const holdKey = `${companyId}:${grantId}`;
+    let replacement = pendingClaudeExchanges.get(companyId, grantId);
     let recheckedRecovery = false;
     for (let attempt = 0; ; attempt++) {
       let committed = false;
@@ -59,7 +59,7 @@ export async function refreshClaudeSubscription(
             eq(connectionGrants.connectionId, row.connection.id),
           )).for("update", { noWait: true });
           if (!grant || grant.status !== "active") {
-            pendingExchanges.delete(key);
+            pendingClaudeExchanges.delete(companyId, grantId);
             throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect this AI account", { connectionId: row.connection.id });
           }
           const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
@@ -73,7 +73,7 @@ export async function refreshClaudeSubscription(
           // A reconnect or an explicit rotation wins over an uncommitted exchange.
           if (replacement && (secret.id !== replacement.secretId || secret.aiSessionEpoch !== replacement.epoch
             || secret.latestVersion !== replacement.version || current !== replacement.base)) {
-            pendingExchanges.delete(key);
+            pendingClaudeExchanges.delete(companyId, grantId);
             replacement = undefined;
           }
           const stored = parseStoredClaudeOauth(current);
@@ -89,7 +89,7 @@ export async function refreshClaudeSubscription(
                 sql`${heartbeatRuns.contextSnapshot}->>${AI_CREDENTIAL_HOLDER_KEY} = ${grant.id}`),
               ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
             )).limit(1);
-            if (held || probeHolders.get(key)) return { value: current };
+            if (held || probeHolders.get(holdKey)) return { value: current };
           }
           const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
@@ -112,7 +112,7 @@ export async function refreshClaudeSubscription(
             }
           }
           replacement ??= { value: refreshed, base: current, secretId: secret.id, epoch: secret.aiSessionEpoch, version: secret.latestVersion };
-          pendingExchanges.set(key, replacement);
+          pendingClaudeExchanges.set(companyId, grantId, replacement);
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
@@ -121,7 +121,7 @@ export async function refreshClaudeSubscription(
         }));
         committed = true;
         // Only a confirmed commit or an explicit generation discard settles this obligation.
-        pendingExchanges.delete(key);
+        pendingClaudeExchanges.delete(companyId, grantId);
         if (result.reauth) throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Sign in again to restore this AI connection.", { connectionId: row.connection.id });
         const credential = parseStoredClaudeOauth(result.value!);
         if (result.recovered && credential && claudeRefreshDue(credential) && !recheckedRecovery) {
@@ -147,16 +147,19 @@ export async function refreshClaudeSubscription(
         // revoke its token. Each renewal takes the same lock, so none can run
         // between the commit above and this write.
         if (options.currentRunId) {
-          await db.update(heartbeatRuns)
+          const [marked] = await db.update(heartbeatRuns)
             .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ [AI_CREDENTIAL_HOLDER_KEY]: row.grant.id })}::jsonb` })
-            .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, options.currentRunId)));
+            .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, options.currentRunId)))
+            .returning({ id: heartbeatRuns.id });
+          // A token handed to a run that has no row would have no holder.
+          if (!marked) throw unprocessable("The run that requested this AI credential no longer exists. Retry shortly.", { code: "ai_connection_busy" });
         }
         if (options.probeHold && !options.probeHold.release) {
-          probeHolders.set(key, (probeHolders.get(key) ?? 0) + 1);
+          probeHolders.set(holdKey, (probeHolders.get(holdKey) ?? 0) + 1);
           options.probeHold.release = () => {
             options.probeHold!.release = () => undefined;
-            const left = (probeHolders.get(key) ?? 1) - 1;
-            if (left > 0) probeHolders.set(key, left); else probeHolders.delete(key);
+            const left = (probeHolders.get(holdKey) ?? 1) - 1;
+            if (left > 0) probeHolders.set(holdKey, left); else probeHolders.delete(holdKey);
           };
         }
         return claudeAccessTokenOf(result.value!);

@@ -1,6 +1,7 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { isAntigravitySwarmExecution } from "../antigravity-swarm.js";
 import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
+import { recordReplacementRunnerCredential } from "../run-ai-credential-holder.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -19468,6 +19469,7 @@ async function createRunnerdBackendWithinSessionClaim(
           restartRecovery: { ...claim, kind: "bootstrap_incomplete" },
         }, sessionScopeId);
         replacementBackend = fresh;
+        await recordReplacementRunnerCredential(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         return fresh.openSession(sessionInput);
       }
       cursorCloudRuntime?.register();

@@ -1127,6 +1127,8 @@ export function aiConnectionService(db: Db) {
     agentId?: string;
     runStartedAt: Date;
     attribution: AiConnectionAttribution & { identity: string };
+    /** Act only on a login that the server can renew. Such a login is marked spent; it never requests sign-in here. */
+    renewableOnly?: boolean;
   }) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
@@ -1171,6 +1173,7 @@ export function aiConnectionService(db: Db) {
           }
           return;
         }
+        if (input.renewableOnly) return;
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })

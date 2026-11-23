@@ -1,4 +1,5 @@
 import { supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
+import { AI_PREPARED_IDENTITY_KEY } from "../run-ai-credential-holder.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
@@ -281,7 +282,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     const liveRunnerIdentity = (input.task.adoptingLiveRunner || input.task.reattachingLiveRunner)
       && savedAiAccount.grantId === managedAiRuntime.attribution.grantId && typeof savedAiAccount.identity === "string"
       ? savedAiAccount.identity : null;
-    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: liveRunnerIdentity ?? managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
+    // The recovery can still retire that runner and launch a replacement,
+    // which receives the newly prepared token. `preparedIdentity` keeps that
+    // identity so the replacement can record it as the one it holds.
+    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: liveRunnerIdentity ?? managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity,
+      ...(liveRunnerIdentity && liveRunnerIdentity !== managedAiRuntime.identity ? { [AI_PREPARED_IDENTITY_KEY]: managedAiRuntime.identity } : {}) };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
   }
   if (secretManifest.length > 0) {

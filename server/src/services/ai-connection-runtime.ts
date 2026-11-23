@@ -31,7 +31,8 @@ import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigrav
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 import { trackIdleWork } from "./task-admission.js";
-import { hasPendingClaudeExchange, type ClaudeProbeHold } from "./claude-subscription-refresh.js";
+import { hasPendingClaudeExchange } from "./claude-pending-exchanges.js";
+import type { ClaudeProbeHold } from "./claude-subscription-refresh.js";
 
 // A cleanup renewal whose exchange succeeded but whose vault save failed is
 // saved again after a short wait, this many times.
@@ -664,15 +665,19 @@ export async function withManagedAiProbe<T>(
       // retired and completed its refresh handoff. HTTP need not wait for it.
       retained = true;
       const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
-      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup, retired: error.retired,
+      // The native process still runs with the token until its retirement
+      // is confirmed. The retained cleanup runs only after that, so it
+      // releases the hold.
+      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"),
+        cleanup: async () => { probeHold.release?.(); await runtime.cleanup(); }, retired: error.retired,
         ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
       throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
     }
     throw error;
   } finally {
-    // Before cleanup, so the renewal at cleanup does not wait for this probe.
-    probeHold.release?.();
     if (!retained) {
+      // Before cleanup, so the renewal at cleanup does not wait for this probe.
+      probeHold.release?.();
       try { await runtime.cleanup(); }
       catch (error) {
         if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {

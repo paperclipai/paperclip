@@ -16,6 +16,8 @@ import { secretService } from "../services/secrets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleLocalWork } from "../services/idle-local-work.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { recordReplacementRunnerCredential } from "../services/run-ai-credential-holder.js";
+import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn() }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -314,6 +316,58 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["failed before it reached the provider", { errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }, document(Date.now() + 8 * 3600_000)],
+    ["was rejected with a login that cannot be renewed", { errorCode: "claude_auth_required" }, "legacy-access-token"],
+  ] as const)("leaves the credential alone when a run with no repair card %s", async (_case, failure, credential) => {
+    const { account, owner, row, service } = await connect(credential);
+    const supersededAgent = randomUUID();
+    await db.insert(agents).values({ id: supersededAgent, companyId, name: "Superseded", adapterType: "claude_local", runtimeConfig: { aiConnection: binding(account) } });
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId: supersededAgent, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    await run.cleanup();
+    const failedRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: supersededAgent, invocationSource: "timer", status: "failed", ...failure,
+      startedAt: new Date(Date.now() + 1000), contextSnapshot: { aiConnection: { ...run.attribution, identity: run.identity } } });
+    const exchange = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
+    expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toBeNull();
+    expect(await service.credentialRaw(row)).toBe(credential);
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("active");
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("marks a rejected token spent although the agent has changed its connection since the run", async () => {
+    const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
+    const movedAgent = randomUUID();
+    await db.insert(agents).values({ id: movedAgent, companyId, name: "Moved", adapterType: "claude_local", runtimeConfig: { aiConnection: binding(account) } });
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId: movedAgent, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    await run.cleanup();
+    await db.update(agents).set({ runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" } } }).where(eq(agents.id, movedAgent));
+    const failedRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: movedAgent, invocationSource: "timer", status: "failed", errorCode: "claude_auth_required",
+      startedAt: new Date(Date.now() + 1000), contextSnapshot: { aiConnection: { ...run.attribution, identity: run.identity } } });
+    expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toBeNull();
+    expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
+  });
+
+  it("refuses to hand a token to a run that has no row, because it could not be recorded as a holder", async () => {
+    const { service, row } = await connect(document(Date.now() + 8 * 3600_000));
+    await expect(service.credential(row, 0, undefined, { currentRunId: randomUUID() })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+  });
+
+  it("records the prepared token identity when a replacement runner is launched, and nothing otherwise", async () => {
+    const replaced = randomUUID(), kept = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: replaced, companyId, agentId, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: "kept", aiConnection: { grantId: "g", identity: "g:shared:delivered", preparedIdentity: "g:shared:renewed" } } },
+      { id: kept, companyId, agentId, invocationSource: "assignment", status: "running", contextSnapshot: { aiConnection: { grantId: "g", identity: "g:shared:delivered" } } },
+    ]);
+    await recordReplacementRunnerCredential(db, { companyId, runId: replaced });
+    await recordReplacementRunnerCredential(db, { companyId, runId: kept });
+    const snapshot = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!.contextSnapshot;
+    expect(await snapshot(replaced)).toEqual({ issueId: "kept", aiConnection: { grantId: "g", identity: "g:shared:renewed" } });
+    expect(await snapshot(kept)).toEqual({ aiConnection: { grantId: "g", identity: "g:shared:delivered" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(inArray(heartbeatRuns.id, [replaced, kept]));
+  });
+
   it("defers an early renewal while another run holds the token", async () => {
     const { service, row, state, account } = await connect(document(Date.now() + 3600_000));
     const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
@@ -413,6 +467,24 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).not.toHaveBeenCalled();
     finish();
     await probe;
+    await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an account test counted as a holder until its native process has retired", async () => {
+    const { account, owner, service, row, state } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const other = await holdingRun(account.grantId);
+    let retire!: () => void;
+    const retired = new Promise<void>(resolve => { retire = resolve; });
+    await expect(withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } }, async () => {
+      throw new NativeEnvironmentProbeCleanupError(retired, undefined, []);
+    })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    // The test has returned, but its native process still runs with the token.
+    expect(await service.credential(row)).toBe("old-access");
+    expect(exchange).not.toHaveBeenCalled();
+    retire();
     await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
     expect(exchange).toHaveBeenCalledOnce();
   });
