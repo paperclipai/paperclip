@@ -37,7 +37,7 @@ export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = pr
     distributionRoot = antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
   }
   return { distributionRoot, manifestPath: join(distributionRoot, ".paperclip-antigravity-closure.json"), expectedClosureSha256: pin.closureSha256,
-    executable: pin.executable, fixedArguments: [...pin.args] };
+    executable: pin.executable, fixedArguments: [...pin.args], storeFamily: "antigravity" };
 }
 
 export async function verifyAntigravityInstallation(profile: QualifiedAcpxProfile, candidateAdmission?: AcpxCandidateStartupAdmission): Promise<VerifiedAcpxInstallation> {
