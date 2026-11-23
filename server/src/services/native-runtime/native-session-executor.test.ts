@@ -3737,18 +3737,19 @@ describe("remote provider pack manifest", () => {
       closureDigest: `sha256:${antigravityPack.linuxClosure}`, qualification: "pending", path: antigravityPath,
       sha256: sha256DirectoryTree(join(root, antigravityPath)) };
     try {
+      const inventories = payload as unknown as Record<"providers" | "candidateProviders", Record<string, unknown>>;
       for (const released of [false, true]) {
         antigravityPack.released = released;
         antigravity.qualification = released ? "qualified" : "pending";
         const [admitted, refused] = released ? ["providers", "candidateProviders"] as const : ["candidateProviders", "providers"] as const;
         Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
-        Object.assign(payload[admitted], { antigravity });
+        Object.assign(inventories[admitted], { antigravity });
         await writeKimiManifest();
         expect(readRemoteProviderPackManifest(root).payload[admitted]?.antigravity).toEqual(antigravity);
         expect(readBundledRemoteProviderPackManifest(manifestPath).payload[admitted]?.antigravity?.qualification)
           .toBe(released ? "qualified" : "pending");
         Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
-        Object.assign(payload[refused], { antigravity: { ...antigravity, qualification: "pending" } });
+        Object.assign(inventories[refused], { antigravity: { ...antigravity, qualification: "pending" } });
         await writeKimiManifest();
         expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity is listed under the wrong pack inventory");
         Object.assign(payload, { providers: { cursor, kimi, antigravity }, candidateProviders: { antigravity } });
@@ -3757,16 +3758,16 @@ describe("remote provider pack manifest", () => {
         for (const closureDigest of [`sha256:${distributions.platforms["darwin-arm64"].vendorClosureSha256}`,
           `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`, digest("other-closure")]) {
           Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
-          Object.assign(payload[admitted], { antigravity: { ...antigravity, closureDigest } });
+          Object.assign(inventories[admitted], { antigravity: { ...antigravity, closureDigest } });
           await writeKimiManifest();
           expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity closure is not this release's patched closure");
         }
         Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
-        Object.assign(payload[admitted], { antigravity: { ...antigravity, version: "0.0.1" } });
+        Object.assign(inventories[admitted], { antigravity: { ...antigravity, version: "0.0.1" } });
         await writeKimiManifest();
         expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity profile does not match this release");
         Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
-        Object.assign(payload[admitted], { antigravity });
+        Object.assign(inventories[admitted], { antigravity });
         await writeKimiManifest();
         await writeFile(join(root, antigravityPath, "agy_acp_server.par"), "vendor Antigravity runtime");
         expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");

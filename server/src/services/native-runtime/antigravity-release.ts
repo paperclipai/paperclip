@@ -54,7 +54,7 @@ const RELEASE_IDENTITY_FIELDS = [
  */
 export function assertAntigravitySavedStateCurrent(execution: NativeExecutionInput): void {
   if (!isAntigravityProvider(execution.provider)) return;
-  const saved = (execution.provider as { profile?: Record<string, unknown> }).profile ?? {};
+  const saved = (execution.provider.profile ?? {}) as unknown as Record<string, unknown>;
   const current = QUALIFIED_ACPX_PROFILES.antigravity as unknown as Record<string, unknown>;
   if (RELEASE_IDENTITY_FIELDS.some(field => saved[field] !== current[field])) {
     throw new NativeProviderStateIncompatibleError(ANTIGRAVITY_EARLIER_RELEASE_STATE_REASON);
