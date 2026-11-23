@@ -1,6 +1,6 @@
 import { forbidden, unprocessable } from "../errors.js";
 import { recordAiConnectionConfigurationFailure, type AiConnectionConfigurationReason } from "../lib/ai-connection-configuration-failure.js";
-export { readAiConnectionConfigurationFailure, isAiConnectionConfigurationReason } from "../lib/ai-connection-configuration-failure.js";
+export { readAiConnectionConfigurationFailure, isAiConnectionConfigurationReason, isOwnedAiConnectionSelectionRejection } from "../lib/ai-connection-configuration-failure.js";
 
 type CredentialAccessFailure = { connectionName: string; grantId?: string };
 const credentialAccessFailures = new WeakMap<Error, CredentialAccessFailure>();

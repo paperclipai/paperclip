@@ -1,5 +1,6 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -128,6 +129,7 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
 }
 
 export const SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON = "sandbox_provider_plugin_not_ready";
+export const PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION = "Assign the task to an agent whose environment can use this project's workspace storage, or choose a workspace from a project for this agent's environment, then press Retry.";
 
 function readNonEmptyStringField(payload: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = payload?.[key];
@@ -223,6 +225,14 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
         + "in the project or the agent's arguments, such as an API key, token or apiKeyHelper. The task is blocked until the conflict is removed.",
       nextAction: "Remove the API key, token or apiKeyHelper from the project's Claude or Codex settings or the agent's arguments, "
         + "or choose a different AI connection for this agent, then retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE) {
+    return {
+      title: "Workspace storage unavailable",
+      body: "The agent did not start because the project that stores this task's files uses workspace storage that the agent's environment cannot use.",
+      nextAction: PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
       tone: "danger",
     };
   }

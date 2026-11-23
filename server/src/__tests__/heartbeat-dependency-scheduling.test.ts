@@ -654,9 +654,16 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   it.each(["answered", "accepted", "rejected", "pending", "missing", "wrong_issue", "agent_resolved", "changed_before_dispatch",
-    "workspace_wait", "workspace_wait_changed", "blocker_finishes"] as const)(
+    "workspace_wait", "workspace_wait_changed", "blocker_finishes", "in_review_answered", "in_review_blocker_finishes"] as const)(
     "delivers only a saved human response while dependencies remain blocked: %s", async response => {
       const companyId = randomUUID(), agentId = randomUUID(), blockerId = randomUUID(), issueId = randomUUID();
+      // A task waiting in review can still have open blockers. The answer must
+      // reach its assignee without a checkout that the blockers would refuse.
+      // Once its last blocker finishes, the reviewed task resumes through its
+      // normal checkout instead of staying in a bounded turn.
+      const reviewed = response === "in_review_answered" || response === "in_review_blocker_finishes";
+      const blockerFinishes = response === "blocker_finishes" || response === "in_review_blocker_finishes";
+      const parentStatus = reviewed ? "in_review" : "blocked";
       await db.insert(companies).values({ id: companyId, name: "Response fixture",
         issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
@@ -666,7 +673,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
       await db.insert(issues).values([
         { id: blockerId, companyId, title: "Parked trial", status: "backlog", responsibleUserId: "responsible-user" },
-        { id: issueId, companyId, title: "Finish trial prerequisites", status: "blocked", assigneeAgentId: agentId,
+        { id: issueId, companyId, title: "Finish trial prerequisites", status: parentStatus, assigneeAgentId: agentId,
           responsibleUserId: "responsible-user" },
       ]);
       await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
@@ -692,9 +699,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .mockRejectedValueOnce(new WorkspaceBusyDeferral({ holder: { runId: randomUUID(), agentId,
           issueId: blockerId, issueIdentifier: null }, executionWorkspaceId: randomUUID(),
           wasIssueAssignee: true, deferralAttempt: 0 })) : null;
-      const service = response === "changed_before_dispatch" || resourceWait || response === "blocker_finishes" ? heartbeatService(db, {
+      const service = response === "changed_before_dispatch" || resourceWait || blockerFinishes ? heartbeatService(db, {
         beforeChatControlRecoveryCheck: async ({ stage }) => {
-          if (response === "blocker_finishes" && stage === "claim")
+          if (blockerFinishes && stage === "claim")
             await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
         },
         beforeResolvedInteractionContinuationDispatchCheck: async ({ runId }) => {
@@ -720,7 +727,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         expect((await service.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(retry.id);
         await service.resumeQueuedRuns();
       }
-      const shouldDeliver = ["answered", "accepted", "rejected", "workspace_wait", "blocker_finishes"].includes(response);
+      const shouldDeliver = ["answered", "accepted", "rejected", "workspace_wait", "blocker_finishes", "in_review_answered",
+        "in_review_blocker_finishes"].includes(response);
       if (shouldDeliver) {
         expect(wake).not.toBeNull();
         await service.drainActiveRunExecutions();
@@ -731,7 +739,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           interactionId: interaction.id, interactionStatus: status, dependencyBlockedInteraction: true,
           unresolvedBlockerIssueIds: [blockerId],
         } });
-        expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+        const answerRuns = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+          .filter((row) => row.status === "succeeded"
+            && (row.contextSnapshot as Record<string, unknown> | null)?.interactionId === interaction.id);
+        expect(answerRuns.map((row) => row.id)).toEqual([run.id]);
+        // The checked-out task's ordinary disposition repair may follow; the
+        // saved answer itself is delivered once.
+        if (response !== "in_review_blocker_finishes") expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
         if (response === "answered") {
           // A resource wait keeps the same bounded interaction and must not
           // strand the answer again at scheduled promotion.
@@ -761,8 +775,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }
       expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId))).toHaveLength(1);
       expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status)
-        .toBe(response === "blocker_finishes" ? "done" : "backlog");
-      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+        .toBe(blockerFinishes ? "done" : "backlog");
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status)
+        .toBe(response === "in_review_blocker_finishes" ? "in_progress" : parentStatus);
       expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${blockerId}`)).toHaveLength(0);
     },
   );

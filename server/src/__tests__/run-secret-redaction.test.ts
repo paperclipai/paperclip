@@ -138,3 +138,35 @@ describe("batched run secret redaction", () => {
     await expect(registry.redactForRuns("company", [{ id: "a", text: secret }])).rejects.toThrow("unavailable");
   });
 });
+
+describe("bounded task notification redaction", () => {
+  beforeEach(() => { resolveVersion.mockClear(); });
+  const entry = (id: number, value = secret) => ({ fingerprintSha256: `fixture-${id}`, material: { value } });
+  const run = (id: number, entries = [entry(0)]) => ({ id: `run-${id}`, contextSnapshot: { paperclipSecretRedactions: entries } });
+  function fixture(groups: unknown[][]) {
+    const limit = vi.fn(async () => groups.shift() ?? []);
+    const db = { select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }) }) };
+    return { registry: createRunSecretRedactionRegistry(db as unknown as Db), limit };
+  }
+  it.each([
+    { name: "too many unique secrets", rows: Array.from({ length: 65 }, (_, id) => run(id, [entry(id)])) },
+    { name: "too much encrypted material", rows: Array.from({ length: 8 }, (_, id) => run(id, [entry(id, "x".repeat(9000))])) },
+    { name: "an oversized SQL-projected registry", rows: [{ id: "oversized", contextSnapshot: null }] },
+  ])("rejects $name before resolving any secret", async ({ rows }) => {
+    const { registry } = fixture([rows, []]);
+    await expect(registry.redactForIssueNotification("company", "task", { body: secret })).rejects.toThrow("budget exceeded");
+    expect(resolveVersion).not.toHaveBeenCalled();
+  });
+  it("bounds the union of legacy and current task histories", async () => {
+    const { registry } = fixture([Array.from({ length: 65 }, (_, id) => run(id)), Array.from({ length: 64 }, (_, id) => run(id + 65))]);
+    await expect(registry.redactForIssueNotification("company", "task", secret)).rejects.toThrow("budget exceeded");
+    expect(resolveVersion).not.toHaveBeenCalled();
+  });
+  it("deduplicates overlapping histories and resolves repeated secrets once", async () => {
+    const rows = Array.from({ length: 128 }, (_, id) => run(id));
+    const { registry, limit } = fixture([rows, rows]);
+    expect(await registry.redactForIssueNotification("company", "task", { body: secret })).toEqual({ body: REDACTED_EVENT_VALUE });
+    expect(limit).toHaveBeenCalledTimes(2);
+    expect(resolveVersion).toHaveBeenCalledTimes(1);
+  });
+});

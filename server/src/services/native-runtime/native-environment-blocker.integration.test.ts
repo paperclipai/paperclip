@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, issueComments, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpStructuredRunResult, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -17,6 +17,9 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
   NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
+import { NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE } from "./status-arbiter.js";
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 
 type Blocker = NonNullable<PrpStructuredRunResult["blocker"]>;
 
@@ -113,6 +116,58 @@ describe("native run that reports a system environment blocker", () => {
     });
     expect(decision.reasonCode).not.toBe(NATIVE_ENVIRONMENT_BLOCKER_CODE);
     expect(retries).toHaveLength(0);
+  });
+
+  async function queueWake(issueId: string, chat: boolean) {
+    const [message] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "env-owner",
+      body: chat ? "GitHub review request for the newest commit." : "Also check the totals." }).returning();
+    const conversationId = randomUUID();
+    const context = { issueId, taskId: issueId, wakeReason: chat ? "External chat message received" : "issue_commented",
+      wakeSource: "assignment", commentId: message!.id, wakeCommentId: message!.id, wakeCommentIds: [message!.id],
+      ...(chat ? { source: "chat:github", chatConversationId: conversationId } : {}) };
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", triggerDetail: "system",
+      reason: context.wakeReason, status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "env-owner",
+      payload: { issueId, mutation: chat ? "chat_message_received" : "comment", wakeCommentId: message!.id, _paperclipWakeContext: context },
+    }).returning();
+    return { wakeId: wake!.id, messageId: message!.id, conversationId };
+  }
+
+  it("lets a queued chat request start the next turn with its own binding instead of continuing the blocked run", async () => {
+    // A GitHub push during a review waits as a chat wake. A fresh-session
+    // continuation would keep the older push's binding and could not publish.
+    let queued!: Awaited<ReturnType<typeof queueWake>>;
+    const { runId, decision, retries, issue } = await reportBlocked(environmentBlocker, {}, async issueId => {
+      queued = await queueWake(issueId, true);
+    });
+    expect(decision).toMatchObject({ reasonCode: NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE });
+    expect(retries).toHaveLength(0);
+    expect(issue).toMatchObject({ status: "in_progress", unblockDescriptor: null });
+
+    const released = await createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, {
+        resolveResponsibleUserId: async () => "env-owner",
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+        resolveSessionBeforeForWakeup: async () => null,
+      } as never),
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    })({ companyId, runId, now: new Date() });
+    expect(released.outcome.kind).toBe("promoted");
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeId));
+    const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.runId!));
+    expect(next!.retryOfRunId).toBeNull();
+    expect(next!.contextSnapshot).toMatchObject({ issueId: issue.id, wakeCommentId: queued.messageId,
+      chatConversationId: queued.conversationId });
+    expect(next!.contextSnapshot).not.toHaveProperty("retryReason");
+    const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(task!.executionRunId).toBe(next!.id);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, next!.id));
+  });
+
+  it("still continues the blocked run when only a plain comment waits behind it", async () => {
+    const { decision, retries } = await reportBlocked(environmentBlocker, {}, issueId => queueWake(issueId, false));
+    expect(decision).toMatchObject({ reasonCode: NATIVE_ENVIRONMENT_BLOCKER_CODE });
+    expect(retries).toHaveLength(1);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retries[0]!.id));
   });
 
   it("keeps a blocker that only its owner can resolve", async () => {

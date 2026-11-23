@@ -796,8 +796,9 @@ async function startServerWithDatabaseTeardown(
   // then abandons no work. It used to run minutes later, after startup had
   // already dispatched queued runs. No startup step it skipped could make an
   // ineligible database eligible: the migrations that clear its blockers are
-  // maintenance commands, and the background passes startup starts were never
-  // awaited before it.
+  // maintenance commands (the gate itself copies only retained runtime skill
+  // bundles still on this disk), and the background passes startup starts
+  // were never awaited before it.
   if (deploymentListenUrl !== null) await assertEphemeralServerData(db as any);
   startupTimeline.mark("volume_free_data_gate");
 
@@ -2159,7 +2160,9 @@ async function startServerWithDatabaseTeardown(
   }
 
   if (deploymentListenUrl !== null) {
-    const qualification = await startupTimeline.precondition("cloud_configuration", () => qualifyCloudConfigurationForCurrentImage(db as any));
+    const qualification = await startupTimeline.precondition("cloud_configuration", () => qualifyCloudConfigurationForCurrentImage(db as any, {
+      bundledManifestsReady: app.locals.bundledPluginManifestsReady,
+    }));
     if (qualification && !qualification.configurationPackagesEligible) {
       throw new Error(`Volume-free server packages are not eligible: ${qualification.blockers.map(blocker => blocker.code).join(", ")}`);
     }

@@ -1,5 +1,6 @@
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ResponsibilityArea, ResponsibilityWithRollup } from "@paperclipai/shared";
 import { Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
@@ -82,6 +83,13 @@ function ProvenanceLine({
  */
 export function Responsibilities() {
   const { selectedCompanyId } = useCompany();
+  const viewer = useResolvedViewerId();
+  if (viewer.error) return <QueryErrorState error={viewer.error} action="load your dashboard" onRetry={() => { void viewer.retry(); }} />;
+  if (!selectedCompanyId || !viewer.userId) return <PageSkeleton variant="dashboard" />;
+  return <OwnerDashboard key={JSON.stringify([selectedCompanyId, viewer.userId])} selectedCompanyId={selectedCompanyId} ownerUserId={viewer.userId} />;
+}
+
+function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId: string; ownerUserId: string }) {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [includeLetGo, setIncludeLetGo] = useState(false);
   const [adding, setAdding] = useState<{ areaId: string | null } | null>(null);
@@ -107,10 +115,9 @@ export function Responsibilities() {
   }, [setBreadcrumbs]);
 
   const overviewQuery = useQuery({
-    queryKey: queryKeys.responsibilities.overview(selectedCompanyId ?? "__none__", { includeLetGo }),
-    queryFn: () => responsibilitiesApi.overview(selectedCompanyId!, { includeLetGo }),
+    queryKey: queryKeys.responsibilities.overview(selectedCompanyId ?? "__none__", { includeLetGo, ownerUserId }),
+    queryFn: () => responsibilitiesApi.overview(selectedCompanyId!, { includeLetGo, ownerUserId }),
     enabled: !!selectedCompanyId,
-    placeholderData: keepPreviousData,
   });
   const overview = overviewQuery.data;
   const areasForNew = useMemo(
@@ -128,7 +135,7 @@ export function Responsibilities() {
     if (!overview) return null;
     const counts = outlineV2Counts(outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas));
     // The same rule as the view's empty state, which shows only the create module.
-    return counts.responsibilities > 0 || overview.proposed.length > 0 ? counts : null;
+    return counts.areas > 0 || counts.responsibilities > 0 || overview.proposed.length > 0 ? counts : null;
   }, [overview, keepEmptyAreas]);
 
   const openAdd = useCallback((areaId: string | null) => setAdding({ areaId }), []);

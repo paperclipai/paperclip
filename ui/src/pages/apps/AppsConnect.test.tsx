@@ -34,6 +34,7 @@ const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
+const getAwsSetupMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
@@ -54,6 +55,7 @@ const mockCompany = vi.hoisted(() => ({
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!;
+const GITHUB_COPILOT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github-copilot")!;
 const GITHUB_MANAGED = {
   ...GITHUB,
   ownershipAvailability: {
@@ -82,6 +84,7 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
+const AWS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "aws")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -93,6 +96,7 @@ vi.mock("@/api/tools", () => ({
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    getAwsSetup: (connectionId: string, accessLevel?: string) => getAwsSetupMock(connectionId, accessLevel),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
@@ -482,6 +486,48 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       await flushReact();
       expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
         connectionMethodKey: "api-key", settings: { workspace: "acme" }, credentialValues: { "credentials.apiKey": "records-key" } }));
+    } finally {
+      setPluginAppDefinitions([]);
+    }
+  });
+
+  it.each([
+    { auth: "none" as const, credentialValues: {} },
+    { auth: "api_key" as const, credentialValues: { "credentials.apiKey": "records-key" } },
+  ])("asks which one agent uses a plugin connector with agent grants ($auth)", async ({ auth, credentialValues }) => {
+    const app = pluginAppDefinition("example.records", {
+      schemaVersion: 1, slug: "records", name: "Records", description: "Look up records", categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" }, urlPatterns: [],
+      methods: [{ key: "agent", label: "Agent", transport: "plugin", auth, grantKinds: ["agent"], ownershipModes: ["customer"],
+        whenToUse: "One agent uses it.", guidanceMd: "Pick the agent.", riskTier: "S1",
+        ...(auth === "api_key"
+          ? { credentialFields: [{ key: "apiKey", label: "API key", type: "password" as const, required: true, placeholder: "key", secret: true }] }
+          : {}),
+        tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] } }],
+    });
+    setPluginAppDefinitions([app]);
+    try {
+      listGalleryMock.mockResolvedValue({ apps: [app] });
+      await render(undefined, false, <ConnectionSetupFlow serviceSlug={app.slug} />);
+      // The stated default must not promise every agent, and the picker is
+      // already open because the connection needs its one agent.
+      expect(container.textContent).not.toContain("available to all agents");
+      expect(container.textContent).toContain("Which agent uses this connection?");
+      expect(container.textContent).not.toContain("GitHub");
+      expect(container.textContent).not.toContain("No identity required");
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+      if (auth === "api_key") await act(async () => setInputValue(key!, "records-key"));
+      await act(async () => buttonByText("Select agents")!.click());
+      await flushReact();
+      await act(async () => document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')!.click());
+      await flushReact();
+      expect(container.textContent).toContain("available only to the chosen agent");
+      await act(async () => buttonByText("Connect")?.click());
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
+        connectionMethodKey: "agent", grantKind: "agent", subjectAgentId: "agent-1",
+        ...(auth === "api_key" ? { credentialValues } : {}) }));
     } finally {
       setPluginAppDefinitions([]);
     }
@@ -1188,8 +1234,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it.each([false, true])("opens Copilot with visible personal defaults and shares only by explicit choice (%s)", async (share) => {
-    mockSearch.value = "source=github&method=copilot-token";
-    listGalleryMock.mockResolvedValue({ apps: [GITHUB] });
+    mockSearch.value = "source=github-copilot";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, GITHUB_COPILOT] });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     client.setQueryData(queryKeys.environments.list("company-1"), [
       { id: "local-env", name: "Local", driver: "local", status: "active", config: {} },
@@ -1228,6 +1274,16 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       environmentId: "local-env",
     }));
     expect(mockNavigate).toHaveBeenCalledWith("/apps/copilot-ai-account/permissions");
+  });
+
+  it("redirects older GitHub Copilot setup links to the GitHub Copilot connector", async () => {
+    mockSearch.value = "source=github&method=copilot-token&agentId=agent-1";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, GITHUB_COPILOT] });
+    await render();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?source=github-copilot&method=copilot-token&agentId=agent-1",
+      { replace: true },
+    );
   });
 
   it("states the GitHub identity default and keeps its controls one click away", async () => {
@@ -2494,6 +2550,129 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "circleback",
       connectionMethodKey: "mcp-oauth",
     })));
+  });
+
+  it("sets up an AWS role in two steps: save a draft, hand setup to the user's agent, then test with the pasted role ARN", async () => {
+    mockParams.appKey = "aws";
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValueOnce({ apps: [AWS] });
+    const roleArn = "arn:aws:iam::123456789012:role/paperclip-aws-draft";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-draft", connection: { id: "aws-draft", status: "draft" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: {},
+    });
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-draft", savedRoleArn: null, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true,
+    });
+    await render();
+    // The role does not exist yet, so the first step does not ask for it.
+    expect(container.textContent).not.toContain("Role ARN");
+    await act(async () => { buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+    }));
+    expect((connectAppMock.mock.calls.at(-1)![1] as { configValues?: { roleArn?: string } }).configValues?.roleArn ?? "").toBe("");
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(getAwsSetupMock.mock.calls.at(-1)?.[0]).toBe("aws-draft");
+    expect(container.querySelector('button[aria-label="Set it up with your agent"]')).toBeTruthy();
+    expect(container.textContent).toContain("Or do it by hand");
+    expect(buttonByText("Test connection")?.disabled).toBe(true);
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#aws-role-arn")!, roleArn); });
+    await flushReact();
+
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-draft", connection: { id: "aws-draft", status: "active" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [{ id: "entry-1", toolName: "aws___run_script" }],
+      actions: { readOnly: [], canMakeChanges: [{ catalogEntryId: "entry-1", name: "aws___run_script" }] }, suggestedDefaults: {},
+    });
+    await act(async () => { buttonByText("Test connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    const testCall = connectAppMock.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(testCall).toMatchObject({
+      galleryKey: "aws", connectionMethodKey: "aws-role", resumeConnectionId: "aws-draft",
+      configValues: expect.objectContaining({ roleArn, endpointRegion: "us-east-1" }),
+    });
+    expect(testCall.saveDraft).toBeUndefined();
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "aws-draft", expect.anything());
+  });
+
+  it("reopens the AWS step when someone returns to an unfinished AWS role draft", async () => {
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValue({ apps: [AWS] });
+    const draft = {
+      id: "aws-draft", companyId: "company-1", name: "AWS", status: "draft", authKind: "api_key", credentialPolicy: "shared",
+      transport: "mcp_remote", applicationId: "app-aws",
+      config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role", url: "https://aws-mcp.us-east-1.api.aws/mcp",
+        methodConfig: { endpointRegion: "us-east-1", accessLevel: "read_only" } },
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-aws", companyId: "company-1", name: "AWS", applicationKey: "app-gallery:aws:x", metadata: { sourceTemplateKey: "aws" } }] });
+    getConnectionMock.mockResolvedValue(draft);
+    mockSearch.value = "source=aws&resume=aws-draft";
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-draft", savedRoleArn: null, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true,
+    });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Or do it by hand"));
+    expect(getAwsSetupMock.mock.calls.at(-1)?.[0]).toBe("aws-draft");
+    // Nothing was tested against AWS before the customer saw what to create.
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("lets a reconnect change an AWS role connection's role ARN on the AWS step", async () => {
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValue({ apps: [AWS] });
+    const oldArn = "arn:aws:iam::123456789012:role/paperclip-aws-conn";
+    const newArn = "arn:aws:iam::210987654321:role/paperclip-aws-conn";
+    const existing = {
+      id: "aws-conn", companyId: "company-1", name: "AWS", status: "active", enabled: true, authKind: "api_key", credentialPolicy: "shared",
+      transport: "mcp_remote", applicationId: "app-aws",
+      config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role", url: "https://aws-mcp.us-east-1.api.aws/mcp",
+        methodConfig: { roleArn: oldArn, endpointRegion: "us-east-1", accessLevel: "read_only" } },
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [existing] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-aws", companyId: "company-1", name: "AWS", applicationKey: "app-gallery:aws:x", metadata: { sourceTemplateKey: "aws" } }] });
+    getConnectionMock.mockResolvedValue(existing);
+    mockSearch.value = "source=aws&reconnect=aws-conn";
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-conn", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-conn", savedRoleArn: oldArn, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true,
+    });
+    await render();
+    const connect = [...container.querySelectorAll("button")].find((b) => /^(Connect|Reconnect)/.test(b.textContent?.trim() ?? "") && !b.disabled);
+    expect(connect).toBeTruthy();
+    await act(async () => { connect!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    // Nothing is sent yet: reconnect opens the AWS step with the saved role ARN, which stays editable.
+    expect(connectAppMock).not.toHaveBeenCalled();
+    // The guide is generated for the access level the test will submit.
+    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-conn", "read_only");
+    const input = container.querySelector<HTMLInputElement>("#aws-role-arn")!;
+    expect(input.value).toBe(oldArn);
+    await act(async () => { setInputValue(input, newArn); });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-conn", connection: { id: "aws-conn", status: "active" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [{ id: "entry-1", toolName: "aws___list_regions" }],
+      actions: { readOnly: [{ catalogEntryId: "entry-1", name: "aws___list_regions" }], canMakeChanges: [] }, suggestedDefaults: {},
+    });
+    await act(async () => { buttonByText("Test connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    const call = connectAppMock.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(call).toMatchObject({ reconnectConnectionId: "aws-conn", configValues: expect.objectContaining({ roleArn: newArn }) });
+    expect(call.saveDraft).toBeUndefined();
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {

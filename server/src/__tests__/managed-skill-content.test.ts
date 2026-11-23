@@ -18,6 +18,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
+import { listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -618,7 +619,7 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       markdown: "# Linked", sourceType: "local_path", sourceLocator: path.join(root, "linked") }).returning();
     const report = await skillInstallationMaintenance(db).installations({ companyId, apply: true, writersStopped: true });
     expect(report.results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ skillId: legacy!.id, status: "blocked" }),
+      expect.objectContaining({ skillId: legacy!.id, status: "blocked", code: "source_files_unavailable" }),
       expect.objectContaining({ skillId: linked!.id, status: "linked_local" }),
     ]));
     expect(await companySkillService(db).getById(companyId, legacy!.id)).toMatchObject({ sourceType: "local_path", currentVersionId: null });
@@ -680,9 +681,104 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       const [legacy] = await db.insert(companySkills).values({ companyId, key: "unsafe", slug: "unsafe", name: "Unsafe", markdown: "# legacy",
         sourceType: "local_path", sourceLocator: directory, metadata: { sourceKind: "managed_local" } }).returning();
       expect((await skillInstallationMaintenance(db).installations({ id: legacy!.id, apply: true, writersStopped: true })).results)
-        .toEqual([expect.objectContaining({ status: "blocked", reason: "Legacy skill contains a symbolic link" })]);
+        .toEqual([expect.objectContaining({ status: "blocked", reason: "Legacy skill contains a symbolic link", code: "legacy_source_unsafe" })]);
       expect(await companySkillService(db).getById(companyId, legacy!.id)).toMatchObject({ sourceType: "local_path", currentVersionId: null });
     } finally { await fs.unlink(path.join(directory, "support.txt")); }
+  });
+
+  it("converts an unmodified catalog installation whose files are gone from its pinned catalog package", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, installedHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results).toEqual([expect.objectContaining({ status: "converted" })]);
+    const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    expect(row.metadata?.originVersionId).toBe(row.currentVersionId);
+    expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
+    const store = skillPackageStore(db), saved = await store.version(companyId, skill.id, row.currentVersionId!);
+    expect((await store.versionFiles(saved!)).find(file => file.path === "SKILL.md")?.content)
+      .toBe((await readCatalogSkillFile(catalog.id, "SKILL.md")).content);
+  });
+
+  it("keeps an unmodified catalog installation blocked when it was not proven identical to its catalog origin", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    expect((await skillInstallationMaintenance(db).installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked", code: "source_files_unavailable" })]);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
+  });
+
+  it("recovers a modified catalog installation's missing reset origin only from the exact pinned catalog package", async () => {
+    const companyId = await company(), service = companySkillService(db), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const skill = await service.createLocalSkill(companyId, { name: "Modified catalog", markdown: "# Locally modified catalog skill" });
+    const metadata = { sourceKind: "catalog", catalogId: catalog.id, originHash: `sha256:${"0".repeat(64)}`,
+      installedHash: `sha256:${"1".repeat(64)}`, userModifiedAt: new Date().toISOString(),
+      originSnapshotLocator: path.join(root, `catalog-origin-missing-${randomUUID()}`) };
+    await db.update(companySkills).set({ sourceType: "catalog", sourceLocator: path.join(root, `catalog-installed-missing-${randomUUID()}`),
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata }).where(eq(companySkills.id, skill.id));
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked", code: "catalog_origin_unavailable" })]);
+    await db.update(companySkills).set({ metadata: { ...metadata, originHash: catalog.contentHash } }).where(eq(companySkills.id, skill.id));
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "converted", versionId: skill.currentVersionId })]);
+    const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    const originVersionId = row.metadata?.originVersionId as string;
+    expect(originVersionId).toBeTruthy();
+    expect(originVersionId).not.toBe(row.currentVersionId);
+    const store = skillPackageStore(db);
+    const origin = await store.versionFiles((await store.version(companyId, skill.id, originVersionId))!);
+    expect(origin.find(file => file.path === "SKILL.md")?.content).toBe((await readCatalogSkillFile(catalog.id, "SKILL.md")).content);
+    const current = await store.versionFiles((await store.version(companyId, skill.id, row.currentVersionId!))!);
+    expect(current.find(file => file.path === "SKILL.md")?.content).toBe("# Locally modified catalog skill");
+    expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
+  });
+
+  it("cancels a stalled pinned catalog download when the budget expires", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Remote catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, installedHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    const budget = new AbortController();
+    const download = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      budget.abort(new Error("budget spent"));
+    }));
+    try {
+      await expect(skillInstallationMaintenance(db).installations({ id: skill.id, apply: true, signal: budget.signal }))
+        .rejects.toThrow("budget spent");
+    } finally { download.mockRestore(); }
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
+  });
+
+  it("stops at an aborted budget instead of reporting the installation as blocked", async () => {
+    const companyId = await company(), directory = path.join(root, `aborted-conversion-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Aborted conversion");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "aborted-conversion", slug: "aborted-conversion", name: "Aborted",
+      markdown: "# Aborted conversion", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const storage = storageModule.getStorageService(), budget = new AbortController();
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async () => {
+      budget.abort(new Error("budget spent"));
+      throw budget.signal.reason;
+    });
+    try {
+      await expect(skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true, signal: budget.signal }))
+        .rejects.toThrow("budget spent");
+    } finally { upload.mockRestore(); }
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
   });
 
   it("keeps the compatibility override durable in Postgres and reports that storage accurately", async () => {

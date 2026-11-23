@@ -20,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 const telemetryMocks = vi.hoisted(() => ({
   track: vi.fn(),
@@ -47,6 +48,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
 
   beforeEach(() => {
     telemetryMocks.track.mockClear();
+    telemetryMocks.track.mockImplementation(() => scopedTelemetryCompanyId());
     telemetryMocks.getTelemetryClient.mockReturnValue({
       track: telemetryMocks.track,
       hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
@@ -135,6 +137,11 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     return calls.at(-1)?.[1] as Record<string, unknown>;
   }
 
+  function scopesOf(name: string) {
+    return telemetryMocks.track.mock.calls.flatMap(([eventName], index) =>
+      eventName === name ? [telemetryMocks.track.mock.results[index]?.value] : []);
+  }
+
   it("emits deprecated resolver alias use at creation without interaction content", async () => {
     const { companyId, issueId } = await seedIssue("Deprecated alias telemetry issue title");
 
@@ -161,6 +168,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       interaction_kind: "request_confirmation",
       used_deprecated_resolver_policy_alias: true,
     });
+    expect(scopesOf("interaction.created")).toEqual([companyId]);
   });
 
   it("emits skipped resolution telemetry for composer Skip", async () => {
@@ -197,6 +205,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       target_type: "none",
     });
     expectNoRawInteractionIds(dimensions);
+    expect(scopesOf("interaction.resolved")).toEqual([companyId]);
   });
 
   it("emits accepted suggested-task telemetry with created and skipped task counts", async () => {

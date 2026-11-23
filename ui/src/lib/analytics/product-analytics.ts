@@ -37,6 +37,12 @@ export interface ProductAnalyticsClient {
   identify(distinctId: string, personProperties?: Record<string, unknown>): void;
   group(groupType: string, groupKey: string): void;
   reset(): void;
+  capture?(event: string, properties?: Record<string, unknown>, options?: { timestamp?: Date }): unknown;
+  opt_out_capturing?(): void;
+  opt_in_capturing?(): void;
+  has_opted_out_capturing?(): boolean;
+  startSessionRecording?(): void;
+  stopSessionRecording?(): void;
 }
 
 /** An event as posthog-js hands it to `before_send`. */
@@ -202,8 +208,19 @@ type State = {
   config: BrowserAnalyticsConfig;
   client: ProductAnalyticsClient | null;
   cancelSchedule: (() => void) | null;
+  pendingClient: ProductAnalyticsClient | null;
   loading: boolean;
+  optedOut: boolean;
+  queued: QueuedProductEvent[];
 };
+
+type QueuedProductEvent = {
+  event: string;
+  properties: Record<string, string>;
+  timestamp: Date;
+};
+
+const MAX_QUEUED_PRODUCT_EVENTS = 50;
 
 let state: State | null = null;
 let wantedUser: ProductAnalyticsUser | null = null;
@@ -229,6 +246,43 @@ function applyIdentity(client: ProductAnalyticsClient, config: BrowserAnalyticsC
   }
 }
 
+function sendProductEvent(client: ProductAnalyticsClient, queued: QueuedProductEvent) {
+  client.capture?.(queued.event, queued.properties, { timestamp: queued.timestamp });
+}
+
+export function captureProductAnalyticsEvent(event: string, properties: Record<string, string> = {}): void {
+  const current = state;
+  if (!current || current.optedOut) return;
+  const queued = { event, properties: { ...properties }, timestamp: new Date() };
+  if (current.client) {
+    sendProductEvent(current.client, queued);
+    return;
+  }
+  if (current.queued.length < MAX_QUEUED_PRODUCT_EVENTS) current.queued.push(queued);
+}
+
+function optOut(client: ProductAnalyticsClient) {
+  client.opt_out_capturing?.();
+  client.stopSessionRecording?.();
+}
+
+function optIn(client: ProductAnalyticsClient, config: BrowserAnalyticsConfig) {
+  client.opt_in_capturing?.();
+  if (config.replayEnabled) client.startSessionRecording?.();
+}
+
+function initialize(current: State, client: ProductAnalyticsClient) {
+  const { config } = current;
+  client.init(config.token, buildPostHogInitOptions(config, window.location.hostname));
+  if (client.has_opted_out_capturing?.()) optIn(client, config);
+  client.register(superProperties(config));
+  current.client = client;
+  applyIdentity(client, config);
+  const queued = current.queued;
+  current.queued = [];
+  for (const event of queued) sendProductEvent(client, event);
+}
+
 /**
  * Start browser analytics for this page session. Idempotent: posthog-js is a
  * page-wide singleton, so later calls (session refetches) keep the first
@@ -238,8 +292,27 @@ export function startProductAnalytics(
   config: BrowserAnalyticsConfig,
   options: ProductAnalyticsOptions,
 ): void {
-  if (state) return;
-  const current: State = { config, client: null, cancelSchedule: null, loading: false };
+  if (state) {
+    if (!state.optedOut) return;
+    state.optedOut = false;
+    if (state.client) {
+      optIn(state.client, state.config);
+    } else if (state.pendingClient) {
+      const client = state.pendingClient;
+      state.pendingClient = null;
+      initialize(state, client);
+    }
+    return;
+  }
+  const current: State = {
+    config,
+    client: null,
+    pendingClient: null,
+    cancelSchedule: null,
+    loading: false,
+    optedOut: false,
+    queued: [],
+  };
   state = current;
   const load = options.load ?? loadPostHog;
   current.cancelSchedule = options.schedule(() => {
@@ -252,10 +325,8 @@ export function startProductAnalytics(
     load(config)
       .then((client) => {
         if (state !== current) return;
-        client.init(config.token, buildPostHogInitOptions(config, window.location.hostname));
-        client.register(superProperties(config));
-        current.client = client;
-        applyIdentity(client, config);
+        if (current.optedOut) current.pendingClient = client;
+        else initialize(current, client);
       })
       .catch(() => {
         // Analytics must never break the board. A failed script load leaves it
@@ -267,6 +338,7 @@ export function startProductAnalytics(
 
 /** Set (or clear, on sign-out) the signed-in user. Safe to call before posthog-js loads. */
 export function setProductAnalyticsUser(user: ProductAnalyticsUser | null): void {
+  if (wantedUser && wantedUser.id !== user?.id && state) state.queued = [];
   wantedUser = user;
   if (state?.client) applyIdentity(state.client, state.config);
 }
@@ -286,9 +358,40 @@ export function resetProductAnalyticsIdentity(): void {
  * through `setProductAnalyticsUser(null)`.
  */
 export function cancelPendingProductAnalytics(): void {
-  if (!state || state.client || state.loading) return;
+  if (!state || state.client || state.pendingClient || state.loading) return;
   state.cancelSchedule?.();
   state = null;
+}
+
+function stopProductAnalytics(): void {
+  if (!state) return;
+  if (!state.client && !state.pendingClient && !state.loading) {
+    state.cancelSchedule?.();
+    state = null;
+    return;
+  }
+  state.optedOut = true;
+  state.queued = [];
+  if (state.client) optOut(state.client);
+}
+
+export function syncProductAnalytics(
+  config: BrowserAnalyticsConfig,
+  consent: "granted" | "denied" | "ask",
+  options: ProductAnalyticsOptions & { immediate?: boolean },
+): () => void {
+  if (consent !== "granted") {
+    stopProductAnalytics();
+    return () => undefined;
+  }
+  const schedule: ProductAnalyticsOptions["schedule"] = options.immediate
+    ? (start) => {
+        start();
+        return () => undefined;
+      }
+    : options.schedule;
+  startProductAnalytics(config, { ...options, schedule });
+  return cancelPendingProductAnalytics;
 }
 
 export function resetProductAnalyticsForTest(): void {

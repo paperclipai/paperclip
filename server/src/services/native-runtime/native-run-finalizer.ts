@@ -34,6 +34,7 @@ import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.j
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
+import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -80,6 +81,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { preservedResultHasStop, readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
@@ -482,7 +484,10 @@ async function recordRetryableFailure(input: {
         ? ("cancelled" as const)
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
-  const outcome = await input.db.transaction(async (tx) => {
+  const admitted = input;
+  const outcome = await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+    input = admitted;
+    terminalRunToEmit = null;
     // Admission snapshots cannot authorize a failure write after a different
     // owner committed success. Match status-committer lock ordering.
     const current = await tx.select().from(nativeRunFinalizations).where(and(
@@ -794,7 +799,7 @@ async function recordRetryableFailure(input: {
       failureCode,
       nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
     };
-  });
+  }));
   if (terminalRunToEmit) {
     await emitAgentTaskRun(input.db, terminalRunToEmit);
     void reportRunFailure(input.db, terminalRunToEmit);
@@ -1580,28 +1585,10 @@ export async function finalizeNativeRun(input: {
         eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
       ),
     );
-  const classifiedAssessment = await classifyNativeEvidence({
-    db: input.db,
-    companyId: run.companyId,
-    issueId: coordinator.issueId,
-    runId: run.id,
-    contract: record(contractRow.contractJson),
-    result,
-  });
   const persistedIgnoredAttention = record(
     envelope.normalizationDiagnostics,
   ).ignoredAttentionRequests;
-  const assessment = {
-    ...classifiedAssessment,
-    ignoredAttentionRequests: [
-      ...(Array.isArray(persistedIgnoredAttention)
-        ? (persistedIgnoredAttention as PrpIgnoredAttentionRequest[])
-        : []),
-      ...classifiedAssessment.ignoredAttentionRequests,
-    ],
-  };
 
-  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
   const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
       eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
@@ -1627,6 +1614,29 @@ export async function finalizeNativeRun(input: {
       .then((rows) => rows[0] ?? null);
     if (!authoritativeIssue)
       throw new Error("native_finalization_issue_missing");
+    // A status retry must rebuild ownership and evidence too. Reusing the
+    // earlier assessment can overwrite an API-bound owner or exhaust every
+    // retry after a membership change, despite reading a fresh issue version.
+    const classifiedAssessment = await classifyNativeEvidence({
+      db: input.db,
+      companyId: run.companyId,
+      issueId: coordinator.issueId,
+      runId: run.id,
+      contract: record(contractRow.contractJson),
+      result,
+    });
+    // A malformed result must not withdraw a pending review. Keep cleanup
+    // after validation while rebuilding the assessment on every status retry.
+    if (attempt === 0) await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+    const assessment = {
+      ...classifiedAssessment,
+      ignoredAttentionRequests: [
+        ...(Array.isArray(persistedIgnoredAttention)
+          ? (persistedIgnoredAttention as PrpIgnoredAttentionRequest[])
+          : []),
+        ...classifiedAssessment.ignoredAttentionRequests,
+      ],
+    };
     const preservedResultFinalization = run.status !== "running"
       ? await readPreservedNativeResultFinalization(input.db, {
           companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
@@ -1776,6 +1786,8 @@ export async function finalizeNativeRun(input: {
         && isNativeEnvironmentBlocker(result),
       agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && result.reportedWorkDisposition === "blocked",
+      hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
+        && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),
       // Only the task's current owner may turn its own failed continuation
       // into a blocker; the committer rechecks that under the issue lock.
@@ -1845,7 +1857,8 @@ export async function finalizeNativeRun(input: {
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
-          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+          enteringConfiguredReview: proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON }, result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
         const incomplete = resolveNativeFinalizerStatus({ ...statusInput,

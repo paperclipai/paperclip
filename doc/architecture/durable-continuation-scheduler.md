@@ -100,6 +100,23 @@ another turn. Its invariant is: an assigned open issue should have either a
 live execution path, a durable reason to wait, or a visible terminal/blocking
 disposition.
 
+Active pending interactions remain a reason to wait under the shared
+interaction eligibility rules. A newer Retry alone does not answer a question.
+Dismissed or historical ordinary questions remain answerable conversation
+data, without blocking current work; governed requests retain their gates.
+Assigned-work reconciliation leaves active question waits quiet, and the
+existing interaction-resolution notification makes them eligible for another
+check. The task and inbox show an active question as the current blocker,
+while older provider failures remain in run history.
+After a failed attempt, the question notice preserves an available manual
+Retry; automatic recovery still waits. Existing saved input prevents a
+duplicate Retry, and other current user gates retain their precedence.
+
+A provider-limit hold before provider work is scheduling, so it does not send
+a cancellation toast for every held task. Its durable retry rechecks provider
+availability. When the provider reports no reset time, the fallback deadline
+is a recheck time rather than a promised reset or work-start time.
+
 ## Why DOT-2 looped
 
 DOT-2's runner repeatedly produced a successful result that reported `done`.

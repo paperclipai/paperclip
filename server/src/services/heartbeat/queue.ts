@@ -15,6 +15,7 @@ import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, isPersonRequestedRun, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
 import { queuedRunDispatchFacts } from "./queued-run-line.js";
+import { QUEUED_RUN_ORDER_CONTEXT_KEYS } from "./queued-run-provenance.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -55,15 +56,12 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isVerifiedDependencyInteractionResponse, readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
-  isConversationReset,
-  isConversationExecutionWake,
   isWaitingConversation,
 } from "../agent-conversations.js";
 import { onboardingGreetingNeeded } from "../onboarding-chat.js";
 import { ONBOARDING_CHAT_GREETING_REASON } from "../onboarding-chat-prompt.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import {
-  admitExplicitNativeContinuation,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
@@ -80,7 +78,6 @@ import {
 import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-dispatch.js";
 import { nativeCleanupHoldsAdmission } from "../native-runtime/native-cleanup-admission-hold.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
-import { preserveTaskRemoteWorkspaceWriter } from "../native-runtime/native-failed-workspace-recovery.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
   slackMentionAllowsRunStart,
@@ -91,7 +88,6 @@ import {
   DEFERRED_CHAT_WAKE_RETRY_KEY,
   assertDurableChatWakeupReceipt,
   assertDurableChatWakeupRequest,
-  withDurableChatAdmission,
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
   unadmittedChatWakeupCondition,
@@ -144,11 +140,12 @@ import { isUniqueViolation } from "../../db-errors.js";
 import { publishLiveEvent } from "../live-events.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import {
+  DEFERRED_WAKE_CONTEXT_KEY,
   queuedCommentIdsFromWakePayload,
   queuedCommentIdsFromRunContext,
   withQueuedCommentIdsInWakePayload,
   withQueuedCommentIdsInRunContext,
-} from "../issue-queued-comment-queue.js";
+} from "../../lib/queued-comment-context.js";
 import { parseObject } from "../../adapters/utils.js";
 import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
@@ -218,8 +215,9 @@ import type { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
+import { hasRetainedExternalChatRetry, type IssueAttributionSnapshot, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { emitSystemTaskBlockedAfterCommit } from "../product-telemetry.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type QueuedRunCandidate = Pick<HeartbeatRun, "id" | "companyId" | "agentId" | "status" | "invocationSource" | "createdAt"
@@ -246,7 +244,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
   runDispatch: Pick<ReturnType<typeof createRunDispatch>, "cancelStaleQueuedRun">;
-  wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "createAdmissionTransactionScope" | "admitWakeBehindIssueExecution">;
+  wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "preflightIssueWake" | "admitIssueWake">;
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
@@ -277,7 +275,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
 
 
 
-export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+export { DEFERRED_WAKE_CONTEXT_KEY } from "../../lib/queued-comment-context.js";
 
 export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -2737,17 +2735,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-      issueId: contextText("issueId"),
-      wakeReason: contextText("wakeReason"),
-      previousRunId: contextText("previousRunId"),
+      orderContext: sql<Record<string, string | null>>`jsonb_build_object(${sql.join(QUEUED_RUN_ORDER_CONTEXT_KEYS.map(key =>
+        sql`${key}::text, ${contextText(key)}`), sql`, `)})`,
     }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.agentId, agentId),
       eq(heartbeatRuns.status, "queued"),
       cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
     )).orderBy(asc(heartbeatRuns.createdAt));
-    return rows.map(({ issueId, wakeReason, previousRunId, ...run }) => ({
+    return rows.map(({ orderContext, ...run }) => ({
       ...run,
-      contextSnapshot: Object.fromEntries(Object.entries({ issueId, wakeReason, previousRunId }).filter(([, value]) => value !== null)),
+      contextSnapshot: Object.fromEntries(Object.entries(orderContext ?? {}).filter(([, value]) => value !== null)),
     }));
   }
 
@@ -2876,19 +2873,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // a run or deferred request; assignment and review have their own wakes.
     if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
-      const conversation = await getIssueExecutionContext(agent.companyId, issueId);
-      if (taskRetryActorId && conversation) assertTaskRetryConversationAllowed(conversation, taskRetryActorId);
-      if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
-      if (isConversation(conversation)) {
-        if (reason === "onboarding_chat_greeting" && (conversation?.originKind !== "onboarding_chat"
-          || conversation.conversationUserId !== opts.requestedByActorId)) return null;
-        if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
-          throw new HttpError(403, "Only the conversation owner can start a chat run");
-        }
-        if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
-        if (agent.id !== conversation!.conversationAgentId) return null;
-        if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
-      }
+      const preflight = await wakeQueue.preflightIssueWake({
+        companyId: agent.companyId,
+        issueId,
+        agentId: agent.id,
+        reason,
+        wakeReason: readNonEmptyString(enrichedContextSnapshot.wakeReason),
+        requestedByActorId: opts.requestedByActorId,
+        manualUserWake: opts.manualUserWake,
+        taskRetryActorId,
+        hasIndependentConversationWakeCause: hasIndependentConversationWakeCause(),
+      });
+      if (preflight.kind === "skipped") return null;
+      if (preflight.onboardingCompletion) enrichedContextSnapshot.onboardingCompletion = true;
     }
     if (agent.adapterType === "paperclip_runner") {
       const oldConfig = parseObject(agent.adapterConfig);
@@ -3269,9 +3266,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Old or direct timer producers cannot create a doomed taskless Runner
     // run. Explicit session restoration above can supply a real task scope.
     if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
-    const sessionBefore =
+    const resolveSessionBefore = async (tx: Pick<Db, "select">) =>
       explicitResumeSession?.sessionDisplayId ??
-      (await resolveSessionBeforeForWakeup(agent, effectiveTaskKey));
+      resolveSessionBeforeForWakeup(agent, effectiveTaskKey, tx);
     let hasResolvablePriorSessionWorkspace: boolean | null = null;
     const resolveHasResolvablePriorSessionWorkspace = async () => {
       if (hasResolvablePriorSessionWorkspace !== null)
@@ -3349,48 +3346,41 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
     let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
-    let queuedResponsibleUserIdPromise: Promise<string> | null = null;
-    const resolveQueuedResponsibleUserId = () => {
-      if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
-      queuedResponsibleUserIdPromise ??= (async () => {
-        const queuedIssueContext = issueId
-          ? await getIssueExecutionContext(agent.companyId, issueId)
-          : null;
-        const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
-          agent.companyId,
-          queuedIssueContext,
-        );
-        const queuedResponsibleUserId =
-          await resolveResponsibleUserIdForRunSeed({
+    const resolveQueuedResponsibleUserId = async (issueContext: IssueAttributionSnapshot | null) => {
+      if (operatorResponsibleUserId) return operatorResponsibleUserId;
+      const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
+        agent.companyId,
+        issueContext,
+      );
+      const queuedResponsibleUserId =
+        await resolveResponsibleUserIdForRunSeed({
+          companyId: agent.companyId,
+          contextSnapshot: enrichedContextSnapshot,
+          issueContext,
+          routineEnvContext: queuedRoutineEnvContext,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          source,
+          triggerDetail,
+        });
+      if (!queuedResponsibleUserId) {
+        throw new HttpError(
+          422,
+          "Unable to resolve responsible user for heartbeat run dispatch",
+          {
+            code: "responsible_user_unresolved",
+            agentId,
             companyId: agent.companyId,
-            contextSnapshot: enrichedContextSnapshot,
-            issueContext: queuedIssueContext,
-            routineEnvContext: queuedRoutineEnvContext,
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            issueId: issueId ?? null,
             source,
             triggerDetail,
-          });
-        if (!queuedResponsibleUserId) {
-          throw new HttpError(
-            422,
-            "Unable to resolve responsible user for heartbeat run dispatch",
-            {
-              code: "responsible_user_unresolved",
-              agentId,
-              companyId: agent.companyId,
-              issueId: issueId ?? null,
-              source,
-              triggerDetail,
-              wakeReason: readNonEmptyString(
-                enrichedContextSnapshot.wakeReason,
-              ),
-            },
-          );
-        }
-        return queuedResponsibleUserId;
-      })();
-      return queuedResponsibleUserIdPromise;
+            wakeReason: readNonEmptyString(
+              enrichedContextSnapshot.wakeReason,
+            ),
+          },
+        );
+      }
+      return queuedResponsibleUserId;
     };
 
     const budgetBlock = await budgets.getInvocationBlock(
@@ -3519,21 +3509,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     if (issueId) {
-      // Mention-triggered wakes can request input from another agent, but they must
-      // still respect the issue execution lock so a second agent cannot start on the
-      // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
       const issueActivityPublications: ActivityPublication[] = [];
       const issuePostCommitActions: IssuePostCommitAction[] = [];
 
-      const outcome = await db
-        .transaction(withDurableChatAdmission(durableRequest, async (tx) => {
-          await tx.execute(
-            sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
-          );
-
+      return wakeQueue.admitIssueWake(
+        { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
+        async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
@@ -3786,37 +3770,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
-          const issue = await tx
-            .select({
-              id: issues.id,
-              companyId: issues.companyId,
-              identifier: issues.identifier,
-              conversationAgentId: issues.conversationAgentId,
-              conversationUserId: issues.conversationUserId,
-              conversationState: issues.conversationState,
-              status: issues.status,
-              statusVersion: issues.statusVersion,
-              projectId: issues.projectId,
-              projectWorkspaceId: issues.projectWorkspaceId,
-              executionWorkspaceId: issues.executionWorkspaceId,
-              executionWorkspacePreference: issues.executionWorkspacePreference,
-              executionWorkspaceSettings: issues.executionWorkspaceSettings,
-              assigneeAgentId: issues.assigneeAgentId,
-              assigneeUserId: issues.assigneeUserId,
-              monitorNextCheckAt: issues.monitorNextCheckAt,
-              monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
-              executionRunId: issues.executionRunId,
-              executionAgentNameKey: issues.executionAgentNameKey,
-              createdAt: issues.createdAt,
-            })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.id, issueId),
-                eq(issues.companyId, agent.companyId),
-              ),
-            )
-            .then((rows) => rows[0] ?? null);
+          // Durable chat authorization can write through this transaction. A missing
+          // row has no lock, so the later read can also see a newly inserted issue.
+          const issue = durableRequest || !lockedIssue ? await lockIssue() : lockedIssue;
 
           if (!issue) {
             if (caseRequest) throw conflict("Case handoff task no longer exists");
@@ -3911,6 +3867,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           let reconciledSourceRunId: string | null = null;
+          let reconciledRecoveryActionId: string | null = null;
           let reconciledRestoreRetryCount: number | null = null;
           if (executionReconciliationWake) {
             const actionId = readNonEmptyString(
@@ -4053,81 +4010,47 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               reconciledRestoreRetryCount = executionFailureRetryCount(reconciledRun!);
             }
             reconciledSourceRunId = sourceRunId;
+            if (enrichedContextSnapshot.recoveryActionId === action.id) reconciledRecoveryActionId = action.id;
           }
 
           let continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-          let continuationBlocked = false;
           const deferBlockedExecution = async (
             executionBlocker: Pick<NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, "recoveryActionId" | "cause" | "nextAction">,
           ) => {
             if (caseRequest) waitForCaseAdmission("execution_reconciliation_required", executionBlocker.nextAction);
             opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
-            const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
-            if (executionWaitRequestId) {
-              await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                requestId: executionWaitRequestId }, condition, { replace: true, publications: issueActivityPublications });
-              return { kind: "deferred" as const, admitted: true };
-            }
-            if (durableRequest || wakeCommentId ||
-                hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-                readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
-              await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
-              await tx.insert(agentWakeupRequests).values({
-                ...durableReceiptFields,
-                companyId: agent.companyId, agentId, source, triggerDetail, reason,
-                payload: withQueuedCommentIdsInWakePayload({
-                  ...payload,
-                  issueId: issue.id,
-                  [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-                  executionWait: condition,
-                }, [...new Set([
-                  ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
-                  ...(wakeCommentId ? [wakeCommentId] : []),
-                ])]),
-                status: "deferred_issue_execution",
+            return recovery.defer({
+              existingRequestId: executionWaitRequestId,
+              commentId: wakeCommentId,
+              contextSnapshot: enrichedContextSnapshot,
+              condition: { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait },
+              nextAction: executionBlocker.nextAction,
+              coalesce: coalesceExecutionWait,
+              publications: issueActivityPublications,
+              request: {
+                ...durableReceiptFields, agentId, source, triggerDetail, reason, payload,
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
-              });
-            } else {
-              await recordExecutionWait(tx as unknown as Db, {
-                issueId: issue.id, condition, coalesce: coalesceExecutionWait,
-                request: {
-                  ...durableReceiptFields,
-                  companyId: agent.companyId, agentId, source, triggerDetail,
-                  reason: "execution_reconciliation_required",
-                  error: executionBlocker.nextAction,
-                  payload,
-                  requestedByActorType: opts.requestedByActorType ?? null,
-                  requestedByActorId: opts.requestedByActorId ?? null,
-                  idempotencyKey: opts.idempotencyKey ?? null,
-                },
-              });
-            }
-            return { kind: "deferred" as const, admitted: true };
+              },
+            });
           };
           const explicitContinuationRunId = randomUUID();
-          const [resetComment] = isConversation(issue) && opts.requestedByActorType === "user" && opts.requestedByActorId && wakeCommentId
-            ? await tx.select({ body: issueComments.body }).from(issueComments).where(and(
-                eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
-                eq(issueComments.id, wakeCommentId), eq(issueComments.authorUserId, opts.requestedByActorId),
-                eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
-              )).limit(1)
-            : [];
-          const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
-          if (wakeCommentId && opts.requestedByActorType === "user")
-            await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
-          const executionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
-            { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
-          );
-          // Prove eligibility without retiring the hold. Later gates can still
-          // decline this wake; hold retirement and successor creation stay atomic.
-          // A bound chat request has already rechecked its current principal
-          // above. Treat its new user message like a board comment, but keep
-          // failed-run retry actions on their separate exact-request path.
-          const ownsReconstructionContinuation = reconciledSourceRunId && executionBlocker?.runId === reconciledSourceRunId
-            && executionBlocker.recoveryActionId === enrichedContextSnapshot.recoveryActionId;
+          const recovery = await prepareRecovery({
+            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
+            requestedByActorType: opts.requestedByActorType, requestedByActorId: opts.requestedByActorId,
+            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
+            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            queuedCommentInterruptId: opts.queuedCommentInterruptId,
+            queuedCommentRequestId: opts.queuedCommentRequestId,
+            taskRetryRequestId: opts.taskRetryRequestId,
+            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
+            interactionPayload: payload,
+            reconciliation: reconciledSourceRunId && reconciledRecoveryActionId ? {
+              sourceRunId: reconciledSourceRunId, actionId: reconciledRecoveryActionId,
+            } : undefined,
+          });
+          const { blocker: executionBlocker, ownsReconstruction: ownsReconstructionContinuation } = recovery;
           const continuationHold = () => executionBlocker ?? {
             recoveryActionId: null, cause: "native_continuation_requires_reconciliation" as const, nextAction: continuationWait.message,
           };
@@ -4154,19 +4077,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             ? await undeliveredContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id }) : null;
           if (continuationToDeliver)
             Object.assign(enrichedContextSnapshot, undeliveredContinuationContext(continuationToDeliver, enrichedContextSnapshot));
-          if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
-            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
-            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
-            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
-            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
-            queuedCommentInterruptId: opts.queuedCommentInterruptId,
-            queuedCommentRequestId: opts.queuedCommentRequestId,
-            taskRetryRequestId: opts.taskRetryRequestId,
-            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
-            interactionPayload: payload,
-            dryRun: true,
-            onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) {
+          const busyRecovery = await recovery.checkBusyAdmission();
+          if (busyRecovery.wait) continuationWait = busyRecovery.wait;
+          if (busyRecovery.kind === "blocked") {
             // A hold left by an unfinished run never refuses an ordinary
             // continuation: unless its cause is the person's, the fallback
             // settles it in this transaction and this wake becomes the fresh
@@ -4334,6 +4247,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(eq(heartbeatRuns.id, issue.executionRunId))
                 .then((rows) => rows[0] ?? null)
             : null;
+          let activeExecutionAgentNameKey = issue.executionAgentNameKey;
           const manualExecutionHold = activeExecutionRun && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
             { companyId: issue.companyId, runId: activeExecutionRun.id, issueId: issue.id });
 
@@ -4463,16 +4377,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 const legacyAgent = await tx
                   .select({ name: agents.name })
                   .from(agents)
-                  .where(eq(agents.id, legacyRun.agentId))
+                  .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, legacyRun.agentId)))
                   .then((rows) => rows[0] ?? null);
+                activeExecutionAgentNameKey = normalizeAgentNameKey(legacyAgent?.name);
                 await notifyStatusCardIssueChange(tx, issue.companyId);
                 await tx
                   .update(issues)
                   .set({
                     executionRunId: legacyRun.id,
-                    executionAgentNameKey: normalizeAgentNameKey(
-                      legacyAgent?.name,
-                    ),
+                    executionAgentNameKey: activeExecutionAgentNameKey,
                     executionLockedAt: new Date(),
                     updatedAt: new Date(),
                   })
@@ -4663,17 +4576,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 const blocked = await issuesSvc.updateForCompany(issue.id, issue.companyId,
                   { status: "blocked", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
                 if (!blocked) throw conflict("The task changed before its workspace settings could be checked");
-              } else await tx
-                .update(issues)
-                .set({
-                  status: "blocked",
-                  checkoutRunId: null,
-                  executionRunId: null,
-                  executionAgentNameKey: null,
-                  executionLockedAt: null,
-                  updatedAt: now,
-                })
-                .where(eq(issues.id, issue.id));
+              } else {
+                const [blocked] = await tx
+                  .update(issues)
+                  .set({
+                    status: "blocked",
+                    checkoutRunId: null,
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                    updatedAt: now,
+                  })
+                  .where(eq(issues.id, issue.id))
+                  .returning();
+                if (blocked) await emitSystemTaskBlockedAfterCommit(tx, blocked, issue.status);
+              }
               await insertIssueComment(tx, {
                 companyId: issue.companyId,
                 issueId: issue.id,
@@ -4724,7 +4641,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   resolvedStrategy,
                   hasResolvablePriorSessionWorkspace,
                 },
-              });
+              }, issueActivityPublications);
               return { kind: "skipped" as const };
             }
           }
@@ -4796,46 +4713,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               return { kind: "coalesced" as const, run: activeExecutionRun };
             }
 
-            const admissionScope = wakeQueue.createAdmissionTransactionScope(
-              agent.companyId,
-              tx as unknown as Db,
-            );
-            const admission = await wakeQueue.admitWakeBehindIssueExecution(
-              admissionScope,
-              {
-                companyId: agent.companyId,
-                issueId: issue.id,
-                agentId,
-                agentNameKey,
-                issueExecutionAgentNameKey: issue.executionAgentNameKey,
-                activeExecutionRun: {
-                  id: activeExecutionRun.id,
-                  agentId: activeExecutionRun.agentId,
-                  status: activeExecutionRun.status,
-                  contextSnapshot: activeExecutionRun.contextSnapshot,
-                  wakeupRequestId: activeExecutionRun.wakeupRequestId,
-                },
-                allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
-                durableReceipt: receiptRequest
-                  ? {
-                      id: receiptRequest.id,
-                      requestedAt: receiptRequest.requestedAt,
-                    }
-                  : undefined,
-                reason,
-                liveRunExecutions,
-                wakeCommentId,
-                forceFreshSession:
-                  enrichedContextSnapshot.forceFreshSession === true,
-                contextSnapshot: enrichedContextSnapshot,
-                source,
-                triggerDetail,
-                payload,
-                requestedByActorType: opts.requestedByActorType ?? null,
-                requestedByActorId: opts.requestedByActorId ?? null,
-                idempotencyKey: opts.idempotencyKey ?? null,
+            const admission = await busyRecovery.admitBusy({
+              companyId: agent.companyId,
+              issueId: issue.id,
+              agentId,
+              agentNameKey,
+              issueExecutionAgentNameKey: activeExecutionAgentNameKey,
+              activeExecutionRun: {
+                id: activeExecutionRun.id,
+                agentId: activeExecutionRun.agentId,
+                status: activeExecutionRun.status,
+                contextSnapshot: activeExecutionRun.contextSnapshot,
+                wakeupRequestId: activeExecutionRun.wakeupRequestId,
               },
-            );
+              allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
+              durableReceipt: receiptRequest
+                ? {
+                    id: receiptRequest.id,
+                    requestedAt: receiptRequest.requestedAt,
+                  }
+                : undefined,
+              reason,
+              liveRunExecutions,
+              wakeCommentId,
+              forceFreshSession:
+                enrichedContextSnapshot.forceFreshSession === true,
+              contextSnapshot: enrichedContextSnapshot,
+              source,
+              triggerDetail,
+              payload,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            });
 
             if (admission.kind === "coalesced") {
               return {
@@ -5038,20 +4948,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
-          const explicitContinuation = await admitExplicitNativeContinuation({
-            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
-            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
-            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
-            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
-            queuedCommentInterruptId: opts.queuedCommentInterruptId,
-            queuedCommentRequestId: opts.queuedCommentRequestId,
-            taskRetryRequestId: opts.taskRetryRequestId,
-            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
-            interactionPayload: payload,
-            onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          });
-          if (!explicitContinuation && (executionBlocker || (continuationBlocked && !verifiedConversationReset)) && !ownsReconstructionContinuation)
-            return deferBlockedExecution(continuationHold());
+          const freshRecovery = await busyRecovery.checkFreshAdmission();
+          if (freshRecovery.wait) continuationWait = freshRecovery.wait;
+          if (freshRecovery.kind === "blocked") return deferBlockedExecution(continuationHold());
+          const { explicitContinuation } = freshRecovery;
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
@@ -5069,252 +4969,87 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }, issueActivityPublications);
           }
 
-          const wakeupValues = {
-            ...durableReceiptFields,
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason,
-            payload,
-            status: "queued" as const,
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          };
-          // A deferred durable chat wake already owns this ID and source.
-          // Promote that receipt in the same transaction as its successor.
-          const wakeupRequest = durableRequest && executionWaitRequestId === durableRequest.id
-            ? await tx.update(agentWakeupRequests).set({
-                payload, status: "queued", error: null, finishedAt: null, updatedAt: new Date(),
-              }).where(and(eq(agentWakeupRequests.id, durableRequest.id),
-                eq(agentWakeupRequests.companyId, agent.companyId),
-                eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)))
-                .returning().then(rows => rows[0])
-            : await tx.insert(agentWakeupRequests).values(wakeupValues).returning().then(rows => rows[0]);
-          if (!wakeupRequest) return { kind: "deferred" as const };
-
-          // A handoff changes the executor, not the owner of saved user input.
-          // Validate its exact stopped source while the issue row is locked;
-          // unrelated agents and dedicated continuations keep their own wakes.
-          const interruptedRunId = readNonEmptyString(enrichedContextSnapshot.interruptedRunId);
-          const handoffSource = source === "assignment" && reason === "issue_assigned" &&
-            issue.assigneeAgentId === agentId && interruptedRunId && isUuidLike(interruptedRunId)
-              ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
-                  eq(heartbeatRuns.id, interruptedRunId), eq(heartbeatRuns.companyId, issue.companyId),
-                  eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
-                  ne(heartbeatRuns.agentId, agentId),
-                  sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
-                  or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
-                )).then(rows => rows[0] ?? null)
-              : null;
-          // External input owns an exact authorized source batch. Board input
-          // must retain its separate receipt, including during normal resume.
-          const canCoalesceComments = !durableRequest && !isConversation(issue) && opts.allowRunCoalescing !== false;
-          // A resumed receipt already passed admission under this issue lock.
-          // Consume it with its successor even when chat keeps other messages
-          // in separate turns, or finalization will deliver it a second time.
-          const pendingComments =
-            (executionWaitRequestId || canCoalesceComments) &&
-            (ownsReconstructionContinuation || !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id)))
-              ? await tx
-                  .select()
-                  .from(agentWakeupRequests)
-                  .where(
-                    and(
-                      eq(agentWakeupRequests.companyId, issue.companyId),
-                      inArray(agentWakeupRequests.agentId, handoffSource ? [agentId, handoffSource.agentId] : [agentId]),
-                      eq(agentWakeupRequests.status, "deferred_issue_execution"),
-                      sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
-                      // Chat Retry already pins its complete authorized source
-                      // batch. Keep separate board input for its own admission.
-                      canCoalesceComments || (opts.taskRetryRequestId && !failedChatRetry)
-                        ? undefined : eq(agentWakeupRequests.id, executionWaitRequestId!),
-                    ),
-                  )
-                  .orderBy(asc(agentWakeupRequests.requestedAt))
-              : [];
-          const adoptedComments = pendingComments.filter((wake) => {
-            if (wake.id === executionWaitRequestId) return true;
-            if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
-            const deferredPayload = parseObject(wake.payload);
-            const deferredContext = parseObject(
-              deferredPayload[DEFERRED_WAKE_CONTEXT_KEY],
-            );
-            // Dedicated interaction wakes carry their own source and session
-            // contract. ID-only adoption must not erase that continuation.
-            return (
-              // Durable chat work must keep its receipt, actor, source, and
-              // session contract through normal promotion and authorization.
-              !wake.idempotencyKey?.startsWith("chat-inbound:") &&
-              !isInteractionResolutionWakePayload(deferredPayload) &&
-              !hasInteractionContinuationWakeContext(deferredContext) &&
-              ["issue_commented", "issue_reopened_via_comment"].includes(String(deferredContext.wakeReason ?? wake.reason)) &&
-              queuedCommentIdsFromWakePayload(wake.payload).length > 0
-            );
-          });
-          let adoptedCommentIds = [
-            ...new Set([
-              ...adoptedComments.flatMap((wake) =>
-                queuedCommentIdsFromWakePayload(wake.payload),
-              ),
-              ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
-            ]),
-          ];
-          if (opts.queuedCommentRequestId || (opts.taskRetryRequestId && !failedChatRetry) || handoffSource) {
-            adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
-              agent.companyId, issueId, agentId, adoptedCommentIds);
-          }
-          await notifyChatRunMilestones(tx, { companyId: agent.companyId, issueId: issueId ?? undefined });
-          const newRun = await tx
-            .insert(heartbeatRuns)
-            .values({
-              ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
-              companyId: agent.companyId,
+          const newRun = await freshRecovery.admitFresh({
+            receipt: {
               agentId,
-            scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
-            issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
-              invocationSource: source,
+              source,
               triggerDetail,
-              status: "queued",
-              responsibleUserId: await resolveQueuedResponsibleUserId(),
-              wakeupRequestId: wakeupRequest.id,
-              retryOfRunId: failedChatRetry
-                ? durableRequest!.failedRunRetry!.failedRunId
-                : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                    adoptedComments.map((wake) => wake.id),
-                  )
-                : enrichedContextSnapshot,
-              sessionIdBefore: explicitContinuation ? null : sessionBefore,
-              continuationAttempt,
-              ...(reconciledSourceRunId
-                ? { retryOfRunId: reconciledSourceRunId }
-                : {}),
-              ...(reconciledRestoreRetryCount !== null ? {
-                scheduledRetryAttempt: reconciledRestoreRetryCount,
-                scheduledRetryReason: "transient_failure",
-              } : {}),
-            })
-            .returning()
-            .then((rows) => rows[0]);
-
-          if (ownsReconstructionContinuation) {
-            await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
-              continuationDelivery: "delivered", continuationRunId: newRun.id,
-            })}::jsonb` }).where(and(eq(issueRecoveryActions.companyId, issue.companyId),
-              eq(issueRecoveryActions.id, String(enrichedContextSnapshot.recoveryActionId)),
-              sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
-          }
-          if (continuationToDeliver)
-            await deliverContinuationAsRun(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, runId: newRun.id,
-              continuation: continuationToDeliver });
-          else if (reconciledSourceRunId)
-            await foldWaitingRetriesIntoRecordedContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
-              runId: newRun.id, recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId), sourceRunId: reconciledSourceRunId });
-
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              runId: newRun.id,
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-
-          if (failedChatRetry && opts.taskRetryRequestId) {
-            await tx.update(agentWakeupRequests).set({
-              status: "coalesced", runId: newRun.id, finishedAt: new Date(), updatedAt: new Date(),
-            }).where(and(eq(agentWakeupRequests.companyId, issue.companyId),
-              eq(agentWakeupRequests.id, opts.taskRetryRequestId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution")));
-          }
-
-          if (adoptedComments.length) {
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                status: "coalesced",
-                runId: newRun.id,
-                finishedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(
-                inArray(
-                  agentWakeupRequests.id,
-                  adoptedComments.map((wake) => wake.id),
-                ),
-              );
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                payload: withQueuedCommentIdsInWakePayload(payload, adoptedCommentIds),
-              })
-              .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-          }
+              reason,
+              payload,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            },
+            issue: { id: issue.id, assigneeAgentId: issue.assigneeAgentId, isConversation: isConversation(issue) },
+            durableReceipt: receiptRequest,
+            durableChatReceiptId: durableRequest?.id,
+            allowRunCoalescing: opts.allowRunCoalescing,
+            executionWaitRequestId,
+            queuedCommentInterruptId: opts.queuedCommentInterruptId,
+            queuedCommentRequestId: opts.queuedCommentRequestId,
+            boardRetryReceiptId: failedChatRetry ? undefined : opts.taskRetryRequestId,
+            failedChatRetryReceiptId: failedChatRetry ? opts.taskRetryRequestId : undefined,
+            ownsReconstructionContinuation: Boolean(ownsReconstructionContinuation),
+            explicitContinuationRunId: explicitContinuation ? explicitContinuationRunId : null,
+            retryOfRunId: failedChatRetry
+              ? durableRequest!.failedRunRetry!.failedRunId
+              : opts.failedRunId ?? automaticParentRunId,
+            contextSnapshot: enrichedContextSnapshot,
+            resolveSessionIdBefore: () => resolveSessionBefore(tx),
+            continuationAttempt,
+            reconciledSourceRunId,
+            reconciledRestoreRetryCount,
+            resolveResponsibleUserId: () => resolveQueuedResponsibleUserId(issue),
+            async recordContinuationDelivery(runId) {
+              if (ownsReconstructionContinuation) {
+                await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+                  continuationDelivery: "delivered", continuationRunId: runId,
+                })}::jsonb` }).where(and(eq(issueRecoveryActions.companyId, issue.companyId),
+                  eq(issueRecoveryActions.id, String(enrichedContextSnapshot.recoveryActionId)),
+                  sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
+              }
+              if (continuationToDeliver)
+                await deliverContinuationAsRun(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+                  runId, continuation: continuationToDeliver });
+              else if (reconciledSourceRunId)
+                await foldWaitingRetriesIntoRecordedContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+                  runId, recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId), sourceRunId: reconciledSourceRunId });
+            },
+          });
+          if (!newRun) return { kind: "deferred" as const };
 
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but
           // doesn't start it). It will be stamped in claimQueuedRun() once the run
           // transitions to "running" — Fix A (lazy locking).
 
           return { kind: "queued" as const, run: newRun };
-        }))
-        .catch((error) => {
-          if (isExternalChatWaitAuthorizationContention(error))
-            return { kind: "deferred" as const };
-          throw error;
-        });
-
-      // The admission has committed. What follows is dispatch of saved rows.
-      if (outcome.kind !== "deferred" && outcome.kind !== "skipped") admission?.saved();
-      for (const publication of issueActivityPublications) publishActivity(publication);
-      await executeIssuePostCommitActions(db, issuePostCommitActions);
-
-      // Telemetry for the cancelled runs is best-effort background work.
-      // Fire it here and never await it: none of the lifecycle work below,
-      // nor this function's return, depends on it, so a slow telemetry
-      // lookup must not delay them.
-      for (const cancelledRun of cancelledRunsToEmit) {
-        void emitAgentTaskRun(db, cancelledRun);
-      }
-
-      if (outcome.kind === "durable") {
-        return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
-      }
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
-        return null;
-      }
-      if (outcome.kind === "coalesced") {
-        await attachQueuedSetupRequest(agent);
-        await startNextQueuedRunForAgent(agent.id);
-        return outcome.run;
-      }
-      if (outcome.kind === "replayed") {
-        if (outcome.run.status === "queued") {
-          await attachQueuedSetupRequest(agent);
-          await startNextQueuedRunForAgent(agent.id);
-        }
-        return outcome.run;
-      }
-
-      const newRun = outcome.run;
-      publishLiveEvent({
-        companyId: newRun.companyId,
-        type: "heartbeat.run.queued",
-        payload: {
-          runId: newRun.id,
-          agentId: newRun.agentId,
-          invocationSource: newRun.invocationSource,
-          triggerDetail: newRun.triggerDetail,
-          wakeupRequestId: newRun.wakeupRequestId,
         },
-      });
-
-      await attachQueuedSetupRequest(agent);
-      await startNextQueuedRunForAgent(agent.id);
-      return newRun;
+        {
+          saved: () => admission?.saved(),
+          publishIssueActivity() {
+            for (const publication of issueActivityPublications) publishActivity(publication);
+          },
+          executeIssueActions: () => executeIssuePostCommitActions(db, issuePostCommitActions),
+          cancelledRuns: cancelledRunsToEmit,
+          emitCancelledRun: (run) => emitAgentTaskRun(db, run),
+          readRun: getRun,
+          publishQueuedRun(run) {
+            publishLiveEvent({
+              companyId: run.companyId,
+              type: "heartbeat.run.queued",
+              payload: {
+                runId: run.id,
+                agentId: run.agentId,
+                invocationSource: run.invocationSource,
+                triggerDetail: run.triggerDetail,
+                wakeupRequestId: run.wakeupRequestId,
+              },
+            });
+          },
+          attachSetupRequest: () => attachQueuedSetupRequest(agent),
+          dispatch: () => startNextQueuedRunForAgent(agent.id),
+        },
+      );
     }
 
     if (durableRequest) throw new Error("chat_inbound_wakeup_binding_denied");
@@ -5492,10 +5227,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: await resolveQueuedResponsibleUserId(),
+          responsibleUserId: await resolveQueuedResponsibleUserId(null),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
-          sessionIdBefore: sessionBefore,
+          sessionIdBefore: await resolveSessionBefore(tx),
           continuationAttempt,
         })
         .returning()
