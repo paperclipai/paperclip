@@ -15239,6 +15239,45 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("sends a deployment OAuth client for a gallery app only to the token endpoint its definition pins", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-deployment-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-deployment-secret");
+    const company = await createCompany(db);
+    const userId = `deployment-client-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use", "tools:manage_connections"]);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Deployment client" },
+      { actorType: "user", actorId: userId });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("slack-deployment-id");
+    const tokenRequests: Array<{ url: string; clientId: string | null; clientSecret: string | null }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = new URLSearchParams(String(init?.body ?? ""));
+        tokenRequests.push({ url: href, clientId: body.get("client_id"), clientSecret: body.get("client_secret") });
+        return { ok: true, status: 200, json: async () => ({ access_token: "deployment-access", refresh_token: "deployment-refresh", expires_in: 3600 }) } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        const payload = JSON.parse(String(init?.body ?? "{}")) as { id?: string; method?: string };
+        if (payload.method === "tools/list") return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: { tools: [] } });
+        return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: {
+          protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "Slack test", version: "1.0.0" } } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!,
+      code: "deployment-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+    expect(tokenRequests).toEqual([{ url: "https://slack.com/api/oauth.v2.access", clientId: "slack-deployment-id", clientSecret: "slack-deployment-secret" }]);
+  });
+
   it("never sends a deployment OAuth client to a machine-to-machine token endpoint of a custom server", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_ID", "m2m-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_SECRET", "m2m-client-secret");

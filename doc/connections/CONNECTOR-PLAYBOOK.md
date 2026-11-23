@@ -2182,7 +2182,12 @@ registers a client on the fly and stores it on the connection:
   the method has none, to a token endpoint on the exact host of its fixed
   `serverUrl`, `discoveryUrl`, `metadataUrl` or `authorizationEndpoint`. Set
   `defaults.tokenEndpoint` when the vendor's token endpoint is on another host.
-  The method must list `customer` ownership. List both
+  The method must list `customer` ownership. Box, Notion, PostHog, Sentry and
+  Xero rely on the same-host rule today: if their discovery returns a token
+  endpoint on another host, a deployment-wide client is refused until the
+  endpoint is pinned, and a client added to the connection always works.
+  `client-settings.test.ts` fails when a new customer method neither pins its
+  token endpoint nor joins that named list. List both
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 

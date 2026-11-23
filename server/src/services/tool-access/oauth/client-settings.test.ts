@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { toolConnections } from "@paperclipai/db";
+import { APP_DEFINITIONS } from "@paperclipai/shared";
 import { configuredOAuthClientForConnection } from "./client-settings.js";
 
 type Connection = typeof toolConnections.$inferSelect;
@@ -135,5 +136,15 @@ describe("instance OAuth clients", () => {
 
     expect(configuredOAuthClientForConnection(pinned, slug, tokenUrl).clientId).toBe("instance-id");
     expect(configuredOAuthClientForConnection(pinned, slug, "https://attacker.example/token").clientId).toBeNull();
+  });
+
+  it("makes every customer OAuth method pin its token endpoint or name its same-host fallback", () => {
+    const sameHostFallback = new Set(["box:mcp-own-oauth", "notion:mcp-oauth", "posthog:mcp-oauth", "sentry:mcp-oauth", "xero:mcp-own-oauth"]);
+    const noFixedEndpoint = new Set(["oauth-generic:oauth"]);
+    const unpinned = APP_DEFINITIONS.flatMap((app) => app.methods
+      .filter((method) => method.auth === "oauth" && !method.oauthStrategy && method.ownershipModes.includes("customer")
+        && method.purpose !== "ai" && method.transport !== "runtime_auth" && !method.defaults?.tokenEndpoint)
+      .map((method) => `${app.slug}:${method.key}`));
+    expect(unpinned.sort()).toEqual([...sameHostFallback, ...noFixedEndpoint].sort());
   });
 });
