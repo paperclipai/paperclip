@@ -620,6 +620,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     const activeConnections = (connectionsQuery.data?.connections ?? []).filter(
       (connection) =>
         connection.status !== "archived" &&
+        !connection.firstSignInPending &&
         connection.connectionPurpose !== "channel",
     );
     const activeApplications = (

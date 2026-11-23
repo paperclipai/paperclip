@@ -1581,6 +1581,19 @@ describe("Connectors landing page", () => {
     expect(notion.textContent).toContain("draft@example.com");
   });
 
+  it("does not list a connection whose first sign-in never finished", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection(), connection({ id: "conn-cancelled", name: "cancelled@example.com", status: "draft", firstSignInPending: true })],
+    });
+    await renderBrowse();
+    const notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("devinfoley@gmail.com");
+    expect(notion.textContent).not.toContain("cancelled@example.com");
+    expect(notion.textContent).not.toContain("needs attention");
+    expect(notion.textContent).not.toContain("2 connections");
+  });
+
   it.each(["provider_setup", "identity_link", undefined, "complete"])(
     "keeps unfinished verifying chat setup visible for step %s", async (step) => {
       chatListMock.mockResolvedValue([

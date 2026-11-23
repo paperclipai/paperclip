@@ -12879,6 +12879,15 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
   method: "post",
+  path: "/api/tool-connections/{connectionId}/sign-in/cancel",
+  tags: ["tool-access"],
+  summary: "Remove a connection whose first sign-in was cancelled; a connection that ever signed in is left unchanged",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
   path: "/api/tool-connections/{connectionId}/health-check",
   tags: ["tool-access"],
   summary: "Run a tool connection health check",

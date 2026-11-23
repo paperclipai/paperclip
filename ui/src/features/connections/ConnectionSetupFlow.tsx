@@ -891,6 +891,25 @@ function StandardConnectionSetupFlow({
     oauthPopupRef.current = null;
     return true;
   }, []);
+  const firstSignInDraftRef = useRef<string | null>(null);
+  const trackFirstSignInDraft = useCallback((connection: Pick<ToolConnection, "id" | "status">) => {
+    firstSignInDraftRef.current = connection.status === "draft" && !resumeConnectionId && !reconnectConnectionId && !connectionIntentId
+      ? connection.id
+      : null;
+  }, [connectionIntentId, reconnectConnectionId, resumeConnectionId]);
+  const cancelFirstSignInDraft = useCallback(() => {
+    const connectionId = firstSignInDraftRef.current;
+    firstSignInDraftRef.current = null;
+    if (!connectionId || !selectedCompanyId) return;
+    setConnectResult((current) => current?.connectionId === connectionId ? null : current);
+    void toolsApi.cancelFirstSignIn(connectionId).then(
+      () => Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId) }),
+      ]),
+      () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) }),
+    );
+  }, [queryClient, selectedCompanyId]);
   useEffect(() => {
     if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
       cancelOAuthLookup();
@@ -1516,6 +1535,7 @@ function StandardConnectionSetupFlow({
   });
   const mutateOAuthStart = oauthStartMutation.mutate;
   const startOAuth = useCallback((connection: ToolConnection) => {
+    trackFirstSignInDraft(connection);
     if (connection.config?.sourceTemplateKey === "google-workspace" && !workspaceSelectionRef.current) {
       setWorkspaceConnection(connection);
       setWorkspaceConsent(() => () => {
@@ -1530,7 +1550,7 @@ function StandardConnectionSetupFlow({
     reserveOAuthPopup();
     if (!connectionIntentId) setDialogOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
-  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
+  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId, trackFirstSignInDraft]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -1691,6 +1711,7 @@ function StandardConnectionSetupFlow({
         setGenericOAuthPending(!entry);
         const startUrl = result.auth.startUrl?.trim();
         if (startUrl && !connectionIntentId) {
+          trackFirstSignInDraft(result.connection);
           setDialogOAuthConnectionId(result.connectionId);
           void prepareAndOpenOAuth({ authorizationUrl: startUrl, handoff: result.auth.handoff });
         } else startOAuth(result.connection);
@@ -2561,6 +2582,7 @@ function StandardConnectionSetupFlow({
         onCancel={() => {
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          cancelFirstSignInDraft();
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -2607,6 +2629,7 @@ function StandardConnectionSetupFlow({
         onCancel={() => {
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          cancelFirstSignInDraft();
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
