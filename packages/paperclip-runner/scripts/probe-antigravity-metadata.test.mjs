@@ -27,7 +27,7 @@ async function fixture(t, behavior = "success", { platform = "darwin", architect
   const admissionSource = "# trusted test admission source\n";
   const admissionSourceSha256 = hash(admissionSource);
   await writeFile(join(scripts, "patch-antigravity-runtime.admission.py"), admissionSource);
-  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.1'; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
+  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.2'; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
   const auditPath = join(root, "audit.json");
   const script = `#!${process.execPath}
 const { writeFileSync } = require('node:fs');
@@ -69,7 +69,7 @@ process.stdin.on('end',()=>{if(behavior!=='ignore-stop')process.exit(0)});
   ];
   const entries = nativeFiles.map(file => ({ path: file.path, sha256: hash(file.content), size: file.content.length, executable: true }));
   const closureSha256 = hash(JSON.stringify(entries));
-  const item = { url: "https://dl.google.com/agy-extensions/releases/macos/fixture.zip", archiveSha256: "a".repeat(64), closureSha256, vendorClosureSha256: closureSha256, vendorEntries: entries, patchVersion: "1.5.2-paperclip.1", admissionSourceSha256, provisioning: "verified-closure", executable: "agy_acp_server.par", args, entries };
+  const item = { url: "https://dl.google.com/agy-extensions/releases/macos/fixture.zip", archiveSha256: "a".repeat(64), closureSha256, vendorClosureSha256: closureSha256, vendorEntries: entries, patchVersion: "1.5.2-paperclip.2", admissionSourceSha256, provisioning: "verified-closure", executable: "agy_acp_server.par", args, entries };
   await writeFile(join(root, "antigravity-distributions.json"), JSON.stringify({ schema: "paperclip.antigravity_distribution.v1", version: "1.5.2", platforms: { [target]: item } }));
   const home = join(root, "operator-home");
   const runtime = join(home, ".paperclip/runtimes/antigravity", target, closureSha256);

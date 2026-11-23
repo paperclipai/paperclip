@@ -1705,10 +1705,8 @@ turn terminal. A stale Allow must return 409 in both cases.
 
 Instructions and assigned skills use the shared `native-completion` cells; the
 Antigravity profile there is opt-in (`--profile runner-acpx-antigravity`).
-Normal setup through the picker is covered by the attended journey. Permission
-denial is not yet covered: the existing denial oracles depend on Cursor and
-Copilot notices. Native questions, plans, steering, agent files and accounting
-are not claimed.
+Normal setup through the picker is covered by the attended journey. Native
+questions, plans, steering, agent files and accounting are not claimed.
 
 ```sh
 pnpm test:e2e:runner -- --list --suite antigravity-qualification
@@ -1718,13 +1716,15 @@ pnpm test:e2e:runner -- --suite antigravity-qualification --environment daytona 
 
 ### Google Antigravity model lineups
 
-`antigravity-model-lineup` (25 cells) and `antigravity-model-lineup-gemini4`
-(16 cells) are local, explicit-only suites with one cell per exact model ID,
-case `model-receipt`. Model IDs are `<family>-<level>`. The API-key lineup is
-Flash 3.5 to 3.8 and 3.1 Pro at `minimal`, `low`, `medium`, `high` and
-`extra_high`. The Gemini 4 lineup is Neon, Carbon, Argon and Hydrogen at `low`
-to `extra_high`; the 1.5.2 server offers those only to subscription sign-in or
-Agent Platform, so run it only with a credential route that reaches them. Each
+`antigravity-model-lineup` (14 cells) and `antigravity-model-lineup-gemini4`
+(14 cells) are local, explicit-only suites with one cell per exact model ID,
+case `model-receipt`, generated from the pinned server's catalog. Model IDs
+are `<family>-<level>`. The API-key lineup is Flash 3.5 to 3.8 at `low`,
+`medium` and `high`, plus 3.1 Pro at `low` and `high`. The Gemini 4 lineup is
+each family at the levels it offers: Neon and Hydrogen at `low` to
+`extra_high`, Carbon and Argon at `low` to `high`. The 1.5.2 server offers
+Gemini 4 only to subscription sign-in or Agent Platform, so run that lineup
+only with a credential route that reaches them. Each
 cell admits its own model, sends the ordinary one-reply prompt, and grades the
 run's native input model plus the Runner's requested and effective model
 receipt against the requested ID; a reply alone does not pass. Profile IDs

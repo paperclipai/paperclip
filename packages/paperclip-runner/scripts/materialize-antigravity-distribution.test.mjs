@@ -64,7 +64,7 @@ async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, 
   await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), `
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.1';
+export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.2';
 export async function patchAntigravityRuntime({source,destination,target,vendorEntries}) {
  await writeFile(${JSON.stringify(join(root, "patch.called"))},JSON.stringify({target,vendorEntries}));
  await mkdir(destination,{mode:0o700});
@@ -85,7 +85,7 @@ export async function patchAntigravityRuntime({source,destination,target,vendorE
     schema: "paperclip.antigravity_distribution.v1", version: "1.5.2",
     platforms: { [target]: {
       url: `https://dl.google.com/agy-extensions/releases/${platform === "darwin" ? "macos" : "linux"}/fixture.zip`,
-      archiveSha256: hash(archive), closureSha256, vendorEntries, vendorClosureSha256: hash(JSON.stringify(vendorEntries)), patchVersion: "1.5.2-paperclip.1", admissionSourceSha256, provisioning: "verified-closure",
+      archiveSha256: hash(archive), closureSha256, vendorEntries, vendorClosureSha256: hash(JSON.stringify(vendorEntries)), patchVersion: "1.5.2-paperclip.2", admissionSourceSha256, provisioning: "verified-closure",
       executable: "agy_acp_server.par", args: platform === "linux" ? ["--uid="] : [], entries,
     } },
   }));

@@ -155,7 +155,7 @@ test("released Antigravity flips to ordinary linux-x64 inventory with its profil
 });
 
 test("Antigravity pack builder keeps only this release's patched closure", async () => {
-  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.1" };
+  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.2" };
   const calls = [];
   const build = result => async options => { calls.push(options); return result; };
   const accepted = await materializeAntigravityProviderPack({ outputRoot: "/pack/provider-assets/antigravity/linux-x64", platform: "linux", architecture: "x64", materialize: build(distribution) });
@@ -172,7 +172,7 @@ test("Antigravity pack builder keeps only this release's patched closure", async
 
 test("Antigravity pack builder repeats only a failed download", async t => {
   t.mock.method(process.stderr, "write", () => true);
-  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.1" };
+  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.2" };
   let attempts = 0;
   const flaky = async () => { if (++attempts < 3) throw new Error("Antigravity archive download failed: 503"); return distribution; };
   const result = await materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "linux", architecture: "x64", materialize: flaky, retryDelayMs: 1 });
