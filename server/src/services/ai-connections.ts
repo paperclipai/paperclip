@@ -1,4 +1,4 @@
-import { claudeAccessTokenOf, parseStoredClaudeOauth } from "./claude-oauth-credential.js";
+import { claudeAccessTokenOf, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
 import { hasPendingClaudeExchange, refreshClaudeSubscription } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
@@ -1167,7 +1167,7 @@ export function aiConnectionService(db: Db) {
           // that still awaits its save already replaces this token: rotating the
           // secret here would discard that pair and reuse a spent refresh token.
           if (renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id)) {
-            await secretService(tx).rotate(ref.secretId, { value: JSON.stringify({ claudeAiOauth: { ...renewable, expiresAt: 0 } }), preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+            await secretService(tx).rotate(ref.secretId, { value: serializeClaudeOauth({ ...renewable, expiresAt: 0 })!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           }
           return;
         }

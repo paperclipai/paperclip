@@ -6,6 +6,7 @@ import { unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
 type Replacement = { value: string; base: string; secretId: string; epoch: number; version: number };
@@ -15,18 +16,6 @@ const pendingExchanges = new Map<string, Replacement>();
 const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
 /** True while an exchanged pair awaits its vault save. The stored credential must not change under it. */
 export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pendingExchanges.has(pendingKey(companyId, grantId));
-
-/** A row lock another statement holds right now (Postgres 55P03 under NOWAIT). */
-function rowLockBusy(error: unknown): boolean {
-  let cause: unknown = error;
-  for (let depth = 0; depth < 4 && cause && typeof cause === "object"; depth++) {
-    const entry = cause as { code?: unknown; cause?: unknown };
-    if (entry.code === "55P03") return true;
-    cause = entry.cause;
-  }
-  return false;
-}
-const ROW_LOCK_WAITS = 5;
 
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
@@ -44,11 +33,13 @@ export async function refreshClaudeSubscription(
     const key = pendingKey(companyId, row.grant.id);
     let replacement = pendingExchanges.get(key);
     let recheckedRecovery = false;
-    let rowLockWaits = 0;
     for (let attempt = 0; ; attempt++) {
       let committed = false;
       try {
-        const result = await db.transaction(async tx => {
+        // Another preparation's freshness read holds a share lock on the same
+        // rows for one statement. Retry briefly instead of failing the run. A
+        // retry after an exchange reuses the retained pair.
+        const result = await retryTransientLockContention(() => db.transaction(async tx => {
           const [grant] = await tx.select().from(connectionGrants).where(and(
             eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, row.grant.id),
             eq(connectionGrants.connectionId, row.connection.id),
@@ -112,7 +103,7 @@ export async function refreshClaudeSubscription(
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });
           return { value: refreshed, recovered: recovering };
-        });
+        }));
         committed = true;
         // Only a confirmed commit or an explicit generation discard settles this obligation.
         pendingExchanges.delete(key);
@@ -136,14 +127,6 @@ export async function refreshClaudeSubscription(
         }
         return claudeAccessTokenOf(result.value!);
       } catch (error) {
-        // Another preparation's freshness read holds a share lock on the same
-        // rows for one statement. Wait briefly instead of failing the run.
-        if (!committed && rowLockBusy(error) && rowLockWaits < ROW_LOCK_WAITS) {
-          rowLockWaits++;
-          attempt--;
-          await new Promise(resolve => setTimeout(resolve, 20 * rowLockWaits));
-          continue;
-        }
         if (committed || !replacement || attempt >= 2) throw error;
       }
     }
