@@ -16,6 +16,18 @@ const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grant
 /** True while an exchanged pair awaits its vault save. The stored credential must not change under it. */
 export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pendingExchanges.has(pendingKey(companyId, grantId));
 
+/** A row lock another statement holds right now (Postgres 55P03 under NOWAIT). */
+function rowLockBusy(error: unknown): boolean {
+  let cause: unknown = error;
+  for (let depth = 0; depth < 4 && cause && typeof cause === "object"; depth++) {
+    const entry = cause as { code?: unknown; cause?: unknown };
+    if (entry.code === "55P03") return true;
+    cause = entry.cause;
+  }
+  return false;
+}
+const ROW_LOCK_WAITS = 5;
+
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
 /** Serialize exchanges with reconnect and other controllers. Only the vault holds refresh tokens. */
@@ -32,6 +44,7 @@ export async function refreshClaudeSubscription(
     const key = pendingKey(companyId, row.grant.id);
     let replacement = pendingExchanges.get(key);
     let recheckedRecovery = false;
+    let rowLockWaits = 0;
     for (let attempt = 0; ; attempt++) {
       let committed = false;
       try {
@@ -123,6 +136,14 @@ export async function refreshClaudeSubscription(
         }
         return claudeAccessTokenOf(result.value!);
       } catch (error) {
+        // Another preparation's freshness read holds a share lock on the same
+        // rows for one statement. Wait briefly instead of failing the run.
+        if (!committed && rowLockBusy(error) && rowLockWaits < ROW_LOCK_WAITS) {
+          rowLockWaits++;
+          attempt--;
+          await new Promise(resolve => setTimeout(resolve, 20 * rowLockWaits));
+          continue;
+        }
         if (committed || !replacement || attempt >= 2) throw error;
       }
     }
