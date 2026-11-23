@@ -112,6 +112,7 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
+import { antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
@@ -2735,9 +2736,10 @@ export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean
 }
 
 export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
-  // Antigravity's first release owns a fresh per-turn daemon. Its native
+  // The pending Antigravity candidate owns a fresh per-turn daemon. Its native
   // conversation is stored separately and may load under each new run's grant.
-  const scope = execution.provider.kind === "acpx" && execution.provider.agent === "antigravity"
+  // A qualified release keeps the ordinary per-session scope.
+  const scope = antigravityUsesRunScopedState(execution)
     ? JSON.stringify([nativeSessionScopeKey(execution), execution.binding.runId])
     : nativeSessionScopeKey(execution);
   return resolve(
@@ -7508,7 +7510,7 @@ function runnerdStateRoot(execution: NativeExecutionInput): string {
     }
     return scoped;
   }
-  if (execution.provider.kind === "acpx" && execution.provider.agent === "antigravity") return scoped;
+  if (antigravityUsesRunScopedState(execution)) return scoped;
   for (const legacy of [
     legacyCompanyRunnerdStateRoot(execution),
     legacyRunnerdStateRoot(execution),
@@ -11028,17 +11030,10 @@ async function executePaperclipNativeSessionAttempt(
   const attemptDiagnosticLeases: NativeDiagnosticLease[] = [];
   const ownRunDiagnosticLease = ownDiagnosticLease;
   ownDiagnosticLease = lease => { attemptDiagnosticLeases.push(lease); ownRunDiagnosticLease?.(lease); };
-  if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
-    const candidate = resolveAntigravityCandidateAdmission({
-      companyId: input.execution.binding.companyId, model: input.execution.provider.model,
-    }, process.env);
-    if (!candidate || !input.useRunnerd || input.backend || input.restartRecovery
-      || input.runnerExecutionTarget?.kind === "remote"
-      || input.execution.session.lifecyclePolicy.mode !== "per_turn"
-      || ("homeMode" in input.execution && input.execution.homeMode === "preconfigured")) {
-      throw new Error("paperclip_runner_antigravity_candidate_ineligible: exact local per-turn candidate admission is required");
-    }
-  }
+  assertAntigravityExecutionAdmissible({
+    execution: input.execution, useRunnerd: input.useRunnerd, backend: input.backend,
+    restartRecovery: input.restartRecovery, remoteTarget: input.runnerExecutionTarget?.kind === "remote",
+  });
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "kimi"
     && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
     const target = input.runnerExecutionTarget?.kind === "remote"
@@ -18862,7 +18857,8 @@ async function createRunnerdBackendWithinSessionClaim(
                 ? undefined
                 : resolveAcpxQualification(input.execution.provider, process.env),
               acpxCandidateAdmission: input.execution.provider.agent === "antigravity"
-                ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model }, process.env)
+                // A released profile carries no candidate grant.
+                ? antigravityReleasePending() ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model }, process.env) : undefined
                 : input.execution.provider.agent === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending"
                   ? resolveKimiCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model,
                     target: remoteTarget ? { platform: "linux", architecture: "x64" } : { platform: process.platform, architecture: process.arch } }, process.env)
@@ -19013,7 +19009,7 @@ async function createRunnerdBackendWithinSessionClaim(
           recoveryContext?.persistedSession?.activeTurnId ?? null,
         resumeProviderSession: recoveryContext?.persistedSession,
         providerRecoveryPolicy:
-          input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity"
+          antigravityForcesSameSessionRecovery(input.execution.provider)
             ? "same_session_only"
             : recoveryContext?.providerRecoveryPolicy ??
           (input.execution.provider.kind === "acpx" &&
