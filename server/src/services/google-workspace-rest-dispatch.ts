@@ -2,6 +2,8 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   GOOGLE_WORKSPACE_TOOL_TRANSPORT,
   googleWorkspaceServiceToolNames,
+  googleWorkspaceToolTarget,
+  googleWorkspaceToolTitle,
   type GoogleWorkspaceService,
   type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
@@ -39,6 +41,19 @@ export function googleWorkspaceRestAuditEndpoint(service: GoogleWorkspaceService
 
 export function listGoogleWorkspaceRest(service: GoogleWorkspaceService): Tool[] {
   return listGoogleWorkspaceRestTools(restService(service));
+}
+
+export function googleWorkspaceCatalogToolTitle(
+  sourceTemplateKey: unknown,
+  name: string,
+  title: string | null | undefined,
+): string | null {
+  if (sourceTemplateKey !== "google-workspace") return title ?? null;
+  const target = googleWorkspaceToolTarget(name);
+  const restTitle = target && isGoogleWorkspaceRestService(target.service)
+    ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
+    : undefined;
+  return googleWorkspaceToolTitle(name, restTitle ?? title);
 }
 
 export async function callGoogleWorkspaceRest(

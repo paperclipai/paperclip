@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
 import { apiRequests, HealthProbe, HostedApi, hostedToken, requestSamples, type RequestRecord } from "./hosted-api.js";
 import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
+import { failureLines, summarizeFailures } from "./hosted-diagnostics.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import { cleanupHosted, inventory, loadState, resolveCompany, setupHosted, type HostedState } from "./hosted-setup.js";
@@ -51,11 +52,15 @@ export async function finalizeHosted(input: { api: Parameters<typeof cleanupHost
     .catch(error => ({ errors: [String(error)] }));
 }
 
-function watchIdentity(timeline: Timeline, samplesPath: string) {
+export function watchIdentity(timeline: { add: (kind: string, data: Record<string, unknown>) => unknown }, samplesPath: string, api: Pick<HostedApi, "diagnosed">) {
   let last: string | null = null;
   let failing = false;
   return (sample: HealthSample) => {
-    appendFileSync(samplesPath, `${JSON.stringify(sample)}\n`, { mode: 0o600 });
+    if (sample.ok) appendFileSync(samplesPath, `${JSON.stringify(sample)}\n`, { mode: 0o600 });
+    else void api.diagnosed(sample.failure).then(() => {
+      appendFileSync(samplesPath, `${JSON.stringify(sample)}\n`, { mode: 0o600 });
+      timeline.add("hosted_health_failure_classified", { at: new Date(sample.at).toISOString(), class: sample.failure?.class ?? null, reason: sample.failure?.reason ?? null });
+    });
     if (!sample.ok) {
       if (!failing) timeline.add("hosted_health_failed", { status: sample.status, ms: sample.ms, error: sample.error ?? null });
       failing = true;
@@ -72,8 +77,10 @@ function watchIdentity(timeline: Timeline, samplesPath: string) {
 async function observe(options: HostedOptions, probe: HealthProbe, api: HostedApi, dir: string, started: number, cancelled: () => boolean, timeline: Timeline): Promise<number> {
   while (!cancelled() && Date.now() - started < options.maxWaitMs && !releasesReached(detectReleases(probe.samples, { now: Date.now() }), options.releases)) await delay(LOOP_MS);
   await probe.stop();
+  await api.settleDiagnostics();
   const releases = detectReleases(probe.samples, { now: Date.now() });
-  const lines = releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(apiRequests(api.requests))));
+  const lines = [...releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(apiRequests(api.requests)))),
+    ...failureLines("Health probe failures", summarizeFailures(probe.samples))];
   await writeFile(path.join(dir, "SUMMARY.md"), `${lines.join("\n")}\n`, { mode: 0o600 });
   timeline.add("hosted_observed", { releases: releases.map(release => ({ shape: release.shape, firstNewAt: new Date(release.firstNewAt).toISOString(),
     lastOldAt: new Date(release.lastOldAt).toISOString(), failed: release.failedRequests, commitChanged: release.commitChanged })) });
@@ -92,12 +99,13 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   const cancelled = () => interrupted;
-  const api = new HostedApi(options.target, hostedToken(options.target));
+  const api = new HostedApi(options.target, hostedToken(options.target), undefined, fetch, { live: true });
   try {
     const exit = await hostedSession({ options, dir, timeline, record, cancelled, api, interrupted: () => interrupted });
     console.info(`Hosted run ${options.label}: results ${dir}`);
     return exit;
   } finally {
+    await api.settleDiagnostics();
     await saveRequests(dir, api.requests, options.mode);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -119,6 +127,8 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   const { options, dir, timeline, record, cancelled, api } = input;
   const me = await api.get<{ userId?: string; companyIds?: string[] }>("/api/cli-auth/me");
   timeline.add("hosted_signed_in", { baseUrl: options.target.baseUrl, mode: options.mode, label: options.label, companies: me.companyIds?.length ?? 0 });
+  const control = await api.primeControl();
+  timeline.add("hosted_control_probe", { ok: control?.ok ?? null, status: control?.status ?? null, ms: control?.ms ?? null, error: control?.error?.code ?? control?.error?.name ?? null });
 
   if (options.mode === "cleanup") {
     const state = await loadState(dir);
@@ -131,7 +141,7 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   const census = await inventory(api, options.label);
   timeline.add("hosted_inventory", { ...census });
   const started = Date.now();
-  const probe = new HealthProbe(api, options.healthMs, watchIdentity(timeline, path.join(dir, "health.jsonl"))).start();
+  const probe = new HealthProbe(api, options.healthMs, watchIdentity(timeline, path.join(dir, "health.jsonl"), api)).start();
   if (options.mode === "observe") return await observe(options, probe, api, dir, started, cancelled, timeline);
 
   let state: HostedState | null = null;
@@ -161,7 +171,7 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
+      health: () => continuity(probe.samples), healthSamples: () => probe.samples, stopHealthProbe: () => probe.stop(), settleDiagnostics: failures => api.settleDiagnostics(failures), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
       quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       tasks: () => workload.records, wantedReleases: options.releases,
@@ -177,7 +187,9 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   } finally {
     await polling?.stop();
     await probe.stop();
-    await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
+    const finalSamples = [...probe.samples];
+    await api.settleDiagnostics(finalSamples.map(sample => sample.failure));
+    await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(finalSamples), health: continuity(finalSamples),
       api: continuity(requestSamples(apiRequests(api.requests))), inventory: census }, null, 2)}\n`, { mode: 0o600 });
     const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });
     if (cleaned && cleaned.errors.length) exit = Math.max(exit, 1);

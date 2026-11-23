@@ -112,6 +112,8 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
+import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
+import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
@@ -141,7 +143,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -2735,9 +2737,10 @@ export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean
 }
 
 export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
-  // Antigravity's first release owns a fresh per-turn daemon. Its native
+  // The pending Antigravity candidate owns a fresh per-turn daemon. Its native
   // conversation is stored separately and may load under each new run's grant.
-  const scope = execution.provider.kind === "acpx" && execution.provider.agent === "antigravity"
+  // A qualified release keeps the ordinary per-session scope.
+  const scope = antigravityUsesRunScopedState(execution)
     ? JSON.stringify([nativeSessionScopeKey(execution), execution.binding.runId])
     : nativeSessionScopeKey(execution);
   return resolve(
@@ -7508,7 +7511,7 @@ function runnerdStateRoot(execution: NativeExecutionInput): string {
     }
     return scoped;
   }
-  if (execution.provider.kind === "acpx" && execution.provider.agent === "antigravity") return scoped;
+  if (antigravityUsesRunScopedState(execution)) return scoped;
   for (const legacy of [
     legacyCompanyRunnerdStateRoot(execution),
     legacyRunnerdStateRoot(execution),
@@ -9316,6 +9319,9 @@ function classifyNativeSessionFailure(
   if (findNativePredecessorRetirementUnproven(error)) return NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE;
   if (findNativeFailedBeforeProviderTurn(error)) return NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE;
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
+  // A saved connection its target cannot use: no provider work began, and a
+  // retry would meet the same configuration.
+  if (error instanceof AntigravityConnectionConfigurationError) return NATIVE_PROVIDER_STARTUP_REJECTED;
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
   if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
@@ -11028,17 +11034,10 @@ async function executePaperclipNativeSessionAttempt(
   const attemptDiagnosticLeases: NativeDiagnosticLease[] = [];
   const ownRunDiagnosticLease = ownDiagnosticLease;
   ownDiagnosticLease = lease => { attemptDiagnosticLeases.push(lease); ownRunDiagnosticLease?.(lease); };
-  if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
-    const candidate = resolveAntigravityCandidateAdmission({
-      companyId: input.execution.binding.companyId, model: input.execution.provider.model,
-    }, process.env);
-    if (!candidate || !input.useRunnerd || input.backend || input.restartRecovery
-      || input.runnerExecutionTarget?.kind === "remote"
-      || input.execution.session.lifecyclePolicy.mode !== "per_turn"
-      || ("homeMode" in input.execution && input.execution.homeMode === "preconfigured")) {
-      throw new Error("paperclip_runner_antigravity_candidate_ineligible: exact local per-turn candidate admission is required");
-    }
-  }
+  assertAntigravityExecutionAdmissible({
+    execution: input.execution, useRunnerd: input.useRunnerd, backend: input.backend,
+    restartRecovery: input.restartRecovery, remoteTarget: input.runnerExecutionTarget?.kind === "remote",
+  });
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "kimi"
     && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
     const target = input.runnerExecutionTarget?.kind === "remote"
@@ -11729,7 +11728,11 @@ async function executePaperclipNativeSessionAttempt(
   let firstTokenRecorded = false;
   const observeDeliverableText = createNativeDeliverableTextObservation();
   let providerUsageLimitObserved = false;
-  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
+  // Antigravity runs on a Gemini API key exactly when one is bound; otherwise
+  // on a Google sign-in (the same rule its credential preparation applies).
+  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider,
+    input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity"
+      ? { antigravityRoute: input.runnerEnvironment?.GEMINI_API_KEY?.trim() ? "api_key" : "subscription" } : {});
   let turnCompletedAtMs: number | null = null;
   let runnerSessionStartupScope: NativeRunSpanScope | null = null;
   let agentTurnScope: NativeRunSpanScope | null = null;
@@ -14403,8 +14406,10 @@ const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
   acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
 } as const;
-const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending" ? ["kimi"] as const : [])] as const;
-const REMOTE_PROVIDER_PACK_CANDIDATES = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? ["kimi"] as const : [])] as const;
+// Antigravity may appear in either inventory; its release state, read at
+// verification time, admits exactly one (antigravityProviderPackEntryRefusal).
+const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending" ? ["kimi"] as const : []), "antigravity"] as const;
+const REMOTE_PROVIDER_PACK_CANDIDATES = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? ["kimi"] as const : []), "antigravity"] as const;
 
 type RemoteProviderPackManifest = {
   schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
@@ -14644,52 +14649,15 @@ function* providerPackIdentityChecks(
       throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
-      const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!allowedProviders.includes(provider) || !candidate
-        || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending") ? "qualified" : "pending") || candidate.path !== expectedPath
-        || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.sha256)) {
-        throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
-      }
+      const refusal = remoteProviderPackEntryRefusal({ provider, inventory, allowedProviders, target: payload.target, entry: candidate,
+        listed: { providers: Boolean((payload.providers as Record<string, unknown> | undefined)?.[provider]),
+          candidateProviders: Boolean((payload.candidateProviders as Record<string, unknown> | undefined)?.[provider]) },
+        release: {
+          profiles: QUALIFIED_ACPX_PROFILES, cursorClosures: CURSOR_DISTRIBUTION_PINS, kimiLinuxX64Closure: KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"],
+          antigravityReleasePending: antigravityReleasePending(), antigravityPatchedClosures: ANTIGRAVITY_PATCHED_CLOSURE_SHA256,
+        } });
+      if (refusal) throw new Error(`runner_remote_provider_artifact_incompatible: ${refusal}`);
       const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
-      if (provider === "cursor") {
-        const target = `${payload.target.platform}-${payload.target.architecture}`;
-        const distribution = Object.hasOwn(CURSOR_DISTRIBUTION_PINS, target)
-          ? CURSOR_DISTRIBUTION_PINS[target as keyof typeof CURSOR_DISTRIBUTION_PINS] : undefined;
-        if (!distribution || candidate.version !== QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.cursor.commandDigest
-          || candidate.closureDigest !== `sha256:${distribution.closureSha256}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Cursor profile or closure does not match this release");
-        }
-      }
-      if (provider === "copilot") {
-        const closurePins = {
-  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
-  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
-  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07"
-} as const;
-        const target = `${payload.target.platform}-${payload.target.architecture}`;
-        const closure = Object.hasOwn(closurePins, target) ? closurePins[target as keyof typeof closurePins] : undefined;
-        if (!closure || (payload.providers?.copilot && payload.candidateProviders?.copilot)
-          || candidate.version !== QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.copilot.commandDigest
-          || candidate.closureDigest !== `sha256:${closure}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Copilot profile or closure does not match this release");
-        }
-      }
-      if (provider === "kimi") {
-        if (inventory !== (QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "candidateProviders" : "providers")
-          || payload[QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "providers" : "candidateProviders"]?.kimi
-          || payload.target.platform !== "linux" || payload.target.architecture !== "x64"
-          || candidate.version !== QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.kimi.commandDigest
-          || candidate.closureDigest !== `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
-        }
-      }
       if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, candidatePath) }) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
       }
@@ -14918,6 +14886,14 @@ export async function stageRemoteRunnerDirectory(input: {
   }
 }
 
+/** The exact remote machine a pack sits on, when the target names one. */
+export function remoteProviderPackSeal(target: Extract<AdapterExecutionTarget, { kind: "remote" }>): { targetKey: string } | null {
+  const sandboxLease = "sandboxLeaseAcquisition" in target ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined;
+  const lease = sandboxLease ?? target.leaseId;
+  if (!lease || !target.environmentId) return null;
+  return { targetKey: `${target.transport}:${target.environmentId}:${lease}` };
+}
+
 /** The normal remote pack installer, without run/session/DB authority. Both
  * native execution and environment Test use the same admitted manifest and
  * complete archive/directory verification before a provider is invoked. */
@@ -14938,9 +14914,11 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   let activeRemoteProviderPackRoot: string | null = null;
   let preinstalledProviderPackRoots: string[] = [];
   let selectedProviderPackManifest = expectedProviderPackManifest;
+  const seal = remoteProviderPackSeal(remoteTarget);
   const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
     verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
-      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true });
+      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
+      ...(seal ? { seal } : {}) });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
     const result = await remoteCommandRunner.execute({
@@ -17415,8 +17393,9 @@ async function createRunnerdBackendWithinSessionClaim(
     if (providerPackVerified && packRoot === activeRemoteProviderPackRoot) return;
     if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
       return;
+    const seal = remoteProviderPackSeal(remoteTarget);
     await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest });
+      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest, ...(seal ? { seal } : {}) });
     providerPackVerified = true;
   };
 
@@ -18862,7 +18841,9 @@ async function createRunnerdBackendWithinSessionClaim(
                 ? undefined
                 : resolveAcpxQualification(input.execution.provider, process.env),
               acpxCandidateAdmission: input.execution.provider.agent === "antigravity"
-                ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model }, process.env)
+                // A released profile carries no candidate grant.
+                ? antigravityReleasePending() ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model,
+                  target: antigravityCandidateTarget(Boolean(remoteTarget)) }, process.env) : undefined
                 : input.execution.provider.agent === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending"
                   ? resolveKimiCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model,
                     target: remoteTarget ? { platform: "linux", architecture: "x64" } : { platform: process.platform, architecture: process.arch } }, process.env)
@@ -19013,7 +18994,7 @@ async function createRunnerdBackendWithinSessionClaim(
           recoveryContext?.persistedSession?.activeTurnId ?? null,
         resumeProviderSession: recoveryContext?.persistedSession,
         providerRecoveryPolicy:
-          input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity"
+          antigravityForcesSameSessionRecovery(input.execution.provider)
             ? "same_session_only"
             : recoveryContext?.providerRecoveryPolicy ??
           (input.execution.provider.kind === "acpx" &&

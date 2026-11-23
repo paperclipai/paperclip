@@ -12,7 +12,7 @@ export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trus
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
-import { bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
+import { bindAcpxCandidateAdmission, isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveClaudeEffort, admittedClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { resolveGrokEffort, admittedGrokEffort } from "../drivers/acpx/grok-effort.js";
@@ -3726,7 +3726,7 @@ function acpxRunnerLaunchProfile(
     `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   let candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   if (options.acpxCandidateAdmission) {
-    if (!identity || options.acpxCandidateAdmission.agent === "antigravity" && options.runnerFilesystemRoot) throw new Error("ACPX candidate requires an actual authorized startup identity");
+    if (!identity) throw new Error("ACPX candidate requires an actual authorized startup identity");
     candidateAdmission = bindAcpxCandidateAdmission(options.acpxCandidateAdmission, identity);
   }
   if (!options.runnerFilesystemRoot) {
@@ -4398,12 +4398,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
       this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
       if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
-        || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
+      // A local grant names this host. A remote grant names the cloud pack's
+      // only Antigravity target, linux-x64; the remote Runner checks that grant
+      // again against its own host before it starts the provider.
+      const remote = options.runnerFilesystemRoot !== undefined;
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx"
+        || (remote ? admitted.platform !== "linux" || admitted.architecture !== "x64"
+          : !isAntigravityNativeTarget(process.platform, process.arch) || admitted.platform !== process.platform || admitted.architecture !== process.arch
+            || options.prepareLaunch || options.runnerProcessLauncher)
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId
         )) {
-        throw new Error("ACPX candidate admission supports only a fresh local isolated per-turn execution");
+        throw new Error("ACPX candidate admission supports only a fresh isolated per-turn execution on its admitted platform");
       }
     }
     if (options.acpxCandidateAdmission?.agent === "antigravity" && options.resumeProviderSession) {

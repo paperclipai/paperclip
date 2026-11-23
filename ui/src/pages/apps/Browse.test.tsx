@@ -320,6 +320,18 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("No connectors match");
   });
 
+  it("finds the Anthropic connector when people search for Claude", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["anthropic", "openai"].map(slug => getAppStoreDefinition(slug)) });
+    await renderBrowse(false);
+    await search("claude");
+    const anthropic = container.querySelector('[data-app-slug="anthropic"]');
+    expect(anthropic?.textContent).toContain("Anthropic (Claude)");
+    expect(anthropic?.textContent).toContain("Connect to Claude with Anthropic.");
+    expect(anthropic?.textContent).not.toContain("restricted key");
+    expect(container.querySelector('[aria-label="Connect Anthropic (Claude)"]')).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="openai"]')).toBeNull();
+  });
+
   it("does not advertise Tailscale setup or request tailnets for non-instance-admin members", async () => {
     boardAccessMock.mockResolvedValue({ source: "session", isInstanceAdmin: false });
     await renderBrowse(false);
