@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { ApiError } from "@/api/api-error";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { queryKeys } from "@/lib/queryKeys";
 import { BlockedTaskCardBody } from "./NeedsYouCardBodies";
 
@@ -96,6 +97,20 @@ describe("human unblock card", () => {
     expect(list.querySelector("[data-unblock-held-up-heading]")?.textContent).toBe("PAP-3 holds up 0 tasks");
     expect(list.querySelectorAll("[data-unblock-held-up-row]")).toHaveLength(0);
     expect(list.textContent).toContain("None of them are open now.");
+  });
+
+  it("keeps the ask, task titles and the held-up list out of session replay", async () => {
+    issues.get.mockResolvedValueOnce({ blocks: [{ ...heldUpTask(4), priority: "medium" }] });
+    const card = await renderCard({ heldUpTasks: [heldUpTask(4), heldUpTask(8), heldUpTask(9)], heldUpDirectCount: 10, heldUpTotalCount: 10,
+      blockingIssue: { id: "task-2", identifier: "PAP-2", title: "Prep", status: "in_progress" } });
+    const maskSelector = ANALYTICS_MASK_CLASS.split(" ").map((name) => `.${name}`).join("");
+    const masked = (element: Element | null) => Boolean(element?.closest(maskSelector));
+    expect(masked(card.querySelector("[data-unblock-ask]")), "ask").toBe(true);
+    expect(masked(card.querySelector("[data-unblock-ask-context]")), "asked-by line").toBe(true);
+    expect(masked(card.querySelector("[data-unblock-waiting-on]")), "waiting-on row").toBe(true);
+    await act(async () => card.querySelector<HTMLButtonElement>("[data-unblock-held-up-more]")!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(masked(document.body.querySelector("[data-unblock-held-up-list]")), "held-up list").toBe(true);
   });
 });
 

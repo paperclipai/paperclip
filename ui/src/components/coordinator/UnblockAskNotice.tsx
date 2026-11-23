@@ -7,7 +7,9 @@ import { issuesApi } from "@/api/issues";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { unblockHeldUp } from "@/lib/coordinator-attention";
+import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 
 type BlockerDetail = Extract<NonNullable<AttentionItem["detail"]>, { kind: "blocker" }>;
@@ -64,7 +66,8 @@ function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: 
           {moreCount} more
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0" data-unblock-held-up-list>
+      {/* The popover renders outside the card, so it carries its own replay mask. */}
+      <PopoverContent align="start" className={cn("w-80 p-0", ANALYTICS_MASK_CLASS)} data-unblock-held-up-list>
         {/* Once the list has loaded, its own count wins, zero included; the card's count only fills in while it loads. */}
         <p data-unblock-held-up-heading className="border-b border-border px-3 py-2 text-sm font-medium">
           {issueLabel} holds up {heldUpCount} {heldUpCount === 1 ? "task" : "tasks"}
@@ -116,7 +119,8 @@ export function UnblockAskNotice({ item, detail, askedBy }: { item: AttentionIte
     heldUp.push(<HeldUpMore key="more" issueId={task.id} issueLabel={taskLabel} moreCount={moreCount} behindCount={behindCount} />);
   }
   return (
-    <div className="overflow-hidden rounded-md border border-destructive/20">
+    // The ask and task titles are customer text: keep them out of session replay.
+    <div className={cn("overflow-hidden rounded-md border border-destructive/20", ANALYTICS_MASK_CLASS)}>
       <div className="flex gap-2.5 bg-destructive/10 px-3.5 py-3 text-sm text-foreground">
         <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
         <p data-unblock-ask><span className="font-semibold">Needed from you:</span> {detail.unblockAction}</p>

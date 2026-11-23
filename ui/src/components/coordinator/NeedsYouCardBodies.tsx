@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { FileText, TriangleAlert } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
@@ -91,7 +93,7 @@ function UnblockAskCardBody({ item, agentMap, userLabelMap, leading, footerConte
   return <>
     <UnblockAskNotice item={item} detail={detail} askedBy={assigneeName(item, agentMap, userLabelMap)} />
     {blocking?.id ? (
-      <div data-unblock-waiting-on className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      <div data-unblock-waiting-on className={cn("flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
         <span>Waiting on</span>
         <IssueReferencePill issue={{ id: blocking.id, identifier: blocking.identifier, title: blocking.title ?? blocking.identifier ?? "Task", status: blocking.status ?? undefined }} />
         {blocking.title ? <span className="min-w-0 truncate text-foreground">{blocking.title}</span> : null}
