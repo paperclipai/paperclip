@@ -67,8 +67,8 @@ async function insertFromSecret(tx: Db, input: {
   const giveUpAt = new Date(input.now.getTime() + GOOGLE_REVOCATION_LIFETIME_MS);
   const [row] = await tx.execute<{ id: string }>(sql`
     insert into ${googlePendingRevocations}
-      (company_id, connection_id, grant_id, subject, profile, token_material, token_sha256, reason, next_attempt_at, give_up_at, created_at, updated_at)
-    select secret.company_id, ${input.connectionId}::uuid, ${input.grantId}::uuid, ${input.subject}::text, ${input.profile}::text,
+      (company_id, connection_id, grant_id, source_secret_id, subject, profile, token_material, token_sha256, reason, next_attempt_at, give_up_at, created_at, updated_at)
+    select secret.company_id, ${input.connectionId}::uuid, ${input.grantId}::uuid, secret.id, ${input.subject}::text, ${input.profile}::text,
       version.material, version.value_sha256, ${input.reason}::text, ${input.nextAttemptAt.toISOString()}::timestamptz,
       ${giveUpAt.toISOString()}::timestamptz, ${input.now.toISOString()}::timestamptz, ${input.now.toISOString()}::timestamptz
     from ${companySecrets} secret
@@ -172,6 +172,7 @@ export function createGooglePendingRevocation(db: Db, deps: {
         isNull(companySecrets.deletedAt),
         ne(companySecrets.status, "deleted"),
         eq(companySecretVersions.valueSha256, row.tokenSha256),
+        ...(row.sourceSecretId ? [ne(companySecrets.id, row.sourceSecretId)] : []),
       ))
       .limit(1);
     return rows.length > 0;

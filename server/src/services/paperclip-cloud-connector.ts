@@ -412,6 +412,23 @@ export function createPaperclipCloudConnector(input: {
     return credentials;
   }
 
+  async function confirmedInstanceStatus(): Promise<"active" | "suspended" | "removed" | "unknown_instance"> {
+    let response: ConnectorResponse;
+    try {
+      response = await call("status", {
+        subject: "instance-status",
+        companyId: "instance-status",
+      });
+    } catch (error) {
+      if (error instanceof PaperclipCloudConnectorError && error.status === 401) return "unknown_instance";
+      throw error;
+    }
+    if (response.status === "active" && response.active === true) return "active";
+    if (response.status === "suspended" && response.active === false) return "suspended";
+    if (response.status === "removed" && response.active === false) return "removed";
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
+  }
+
   return {
     instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
     async syncMcpClientMirror(serialized: string): Promise<unknown> {
@@ -492,21 +509,10 @@ export function createPaperclipCloudConnector(input: {
       return opened;
     },
     async getInstanceStatus(): Promise<"active" | "suspended" | "removed"> {
-      let response: ConnectorResponse;
-      try {
-        response = await call("status", {
-          subject: "instance-status",
-          companyId: "instance-status",
-        });
-      } catch (error) {
-        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return "removed";
-        throw error;
-      }
-      if (response.status === "active" && response.active === true) return "active";
-      if (response.status === "suspended" && response.active === false) return "suspended";
-      if (response.status === "removed" && response.active === false) return "removed";
-      throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
+      const status = await confirmedInstanceStatus();
+      return status === "unknown_instance" ? "removed" : status;
     },
+    getConfirmedInstanceStatus: confirmedInstanceStatus,
     async getCapabilities(): Promise<PaperclipCloudConnectorProfileId[]> {
       let response: ConnectorResponse;
       try {

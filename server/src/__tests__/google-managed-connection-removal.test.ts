@@ -42,6 +42,7 @@ import {
   createGooglePendingRevocation,
   GOOGLE_REVOCATION_LIFETIME_MS,
   googleRevocationRetryDelayMs,
+  queueGoogleRevocationFromSecret,
   revokeGoogleAccessForRemovedInstance,
 } from "../services/tool-access/connections/google-pending-revocation.js";
 import { secretService } from "../services/secrets.js";
@@ -811,6 +812,25 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(await db.select().from(googlePendingRevocations)).toEqual([]);
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "other_connections_remain" }]);
+  });
+
+  it("still revokes when the process stopped before the removed grant's own secret was deleted", async () => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() }).where(eq(connectionGrants.id, fixture.grant.id));
+    await queueGoogleRevocationFromSecret(db, {
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, subject: fixture.userId,
+      profile: "gmail.draft", secretId: refreshSecretId, version: secret!.latestVersion, reason: "grant_revoked",
+    });
+    const [pending] = await db.select().from(googlePendingRevocations);
+    expect(pending!.sourceSecretId).toBe(refreshSecretId);
+
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
   });
 
   it("treats an older broker refusing a removed instance as retryable", async () => {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  status: vi.fn<() => Promise<"active" | "suspended" | "removed">>(),
+  status: vi.fn<() => Promise<"active" | "suspended" | "removed" | "unknown_instance">>(),
 }));
 
 vi.mock("../services/paperclip-cloud-connector-enrollment.js", () => ({
@@ -12,7 +12,7 @@ vi.mock("../services/paperclip-cloud-connector-enrollment.js", () => ({
 
 vi.mock("../services/paperclip-cloud-connector.js", () => ({
   paperclipCloudConnectorConfigFromEnv: () => ({}),
-  createPaperclipCloudConnector: () => ({ getInstanceStatus: mocks.status }),
+  createPaperclipCloudConnector: () => ({ getConfirmedInstanceStatus: mocks.status }),
 }));
 
 const { reconcilePaperclipCloudConnectorEnrollmentStatus } = await import("../services/paperclip-cloud-connector-status.js");
@@ -30,7 +30,7 @@ describe("reconcilePaperclipCloudConnectorEnrollmentStatus", () => {
     expect(onRemoved).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["active", "suspended"] as const)("does not end Google access while the instance is %s", async (value) => {
+  it.each(["active", "suspended", "unknown_instance"] as const)("does not end Google access when the status is %s", async (value) => {
     mocks.status.mockResolvedValue(value);
     const onRemoved = vi.fn(async () => 1);
 

@@ -17,10 +17,10 @@ export async function reconcilePaperclipCloudConnectorEnrollmentStatus(
   const config = paperclipCloudConnectorConfigFromEnv(env);
   if (!config) return { ...local, configured: false, status: "not_configured" };
   try {
-    const status = await createPaperclipCloudConnector({ config, request }).getInstanceStatus();
+    const status = await createPaperclipCloudConnector({ config, request }).getConfirmedInstanceStatus();
     if (status === "active") return { ...local, configured: true, status: "active" };
     if (status === "suspended") return { ...local, configured: false, status: "suspended" };
-    await onRemoved?.().catch(() => undefined);
+    if (status === "removed") await onRemoved?.().catch(() => undefined);
     return { ...local, configured: false, status: "not_configured" };
   } catch {
     return { ...local, configured: false, status: "unverified" };

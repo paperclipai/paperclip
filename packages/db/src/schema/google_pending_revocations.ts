@@ -7,6 +7,7 @@ export const googlePendingRevocations = pgTable(
     companyId: uuid("company_id").notNull(),
     connectionId: uuid("connection_id"),
     grantId: uuid("grant_id"),
+    sourceSecretId: uuid("source_secret_id"),
     subject: text("subject").notNull(),
     profile: text("profile").notNull(),
     tokenMaterial: jsonb("token_material").$type<Record<string, unknown>>().notNull(),

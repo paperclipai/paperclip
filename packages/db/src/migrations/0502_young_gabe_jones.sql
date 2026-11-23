@@ -3,6 +3,7 @@ CREATE TABLE "google_pending_revocations" (
 	"company_id" uuid NOT NULL,
 	"connection_id" uuid,
 	"grant_id" uuid,
+	"source_secret_id" uuid,
 	"subject" text NOT NULL,
 	"profile" text NOT NULL,
 	"token_material" jsonb NOT NULL,

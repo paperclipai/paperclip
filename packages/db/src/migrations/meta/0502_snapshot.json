@@ -1,5 +1,5 @@
 {
-  "id": "c88dd0d3-e6e1-4f22-bc03-238e5ae698e1",
+  "id": "c92cac27-4535-4dc1-98cb-296d5bbbfb72",
   "prevId": "62fdf61f-883c-4e82-a4ab-4311ff6d39e5",
   "version": "7",
   "dialect": "postgresql",
@@ -34270,6 +34270,12 @@
         },
         "grant_id": {
           "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_secret_id": {
+          "name": "source_secret_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
