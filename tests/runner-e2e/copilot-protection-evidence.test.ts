@@ -141,8 +141,10 @@ describe("Copilot sealed remote proof", () => {
   it("awaits the remote fixture and baseline before disclosing the actual command", async () => {
     const s = baseline(), order: string[] = [];
     const fixture: CopilotRemoteFixture = { binding: s.binding, remoteCwd: s.binding.remoteCwd, actionFile: s.setup.path,
+      killOwnedCopilot: async () => { throw new Error("Unexpected provider-death dispatch"); },
       snapshot: async () => { await Promise.resolve(); order.push("baseline"); return s; },
-      setupAttachedCommand: async input => { expect(input.markerText).toBe("private-marker"); order.push("setup"); return { command: "exact-remote-command", commandSha256: `sha256:${"c".repeat(64)}` }; },
+      releaseAttachedCommand: async () => { throw new Error("Unexpected fixture release during setup"); },
+      setupAttachedCommand: async input => { expect(input.waitForFinishAttempt).toBe(true); expect(input.markerText).toBe("private-marker"); order.push("setup"); return { command: "exact-remote-command", commandSha256: `sha256:${"c".repeat(64)}` }; },
       finish: async () => { throw new Error("must not finish during setup"); }, readFile: async () => { throw new Error("must not read host file"); }, close: async () => {} };
     const prepared = await prepareCopilotRemoteAction({ fixture, companyId: "company", environmentId: "env", runId: "run", target, prompt: "test", markerText: "private-marker" });
     order.push("publish"); expect(order).toEqual(["setup", "baseline", "publish"]);

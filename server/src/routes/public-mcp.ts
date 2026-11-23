@@ -1,3 +1,6 @@
+import {cloudEventAuthoritySchema} from "../services/public-mcp/cloud-event-authority.js";
+import { verifyMcpDeviceMintContext } from "../services/public-mcp/device-mint-authority.js";
+import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 import express, { Router, type ErrorRequestHandler, type RequestHandler } from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -6,9 +9,9 @@ import { z } from "zod";
 import { type PublicMcpEvents } from "../services/public-mcp/events.js";
 import type { PublicMcpToolExtension } from "../services/public-mcp/dot-runner.js";
 import { McpEventError } from "../services/public-mcp/event-webhooks.js";
-import { DOT_RUNNER_MCP_PATH, DOT_RUNNER_MCP_SCOPES, PUBLIC_MCP_SCOPES, mcpConsentSchema, mcpInvitation, mcpSetupUrl } from "@paperclipai/shared";
+import { DOT_RUNNER_MCP_PATH, mcpConsentSchema, mcpInvitation, mcpSetupUrl } from "@paperclipai/shared";
 import { renderMcpSetup, mcpSetupMarkdown } from "../services/public-mcp/setup.js";
-import { DEVICE_GRANT, McpOAuthError, type PublicMcpOAuth } from "../services/public-mcp/oauth.js";
+import { McpOAuthError, type PublicMcpOAuth } from "../services/public-mcp/oauth.js";
 import { McpApiError, McpCapabilityError, publicMcpCapabilities, type createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 
 const oauthErrors: ErrorRequestHandler = (error, _req, res, next) => {
@@ -43,10 +46,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
   const endpoint = new URL(resource).pathname;
   const agentConnection = endpoint === DOT_RUNNER_MCP_PATH;
   const oauthPath = agentConnection ? endpoint + "/oauth" : "/mcp/oauth";
-  const issuer = agentConnection ? origin + oauthPath : origin;
-  const scopes = agentConnection ? DOT_RUNNER_MCP_SCOPES : PUBLIC_MCP_SCOPES;
   const metadataPath = "/.well-known/oauth-authorization-server" + (agentConnection ? oauthPath : "");
-  const prefix = origin + oauthPath;
   const resourceMetadata = origin + "/.well-known/oauth-protected-resource" + endpoint;
   if (!agentConnection) router.get(["/mcp/setup", "/mcp/setup.md"], async (req, res) => {
     await oauth.assertEnabled();
@@ -70,23 +70,11 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     await oauth.assertEnabled();
     next();
   });
-  router.get(agentConnection ? ["/.well-known/oauth-protected-resource" + endpoint] : ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource" + endpoint], (_req, res) => res.json({
-    resource, authorization_servers: [issuer], scopes_supported: agentConnection ? DOT_RUNNER_MCP_SCOPES : ["paperclip:read", "paperclip:write", "paperclip:configure"], bearer_methods_supported: ["header"],
-    resource_name: agentConnection ? "Paperclip agent" : "Paperclip",
-  }));
-  router.get(metadataPath, (_req, res) => res.json({
-    issuer, authorization_endpoint: (oauth.config.authorizationOrigin ?? origin) + oauthPath + "/authorize", token_endpoint: prefix + "/token",
-    registration_endpoint: prefix + "/register", revocation_endpoint: prefix + "/revoke",
-    response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token", DEVICE_GRANT],
-    device_authorization_endpoint: prefix + "/device_authorization",
-    token_endpoint_auth_methods_supported: ["none"], revocation_endpoint_auth_methods_supported: ["none"],
-    code_challenge_methods_supported: ["S256"], scopes_supported: scopes,
-    authorization_response_iss_parameter_supported: true,
-    client_id_metadata_document_supported: true,
-  }));
+  for (const entry of mcpDiscoveryDocuments({ origin, authorizationOrigin: oauth.config.authorizationOrigin ?? origin,
+    profiles: [agentConnection ? "dot-mcp" : "personal-mcp"] })) router.get(entry.path, (_req,res) => res.json(entry.document));
   router.use(oauthPath, authRateLimit(), express.urlencoded({ extended: false, limit: "16kb" }));
   router.post(oauthPath + "/register", async (req, res) => res.status(201).json(await oauth.register(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown")));
-  router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown")));
+  router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown",verifyMcpDeviceMintContext(req,oauth.config.resource))));
   router.get(oauthPath + "/authorize", async (req, res) => res.redirect(303, await oauth.authorize(req.query, req.ip ?? req.socket.remoteAddress ?? "unknown")));
   router.post(oauthPath + "/token", async (req, res) => res.json(await oauth.token(req.body ?? {})));
   router.post(oauthPath + "/revoke", async (req, res) => {
@@ -166,8 +154,9 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
           case "events/subscribe": {
             if (!events) { fail(-32601, "Events are unavailable."); return; }
             // The broker supplies its original access proof only for hosted subscriptions.
-            // It is validated against the fixed Cloud origin before being retained encrypted.
-            const authority = z.object({ token: z.string().max(24000), expiresAt: z.number() }).safeParse(meta["ai.paperclip/cloudAuthority"]);
+            // It is validated against the selected verified issuer before being retained encrypted.
+            const rawAuthority=meta["ai.paperclip/cloudAuthority"],authority = cloudEventAuthoritySchema.safeParse(rawAuthority);
+            if(rawAuthority!==undefined&&!authority.success)throw new McpEventError(-32602,"Invalid hosted subscription authority.");
             result = await events.subscribe(principal!, params, authority.success ? authority.data : undefined); break;
           }
           case "events/unsubscribe":

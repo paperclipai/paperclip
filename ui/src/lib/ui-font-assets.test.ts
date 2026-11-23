@@ -7,10 +7,10 @@ const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 const fontDir = path.join(uiRoot, "public", "fonts");
 const cssPath = path.join(uiRoot, "src", "index.css");
 
-const fontFiles = ["InterVariable.woff2", "InterVariable-Italic.woff2"];
+const fontFiles = ["InterVariable.woff2", "InterVariable-Italic.woff2", "PaperMono-Variable.woff2"];
 
 describe("bundled UI font assets", () => {
-  it("ships the Inter variable font files used by the CSS", () => {
+  it("ships the variable font files used by the CSS", () => {
     const css = readFileSync(cssPath, "utf8");
 
     for (const fileName of fontFiles) {

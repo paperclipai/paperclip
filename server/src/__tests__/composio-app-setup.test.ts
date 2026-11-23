@@ -251,14 +251,21 @@ const support = await getEmbeddedPostgresTestSupport();
     const f = await fixture(names); f.activate();
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    f.onList(() => held);
-    await Promise.all([f.access.syncComposioApps(f.connection.id, true, f.actor), f.access.syncComposioApps(f.connection.id, true, f.actor)]);
-    expect(f.batches).toHaveLength(1);
-    release();
-    const result = await finishSync(f);
-    expect(result.sync).toMatchObject({ status: "ready", total: 36, checked: 36 });
-    expect(f.batches.map(batch => batch.length)).toEqual([32, 4]);
-    expect(new Set(f.batches.flat().map(tool => tool.name)).size).toBe(36);
+    let acknowledgeProviderEntry!: () => void;
+    const providerEntered = new Promise<void>(resolve => { acknowledgeProviderEntry = resolve; });
+    f.onList(() => { acknowledgeProviderEntry(); return held; });
+    try {
+      await Promise.all([f.access.syncComposioApps(f.connection.id, true, f.actor), f.access.syncComposioApps(f.connection.id, true, f.actor)]);
+      await providerEntered;
+      expect(f.batches).toHaveLength(1);
+      release();
+      const result = await finishSync(f);
+      expect(result.sync).toMatchObject({ status: "ready", total: 36, checked: 36 });
+      expect(f.batches.map(batch => batch.length)).toEqual([32, 4]);
+      expect(new Set(f.batches.flat().map(tool => tool.name)).size).toBe(36);
+    } finally {
+      release();
+    }
   });
 
   it("keeps failed account observations unverified and restores them after a successful sync", async () => {

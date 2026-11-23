@@ -14,7 +14,7 @@ import { AiConnectionAuth, type AiAuthState } from "@/components/ai-connections/
 import { CredentialModeLink } from "@/components/onboarding/CredentialModeLink";
 import { AI_PROVIDERS, aiMethodLabel, type AiConnectionSummary, type AiProvider, type AiAuthMethod } from "@/components/ai-connections/model";
 import { AI_REVIEW_CONNECTIONS } from "../fixtures/aiConnections";
-import { storybookAgents } from "../fixtures/paperclipData";
+import { storybookAgents, storybookAuthSession } from "../fixtures/paperclipData";
 
 const companyId = "company-storybook";
 const date = new Date("2026-09-10T12:00:00Z");
@@ -56,17 +56,19 @@ function grantsFor(account: AiConnectionSummary, readOnly: boolean): ConnectionG
 }
 
 /** Mount the production route components against an isolated, deterministic in-memory API. */
-export function AiConnectorPages({ initialConnections = AI_REVIEW_CONNECTIONS, detail = false, readOnly = false }: {
-  initialConnections?: AiConnectionSummary[]; detail?: boolean; readOnly?: boolean;
+export function AiConnectorPages({ initialConnections = AI_REVIEW_CONNECTIONS, detail = false, readOnly = false, failDefaultOnce = false }: {
+  initialConnections?: AiConnectionSummary[]; detail?: boolean; readOnly?: boolean; failDefaultOnce?: boolean;
 }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0, refetchOnWindowFocus: false }, mutations: { retry: false } } }));
   const [store] = useState(() => ({ profiles: new Map<string, unknown>(initialConnections.filter((row) => row.id === "claude-dotta").map((row) => [row.id, {
     id: `profile-${row.id}`, companyId, profileKey: `app:${row.id}`, entries: [], bindings: ["nova"].map((targetId) => ({ targetType: "agent", targetId })),
-  }])), accounts: initialConnections.map((row) => ({ ...row })), removed: new Set<string>(), installs: new Map<string, unknown[]>(), audience: new Map<string, string[]>() }));
+  }])), accounts: initialConnections.map((row) => ({ ...row, companyId, canSetDefault: !readOnly && row.ownership === "personal" && row.ownerUserId === "dotta" && !row.routing })) as AiConnectionSummary[],
+    failedDefault: false, removed: new Set<string>(), installs: new Map<string, unknown[]>(), audience: new Map<string, string[]>() }));
   const [ready, setReady] = useState(false);
   const [, render] = useState(0);
   const navigate = useNavigate();
   function update(account: AiConnectionSummary) {
+    account = { ...account, companyId, canSetDefault: !readOnly && account.ownership === "personal" && account.ownerUserId === "dotta" && !account.routing };
     store.accounts = store.accounts.some((row) => row.id === account.id) ? store.accounts.map((row) => row.id === account.id ? account : row) : [...store.accounts, account];
     void client.invalidateQueries(); render((n) => n + 1);
   }
@@ -81,9 +83,20 @@ export function AiConnectorPages({ initialConnections = AI_REVIEW_CONNECTIONS, d
       const rows = store.accounts.filter((row) => !store.removed.has(row.id));
       const applications: ToolApplication[] = gallery.map((app) => ({ id: `app-${app.slug}`, companyId, applicationKey: `app-gallery:${app.slug}:review`, name: app.name, description: app.description, type: "mcp_http", status: "active", pluginId: null, ownerAgentId: null, ownerUserId: "dotta", metadata: { sourceTemplateKey: app.slug }, archivedAt: null, createdAt: date, updatedAt: date }));
       const reply = (value: unknown) => Promise.resolve(Response.json(value));
+      if (path === "/api/auth/get-session") return reply({ ...storybookAuthSession, user: { ...storybookAuthSession.user, id: "dotta", name: "Dotta" } });
+      if (path === `/api/companies/${companyId}/ai-connections`) return reply({ currentUserId: "dotta", canManageConnections: !readOnly, connections: rows });
+      if (path === `/api/companies/${companyId}/ai-connections/default` && method === "PUT") {
+        const target = rows.find(row => row.grantId === payload.grantId);
+        if (!target?.canSetDefault || target.status !== "connected") return Response.json({ error: "This account cannot be selected as your default." }, { status: 403 });
+        if (failDefaultOnce && !store.failedDefault) { store.failedDefault = true; return Response.json({ error: "The default could not be saved. Try again." }, { status: 503 }); }
+        store.accounts = store.accounts.map(row => row.provider === target.provider && row.ownerUserId === "dotta" ? { ...row, isDefault: row.grantId === target.grantId } : row);
+        return reply({ ok: true });
+      }
       if (path === `/api/companies/${companyId}/tools/gallery`) return reply({ apps: gallery, capabilities: { canCreateOrganizationGrant: !readOnly, organizationGrantReason: null, canSetCompanyInstall: !readOnly, companyInstallReason: null } });
       if (path === `/api/companies/${companyId}/tools/applications`) return reply({ applications });
       if (path === `/api/companies/${companyId}/tools/connections`) return reply({ connections: rows.map(asConnection) });
+      if (path === `/api/companies/${companyId}/chat-endpoints`) return reply([]);
+      if (path === "/api/mcp/connections") return reply([]);
       if (path === `/api/companies/${companyId}/tools/profiles`) return reply({ profiles: [...store.profiles.values()] });
       if (path === `/api/companies/${companyId}/tools/policies`) return reply({ policies: [] });
       if (path === `/api/companies/${companyId}/agents`) return reply(agents);
@@ -110,6 +123,10 @@ export function AiConnectorPages({ initialConnections = AI_REVIEW_CONNECTIONS, d
           return reply({ connectionId: row.id, installs: store.installs.get(row.id) ?? [] });
         }
         if (suffix === "/catalog") return reply({ catalog: [] });
+        if (suffix === "/profile-configuration") {
+          const profile = store.profiles.get(row.id);
+          return reply({ profiles: profile ? [profile] : [] });
+        }
         return Response.json({ error: `Unsupported review operation: ${suffix}` }, { status: 400 });
       }
       if (path.startsWith(`/api/companies/${companyId}/tools/apps/`) && path.endsWith("/finish")) {
@@ -135,14 +152,14 @@ export function AiConnectorPages({ initialConnections = AI_REVIEW_CONNECTIONS, d
       <Routes>
         <Route path="/:companyPrefix/apps" element={<Browse renderAccountDetails={(connection) => {
           const row = store.accounts.find((account) => account.id === connection.id);
-          return row ? <p className="text-xs text-muted-foreground">{aiMethodLabel(row.provider, row.method)} · {row.ownership === "shared" ? "Company shared" : "Personal"}{row.isDefault ? " · Personal default" : ""}{row.accountLabel ? ` · ${row.accountLabel}` : ""}</p> : null;
+          return row ? <p className="text-xs text-muted-foreground">{aiMethodLabel(row.provider, row.method)} · {row.ownership === "shared" ? "Company shared" : "Personal"}{row.accountLabel ? ` · ${row.accountLabel}` : ""}</p> : null;
         }} />} />
         <Route path="/:companyPrefix/apps/connect" element={<Setup accounts={store.accounts} onSave={update} />} />
         <Route path="/:companyPrefix/apps/:connectionId/:tab" element={<AppDetail onReconnect={(connection) => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&stage=setup&reconnect=${connection.id}`)} renderActions={(connection) => {
           const account = store.accounts.find((row) => row.id === connection.id);
           return account ? <AiReviewBoundary label="App component: AI account controls inside existing AppDetail"><AiConnectionAccountControls account={account} currentUserId="dotta" grant={grantsFor(account, readOnly).grants[0]} readOnly={readOnly}
             onMakeDefault={() => {
-              store.accounts = store.accounts.map((row) => row.provider === account.provider && row.method === account.method && row.ownerUserId === "dotta" ? { ...row, isDefault: row.id === account.id } : row); update({ ...account, isDefault: true });
+              store.accounts = store.accounts.map((row) => row.provider === account.provider && row.ownerUserId === "dotta" ? { ...row, isDefault: row.id === account.id } : row); update({ ...account, isDefault: true });
             }}
             onReconnect={() => navigate(`/apps/connect?source=${account.provider}&stage=setup&reconnect=${account.id}`)}
             onRevoke={() => update({ ...account, status: "revoked" })}

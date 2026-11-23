@@ -7,13 +7,47 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { isWorkspacePackage, parseWorkspaceEntries } from '../build-standalone-public-packages.mjs';
-import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
+import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedClaudeProbeSource, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
 import { verifyPiPackagedDaemon } from '../pi-public-install-probe.mjs';
 import { publicInstallClosure } from '../public-install-closure.mjs';
 import { runnerBinaryTarget } from '../../packages/paperclip-runner/src/live/runner-binary.ts';
 
 const paths = { assets: '/private/staging/assets', consumer: '/private/staging/consumer', cache: '/private/staging/cache', uid: 1001, gid: 1001 };
 const values = (args, flag) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
+
+test('installed Claude admission propagates failure without emitting a passing receipt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-admission-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation(model) { if (model !== 'claude-opus-5-5') throw Error('wrong model'); }\n");
+    const accepted = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).packageIntegrityAndNoFollowLease, 'passed');
+    assert.equal(JSON.parse(accepted.stdout).providerCalls, 0);
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('integrity rejected'); }\n");
+    const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.notEqual(rejected.status, 0);
+    assert.equal(rejected.stdout, '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('ordinary Claude consumer admission rejects authority overrides before invoking the verifier', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-authority-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('provider verifier invoked'); }\n");
+    for (const key of ['PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT', 'PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST']) {
+      const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000,
+        env: { PATH: process.env.PATH, [key]: root } });
+      assert.notEqual(rejected.status, 0);
+      assert.equal(rejected.stdout, '');
+      assert.match(rejected.stderr, /AssertionError/);
+      assert.doesNotMatch(rejected.stderr, /provider verifier invoked/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('Mac initial install failures retain bounded npm progress without secret or environment values', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mac-install-diagnostics-test-')));
@@ -296,7 +330,7 @@ test('the verifier stages only workspace packages, so it skips the standalone bu
   // staged, reusing the UI that `pnpm build` produced, and it is timed. The
   // gated standalone build keeps release.sh's order: after the closure is
   // known and before the UI copy and any staged source.
-  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills']);
+  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills', 'scripts/install-copilot-assets.mjs']);
   assert.ok(source.includes("PAPERCLIP_RELEASE_REUSE_UI_DIST: '1'"));
   const uiDist = position("run('bash', [join(repo, 'scripts/prepare-server-ui-dist.sh')], repo)");
   assert.ok(position('publicInstallClosure(repo)') < gate && gate < uiDist && uiDist < position('timing.stage_ui_dist_ms =') && uiDist < position('const stageSource = '));
@@ -318,7 +352,7 @@ test('the installed Codex probe exercises the public export and rejects incomple
     else { nativeBytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); nativeBytes.writeUInt16LE(process.arch === 'arm64' ? 183 : 62, 18); }
     const nativeFile = join(nativeVendor, triple, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
     mkdirSync(join(nativeVendor, triple, 'bin'), { recursive: true }); writeFileSync(nativeFile, nativeBytes, { mode: 0o755 });
-    const manifest = { name: '@openai/codex', version: `0.160.0-${target}`, os: [process.platform], cpu: [process.arch] };
+    const manifest = { name: '@openai/codex', version: `0.170.0-${target}`, os: [process.platform], cpu: [process.arch] };
     writeFileSync(join(platform, 'package.json'), JSON.stringify(manifest));
     const entry = { name: manifest.name, version: manifest.version,
       resolved: `https://registry.npmjs.org/@openai/codex/-/codex-${manifest.version}.tgz`, integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}` };
@@ -341,13 +375,13 @@ test('the installed Codex probe exercises the public export and rejects incomple
     writeFileSync(integrity, moduleSource);
     writeFileSync(join(drivers, 'qualified-profiles.js'), "export const resolveQualifiedAcpxProfile = (agent, model) => ({ agent, model });");
     const wrapper = join(consumer, 'node_modules/@openai/codex/bin'); mkdirSync(wrapper, { recursive: true });
-    writeFileSync(join(wrapper, '../package.json'), JSON.stringify({ name: '@openai/codex', version: '0.160.0' }));
+    writeFileSync(join(wrapper, '../package.json'), JSON.stringify({ name: '@openai/codex', version: '0.170.0' }));
     const index = join(vendor, 'index.mjs'), command = join(wrapper, 'codex.js'), probe = join(root, 'probe.mjs');
     const executable = version => writeFileSync(command, `#!/bin/sh\n[ "$1" = --version ] || exit 65\nprintf '%s\\n' 'codex-cli ${version}'\n`, { mode: 0o755 });
-    writeFileSync(probe, installedCodexProbeSource(index, consumer, '0.160.0'));
+    writeFileSync(probe, installedCodexProbeSource(index, consumer, '0.170.0'));
     const run = () => spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 10_000, env: { PATH: '/usr/bin:/bin', NODE_PATH: '' } });
     writeFileSync(index, `export const resolvePinnedCodexCommand = () => ${JSON.stringify(command)};`);
-    executable('0.160.0');
+    executable('0.170.0');
     let result = run(); assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).pinnedCodexCommandVerified, true);
     assert.equal(JSON.parse(result.stdout).codexPlatformPackageSource, 'official npm');
@@ -385,7 +419,7 @@ test('the installed Codex probe exercises the public export and rejects incomple
     result = run(); assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).codexPlatformPackages.length, 2);
     assert.equal(JSON.parse(result.stdout).codexSelectedPlatformPath, platformPath);
-    assert.equal(JSON.parse(result.stdout).codexSelectedPlatformVersion, '0.160.0-' + target);
+    assert.equal(JSON.parse(result.stdout).codexSelectedPlatformVersion, '0.170.0-' + target);
     const legacyCommand = join(legacy, 'codex');
     writeFileSync(legacyCommand, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     writeFileSync(index, `export const resolvePinnedCodexCommand = () => ${JSON.stringify(legacyCommand)};`);
@@ -399,7 +433,7 @@ test('the installed Codex probe exercises the public export and rejects incomple
     result = run(); assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).installedCodexVersion, 'codex-cli 0.156.1');
     assert.equal(JSON.parse(result.stdout).codexQualifiedInstallationVerified, undefined);
-    writeFileSync(probe, installedCodexProbeSource(index, consumer, '0.160.0'));
+    writeFileSync(probe, installedCodexProbeSource(index, consumer, '0.170.0'));
     writeFileSync(security, securitySource);
 
     writeFileSync(index, `import { writeFileSync } from 'node:fs'; export const resolvePinnedCodexCommand = () => {
@@ -439,7 +473,7 @@ test('the installed Codex probe exercises the public export and rejects incomple
     delete lock.packages[platformPath].inBundle;
     writeFileSync(join(consumer, 'package-lock.json'), JSON.stringify(lock));
     const foreign = join(consumer, 'node_modules/@openai/codex-win32-arm64'); mkdirSync(foreign);
-    writeFileSync(join(foreign, 'package.json'), JSON.stringify({ name: '@openai/codex', version: '0.160.0-win32-arm64' }));
+    writeFileSync(join(foreign, 'package.json'), JSON.stringify({ name: '@openai/codex', version: '0.170.0-win32-arm64' }));
     result = run(); assert.notEqual(result.status, 0); assert.match(result.stderr, /only the host/);
     rmSync(foreign, { recursive: true });
     executable('9.9.9'); result = run(); assert.notEqual(result.status, 0); assert.match(result.stderr, /qualified pin/);
@@ -472,7 +506,7 @@ test('actual tar member checks allow Codex JavaScript but reject nested platform
 test('consumer provenance rejects bundled, foreign, inconsistent and non-official Codex payloads', () => {
   for (const target of ['linux-x64', 'linux-arm64']) {
   const path = `node_modules/@openai/codex-${target}`;
-  const manifest = { name: '@openai/codex', version: `0.160.0-${target}`, os: ['linux'], cpu: [target.slice('linux-'.length)] };
+  const manifest = { name: '@openai/codex', version: `0.170.0-${target}`, os: ['linux'], cpu: [target.slice('linux-'.length)] };
   const entry = { version: manifest.version, resolved: `https://registry.npmjs.org/@openai/codex/-/codex-${manifest.version}.tgz`,
     integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}` };
   const check = (value = entry, installed = [{ path, manifest }]) => assertInstalledCodexPlatformProvenance({ packages: { [path]: value } }, installed, target);
@@ -480,12 +514,12 @@ test('consumer provenance rejects bundled, foreign, inconsistent and non-officia
   const legacyManifest = { ...manifest, version: `0.156.1-${target}` };
   assert.equal(check({ ...entry, version: legacyManifest.version,
     resolved: `https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-${target}.tgz` }, [{ path, manifest: legacyManifest }]).codexConsumerHostOnly, true);
-  assert.throws(() => check(entry, [{ path, manifest: { ...manifest, version: `^0.160.0-${target}` } }]), /exact host version/);
+  assert.throws(() => check(entry, [{ path, manifest: { ...manifest, version: `^0.170.0-${target}` } }]), /exact host version/);
   for (const change of [
     { inBundle: true }, { link: true }, { version: `0.156.1-${target}` },
-    { resolved: `https://example.com/@openai/codex/-/codex-0.160.0-${target}.tgz` },
+    { resolved: `https://example.com/@openai/codex/-/codex-0.170.0-${target}.tgz` },
     { resolved: `https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-${target}.tgz` },
-    { resolved: `https://user@registry.npmjs.org/@openai/codex/-/codex-0.160.0-${target}.tgz` },
+    { resolved: `https://user@registry.npmjs.org/@openai/codex/-/codex-0.170.0-${target}.tgz` },
     { integrity: undefined }, { integrity: 'sha512-AA==' },
   ]) assert.throws(() => check({ ...entry, ...change }));
   assert.throws(() => check(entry, []), /must install its host/);
