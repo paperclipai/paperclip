@@ -69,6 +69,7 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "anthropic/claude-sonnet-5-5", label: "anthropic/claude-sonnet-5-5" },
   { id: "anthropic/claude-sonnet-5", label: "anthropic/claude-sonnet-5" },
   { id: "anthropic/claude-haiku-5-5", label: "anthropic/claude-haiku-5-5" },
+  { id: "google/gemini-4-neon", label: "google/gemini-4-neon" },
   { id: "google/gemini-4-carbon", label: "google/gemini-4-carbon" },
   { id: "google/gemini-4-argon", label: "google/gemini-4-argon" },
   { id: "google/gemini-4-hydrogen", label: "google/gemini-4-hydrogen" },
