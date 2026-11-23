@@ -157,6 +157,20 @@ describe("cancelling an unfinished first sign-in", () => {
     await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body.abandoned).toBe(true));
   });
 
+  it("keeps a retry that starts while the cancel is still removing the draft", async () => {
+    const { app, company, connect, visible } = await setup();
+    const first = await connect();
+    const [cancelled, retry] = await Promise.all([
+      request(app).post(`/api/tool-connections/${first.connectionId}/sign-in/cancel`).expect(200),
+      connect(),
+    ]);
+    expect(cancelled.body.abandoned).toBe(true);
+    await request(app).get("/api/tools/oauth/callback").query({ state: retry.state, code: "fixture-code", iss: origin }).expect(200);
+    const live = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, company.id), ne(toolConnections.status, "archived")));
+    expect(live.map((row) => [row.id, row.status])).toEqual([[retry.connectionId, "active"]]);
+    expect((await visible()).map((connection) => connection.id)).toEqual([retry.connectionId]);
+  });
+
   it("refuses a sign-in that finishes after the user cancelled it", async () => {
     const { app, connect, visible } = await setup();
     const { connectionId, state } = await connect();

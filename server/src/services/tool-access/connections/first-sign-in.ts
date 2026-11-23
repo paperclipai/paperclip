@@ -13,6 +13,11 @@ type ConnectionRow = typeof toolConnections.$inferSelect;
 type GrantEvidence = Pick<typeof connectionGrants.$inferSelect, "connectionId" | "credentialSecretRefs" | "providerTenant" | "externalCredential">;
 
 const OAUTH_TOKEN_PATHS = new Set(["oauth.access_token", "oauth.refresh_token"]);
+const SIGN_IN_CANCELLED = "oauth_sign_in_cancelled";
+
+function signInCancelled(connection: Pick<ConnectionRow, "status" | "lastError">): boolean {
+  return connection.status === "disabled" && connection.lastError === SIGN_IN_CANCELLED;
+}
 
 function holdsInlineOAuthToken(config: unknown): boolean {
   const oauth = asRecord(asRecord(config).oauth);
@@ -33,6 +38,7 @@ export function connectionHasOAuthCredential(connection: ConnectionRow, grants: 
 }
 
 export function connectionAwaitsFirstSignIn(connection: ConnectionRow, grants: GrantEvidence[]): boolean {
+  if (signInCancelled(connection)) return true;
   return connection.status === "draft"
     && connection.authKind === "oauth"
     && connection.lastError !== "connection_identity_rollback_failed"
@@ -43,11 +49,11 @@ export async function lockConnectionForSignIn(
   tx: ToolAccessMutationDb,
   connection: Pick<ConnectionRow, "id" | "companyId">,
 ) {
-  const [locked] = await tx.select({ status: toolConnections.status }).from(toolConnections)
+  const [locked] = await tx.select({ status: toolConnections.status, lastError: toolConnections.lastError }).from(toolConnections)
     .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
     .for("update");
-  if (locked?.status === "archived") {
-    throw conflict("This sign-in was cancelled. Start the connection again.", { code: "oauth_sign_in_cancelled" });
+  if (locked && (locked.status === "archived" || signInCancelled(locked))) {
+    throw conflict("This sign-in was cancelled. Start the connection again.", { code: SIGN_IN_CANCELLED });
   }
 }
 
@@ -66,6 +72,10 @@ async function grantEvidence(db: ToolAccessMutationDb, companyId: string, connec
     })
     .from(connectionGrants)
     .where(and(eq(connectionGrants.companyId, companyId), inArray(connectionGrants.connectionId, connectionIds)));
+}
+
+class KeptConnection {
+  row: ConnectionRow | null = null;
 }
 
 export function createFirstSignInDrafts(db: Db, { removeConnection }: Dependencies) {
@@ -88,18 +98,25 @@ export function createFirstSignInDrafts(db: Db, { removeConnection }: Dependenci
     companyId: string,
     actor?: ActorInfo,
   ): Promise<{ abandoned: false; connection: ToolConnection } | ({ abandoned: true } & ToolConnectionRemovalResult)> {
-    const outcome = await db.transaction(async (tx) => {
-      const [row] = await tx.select().from(toolConnections)
-        .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)))
-        .for("update");
-      if (!row) throw notFound("Tool connection not found");
-      if (!connectionAwaitsFirstSignIn(row, await grantEvidence(tx, companyId, [row.id]))) return { abandoned: false as const, row };
-      await tx.delete(toolOauthStates).where(and(eq(toolOauthStates.companyId, companyId), eq(toolOauthStates.connectionId, row.id)));
-      await tx.update(toolConnections).set({ status: "archived", enabled: false, updatedAt: new Date() })
-        .where(and(eq(toolConnections.id, row.id), eq(toolConnections.companyId, companyId)));
-      return { abandoned: true as const, row };
-    });
-    if (!outcome.abandoned) return { abandoned: false, connection: toConnection(outcome.row) };
+    const kept = new KeptConnection();
+    try {
+      await db.transaction(async (tx) => {
+        await tx.delete(toolOauthStates).where(and(eq(toolOauthStates.companyId, companyId), eq(toolOauthStates.connectionId, connectionId)));
+        const [row] = await tx.select().from(toolConnections)
+          .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)))
+          .for("update");
+        if (!row) throw notFound("Tool connection not found");
+        if (!connectionAwaitsFirstSignIn(row, await grantEvidence(tx, companyId, [row.id]))) {
+          kept.row = row;
+          throw kept;
+        }
+        await tx.update(toolConnections).set({ status: "disabled", enabled: false, lastError: SIGN_IN_CANCELLED, updatedAt: new Date() })
+          .where(and(eq(toolConnections.id, row.id), eq(toolConnections.companyId, companyId)));
+      });
+    } catch (error) {
+      if (error === kept && kept.row) return { abandoned: false, connection: toConnection(kept.row) };
+      throw error;
+    }
     return { abandoned: true, ...(await removeConnection(connectionId, companyId, actor)) };
   }
 
