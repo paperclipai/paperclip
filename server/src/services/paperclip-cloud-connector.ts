@@ -567,7 +567,9 @@ export function createPaperclipCloudConnector(input: {
         // An inactive registration has no usable sign-ins either, including
         // the gallery's cached list. Advancing both generations stops reads
         // already in flight from saving or caching their pre-removal list.
-        if (status !== "active") {
+        // A response from before a later invalidation is stale: it must not
+        // fence out the answers of checks that started after it.
+        if (status !== "active" && generation === savedAnswerGeneration) {
           remember(lastKnownCapabilities, [], generation);
           savedAnswerGeneration += 1;
           capabilityCacheGeneration += 1;

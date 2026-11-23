@@ -146,6 +146,29 @@ describe("Paperclip Cloud connector saved answers", () => {
     await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
   });
 
+  it("keeps a recovery answer when an older removal answer arrives while it is in flight", async () => {
+    let answerOldRemoval!: (response: Response) => void;
+    let answerRecovery!: (response: Response) => void;
+    const responses: Array<Response | Promise<Response>> = [
+      new Promise<Response>((resolve) => { answerOldRemoval = resolve; }),
+      new Promise<Response>((resolve) => { answerRecovery = resolve; }),
+      busy(),
+    ];
+    const connector = createPaperclipCloudConnector({
+      config: config(),
+      request: vi.fn(async () => responses.shift()!) as typeof fetch,
+    });
+    const oldRemoval = connector.getInstanceStatus();
+    invalidatePaperclipCloudConnectorCapabilities();
+    const recovery = connector.getInstanceStatus();
+    answerOldRemoval(new Response("removed", { status: 401 }));
+    await expect(oldRemoval).resolves.toBe("removed");
+    answerRecovery(Response.json({ active: true, status: "active" }));
+    await expect(recovery).resolves.toBe("active");
+    // Cloud is busy now; the recovery answer is the one that stands.
+    await expect(connector.getInstanceStatus()).resolves.toBe("active");
+  });
+
   it("does not let an answer that started before an invalidation replace a newer one", async () => {
     let answerLate!: (response: Response) => void;
     const responses: Array<Response | Promise<Response>> = [
