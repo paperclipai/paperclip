@@ -16,7 +16,10 @@ try {
   let adminUrl = testPostgresAdminUrl();
   if (adminUrl) await checkTestPostgresAdmin(adminUrl);
   else {
-    server = await startEmbeddedPostgresTestDatabase("paperclip-test-command-");
+    // Shared multi-worker test server: raise max_connections above Postgres's
+    // default 100 so 7-8 parallel Vitest fork workers (each with main + private
+    // pools) never exhaust backend slots on 8-core runners or dev workstations.
+    server = await startEmbeddedPostgresTestDatabase("paperclip-test-command-", { maxConnections: 300 });
     const url = new URL(server.connectionString);
     url.pathname = "/postgres";
     adminUrl = url.toString();
