@@ -36,8 +36,12 @@ export type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
  */
 export type AcpxProcessIdentitySink = {
   current: AdapterExecutionContext["onSpawn"];
+  /** Counts physical spawns on the current run, including respawns on a cached runtime. */
+  onLaunch?: () => void;
   latest: AcpxAgentProcessIdentity | null;
   localProcess?: ChildProcess;
+  /** The current run's agent environment; a warm runtime respawns with this run's values. */
+  launchEnvironment?: Readonly<Record<string, string>>;
 };
 
 /** The live-line buffer and log path a warm runtime's child stderr carries. */

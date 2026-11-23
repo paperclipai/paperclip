@@ -37,6 +37,9 @@ export function RecoveryNoticeFixture({ state = "blocked", children }: {
     const fixtureFetch: typeof window.fetch = async (input, init) => {
       const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       const path = new URL(rawUrl, window.location.origin).pathname;
+      if (path === "/api/issues/storybook-recovery/recovery-actions/recover-workspace" && init?.method === "POST") {
+        return Response.json({ actionId: "recovery", status: "queued" }, { status: 202 });
+      }
       if (path === "/api/issues/storybook-recovery/recovery-actions" && (!init?.method || init.method === "GET")) {
         return state === "unavailable" ? Response.json({ error: "Recovery service unavailable" }, { status: 503 }) : Response.json(response);
       }

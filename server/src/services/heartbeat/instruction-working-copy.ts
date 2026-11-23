@@ -9,9 +9,11 @@ import { AgentDirectoryReuseInvalidatedError, isAgentDirectoryCopy } from "../ag
 import { collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance, type agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import { claimWarmNativeInstructionCopy, nativeSessionWorkspaceScope, reserveWarmNativeInstructionDirectory } from "../native-runtime/index.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { supportsNativeWarmFiles } from "../native-runtime/native-warm-capability.js";
 import type { HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
+import type { NativeLifecyclePolicy } from "./native-lifecycle.js";
 
 type Copies = ReturnType<typeof agentInstructionWorkingCopyService>;
 type Selection = HeartbeatRuntimeSelectionInput;
@@ -62,7 +64,7 @@ interface InstructionWorkingCopyInput {
   context: Selection["task"]["context"];
   session: {
     taskSession: { lastRunId: string | null } | null;
-    taskSessionForRun: Selection["session"]["taskSessionForRun"];
+    taskSessionForRun: { lastRunId: string | null } | null;
     sessionConfigMetadata: EffectiveRunSessionConfigMetadata;
   };
   workspace: Pick<Selection["workspace"], "executionTarget" | "executionWorkspace" | "persistedExecutionWorkspace">;
@@ -78,6 +80,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
   let nativeInstructionReservation: Awaited<ReturnType<typeof reserveWarmNativeInstructionDirectory>> = null;
   let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
   let instructionSave: Record<string, unknown> | null = null;
+  const task = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerTask : undefined;
   const instructionPreparationKey = createHash("sha256").update(JSON.stringify({
     adapterType: agent.adapterType, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig, sessionConfigMetadata,
     duplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(executionTarget),
@@ -121,12 +124,13 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
     retirementFailed: async () => { await instructionCopies.reportRetirementUnconfirmed(agent.companyId, readRun().id); },
   } : undefined;
 
-  async function prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem }: {
+  async function prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }: {
     runtimeConfig: Record<string, unknown>;
     nativeRuntimeResolution: Selection["nativeRuntimeResolution"];
     hasInstructionFilesystem: boolean;
+    nativeLifecyclePolicy: NativeLifecyclePolicy | null;
   }) {
-    if (hasInstructionFilesystem) {
+    if (hasInstructionFilesystem && !task) {
       try {
         // Missing contract fields on a restored session mean the deployed
         // legacy format. New sessions opt into whole-directory persistence.
@@ -137,11 +141,9 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
         const savedFileInput = parseObject(parseObject(readRun().runnerProfileJson).nativeExecutionInput);
         const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
         const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-        const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+        const warmFiles = nativeRuntimeResolution.kind === "native" && (supportsNativeWarmFiles({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }) ||
           (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
-          (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
-            ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
-            : parseObject(agent.adapterConfig).lifecycleMode === "warm");
+          nativeLifecyclePolicy?.mode === "warm";
         if (warmFiles && taskSessionForRun?.lastRunId) {
           nativeInstructionReservation = await reserveWarmNativeInstructionDirectory({ companyId: agent.companyId, agentId: agent.id,
             previousRunId: taskSessionForRun.lastRunId, runId: readRun().id, target: executionTarget,
@@ -154,7 +156,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
             observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             priorExecution: parseNativeExecutionInput(priorFileInput), companyId: agent.companyId, agentId: agent.id,
             executionWorkspaceId: persistedExecutionWorkspace?.id ?? readRun().id, workspace: executionWorkspace,
-            environmentId: executionTarget?.environmentId ?? null, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,
+            environmentId: executionTarget?.environmentId ?? null, target: executionTarget, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,
             adopt: async previousRunId => {
               instructionCopy = await instructionCopies.adopt({ companyId: agent.companyId, agentId: agent.id,
                 runId: readRun().id, previousRunId, target: executionTarget, cwd: executionWorkspace.cwd, allowRetirementHandoff: true });

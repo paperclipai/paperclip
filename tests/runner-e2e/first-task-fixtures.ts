@@ -4,6 +4,7 @@ import type { RunnerApi } from "./api.js";
 import { deleteDaytonaEnvironment, installFixtureDaytonaProvider, type LiveFixtureValues } from "./live-fixtures.js";
 import { isImmutableDaytonaImage } from "./catalog.js";
 import type { CredentialName, MatrixExecution } from "./types.js";
+import { APPROVAL_HISTORY_SUITE } from "./first-task-approval-history.js";
 
 export const MANAGED_FIRST_TASK_CELL = "confirmation-replies.runner-codex.daytona.task-card-accept";
 export function isManagedFirstTask(execution: Pick<MatrixExecution, "id">): boolean {
@@ -63,7 +64,7 @@ export async function provisionFirstTaskFixtures(input: {
   const { api, execution, nonce, company, credentials } = input;
   const managed = isManagedFirstTask(execution);
   if (
-    !["first-task", "completion-updates", "confirmation-replies"].includes(execution.suite.id) || execution.task.flow !== "first_task" ||
+    !["first-task", "completion-updates", "confirmation-replies", APPROVAL_HISTORY_SUITE].includes(execution.suite.id) || execution.task.flow !== "first_task" ||
     (execution.environment.id !== "local" && !managed) ||
     ![
       "legacy-codex",

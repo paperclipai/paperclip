@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "@paperclipai/paperclip-runner";
 import {
   ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID,
   ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID,
@@ -113,14 +115,48 @@ describe("first-task proposal mode policy", () => {
     expect(skill).toContain("actual child task and download links");
   });
 
+  it("ships native child handoff arguments that let the child run before its waiting parent", async () => {
+    const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+    const recipe = [...skill.matchAll(/```json\s+([\s\S]*?)```/g)]
+      .map((match) => JSON.parse(match[1]!) as Record<string, Record<string, unknown>>)
+      .find((value) => value.createTask && value.setDependencies);
+    if (!recipe) throw new Error("Shipped first-task skill is missing the native child handoff recipe");
+    expect(Object.keys(recipe).sort()).toEqual(["createTask", "setDependencies"]);
+    expect(recipe.createTask).toEqual({
+      idempotencyKey: "first-task-child:<proposal-id>",
+      title: "<child-title>",
+      description: "<approved-child-description>",
+      assigneeActorId: "<self-agent-id>",
+      status: "todo",
+      blockedByTaskIds: [],
+    });
+    expect(recipe.setDependencies).toEqual({
+      idempotencyKey: "first-task-wait:<proposal-id>",
+      blockedByTaskIds: ["<existing-blocker-id>", "<child-task-id>"],
+    });
+
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const [operationId, input] of [["create_task", recipe.createTask], ["set_dependencies", recipe.setDependencies]] as const) {
+      const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find((tool) => tool.operationId === operationId);
+      if (!descriptor) throw new Error(`Missing native tool descriptor: ${operationId}`);
+      const validate = ajv.compile(descriptor.inputSchema);
+      expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...input, notAToolArgument: true })).toBe(false);
+    }
+    expect(skill).toContain("Copy required input payloads verbatim");
+    expect(skill).toContain("encoded bytes, nonces, constraints, and requested filenames");
+    expect(skill).toContain('Do not leave references such as "provided above"');
+    expect(skill).toContain("Parent-child linkage is not a dependency");
+  });
+
   it("keeps plan-only authorization and document-only child execution distinct from file handoff", async () => {
     const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
     expect(skill).toContain("For a plan-only request, retain the accepted plan on this task");
     expect(skill).toContain("Do not start its implementation or hire the proposed team without authorization");
-    expect(skill).toContain("Create exactly one child linked to this onboarding task");
+    expect(skill).toContain("For an accepted single task, complete the work here.");
     expect(skill).toContain("For document-only child work, you may execute it directly");
     expect(skill).toContain("Save the finished output as a document on the child task and mark that child done");
-    expect(skill).toContain("On later wakes, continue that same child instead of creating another");
+    expect(skill).toContain("reuse any task already created for it");
   });
 });
 

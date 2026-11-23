@@ -43,7 +43,7 @@ import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
-const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
+const adapterExecute = vi.hoisted(() => vi.fn(async (_input?: unknown) => ({
   exitCode: 0,
   signal: null,
   timedOut: false,
@@ -650,9 +650,9 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       },
     });
 
-    let childRunWorkspace:
+    let childRunWorkspace = null as
       | { cwd: string; branchName: string; executionWorkspaceId: string }
-      | null = null;
+      | null;
     adapterExecute.mockImplementationOnce(async (input) => {
       const context = (input as { context?: Record<string, unknown> }).context ?? {};
       const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;
@@ -863,7 +863,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9302",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Make the plan only.");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("guards cross-issue accepted-plan retries even when the waking issue is standard work mode", async () => {
@@ -1025,7 +1025,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9402",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Issue: \"PAP-9401\"");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
@@ -1163,7 +1163,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Implement the accepted plan on this issue.",
     );
   }, 20_000);
 });

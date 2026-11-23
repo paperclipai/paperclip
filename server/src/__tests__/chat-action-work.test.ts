@@ -47,7 +47,7 @@ describe("chat action scheduling", () => {
     const work = s.start();
     await vi.advanceTimersByTimeAsync(1);
     expect(s.service.processTelegramSubscriptionDiscovery).toHaveBeenCalledTimes(1);
-    await s.owner.transaction(tx => notifyChatEndpointWork(tx, "connection-fixture"));
+    await s.owner.transaction(tx => notifyChatEndpointWork(tx, "connection-fixture", "company-fixture"));
     expect(s.service.scheduleTelegramSubscriptionDiscovery).toHaveBeenCalledWith("connection-fixture");
     s.service.processTelegramSubscriptionDiscovery.mockRejectedValueOnce(new Error("discovery unavailable"));
     release();
@@ -87,7 +87,7 @@ describe("chat action scheduling", () => {
     for (const run of s.runs) expect(run).toHaveBeenCalledTimes(2);
     // Queue claims/settlements do not rediscover every configured endpoint.
     expect(s.service.processTelegramSubscriptionDiscovery).toHaveBeenCalledTimes(1);
-    await s.owner.transaction(tx => notifyChatEndpointWork(tx, "connection-fixture"));
+    await s.owner.transaction(tx => notifyChatEndpointWork(tx, "connection-fixture", "company-fixture"));
     await vi.advanceTimersByTimeAsync(1);
     for (const run of s.runs) expect(run).toHaveBeenCalledTimes(3);
     expect(s.service.processTelegramSubscriptionDiscovery).toHaveBeenCalledTimes(2);

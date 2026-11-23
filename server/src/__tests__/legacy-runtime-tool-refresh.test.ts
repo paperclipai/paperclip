@@ -7,7 +7,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 // Pi resolves its session directory at module load. Keep that test directory
 // under the temporary root instead of the operator's real home.
 vi.mock("node:os", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:os")>();
+  const actual = await importOriginal<typeof import("node:os") & { default: typeof import("node:os") }>();
   return { ...actual, default: { ...actual.default, homedir: actual.tmpdir }, homedir: actual.tmpdir };
 });
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {

@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import profiles from "../acpx-profiles.json" with { type: "json" };
+import historicalKimi from "../test/fixtures/kimi-profile-v14-identity.json" with { type: "json" };
+import { KIMI_DISTRIBUTION_CLOSURE_SHA256 as kimiClosures } from "../src/drivers/acpx/kimi-closure-pins.ts";
 import distributions from "../cursor-distributions.json" with { type: "json" };
 import { verifyReleaseProviderPack } from "./release-provider-pack.mjs";
 import { existingReleaseProviderPack, releaseProviderPackManifest } from "./stage-release-runner-binaries.mjs";
@@ -22,6 +24,12 @@ function fixture() {
     providers: { cursor: { version: profiles.profiles.cursor.agentServerVersion, profileDigest: profiles.profiles.cursor.commandDigest,
       closureDigest: `sha256:${distributions.platforms["linux-x64"].closureSha256}`, qualification: "qualified",
       path: "provider-assets/cursor/linux-x64", sha256: digest } } };
+  payload.providers.copilot = { version: profiles.profiles.copilot.agentServerVersion,
+    profileDigest: profiles.profiles.copilot.commandDigest, closureDigest: "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
+    qualification: "qualified", path: "provider-assets/copilot/linux-x64", sha256: digest };
+  payload.providers.kimi = { version: profiles.profiles.kimi.agentServerVersion,
+    profileDigest: profiles.profiles.kimi.commandDigest, closureDigest: `sha256:${kimiClosures["linux-x64"]}`,
+    qualification: "qualified", path: "provider-assets/kimi/linux-x64", sha256: digest };
   return payload;
 }
 function seal(payload) { return { schema: "paperclip-runner/remote-provider-pack/v1", payload,
@@ -52,7 +60,7 @@ test("release assembly rejects rehashed stale or missing packs before staging an
   const source = dirname(dirname(fileURLToPath(import.meta.url)));
   try {
     // Run the actual assembler in an isolated layout so it cannot overwrite built artifacts.
-    for (const file of ["scripts/stage-release-runner-binaries.mjs", "scripts/release-provider-pack.mjs", "src/live/runner-binary.ts", "acpx-profiles.json", "cursor-distributions.json", "release-runner-targets.json"]) {
+    for (const file of ["scripts/stage-release-runner-binaries.mjs", "scripts/release-provider-pack.mjs", "src/live/runner-binary.ts", "src/drivers/acpx/kimi-closure-pins.ts", "acpx-profiles.json", "cursor-distributions.json", "release-runner-targets.json"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true }); cpSync(join(source, file), join(root, file));
     }
     const platforms = {};
@@ -93,6 +101,19 @@ test("daemon-only assembly retains an existing same-source Linux provider-pack i
     writeFileSync(file, JSON.stringify(seal(wrongTarget)));
     assert.throws(() => existingReleaseProviderPack(root, revision), /Linux x64 target/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const field of ["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"]) {
+  test(`rejects an independently rehashed stale Copilot ${field}`, () => {
+    const payload = fixture(); payload.providers.copilot[field] = "stale";
+    assert.throws(() => verifyReleaseProviderPack(seal(payload), revision), /Copilot identity/);
+  });
+}
+test("rejects omitted Copilot and a duplicate candidate inventory", () => {
+  const missing = fixture(); delete missing.providers.copilot;
+  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision), /Copilot identity/);
+  const mixed = fixture(); mixed.candidateProviders = { copilot: mixed.providers.copilot };
+  assert.throws(() => verifyReleaseProviderPack(seal(mixed), revision), /Copilot identity/);
 });
 
 function armFixture() {
@@ -146,4 +167,39 @@ test("frozen image validation uses release profiles rather than the newer workfl
   assert.equal(verifyReleaseProviderPack(pack, revision, "linux-x64", expected), pack);
   payload.acpxProfileDigests.claude = "sha256:" + "d".repeat(64);
   assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-x64", expected), /profiles/);
+});
+
+test("uses the frozen release's Copilot profile when the workflow checkout has advanced", () => {
+  const releaseProfiles = structuredClone(profiles);
+  releaseProfiles.profiles.copilot.commandDigest = "sha256:" + "e".repeat(64);
+  const payload = fixture(); payload.providers.copilot.profileDigest = releaseProfiles.profiles.copilot.commandDigest;
+  const manifest = seal(payload);
+  assert.equal(verifyReleaseProviderPack(manifest, revision, "linux-x64", { profiles: releaseProfiles, distributions }), manifest);
+  assert.throws(() => verifyReleaseProviderPack(manifest, revision), /Copilot identity/);
+});
+
+for (const field of ["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"]) {
+  test(`rejects an independently rehashed stale Kimi ${field}`, () => {
+    const payload = fixture(); payload.providers.kimi[field] = "stale";
+    assert.throws(() => verifyReleaseProviderPack(seal(payload), revision), /Kimi identity/);
+  });
+}
+test("released Kimi requires one ordinary identity and exact frozen closure", () => {
+  const missing = fixture(); delete missing.providers.kimi;
+  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision), /Kimi identity/);
+  const duplicate = fixture(); duplicate.candidateProviders = { kimi: duplicate.providers.kimi };
+  assert.throws(() => verifyReleaseProviderPack(seal(duplicate), revision), /Kimi identity/);
+  const frozen = structuredClone(profiles); frozen.profiles.kimi.commandDigest = "sha256:" + "e".repeat(64);
+  const payload = fixture(); payload.providers.kimi.profileDigest = frozen.profiles.kimi.commandDigest;
+  assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-x64", { profiles: frozen, distributions }), /Kimi identity/);
+  assert.equal(verifyReleaseProviderPack(seal(payload), revision, "linux-x64", { profiles: frozen, distributions, kimiClosures }).payload, payload);
+});
+test("historical pending releases keep their separate candidate inventory", () => {
+  const historical = structuredClone(profiles);
+  historical.profiles.kimi = { ...historical.profiles.kimi, agentProfileVersion: 14,
+    commandDigest: historicalKimi.commandDigest, qualificationStatus: historicalKimi.declaration.qualificationStatus };
+  const payload = fixture(); payload.candidateProviders = { kimi: { ...payload.providers.kimi,
+    profileDigest: historicalKimi.commandDigest, qualification: "pending" } }; delete payload.providers.kimi;
+  const pack = seal(payload);
+  assert.equal(verifyReleaseProviderPack(pack, revision, "linux-x64", { profiles: historical, distributions }), pack);
 });

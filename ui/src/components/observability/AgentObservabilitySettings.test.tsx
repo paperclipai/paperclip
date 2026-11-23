@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
+import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DEFAULT_AGENT_OBSERVABILITY_CAPTURE, type AgentObservabilitySettings } from "@paperclipai/shared";
@@ -15,21 +15,21 @@ const saved: AgentObservabilitySettings = {
 const onSave = vi.fn();
 const props = (overrides: Partial<AgentObservabilitySettingsViewProps> = {}): AgentObservabilitySettingsViewProps => ({ companyId: saved.companyId, settings: saved, onSave, onTest: vi.fn(), onRemove: vi.fn(), ...overrides });
 async function render(value: AgentObservabilitySettingsViewProps) {
-  flushSync(() => root.render(<TooltipProvider><AgentObservabilitySettingsView {...value} /></TooltipProvider>));
-  await new Promise(resolve => setTimeout(resolve, 0));
-  flushSync(() => {});
+  // Company changes erase credential drafts in an effect; settle its updates
+  // before inspecting the new company's controls.
+  await act(async () => root.render(<TooltipProvider><AgentObservabilitySettingsView {...value} /></TooltipProvider>));
 }
 function button(text: string) { return [...element.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === text)!; }
 function fill(selector: string, value: string) {
   const input = element.querySelector<HTMLInputElement>(selector)!;
-  flushSync(() => {
+  act(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-function click(node: HTMLElement) { flushSync(() => node.click()); }
-beforeEach(() => { element = document.createElement("div"); document.body.append(element); root = createRoot(element); onSave.mockReset(); });
-afterEach(() => { flushSync(() => root.unmount()); element.remove(); });
+function click(node: HTMLElement) { act(() => node.click()); }
+beforeEach(() => { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); element = document.createElement("div"); document.body.append(element); root = createRoot(element); onSave.mockReset(); });
+afterEach(() => { act(() => root.unmount()); element.remove(); vi.unstubAllGlobals(); });
 it("keeps saved credentials write-only and erases a cancelled replacement", async () => {
   await render(props()); expect(element.querySelector('input[type="password"]')).toBeNull();
   click(button("Replace API key")); fill('input[type="password"]', "secret-input-canary");

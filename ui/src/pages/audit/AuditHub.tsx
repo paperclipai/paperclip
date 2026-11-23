@@ -30,6 +30,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
   const actionParam = searchParams.get("action");
   const actionDomain = [
     "issue.",
+    "case.",
     "agent.",
     "heartbeat.",
     "approval.",
@@ -78,6 +79,35 @@ export function AuditHub({ section }: { section: AuditSection }) {
     [setSearchParams],
   );
 
+  const handleEntityTypeChange = useCallback((next: string) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === "__all") params.delete("entityType");
+      else params.set("entityType", next);
+      params.delete("entityId");
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const handleEntityIdChange = useCallback((next: string) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next.trim()) params.set("entityId", next);
+      else params.delete("entityId");
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const handleClearFilters = useCallback(() => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.delete("action");
+      params.delete("entityType");
+      params.delete("entityId");
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={History} message="Select an organization to view Audit." />;
   }
@@ -110,6 +140,11 @@ export function AuditHub({ section }: { section: AuditSection }) {
           onModeChange={handleModeChange}
           actionDomain={actionDomain}
           onActionDomainChange={handleActionDomainChange}
+          entityType={scope.entityType ?? "__all"}
+          onEntityTypeChange={handleEntityTypeChange}
+          entityId={scope.entityId ?? ""}
+          onEntityIdChange={handleEntityIdChange}
+          onClearFilters={handleClearFilters}
           lockedAgentId={scope.agentId ?? undefined}
           lockedRunId={scope.runId ?? undefined}
           lockedEntity={
