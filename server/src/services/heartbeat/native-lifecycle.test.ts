@@ -88,6 +88,10 @@ describe("Google Antigravity lifecycle", () => {
     { name: "an environment that chose warm", change: { agentMode: "per_turn", environmentPolicy: warm } },
     { name: "a remote sandbox on a reusable lease", change: { agentMode: undefined, localTarget: false, remoteSandboxTarget: { reusableLease: true } } },
     { name: "a task-owned sandbox", change: { taskOwned: true, environmentPolicy: warm } },
+    // No release ever admitted a warm Antigravity turn, so a saved warm policy
+    // has no live warm owner to retire; the next turn simply runs per-turn.
+    { name: "a saved warm policy with an API key", change: { persistedPolicy: warm, managedAiSelected: true, managedAiAttribution: { provider: "google", method: "api_key" } } },
+    { name: "a saved warm policy with a Google sign-in", change: { persistedPolicy: warm, managedAiSelected: true, managedAiAttribution: { provider: "google", method: "subscription" } } },
   ])("runs per-turn for $name", ({ change }) => {
     expect(resolveHeartbeatNativeLifecyclePolicy({ ...antigravity, ...change })).toEqual(perTurn);
   });

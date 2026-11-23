@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../../packages/paperclip-runner/src/drivers/acpx/generated-profiles.js";
 import { antigravityCandidateAdmissionForExecution, isAntigravityAdmittedExecution } from "./antigravity-admission.js";
 import { ANTIGRAVITY_API_KEY_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP, antigravityLineupProfileId } from "./antigravity-qualification-cases.js";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
@@ -113,6 +114,16 @@ describe("Antigravity company-bound candidate grant", () => {
     expect(() => antigravityCandidateAdmissionForExecution(local, "not-a-company")).toThrow("exact disposable company");
     expect(() => antigravityCandidateAdmissionForExecution({ ...local, suite: { ...local.suite, id: "extended-harnesses" } }, companyId)).toThrow("explicit Antigravity suite");
     expect(antigravityCandidateAdmissionForExecution({ ...local, profile: { ...local.profile, qualificationCandidate: "kimi" } }, companyId)).toBeUndefined();
+  });
+
+  it.runIf(pending)("stages a linux-x64 grant with the patched closure for a Daytona cell on any controller host", () => {
+    const now = Date.now();
+    for (const host of [{ platform: "darwin", arch: "arm64" }, { platform: "linux", arch: "x64" }] as const) {
+      expect(antigravityCandidateAdmissionForExecution(remote, companyId, now, host)).toMatchObject({
+        companyId, agent: "antigravity", model: "gemini-3.8-flash-low", platform: "linux", architecture: "x64",
+        nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256}`, expiresAt: now + 3_600_000,
+      });
+    }
   });
 
   it.runIf(pending)("fails before provider spend on a target without an admitted closure", () => {

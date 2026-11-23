@@ -105,14 +105,15 @@ describe("Antigravity managed Runner credentials", () => {
     expect(await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: { GEMINI_HOME: "/untrusted" } })).toEqual({
       home: managedHome, credential: credential("fixture-selected"), environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential("fixture-selected") },
     });
-    for (const [input, code] of [[{ remote: true }, "antigravity_remote_sign_in_unsupported"],
-      [{ remote: false, lifecycleMode: "warm" as const }, "antigravity_warm_sign_in_unsupported"]] as const) {
-      const refusal = await prepareAntigravityRunnerCredentials({ managedHome, environment: {}, ...input }).catch(error => error);
+    for (const [input, code] of [[{ remote: true, environment: {} }, "antigravity_remote_sign_in_unsupported"],
+      [{ remote: false, lifecycleMode: "warm" as const, environment: {} }, "antigravity_warm_unsupported"],
+      [{ remote: false, lifecycleMode: "warm" as const, environment: { GEMINI_API_KEY: "fixture-selected" } }, "antigravity_warm_unsupported"]] as const) {
+      const refusal = await prepareAntigravityRunnerCredentials({ managedHome, ...input }).catch(error => error);
       // Configuration save and Test refuse this first; a run that still
       // reaches it stops permanently by name instead of offering a Retry.
       expect(refusal).toBeInstanceOf(AntigravityConnectionConfigurationError);
       expect(refusal).toMatchObject({ code });
-      expect(refusal.message).toMatch(/Google API key/);
+      expect(refusal.message).toMatch(code === "antigravity_warm_unsupported" ? /^Google Antigravity runs one turn at a time\. Turn off warm sessions for this agent\.$/ : /Google API key/);
       const failure = nativeSessionFailureSourceCode(refusal);
       expect(failure).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
       expect(nativeSessionFailureDisposition(1, new Date(), failure)).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED });
@@ -120,12 +121,24 @@ describe("Antigravity managed Runner credentials", () => {
   });
   it("names the connection choices each target supports in both release states", () => {
     expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: false })).toBeNull();
-    expect(antigravityConnectionRefusal({ apiKey: true, remote: false, lifecycleMode: "warm", releasePending: false })).toBeNull();
+    // Per-turn is one contract for both routes: an API key does not enable warm.
+    for (const apiKey of [true, false]) {
+      expect(antigravityConnectionRefusal({ apiKey, remote: false, lifecycleMode: "warm", releasePending: false })?.code).toBe("antigravity_warm_unsupported");
+      expect(antigravityConnectionRefusal({ apiKey, remote: false, lifecycleMode: "per_turn", releasePending: false })).toBeNull();
+    }
     expect(antigravityConnectionRefusal({ apiKey: false, remote: false, releasePending: false })).toBeNull();
     expect(antigravityConnectionRefusal({ apiKey: false, remote: true, releasePending: false })?.message)
       .toBe("Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead.");
     expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: true })?.code).toBe("antigravity_remote_unavailable");
     expect(antigravityConnectionRefusal({ apiKey: false, remote: false, releasePending: true })).toBeNull();
+    // While pending, an operator's cloud grant admits an API key in a cloud environment, never Google sign-in.
+    expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: true, remoteCandidateAdmitted: true })).toBeNull();
+    expect(antigravityConnectionRefusal({ apiKey: false, remote: true, releasePending: true, remoteCandidateAdmitted: true })?.code)
+      .toBe("antigravity_remote_sign_in_unsupported");
+    expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: true, remoteCandidateAdmitted: false })?.code)
+      .toBe("antigravity_remote_unavailable");
+    expect(antigravityConnectionRefusal({ apiKey: true, remote: true, lifecycleMode: "warm", releasePending: true, remoteCandidateAdmitted: true })?.code)
+      .toBe("antigravity_warm_unsupported");
   });
   it.each(["symlink", "public", "invalid"])("rejects a %s selected token without using a fallback", async kind => {
     const managedHome = await home(), token = join(managedHome, "antigravity-acp", "acp_token.json");

@@ -44,11 +44,12 @@ export async function prepareAntigravityRunnerCredentials(input: {
 }): Promise<{ environment: NodeJS.ProcessEnv; home: string | null; credential?: string }> {
   const environment = { ...input.environment };
   for (const key of [AUTH_SECRET, "GEMINI_HOME", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN"]) delete environment[key];
-  if (environment.GEMINI_API_KEY?.trim()) return { environment, home: null };
-  delete environment.GEMINI_API_KEY;
+  const apiKey = Boolean(environment.GEMINI_API_KEY?.trim());
   // Save and Test refuse these choices first; this is the run-time defense.
-  const refusal = antigravityConnectionRefusal({ apiKey: false, remote: input.remote, lifecycleMode: input.lifecycleMode, releasePending: false });
+  const refusal = antigravityConnectionRefusal({ apiKey, remote: input.remote, lifecycleMode: input.lifecycleMode, releasePending: false });
   if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
+  if (apiKey) return { environment, home: null };
+  delete environment.GEMINI_API_KEY;
   const home = input.managedHome?.trim();
   if (!home) throw new Error("Google Antigravity requires a selected managed Google account or Google API key.");
   await reconcileRetainedGoogleCleanupForHome(home);

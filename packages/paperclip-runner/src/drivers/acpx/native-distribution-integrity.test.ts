@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, fork, spawn, spawnSync } from "node:child_process";
 import { chmod, copyFile, link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copyOwnedNodeRuntime } from "../../test-support/owned-node-runtime.js";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
-import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_STORE_ROOT_ENV, pruneNativeAcpxStores, scheduledNativeAcpxStorePrune, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
+import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_STORE_ROOT_ENV, NativeAcpxStoreRootError, pruneNativeAcpxStores, scheduledNativeAcpxStorePrune, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -18,7 +18,7 @@ import antigravityDistributions from "../../../antigravity-distributions.json" w
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, open: vi.fn(original.open), rm: vi.fn(original.rm), mkdir: vi.fn(original.mkdir), chmod: vi.fn(original.chmod) };
+  return { ...original, open: vi.fn(original.open), rm: vi.fn(original.rm), mkdir: vi.fn(original.mkdir), chmod: vi.fn(original.chmod), rename: vi.fn(original.rename) };
 });
 
 const roots: string[] = [];
@@ -150,8 +150,10 @@ describe("native ACPX execution closure", () => {
       }
       const expectedCreation = [root, ...[...levels.keys()].sort((a, b) => a - b).flatMap(depth => [...levels.get(depth)!].sort())];
       expect(vi.mocked(mkdir).mock.calls.slice(creatingStart).filter(([path]) => String(path).startsWith(root))).toEqual(expectedCreation.map(path => [path, { mode: 0o700 }]));
-      // Every store directory is sealed before the staging tree is published.
-      expect(vi.mocked(chmod).mock.calls.slice(sealingStart).filter(([path]) => String(path).startsWith(dirname(root)))).toEqual([...[...directories].map(path => [path, 0o500]), [dirname(root), 0o500]]);
+      // Every distribution directory is sealed before the staging tree is
+      // published; the store directory itself is sealed right after the move.
+      expect(vi.mocked(chmod).mock.calls.slice(sealingStart).filter(([path]) => String(path).startsWith(dirname(root)))).toEqual([...directories].map(path => [path, 0o500]));
+      expect(vi.mocked(chmod).mock.calls.slice(sealingStart).filter(([path]) => String(path) === dirname(created.distributionRoot))).toEqual([[dirname(created.distributionRoot), 0o500]]);
       for (const path of [dirname(created.distributionRoot), ...[...directories].map(path => created.distributionRoot + path.slice(root.length))]) expect((await stat(path)).mode & 0o777).toBe(0o500);
     } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
   });
@@ -839,11 +841,15 @@ describe("native ACPX verified store reuse", () => {
     const before = await stat(stored);
     const original = await readFile(stored);
     await tamper(stored, '#!/bin/sh\nprintf "tampered:%s:%s" "$1" "${COPILOT_PKG_CACHE_HOME:-n}"\n'.slice(0, original.length).padEnd(original.length, "#"));
+    vi.mocked(open).mockClear();
     const lease = await installation.openCommand();
     expect(await output(lease.spawn())).toEqual({ text: "native:fixed:none", error: "", code: 0 });
     await lease.close();
     expect(await readFile(stored)).toEqual(original);
-    expect((await stat(stored)).ino).not.toBe(before.ino);
+    // The file system may reuse the freed inode, so the rebuild is proven by
+    // the new store's files being written, not by a different inode.
+    expect(createdFiles().filter(path => path.startsWith(storeRoot) && path.endsWith("/runtime"))).toHaveLength(1);
+    expect((await stat(stored)).ctimeMs).toBeGreaterThanOrEqual(before.ctimeMs);
     expect((await readdir(storeRoot)).filter(name => name.startsWith(".retired-") || name.startsWith(".staging-"))).toEqual([]);
   });
 
@@ -910,6 +916,32 @@ describe("native ACPX verified store reuse", () => {
     await expect((await verifyNativeAcpxInstallation(declaration)).openCommand()).rejects.toThrow();
   });
 
+  it("never renames a sealed store directory, which some macOS releases refuse", async () => {
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    // Model macOS 15: moving a directory its owner cannot write fails.
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      const info = await actual.lstat(from);
+      if (info.isDirectory() && (info.mode & 0o200) === 0) throw Object.assign(new Error("EACCES: permission denied, rename"), { code: "EACCES" });
+      return await actual.rename(from, to);
+    });
+    const old = { ...await fixture(), storeFamily: "sealed-provider" };
+    const installation = await verifyNativeAcpxInstallation(old);
+    const first = await installation.openCommand();
+    expect((await output(first.spawn())).text).toBe("native:fixed:none");
+    await first.close();
+    expect((await stat(join(storeRoot, old.expectedClosureSha256))).mode & 0o777).toBe(0o500);
+    // A damaged store is retired and rebuilt.
+    const stored = join(storeFiles(old), "runtime");
+    await tamper(stored, (await readFile(stored, "utf8")).replace("native", "nativf"));
+    const second = await installation.openCommand();
+    expect((await output(second.spawn())).text).toBe("native:fixed:none");
+    await second.close();
+    // A superseded store no live runner holds is retired.
+    await rename(join(storeRoot, `${old.expectedClosureSha256}.lease-${process.pid}`), join(storeRoot, `${old.expectedClosureSha256}.lease-${spawnSync("true").pid!}`));
+    expect(await pruneNativeAcpxStores(storeRoot, "sealed-provider", hash("next"))).toEqual([old.expectedClosureSha256]);
+    expect((await readdir(storeRoot)).filter(name => name.startsWith("."))).toEqual([]);
+  });
+
   it("publishes exactly one verified store for concurrent first launches", async () => {
     const declaration = await fixture();
     const installation = await verifyNativeAcpxInstallation(declaration);
@@ -919,15 +951,48 @@ describe("native ACPX verified store reuse", () => {
     expect((await readdir(storeRoot)).filter(name => !name.endsWith(".source.json"))).toEqual([declaration.expectedClosureSha256]);
   });
 
-  it("never trusts a store root another user could write", async () => {
+  it("refuses to launch from a configured store root another user could write", async () => {
     const declaration = await fixture();
     const shared = await mkdtemp(join(tmpdir(), "native-acpx-shared-store-")); roots.push(shared);
     await chmod(shared, 0o777);
     process.env[NATIVE_ACPX_STORE_ROOT_ENV] = shared;
-    const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
-    expect((await output(lease.spawn())).text).toBe("native:fixed:none");
-    await lease.close();
+    const failure = (await verifyNativeAcpxInstallation(declaration)).openCommand();
+    await expect(failure).rejects.toBeInstanceOf(NativeAcpxStoreRootError);
+    await expect(failure).rejects.toThrow(`${NATIVE_ACPX_STORE_ROOT_ENV} must name an absolute directory owned by the runner user`);
     expect(await readdir(shared)).toEqual([]);
+  });
+
+  describe("an unsafe default store root", () => {
+    const previousTmpdir = process.env.TMPDIR;
+    let temporary = "";
+    beforeEach(async () => {
+      temporary = await realpath(await mkdtemp(join(tmpdir(), "native-acpx-tmpdir-"))); roots.push(temporary);
+      delete process.env[NATIVE_ACPX_STORE_ROOT_ENV];
+      process.env.TMPDIR = temporary;
+      // Another user squatted the per-uid default root.
+      await mkdir(join(temporary, `paperclip-verified-native-${process.getuid!()}`), { mode: 0o777 });
+      await chmod(join(temporary, `paperclip-verified-native-${process.getuid!()}`), 0o777);
+    });
+    afterEach(() => { if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir; });
+    const privateStores = async () => (await readdir(temporary)).filter(name => /^paperclip-verified-native-(?!\d+$)/.test(name));
+
+    it("reports the fallback and removes the process-private store with its last launch", async () => {
+      const declaration = await fixture();
+      const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+      const installation = await verifyNativeAcpxInstallation(declaration);
+      const first = await installation.openCommand();
+      const second = await installation.openCommand();
+      expect(await privateStores()).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("default_store_root_not_private"), expect.objectContaining({ code: "PAPERCLIP_ACPX_NATIVE_STORE_FALLBACK" }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(temporary);
+      expect((await output(first.spawn())).text).toBe("native:fixed:none");
+      await first.close();
+      expect(await privateStores()).toHaveLength(1);
+      expect((await output(second.spawn())).text).toBe("native:fixed:none");
+      await second.close();
+      expect(await privateStores()).toEqual([]);
+      expect(await readdir(join(temporary, `paperclip-verified-native-${process.getuid!()}`))).toEqual([]);
+    });
   });
 
   describe("superseded closure stores", () => {
@@ -960,6 +1025,86 @@ describe("native ACPX verified store reuse", () => {
       expect(names.filter(name => name.startsWith(".retiring-") || name.startsWith(".retired-"))).toEqual([]);
       // A later launch of the retired closure verifies it again from source.
       expect(await launch(old)).toBe("old:fixed");
+    });
+
+    const moduleUrl = new URL("./installation-integrity.ts", import.meta.url).href;
+    const storeModuleUrl = new URL("./native-distribution-integrity.ts", import.meta.url).href;
+    /** Runs a script in a separate runner process sharing this test's store root. */
+    const runChild = async (name: string, body: string) => {
+      const scripts = await realpath(await mkdtemp(join(tmpdir(), "native-acpx-race-scripts-"))); roots.push(scripts);
+      const file = join(scripts, name);
+      await writeFile(file, body);
+      const child = fork(file, [], { execArgv: ["--import", "tsx"], stdio: ["ignore", "pipe", "pipe", "ipc"], env: { ...process.env, [NATIVE_ACPX_STORE_ROOT_ENV]: storeRoot } });
+      const result = await output(child);
+      expect(result.code, result.error).toBe(0);
+      return result.text.trim();
+    };
+    /** Another runner verifies the store, runs it and exits, so no live lease holds it. */
+    const verifyInExitedRunner = async (declaration: NativeAcpxDistributionInput) => {
+      expect(await runChild("verify.mjs", [
+        `const { verifyNativeAcpxInstallation } = await import(${JSON.stringify(moduleUrl)});`,
+        `const lease = await (await verifyNativeAcpxInstallation(${JSON.stringify(declaration)})).openCommand();`,
+        "await lease.close();", 'console.log("verified");',
+      ].join("\n"))).toBe("verified");
+    };
+
+    it("keeps a store that another runner process starts using while it is being pruned", async () => {
+      const family = "race-provider";
+      const old = { ...await fixture({ script: script("raced") }), storeFamily: family };
+      const keep = hash("current closure");
+      await verifyInExitedRunner(old);
+      // This runner starts using the store. Right after it has checked the
+      // store, a third runner prunes the closure as superseded.
+      const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      let pruned: string | undefined;
+      vi.mocked(open).mockImplementation((async (path: Parameters<typeof actual.open>[0], ...rest: unknown[]) => {
+        if (pruned === undefined && String(path) === join(storeRoot, `${old.expectedClosureSha256}.source.json`)) {
+          pruned = await runChild("prune.mjs", [
+            `const { pruneNativeAcpxStores } = await import(${JSON.stringify(storeModuleUrl)});`,
+            `console.log(JSON.stringify(await pruneNativeAcpxStores(${JSON.stringify(storeRoot)}, ${JSON.stringify(family)}, ${JSON.stringify(keep)})));`,
+          ].join("\n"));
+        }
+        return await (actual.open as (...args: unknown[]) => Promise<FileHandle>)(path, ...rest);
+      }) as typeof open);
+      const lease = await (await verifyNativeAcpxInstallation(old)).openCommand();
+      vi.mocked(open).mockImplementation(actual.open);
+      expect(pruned).toBe("[]");
+      expect(await output(lease.spawn())).toEqual({ text: "raced:fixed", error: "", code: 0 });
+      await lease.close();
+      const names = await readdir(storeRoot);
+      expect(names).toEqual(expect.arrayContaining([old.expectedClosureSha256, `${old.expectedClosureSha256}.family`, `${old.expectedClosureSha256}.source.json`]));
+      expect(names.filter(name => name.startsWith(".retiring-") || name.includes(".pruning-"))).toEqual([]);
+    }, 60_000);
+
+    it("waits for a live prune of the closure before reading its store, and cleans trees an exited pruner left", async () => {
+      const old = { ...await fixture({ script: script("waited") }), storeFamily: "wait-provider" };
+      await verifyInExitedRunner(old);
+      // A live process (this test's helper) is mid-prune of the closure.
+      const exitedPruner = spawnSync("true").pid!;
+      const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      const marker = join(storeRoot, `${old.expectedClosureSha256}.pruning-${helper.pid}`);
+      await writeFile(marker, "");
+      const abandoned = join(storeRoot, `.retiring-${exitedPruner}-left-behind`);
+      await mkdir(join(abandoned, "distribution"), { recursive: true }); await chmod(join(abandoned, "distribution"), 0o500); await chmod(abandoned, 0o500);
+      let settled = false;
+      const reading = (async () => {
+        const lease = await (await verifyNativeAcpxInstallation({ ...old })).openCommand();
+        settled = true;
+        return lease;
+      })();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(settled).toBe(false);
+      // The prune finishes: it retired the store and removed its records.
+      await unsealAndRemove(join(storeRoot, old.expectedClosureSha256));
+      await rm(join(storeRoot, `${old.expectedClosureSha256}.source.json`)); await rm(join(storeRoot, `${old.expectedClosureSha256}.family`));
+      await rm(marker);
+      const lease = await reading;
+      helper.kill("SIGKILL");
+      expect((await output(lease.spawn())).text).toBe("waited:fixed");
+      await lease.close();
+      expect(await readFile(join(storeRoot, `${old.expectedClosureSha256}.family`), "utf8")).toBe("wait-provider");
+      expect(await pruneNativeAcpxStores(storeRoot, "wait-provider", hash("next"))).toEqual([]);
+      expect((await readdir(storeRoot)).filter(name => name.startsWith(".retiring-"))).toEqual([]);
     });
 
     it("never retires a superseded store that a live runner still holds", async () => {

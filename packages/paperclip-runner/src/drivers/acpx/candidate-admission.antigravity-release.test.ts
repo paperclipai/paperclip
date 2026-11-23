@@ -16,7 +16,7 @@ vi.mock("./qualified-profiles.js", async importOriginal => {
   return {
     ...actual, QUALIFIED_ACPX_PROFILES,
     assertAcpxProfileReleased: (agent: string) => {
-      if (profile(agent).qualificationStatus === "pending") {
+      if ((profile(agent) as { qualificationStatus?: string }).qualificationStatus === "pending") {
         throw Object.assign(new Error(`ACPX ${agent} qualification is pending; this build cannot launch the provider.`), { code: "ACPX_PROFILE_QUALIFICATION_PENDING" });
       }
     },

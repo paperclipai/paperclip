@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 
-const mocks = vi.hoisted(() => ({ probe: vi.fn(), admission: vi.fn(), credentials: vi.fn(), copyBack: vi.fn(), remove: vi.fn(), turn: vi.fn(), warn: vi.fn(),
+const mocks = vi.hoisted(() => ({ probe: vi.fn(), admission: vi.fn(), remoteAdmitted: vi.fn(() => false), credentials: vi.fn(), copyBack: vi.fn(), remove: vi.fn(), turn: vi.fn(), warn: vi.fn(),
   shell: vi.fn(), released: false }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../vendor/paperclip-runner/index.js", async importOriginal => {
@@ -21,7 +21,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async importOriginal => (
 vi.mock("../services/native-runtime/remote-provider-pack.js", async importOriginal => ({
   ...await importOriginal<object>(), ANTIGRAVITY_PATCHED_CLOSURE_SHA256: { "linux-x64": "b".repeat(64) },
 }));
-vi.mock("../services/native-runtime/acpx-qualification.js", () => ({ resolveAntigravityCandidateAdmission: mocks.admission }));
+vi.mock("../services/native-runtime/acpx-qualification.js", () => ({ resolveAntigravityCandidateAdmission: mocks.admission,
+  antigravityRemoteCandidateAdmitted: mocks.remoteAdmitted }));
 vi.mock("../services/native-runtime/antigravity-runner-credentials.js", () => ({
   prepareAntigravityRunnerCredentials: mocks.credentials, antigravityCredentialTurn: mocks.turn,
 }));
@@ -137,7 +138,7 @@ describe("Google Antigravity setup admission", () => {
     const result = await testAntigravityConnection(context, model);
     expect(result.status).toBe("pass");
     expect(result.checks).toContainEqual(expect.objectContaining({ code: "antigravity_metadata_verified" }));
-    expect(mocks.admission).toHaveBeenCalledExactlyOnceWith({ companyId: "company-1", model });
+    expect(mocks.admission).toHaveBeenCalledExactlyOnceWith({ companyId: "company-1", model, target: { platform: process.platform, architecture: process.arch } });
     expect(mocks.credentials).toHaveBeenCalledWith(expect.objectContaining({ managedHome: "/selected/provider", remote: false, lifecycleMode: "per_turn" }));
     expect(order).toEqual(["retired", "copy-back", "scrub"]);
   });
@@ -160,6 +161,37 @@ describe("Google Antigravity setup admission", () => {
     expect(remote).toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_unavailable", message: expect.stringMatching(/only on the Paperclip host/) }] });
     expect(mocks.credentials).not.toHaveBeenCalled();
     expect(mocks.probe).not.toHaveBeenCalled();
+    expect(mocks.shell).not.toHaveBeenCalled();
+  });
+});
+
+describe("Google Antigravity cloud candidate while pending", () => {
+  const remoteTarget = { kind: "remote", transport: "ssh", remoteCwd: "/workspace" } as unknown as AdapterEnvironmentTestContext["executionTarget"];
+  const apiKeyContext = { ...context, managedAiCredentialHome: undefined,
+    config: { ...context.config, env: { GEMINI_API_KEY: "fixture-google-key" } }, executionTarget: remoteTarget };
+  const pendingEntry = () => ({ version: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+    closureDigest: `sha256:${"b".repeat(64)}`, qualification: "pending", path: "provider-assets/antigravity/linux-x64", sha256: `sha256:${"c".repeat(64)}` });
+  const pendingManifest = (providers: Record<string, unknown>) => ["Linux", "x86_64", JSON.stringify({
+    schema: "paperclip-runner/remote-provider-pack/v1", payload: { target: { platform: "linux", architecture: "x64" }, ...providers } })].join("\n");
+  afterEach(() => { mocks.remoteAdmitted.mockReset(); mocks.remoteAdmitted.mockReturnValue(false); });
+
+  it("checks the cloud candidate pack for an API key the operator granted this company and model", async () => {
+    mocks.remoteAdmitted.mockReturnValue(true);
+    mocks.shell.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: pendingManifest({ candidateProviders: { antigravity: pendingEntry() } }), stderr: "" });
+    expect(await testAntigravityConnection(apiKeyContext, model)).toMatchObject({ status: "warn", checks: [{ code: "antigravity_remote_runtime_ready" }] });
+    expect(mocks.remoteAdmitted).toHaveBeenCalledWith({ companyId: "company-1", model });
+    mocks.shell.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: pendingManifest({ providers: { antigravity: { ...pendingEntry(), qualification: "qualified" } } }), stderr: "" });
+    expect((await testAntigravityConnection(apiKeyContext, model)).status).toBe("fail");
+    expect(mocks.credentials).not.toHaveBeenCalled();
+  });
+
+  it("refuses Google sign-in in the cloud even with a grant, and any cloud run without one", async () => {
+    mocks.remoteAdmitted.mockReturnValue(true);
+    expect(await testAntigravityConnection({ ...context, executionTarget: remoteTarget }, model))
+      .toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_sign_in_unsupported" }] });
+    mocks.remoteAdmitted.mockReturnValue(false);
+    expect(await testAntigravityConnection(apiKeyContext, model))
+      .toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_unavailable" }] });
     expect(mocks.shell).not.toHaveBeenCalled();
   });
 });

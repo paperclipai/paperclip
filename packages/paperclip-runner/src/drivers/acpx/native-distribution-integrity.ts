@@ -101,7 +101,13 @@ const identityMatches = (value: FileIdentity, recorded: unknown): boolean => Arr
   && identityRecord(value).every((part, index) => part === recorded[index]);
 const runnerUid = () => BigInt(process.getuid!());
 const entryPath = (root: string, entry: { path: string }) => join(root, ...entry.path.split("/"));
-let processPrivateStoreRoot: Promise<string> | undefined;
+/**
+ * Fallback store used only when the per-uid store root is unsafe. It lives
+ * while a launch uses it and is removed with the last one.
+ */
+type PrivateStore = { root: Promise<string>; users: number };
+let processPrivateStore: PrivateStore | undefined;
+let reportedPrivateStoreFallback = false;
 
 /**
  * Admit a native closure for one launch.
@@ -135,8 +141,26 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
   entries = parseNativeAcpxDistributionEntries({ entries }, input.expectedClosureSha256);
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("Native ACPX snapshots require Linux or macOS");
   const source = await realpath(input.distributionRoot);
-  const storeRoot = await resolveNativeStoreRoot();
+  const resolved = await resolveNativeStoreRoot();
+  try {
+    const launch = await admitFromVerifiedStore(input, entries, source, resolved.root, signal);
+    if (resolved.privateStore === undefined) return launch;
+    const privateStore = resolved.privateStore;
+    const closeLaunch = launch.snapshot.close;
+    let closing: Promise<void> | undefined;
+    launch.snapshot.close = () => closing ??= closeLaunch().finally(() => releasePrivateStore(privateStore));
+    return launch;
+  } catch (error) {
+    if (resolved.privateStore !== undefined) await releasePrivateStore(resolved.privateStore);
+    throw error;
+  }
+}
+
+async function admitFromVerifiedStore(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], source: string, storeRoot: string, signal?: AbortSignal): Promise<NativeAcpxDistributionSnapshot> {
   const storeDirectory = join(storeRoot, input.expectedClosureSha256);
+  // The lease is taken before the store is read, so a concurrent prune either
+  // sees it and keeps the store, or finishes retiring it before this reads.
+  if (input.storeFamily !== undefined) await holdVerifiedStore(storeRoot, input.expectedClosureSha256, input.storeFamily);
   let identities = await readVerifiedStore(storeDirectory, entries);
   if (identities === "invalid") {
     await retireVerifiedStore(storeRoot, storeDirectory);
@@ -157,7 +181,6 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     await writeSourceRecord(storeRoot, input.expectedClosureSha256, source, await verifyNativeSource(source, entries, signal));
   }
   signal?.throwIfAborted();
-  if (input.storeFamily !== undefined) await holdVerifiedStore(storeRoot, input.expectedClosureSha256, input.storeFamily);
   const launch = await createNativeLaunch(input, entries, join(storeDirectory, "distribution"));
   // Retiring superseded closures never delays this launch.
   if (input.storeFamily !== undefined) scheduleNativeAcpxStorePrune(storeRoot, input.storeFamily, input.expectedClosureSha256);
@@ -168,18 +191,49 @@ const validStoreFamily = (value: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(val
 const heldStores = new Set<string>();
 const scheduledPrunes = new Map<string, Promise<string[]>>();
 
+// A prune holds its marker only while it parks one store and removes two small
+// records. A launch waits for that, never for the parked tree's deletion.
+const PRUNE_MARKER_WAIT_MS = 10_000;
+const PRUNE_MARKER_POLL_MS = 5;
+
 /**
  * Mark a store as used by this runner process and record its provider. The
  * lease names the process, so a store stays while any live runner holds it,
  * including an older release still finishing its runs during a deploy.
+ *
+ * Leases and prunes exclude each other across processes without a lock: a
+ * launch writes its lease and then looks for a prune marker; a prune writes its
+ * marker and then looks for leases. Whichever writes second sees the other. A
+ * launch that sees a live prune waits for it to finish, so it reads either the
+ * kept store or none, and writes its records after the prune removed the
+ * retired ones.
  */
 async function holdVerifiedStore(storeRoot: string, closure: string, family: string): Promise<void> {
   if (!validStoreFamily(family)) throw new Error("Native ACPX store family is invalid");
   const key = `${storeRoot}\0${closure}`;
   if (heldStores.has(key)) return;
   await writeFile(join(storeRoot, `${closure}.lease-${process.pid}`), "", { mode: 0o600 });
+  await awaitNoLivePrune(storeRoot, closure);
   await writeFile(join(storeRoot, `${closure}.family`), family, { mode: 0o600 });
   heldStores.add(key);
+}
+
+async function awaitNoLivePrune(storeRoot: string, closure: string): Promise<void> {
+  const pattern = new RegExp(`^${closure}\\.pruning-(\\d{1,10})$`);
+  const deadline = Date.now() + PRUNE_MARKER_WAIT_MS;
+  for (;;) {
+    let pruning = false;
+    for (const name of await readdir(storeRoot)) {
+      const pid = pattern.exec(name)?.[1];
+      if (pid === undefined) continue;
+      if (processAlive(Number(pid))) pruning = true;
+      else await rm(join(storeRoot, name), { force: true });
+    }
+    // A stuck prune never blocks a launch: past the deadline this proceeds and
+    // the store is read, or verified again, as usual.
+    if (!pruning || Date.now() >= deadline) return;
+    await new Promise(resolve => setTimeout(resolve, PRUNE_MARKER_POLL_MS));
+  }
 }
 
 function scheduleNativeAcpxStorePrune(storeRoot: string, family: string, keepClosure: string): void {
@@ -214,46 +268,120 @@ async function liveStoreHolders(storeRoot: string, closure: string, names: reado
  * Remove `family`'s sealed stores whose closure is not `keepClosure` and that
  * no live runner process holds. Stores of other providers, unmarked stores and
  * the kept closure are never touched. Returns the retired closures.
+ *
+ * Each retirement runs under a per-closure prune marker (see
+ * `holdVerifiedStore`): the store is parked and its records removed only when
+ * no live lease exists after the marker is written. The parked tree is removed
+ * on every path, and trees an exited runner left behind are removed here.
  */
 export async function pruneNativeAcpxStores(storeRoot: string, family: string, keepClosure: string): Promise<string[]> {
   if (!validStoreFamily(family) || !/^[a-f0-9]{64}$/.test(keepClosure)) return [];
+  await removeAbandonedStoreTrees(storeRoot);
   const retired: string[] = [];
   for (const name of await readdir(storeRoot)) {
     const closure = /^([a-f0-9]{64})\.family$/.exec(name)?.[1];
     if (!closure || closure === keepClosure) continue;
-    const marker = await readFile(join(storeRoot, name), "utf8").catch(() => null);
-    if (marker !== family) continue;
+    if (await readFile(join(storeRoot, name), "utf8").catch(() => null) !== family) continue;
     if (await liveStoreHolders(storeRoot, closure, await readdir(storeRoot)) > 0) continue;
-    const storeDirectory = join(storeRoot, closure);
-    const parked = join(storeRoot, `.retiring-${randomUUID()}`);
-    try { await rename(storeDirectory, parked); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
-    }
-    // A runner that took a lease while the store was being parked keeps it.
-    if (await liveStoreHolders(storeRoot, closure, await readdir(storeRoot)) > 0) {
-      await rename(parked, storeDirectory).catch(() => undefined);
-      continue;
-    }
-    await removeSealedTree(parked).catch(() => undefined);
-    await rm(join(storeRoot, `${closure}.source.json`), { force: true });
-    await rm(join(storeRoot, name), { force: true });
-    retired.push(closure);
+    if (await retireUnheldStore(storeRoot, closure)) retired.push(closure);
   }
   return retired;
 }
 
-/** Runner-owned private store root; a foreign or unsafe location falls back to a process-private one. */
-async function resolveNativeStoreRoot(): Promise<string> {
-  const configured = process.env[NATIVE_ACPX_STORE_ROOT_ENV];
-  const root = configured ? configured : join(tmpdir(), `paperclip-verified-native-${process.getuid!()}`);
-  if (isAbsolute(root) && !root.includes("\0")) {
-    try {
-      await mkdir(root, { recursive: true, mode: 0o700 });
-      if (await isPrivateDirectory(root)) return await realpath(root);
-    } catch { /* fall back below */ }
+async function retireUnheldStore(storeRoot: string, closure: string): Promise<boolean> {
+  const marker = join(storeRoot, `${closure}.pruning-${process.pid}`);
+  try { await writeFile(marker, "", { mode: 0o600, flag: "wx" }); } catch { return false; }
+  let parked: string | undefined;
+  try {
+    // A launch that wrote its lease before this marker is seen here; one that
+    // writes it later sees the marker and waits until this returns.
+    if (await liveStoreHolders(storeRoot, closure, await readdir(storeRoot)) > 0) return false;
+    parked = join(storeRoot, `.retiring-${process.pid}-${randomUUID()}`);
+    try { await renameSealedDirectory(join(storeRoot, closure), parked); } catch (error) {
+      parked = undefined;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    await rm(join(storeRoot, `${closure}.source.json`), { force: true });
+    await rm(join(storeRoot, `${closure}.family`), { force: true });
+    return true;
+  } finally {
+    await rm(marker, { force: true });
+    if (parked !== undefined) await removeSealedTree(parked).catch(() => undefined);
   }
+}
+
+/** Staging, retired and parked trees of runner processes that have exited. */
+async function removeAbandonedStoreTrees(storeRoot: string): Promise<void> {
+  for (const name of await readdir(storeRoot)) {
+    const pid = /^\.(?:staging|retired|retiring)-(\d{1,10})-/.exec(name)?.[1];
+    if (pid !== undefined && !processAlive(Number(pid))) await removeSealedTree(join(storeRoot, name)).catch(() => undefined);
+  }
+}
+
+/**
+ * Rename a store directory. Some macOS releases refuse to rename a directory
+ * its owner cannot write, so the directory is unsealed for the move.
+ */
+async function renameSealedDirectory(from: string, to: string): Promise<void> {
+  await chmod(from, 0o700);
+  try { await rename(from, to); } catch (error) {
+    await chmod(from, 0o500).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Raised when the operator-configured store root cannot be used safely. */
+export class NativeAcpxStoreRootError extends Error {
+  readonly code = "ACPX_NATIVE_STORE_ROOT_UNSAFE";
+  constructor() {
+    super(`${NATIVE_ACPX_STORE_ROOT_ENV} must name an absolute directory owned by the runner user and closed to other users (mode 0700). Fix the directory or unset the variable.`);
+    this.name = "NativeAcpxStoreRootError";
+  }
+}
+
+async function usableStoreRoot(root: string): Promise<string | undefined> {
+  if (!isAbsolute(root) || root.includes("\0")) return undefined;
+  try {
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    if (await isPrivateDirectory(root)) return await realpath(root);
+  } catch { /* unusable */ }
+  return undefined;
+}
+
+/**
+ * Runner-owned private store root. An operator-configured root that is unsafe
+ * fails closed. When the default per-uid root is unsafe (for example squatted
+ * by another user), launches use a process-private store, report it once, and
+ * remove it when the last launch using it closes.
+ */
+async function resolveNativeStoreRoot(): Promise<{ root: string; privateStore?: PrivateStore }> {
+  const configured = process.env[NATIVE_ACPX_STORE_ROOT_ENV];
+  if (configured) {
+    const root = await usableStoreRoot(configured);
+    if (root === undefined) throw new NativeAcpxStoreRootError();
+    return { root };
+  }
+  const root = await usableStoreRoot(join(tmpdir(), `paperclip-verified-native-${process.getuid!()}`));
+  if (root !== undefined) return { root };
   // A squatted shared path must not block launches or reuse foreign bytes.
-  return await (processPrivateStoreRoot ??= mkdtemp(join(tmpdir(), "paperclip-verified-native-")).then(path => realpath(path)));
+  if (!reportedPrivateStoreFallback) {
+    reportedPrivateStoreFallback = true;
+    process.emitWarning(JSON.stringify({ schema: "paperclip.runner.native_store_fallback.v1", reason: "default_store_root_not_private" }),
+      { code: "PAPERCLIP_ACPX_NATIVE_STORE_FALLBACK", type: "PaperclipRunnerStoreWarning" });
+  }
+  const privateStore = processPrivateStore ??= { root: mkdtemp(join(tmpdir(), "paperclip-verified-native-")).then(path => realpath(path)), users: 0 };
+  privateStore.users++;
+  try { return { root: await privateStore.root, privateStore }; } catch (error) {
+    await releasePrivateStore(privateStore);
+    throw error;
+  }
+}
+
+async function releasePrivateStore(store: PrivateStore): Promise<void> {
+  if (--store.users > 0) return;
+  if (processPrivateStore === store) processPrivateStore = undefined;
+  const root = await store.root.catch(() => undefined);
+  if (root !== undefined) await removeSealedTree(root).catch(() => undefined);
 }
 
 async function isPrivateDirectory(path: string): Promise<boolean> {
@@ -324,8 +452,8 @@ async function storeGuardIntact(path: string, expected: Buffer): Promise<boolean
 }
 
 async function retireVerifiedStore(storeRoot: string, storeDirectory: string): Promise<void> {
-  const retired = join(storeRoot, `.retired-${randomUUID()}`);
-  try { await rename(storeDirectory, retired); } catch (error) {
+  const retired = join(storeRoot, `.retired-${process.pid}-${randomUUID()}`);
+  try { await renameSealedDirectory(storeDirectory, retired); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
@@ -449,7 +577,7 @@ async function verifyNativeSource(source: string, entries: NativeAcpxDistributio
  * launch published the same closure first.
  */
 async function materializeVerifiedStore(source: string, storeRoot: string, storeDirectory: string, entries: NativeAcpxDistributionEntry[], signal?: AbortSignal): Promise<FileIdentity[] | null> {
-  const staging = await realpath(await mkdtemp(join(storeRoot, ".staging-")));
+  const staging = await realpath(await mkdtemp(join(storeRoot, `.staging-${process.pid}-`)));
   const packageRoot = join(staging, "distribution");
   const directories = [packageRoot];
   let published = false;
@@ -490,7 +618,8 @@ async function materializeVerifiedStore(source: string, storeRoot: string, store
     await boundedEach(directories, NATIVE_DIRECTORY_CONCURRENCY, path => chmod(path, 0o500));
     const record = Buffer.from(JSON.stringify({ schema: STORE_SCHEMA, entries: entries.map((entry, index) => ({ ...entry, identity: identityRecord(observed[index]!.target!) })) }));
     await writeFile(join(staging, STORE_RECORD), record, { mode: 0o400, flag: "wx" });
-    await chmod(staging, 0o500);
+    // Published while still writable: some macOS releases refuse to rename a
+    // directory its owner cannot write. It is sealed right after the move.
     try {
       await rename(staging, storeDirectory);
       published = true;
@@ -498,6 +627,7 @@ async function materializeVerifiedStore(source: string, storeRoot: string, store
       if (await lstat(storeDirectory).then(() => true, () => false)) return null;
       throw error;
     }
+    await chmod(storeDirectory, 0o500);
     return observed.map(result => result.source);
   } finally {
     if (!published) await removeSealedTree(staging);

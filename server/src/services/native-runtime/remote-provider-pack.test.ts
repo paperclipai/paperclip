@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createNativeRunTrace } from "./native-run-trace.js";
 import { readFileSync } from "node:fs";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, COPILOT_PROVIDER_PACK_CLOSURES, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, type RemoteProviderPackRelease, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -229,6 +229,47 @@ describe("Google Antigravity image pack identity", () => {
     ["an older runtime version", { entry: { ...entry, version: "1.4.2" } }],
   ])("refuses %s", (_name, change) => {
     expect(antigravityProviderPackEntryRefusal({ ...base, ...change })).not.toBeNull();
+  });
+});
+
+describe("remote provider pack entry expectation", () => {
+  const digest = (char: string) => `sha256:${char.repeat(64)}`;
+  const profile = (version: string, char: string) => ({ agentServerVersion: version, commandDigest: digest(char) });
+  const release: RemoteProviderPackRelease = {
+    profiles: { cursor: profile("c1", "1"), copilot: profile("p1", "2"), kimi: { ...profile("k1", "3"), qualificationStatus: "pending" }, antigravity: profile("a1", "4") },
+    cursorClosures: { "linux-x64": { closureSha256: "5".repeat(64) } },
+    kimiLinuxX64Closure: "6".repeat(64),
+    antigravityReleasePending: true,
+    antigravityPatchedClosures: { "linux-x64": "7".repeat(64) },
+  };
+  const target = { platform: "linux", architecture: "x64" };
+  const all = ["pi", "cursor", "copilot", "kimi", "antigravity"];
+  const entry = (provider: string, qualification: string, version: string, profileDigest: string, closure: string) => ({
+    version, profileDigest, closureDigest: `sha256:${closure}`, qualification, path: `provider-assets/${provider}/linux-x64`, sha256: digest("9"),
+  });
+  const check = (provider: string, inventory: "providers" | "candidateProviders", value: unknown, listed = { providers: inventory === "providers", candidateProviders: inventory === "candidateProviders" }) =>
+    remoteProviderPackEntryRefusal({ provider, inventory, allowedProviders: all, target, entry: value, listed, release });
+
+  it("admits each provider's entry only with this release's inventory, qualification, profile and closure", () => {
+    expect(check("pi", "providers", entry("pi", "qualified", "any", digest("8"), "8".repeat(64)))).toBeNull();
+    expect(check("cursor", "providers", entry("cursor", "qualified", "c1", digest("1"), "5".repeat(64)))).toBeNull();
+    expect(check("copilot", "providers", entry("copilot", "qualified", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!))).toBeNull();
+    expect(check("copilot", "candidateProviders", entry("copilot", "pending", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!))).toBeNull();
+    expect(check("kimi", "candidateProviders", entry("kimi", "pending", "k1", digest("3"), "6".repeat(64)))).toBeNull();
+    expect(check("antigravity", "candidateProviders", entry("antigravity", "pending", "a1", digest("4"), "7".repeat(64)))).toBeNull();
+  });
+
+  it("refuses with the same reasons the pack verifier reports", () => {
+    expect(check("grok", "providers", entry("grok", "qualified", "g", digest("1"), "1".repeat(64)))).toBe("invalid candidate identity");
+    expect(check("antigravity", "providers", entry("antigravity", "qualified", "a1", digest("4"), "7".repeat(64)))).toBe("invalid candidate identity");
+    expect(check("cursor", "providers", { ...entry("cursor", "qualified", "c1", digest("1"), "5".repeat(64)), extra: true })).toBe("invalid candidate identity");
+    expect(check("cursor", "providers", entry("cursor", "qualified", "c0", digest("1"), "5".repeat(64)))).toBe("Cursor profile or closure does not match this release");
+    expect(check("copilot", "providers", entry("copilot", "qualified", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!), { providers: true, candidateProviders: true }))
+      .toBe("Copilot profile or closure does not match this release");
+    expect(check("kimi", "candidateProviders", entry("kimi", "pending", "k1", digest("3"), "6".repeat(64)), { providers: true, candidateProviders: true }))
+      .toBe("Kimi profile or closure does not match this release");
+    expect(check("antigravity", "candidateProviders", entry("antigravity", "pending", "a1", digest("4"), "e".repeat(64))))
+      .toBe("Antigravity closure is not this release's patched closure");
   });
 });
 

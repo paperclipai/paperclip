@@ -51,9 +51,12 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
     : { mode: "per_turn", idleTimeoutMs: null };
   const supportsManagedWarm = input.adapterType === "paperclip_runner" && (input.taskOwned ||
     supportsManagedNativeWarmSession(profile, input.managedAiAttribution));
+  // A harness qualified only per-turn runs per-turn even when a saved policy
+  // says warm: no release admitted a warm turn for it, so none can be live.
+  if (requiresPerTurnNativeSession(profile)) return { mode: "per_turn", idleTimeoutMs: null };
   return input.persistedPolicy ??
     (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(input.backend)
-      || requiresPerTurnNativeSession(profile) || input.managedAiSelected && !supportsManagedWarm
+      || input.managedAiSelected && !supportsManagedWarm
       ? { mode: "per_turn", idleTimeoutMs: null }
       : input.environmentPolicy ?? agentPolicy);
 }

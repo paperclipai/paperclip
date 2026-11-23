@@ -320,12 +320,14 @@ profile is pending it is listed under `candidateProviders`.
 Two connection routes exist: a Gemini API key (`gemini-api-key`, locally and in
 a cloud environment once released) and personal Google sign-in (Paperclip host
 only, one turn at a time). Agent save and Test refuse any other combination in
-plain language. Models are the server's own catalog; Gemini 4 families are
-offered only to sign-in or Agent Platform in 1.5.2, and a refused model is named
-with its fix. Global release qualification remains pending and normal execution
+plain language. Models are the server's own catalog. The 1.5.2 catalog lists
+Gemini 4 families only for Agent Platform, but patch `1.5.2-paperclip.2` admits
+an exact requested model ID under an API key, so Gemini 4 (Neon included) runs
+on the API-key route with a paid key; a refused model is named with its fix. Global release qualification remains pending and normal execution
 admission stays closed: an isolated operator can admit one company, exact
-model, local platform and pinned closure/profile until a fixed expiry through
-trusted server startup authority. Live acceptance on 1.5.2 (API key, Linux,
+model, execution platform (this host, or linux-x64 for a cloud environment with
+an API key) and pinned patched closure/profile, per-turn only, until a fixed
+expiry through trusted server startup authority. Live acceptance on 1.5.2 (API key, Linux,
 Daytona, the model lineups) has not passed yet. Google Workspace OAuth does not
 substitute for a runtime credential. See the
 [current qualification plan](../../doc/plans/2026-11-22-antigravity-qualification.md)

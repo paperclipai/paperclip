@@ -905,7 +905,12 @@ cover macOS ARM64, macOS x64 and Linux x64. Source-owned closure pins remain
 separate from profile declaration digests. Native admission reads held files and
 verifies every admitted byte once per closure into a sealed, runner-owned
 verified store (`$PAPERCLIP_ACPX_NATIVE_STORE_ROOT`, default
-`$TMPDIR/paperclip-verified-native-<uid>`). Later launches bind the store by the
+`$TMPDIR/paperclip-verified-native-<uid>`). A configured root that is not a
+private directory of the runner user refuses the launch; an unsafe default root
+falls back, with a warning, to a process-private store removed with its last
+launch. A process leases a closure before reading its store, and pruning of
+superseded closures excludes those leases through per-closure prune markers.
+Later launches bind the store by the
 kernel identity (device, inode, size, mtime, ctime) recorded when its bytes were
 hashed, re-hash only a changed installed source, and get a small private launch
 directory. The store also holds the closure's module guard beside its

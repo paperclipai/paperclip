@@ -1732,9 +1732,12 @@ case `model-receipt`, generated from the pinned server's catalog. Model IDs
 are `<family>-<level>`. The API-key lineup is Flash 3.5 to 3.8 at `low`,
 `medium` and `high`, plus 3.1 Pro at `low` and `high`. The Gemini 4 lineup is
 each family at the levels it offers: Neon and Hydrogen at `low` to
-`extra_high`, Carbon and Argon at `low` to `high`. The 1.5.2 server offers
-Gemini 4 only to subscription sign-in or Agent Platform, so run that lineup
-only with a credential route that reaches them. Each
+`extra_high`, Carbon and Argon at `low` to `high`. Both lineups bind
+`GEMINI_API_KEY`. The 1.5.2 server's own catalog lists Gemini 4 only for Agent
+Platform, but patch `1.5.2-paperclip.2` admits an exact requested model ID
+under an API key, so the Gemini 4 lineup runs on the same API-key route. It
+needs a paid Gemini key: a free-tier key has no Gemini 4 quota, so its cells
+reach the exact-model receipt but no reply. Each
 cell admits its own model, sends the ordinary one-reply prompt, and grades the
 run's native input model plus the Runner's requested and effective model
 receipt against the requested ID; a reply alone does not pass. Profile IDs

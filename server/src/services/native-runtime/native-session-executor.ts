@@ -113,7 +113,7 @@ import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolve
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
-import { antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
+import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
@@ -143,7 +143,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -14649,60 +14649,15 @@ function* providerPackIdentityChecks(
       throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
-      const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!allowedProviders.includes(provider) || !candidate
-        || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending"
-          || provider === "antigravity" && !antigravityReleasePending()) ? "qualified" : "pending") || candidate.path !== expectedPath
-        || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
-        || !/^sha256:[a-f0-9]{64}$/.test(candidate.sha256)) {
-        throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
-      }
+      const refusal = remoteProviderPackEntryRefusal({ provider, inventory, allowedProviders, target: payload.target, entry: candidate,
+        listed: { providers: Boolean((payload.providers as Record<string, unknown> | undefined)?.[provider]),
+          candidateProviders: Boolean((payload.candidateProviders as Record<string, unknown> | undefined)?.[provider]) },
+        release: {
+          profiles: QUALIFIED_ACPX_PROFILES, cursorClosures: CURSOR_DISTRIBUTION_PINS, kimiLinuxX64Closure: KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"],
+          antigravityReleasePending: antigravityReleasePending(), antigravityPatchedClosures: ANTIGRAVITY_PATCHED_CLOSURE_SHA256,
+        } });
+      if (refusal) throw new Error(`runner_remote_provider_artifact_incompatible: ${refusal}`);
       const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
-      if (provider === "cursor") {
-        const target = `${payload.target.platform}-${payload.target.architecture}`;
-        const distribution = Object.hasOwn(CURSOR_DISTRIBUTION_PINS, target)
-          ? CURSOR_DISTRIBUTION_PINS[target as keyof typeof CURSOR_DISTRIBUTION_PINS] : undefined;
-        if (!distribution || candidate.version !== QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.cursor.commandDigest
-          || candidate.closureDigest !== `sha256:${distribution.closureSha256}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Cursor profile or closure does not match this release");
-        }
-      }
-      if (provider === "copilot") {
-        const closurePins = {
-  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
-  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
-  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07"
-} as const;
-        const target = `${payload.target.platform}-${payload.target.architecture}`;
-        const closure = Object.hasOwn(closurePins, target) ? closurePins[target as keyof typeof closurePins] : undefined;
-        if (!closure || (payload.providers?.copilot && payload.candidateProviders?.copilot)
-          || candidate.version !== QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.copilot.commandDigest
-          || candidate.closureDigest !== `sha256:${closure}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Copilot profile or closure does not match this release");
-        }
-      }
-      if (provider === "kimi") {
-        if (inventory !== (QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "candidateProviders" : "providers")
-          || payload[QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "providers" : "candidateProviders"]?.kimi
-          || payload.target.platform !== "linux" || payload.target.architecture !== "x64"
-          || candidate.version !== QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion
-          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.kimi.commandDigest
-          || candidate.closureDigest !== `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`) {
-          throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
-        }
-      }
-      if (provider === "antigravity") {
-        const refusal = antigravityProviderPackEntryRefusal({ inventory, target: payload.target, entry: candidate,
-          inBoth: Boolean(payload.providers?.antigravity && payload.candidateProviders?.antigravity),
-          releasePending: antigravityReleasePending(), profile: QUALIFIED_ACPX_PROFILES.antigravity,
-          patchedClosures: ANTIGRAVITY_PATCHED_CLOSURE_SHA256 });
-        if (refusal) throw new Error(`runner_remote_provider_artifact_incompatible: ${refusal}`);
-      }
       if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, candidatePath) }) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
       }
@@ -18887,7 +18842,8 @@ async function createRunnerdBackendWithinSessionClaim(
                 : resolveAcpxQualification(input.execution.provider, process.env),
               acpxCandidateAdmission: input.execution.provider.agent === "antigravity"
                 // A released profile carries no candidate grant.
-                ? antigravityReleasePending() ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model }, process.env) : undefined
+                ? antigravityReleasePending() ? resolveAntigravityCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model,
+                  target: antigravityCandidateTarget(Boolean(remoteTarget)) }, process.env) : undefined
                 : input.execution.provider.agent === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending"
                   ? resolveKimiCandidateAdmission({ companyId: input.execution.binding.companyId, model: input.execution.provider.model,
                     target: remoteTarget ? { platform: "linux", architecture: "x64" } : { platform: process.platform, architecture: process.arch } }, process.env)

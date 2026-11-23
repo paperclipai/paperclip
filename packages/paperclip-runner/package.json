@@ -68,7 +68,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "node scripts/record-build-inputs.mjs --begin && pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run check:capability-contract && pnpm run check:capability-inventory && pnpm run check:protocol-coverage && node scripts/generate-semantic-contracts.mjs --check && node scripts/check-runner-workflow-traceability.mjs && node scripts/build-runner-binary.mjs && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check && node scripts/record-build-inputs.mjs --finish",
-    "build:typescript": "pnpm run check:acpx-profiles && pnpm run check:antigravity-models && pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs && node scripts/install-copilot-assets.mjs",
+    "build:typescript": "pnpm run check:acpx-profiles && node scripts/generate-antigravity-models.mjs --check && pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs && node scripts/install-copilot-assets.mjs",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:binary": "cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/stage-runner-binary.mjs",
     "stage:release-binaries": "node scripts/stage-release-runner-binaries.mjs",
@@ -174,8 +174,6 @@
     "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs",
     "generate:acpx-profiles": "node scripts/generate-acpx-profiles.mjs",
     "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check",
-    "generate:antigravity-models": "node scripts/generate-antigravity-models.mjs",
-    "check:antigravity-models": "node scripts/generate-antigravity-models.mjs --check",
     "postinstall": "node scripts/install-copilot-assets.mjs"
   },
   "dependencies": {

@@ -51,7 +51,7 @@ import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
 import { antigravityConnectionRefusal } from "../services/native-runtime/antigravity-connection-policy.js";
 import { antigravityReleasePending } from "../services/native-runtime/antigravity-release.js";
-import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
+import { antigravityRemoteCandidateAdmitted, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
@@ -3261,8 +3261,11 @@ export function agentRoutes(
       // Refuse a connection its environment cannot run here, not as a failed run.
       const effectiveEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
       const driver = effectiveEnvironmentId ? (await environmentsSvc.getById(effectiveEnvironmentId))?.driver : "local";
-      const refusal = antigravityConnectionRefusal({ apiKey: selection.attribution.method === "api_key",
-        remote: driver !== undefined && driver !== "local", releasePending: antigravityReleasePending() });
+      const remote = driver !== undefined && driver !== "local";
+      const releasePending = antigravityReleasePending();
+      const refusal = antigravityConnectionRefusal({ apiKey: selection.attribution.method === "api_key", remote, releasePending,
+        remoteCandidateAdmitted: remote && releasePending && antigravityRemoteCandidateAdmitted({ companyId,
+          model: typeof config.model === "string" ? config.model : undefined }) });
       if (refusal) throw unprocessable(refusal.message, { code: refusal.code });
     }
     const routing = validateModelCatalog ? aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing : undefined;

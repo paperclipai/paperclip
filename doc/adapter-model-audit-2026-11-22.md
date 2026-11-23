@@ -41,14 +41,14 @@ spelling; each ID formats back to itself.
 No family offers `minimal` in 1.5.2. The earlier 25-model API-key lineup (five
 families times five levels) was wrong; the real list has 14 models.
 
-`pnpm --filter @paperclipai/paperclip-runner generate:antigravity-models`
+`node packages/paperclip-runner/scripts/generate-antigravity-models.mjs`
 writes `packages/shared/src/antigravity-models.generated.ts` on darwin-arm64.
 It starts the pinned, patched runtime with a placeholder API key (the server
 does not check the key and builds this list locally), opens one session
 without a prompt, and reads its model list. It also reads the families and
 levels from the server's own catalog table in the verified vendor archive and
 stops if the two disagree. The file records the runtime version and the
-darwin-arm64 vendor archive and closure digests. `check:antigravity-models`
+darwin-arm64 vendor archive and closure digests. Its `--check` mode
 runs in the runner's TypeScript build and fails when the checked-in runtime
 declaration changes or the file was edited by hand.
 

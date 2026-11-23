@@ -53,10 +53,13 @@ function antigravityExecution(input: { runId?: string; issueId?: string; workspa
   return execution;
 }
 
-const candidateGrant = () => JSON.stringify({ schema: "paperclip.acpx-candidate-admission.v1", companyId,
-  agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
-  nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
-  platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 });
+const candidateGrant = (target = "darwin-arm64", changes: Record<string, unknown> = {}) => {
+  const [platform, architecture] = target.split("-");
+  return JSON.stringify({ schema: "paperclip.acpx-candidate-admission.v1", companyId,
+    agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+    nativeClosureDigest: `sha256:${distributions.platforms[target].closureSha256}`,
+    platform, architecture, expiresAt: Date.now() + 60_000, ...changes });
+};
 
 afterEach(() => { release.pending = true; vi.unstubAllEnvs(); });
 
@@ -72,11 +75,29 @@ describe("Antigravity executor admission", () => {
     if (!localHost) return;
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant());
     expect(admissible(execution)).not.toThrow();
+    // A local grant never admits a cloud run.
     for (const change of [{ remoteTarget: true }, { restartRecovery: { kind: "same_run" } }, { useRunnerd: false }, { backend: {} }]) {
       expect(admissible(execution, change)).toThrow(/candidate_ineligible/);
     }
     const warm = { ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1 } } } as NativeExecutionInput;
     expect(admissible(warm)).toThrow(/candidate_ineligible/);
+  });
+
+  it("admits a cloud run only with a linux-x64 grant naming the patched closure, for the granted company", () => {
+    const execution = antigravityExecution();
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+    expect(admissible(execution, { remoteTarget: true })).not.toThrow();
+    const warm = { ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1 } } } as NativeExecutionInput;
+    expect(admissible(warm, { remoteTarget: true })).toThrow(/candidate_ineligible/);
+    expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).toThrow(/candidate_ineligible/);
+    const otherCompany = { ...execution, binding: { ...execution.binding, companyId: "10000000-0000-4000-8000-0000000000ff" } } as NativeExecutionInput;
+    expect(admissible(otherCompany, { remoteTarget: true })).toThrow(/candidate_ineligible/);
+    for (const grant of [candidateGrant("linux-arm64"), candidateGrant("darwin-arm64"),
+      candidateGrant("linux-x64", { nativeClosureDigest: `sha256:${distributions.platforms["linux-x64"].vendorClosureSha256}` }),
+      candidateGrant("linux-x64", { model: "gemini-3.8-flash-high" })]) {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant);
+      expect(admissible(execution, { remoteTarget: true })).toThrow(/candidate_ineligible/);
+    }
   });
 
   it("takes the general qualified path after the flip: no grant, restart recovery, remote and warm targets", () => {

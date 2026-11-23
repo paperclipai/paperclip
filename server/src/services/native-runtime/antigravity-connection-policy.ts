@@ -5,10 +5,10 @@
  */
 export const ANTIGRAVITY_REMOTE_UNAVAILABLE = "antigravity_remote_unavailable";
 export const ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED = "antigravity_remote_sign_in_unsupported";
-export const ANTIGRAVITY_WARM_SIGN_IN_UNSUPPORTED = "antigravity_warm_sign_in_unsupported";
+export const ANTIGRAVITY_WARM_UNSUPPORTED = "antigravity_warm_unsupported";
 
 export type AntigravityConnectionRefusal = {
-  code: typeof ANTIGRAVITY_REMOTE_UNAVAILABLE | typeof ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED | typeof ANTIGRAVITY_WARM_SIGN_IN_UNSUPPORTED;
+  code: typeof ANTIGRAVITY_REMOTE_UNAVAILABLE | typeof ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED | typeof ANTIGRAVITY_WARM_UNSUPPORTED;
   message: string;
 };
 
@@ -18,8 +18,23 @@ export function antigravityConnectionRefusal(input: {
   remote: boolean;
   lifecycleMode?: "per_turn" | "warm";
   releasePending: boolean;
+  /**
+   * While pending: the operator granted this company and model a candidate for
+   * the cloud target (linux-x64). It admits an API key only, never sign-in.
+   */
+  remoteCandidateAdmitted?: boolean;
 }): AntigravityConnectionRefusal | null {
-  if (input.remote && input.releasePending) {
+  // Antigravity runs one turn at a time on every connection until a warm
+  // owner is separately qualified; lifecycle resolution already enforces it.
+  if (input.lifecycleMode === "warm") {
+    return { code: ANTIGRAVITY_WARM_UNSUPPORTED,
+      message: "Google Antigravity runs one turn at a time. Turn off warm sessions for this agent." };
+  }
+  if (input.remote && input.releasePending && !(input.remoteCandidateAdmitted && input.apiKey)) {
+    if (input.remoteCandidateAdmitted) {
+      return { code: ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED,
+        message: "Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead." };
+    }
     return { code: ANTIGRAVITY_REMOTE_UNAVAILABLE,
       message: "Google Antigravity runs only on the Paperclip host for now. Choose the Paperclip host as this agent's environment." };
   }
@@ -27,10 +42,6 @@ export function antigravityConnectionRefusal(input: {
   if (input.remote) {
     return { code: ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED,
       message: "Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead." };
-  }
-  if (input.lifecycleMode === "warm") {
-    return { code: ANTIGRAVITY_WARM_SIGN_IN_UNSUPPORTED,
-      message: "Google sign-in for Google Antigravity runs one turn at a time. Turn off warm sessions for this agent, or connect a Google API key instead." };
   }
   return null;
 }

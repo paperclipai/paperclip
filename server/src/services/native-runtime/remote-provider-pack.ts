@@ -51,6 +51,88 @@ export function antigravityProviderPackEntryRefusal(input: {
   return null;
 }
 
+type ProviderPackProfile = { agentServerVersion: string; commandDigest: string };
+
+/** The provider identities one server release admits in a remote pack. */
+export type RemoteProviderPackRelease = {
+  profiles: {
+    cursor: ProviderPackProfile;
+    copilot: ProviderPackProfile;
+    kimi: ProviderPackProfile & { qualificationStatus?: string };
+    antigravity: ProviderPackProfile;
+  };
+  cursorClosures: Readonly<Record<string, { closureSha256: string }>>;
+  kimiLinuxX64Closure: string;
+  antigravityReleasePending: boolean;
+  antigravityPatchedClosures?: Readonly<Record<string, string>>;
+};
+
+/** Copilot's pinned closure per platform in this release. */
+export const COPILOT_PROVIDER_PACK_CLOSURES: Readonly<Record<string, string>> = Object.freeze({
+  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
+  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
+  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
+});
+
+/**
+ * The complete expectation for one provider entry of a remote pack: which
+ * inventory may list it, its qualification, asset path, digests, and the
+ * release's profile and closure for the pack target. Returns null when the
+ * entry is admitted, else the refusal reason.
+ */
+export function remoteProviderPackEntryRefusal(input: {
+  provider: string;
+  inventory: "providers" | "candidateProviders";
+  allowedProviders: readonly string[];
+  target: { platform: string; architecture: string };
+  entry: unknown;
+  /** Whether the provider is listed in each inventory of the same pack. */
+  listed: { providers: boolean; candidateProviders: boolean };
+  release: RemoteProviderPackRelease;
+}): string | null {
+  const { provider, inventory, target, release } = input;
+  const entry = input.entry as Record<string, unknown> | null | undefined;
+  const kimiPending = release.profiles.kimi.qualificationStatus === "pending";
+  const qualified = ["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && !kimiPending
+    || provider === "antigravity" && !release.antigravityReleasePending);
+  if (!input.allowedProviders.includes(provider) || !entry || typeof entry !== "object"
+    || Object.keys(entry).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
+    || entry.qualification !== (qualified ? "qualified" : "pending") || entry.path !== `provider-assets/${provider}/${target.platform}-${target.architecture}`
+    || typeof entry.version !== "string" || !entry.version || entry.version.length > 120
+    || !/^sha256:[a-f0-9]{64}$/.test(String(entry.profileDigest))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(entry.closureDigest))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(entry.sha256))) {
+    return "invalid candidate identity";
+  }
+  const identity = entry as ProviderPackEntry;
+  const platform = `${target.platform}-${target.architecture}`;
+  const matches = (profile: ProviderPackProfile, closure: string | undefined) => closure !== undefined
+    && identity.version === profile.agentServerVersion && identity.profileDigest === profile.commandDigest && identity.closureDigest === `sha256:${closure}`;
+  if (provider === "cursor") {
+    const closure = Object.hasOwn(release.cursorClosures, platform) ? release.cursorClosures[platform]!.closureSha256 : undefined;
+    if (!matches(release.profiles.cursor, closure)) return "Cursor profile or closure does not match this release";
+  }
+  if (provider === "copilot") {
+    const closure = Object.hasOwn(COPILOT_PROVIDER_PACK_CLOSURES, platform) ? COPILOT_PROVIDER_PACK_CLOSURES[platform] : undefined;
+    if ((input.listed.providers && input.listed.candidateProviders) || !matches(release.profiles.copilot, closure)) {
+      return "Copilot profile or closure does not match this release";
+    }
+  }
+  if (provider === "kimi") {
+    if (inventory !== (kimiPending ? "candidateProviders" : "providers") || input.listed[kimiPending ? "providers" : "candidateProviders"]
+      || platform !== "linux-x64" || !matches(release.profiles.kimi, release.kimiLinuxX64Closure)) {
+      return "Kimi profile or closure does not match this release";
+    }
+  }
+  if (provider === "antigravity") {
+    return antigravityProviderPackEntryRefusal({ inventory, target, entry: identity,
+      inBoth: input.listed.providers && input.listed.candidateProviders,
+      releasePending: release.antigravityReleasePending, profile: release.profiles.antigravity,
+      patchedClosures: release.antigravityPatchedClosures });
+  }
+  return null;
+}
+
 /** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */
 export function providerPackProvenanceReuseAllowed(input: {
   retainProviderPack: boolean;

@@ -3,7 +3,12 @@ import {
   QUALIFIED_ACPX_PROFILES,
   type NativeExecutionInput,
 } from "../../vendor/paperclip-runner/index.js";
-import { resolveAntigravityCandidateAdmission } from "./acpx-qualification.js";
+import { ANTIGRAVITY_REMOTE_TARGET, resolveAntigravityCandidateAdmission } from "./acpx-qualification.js";
+
+/** The platform a pending candidate grant must name for this execution. */
+export function antigravityCandidateTarget(remote: boolean): { platform: string; architecture: string } {
+  return remote ? ANTIGRAVITY_REMOTE_TARGET : { platform: process.platform, architecture: process.arch };
+}
 
 /**
  * Google Antigravity's server gates while its Runner profile is pending, and
@@ -62,8 +67,9 @@ export function assertAntigravitySavedStateCurrent(execution: NativeExecutionInp
 }
 
 /**
- * Executor admission. While pending, only an exact local per-turn candidate
- * grant may run. After the flip no grant is needed and Antigravity takes the
+ * Executor admission. While pending, only an exact per-turn candidate grant
+ * bound to the execution target's platform may run: this host locally, or the
+ * cloud pack's linux-x64 closure remotely. After the flip no grant is needed and Antigravity takes the
  * same path as Kimi and Copilot; only state saved by another release is refused.
  */
 export function assertAntigravityExecutionAdmissible(input: {
@@ -80,12 +86,15 @@ export function assertAntigravityExecutionAdmissible(input: {
     assertAntigravitySavedStateCurrent(execution);
     return;
   }
-  const candidate = resolveAntigravityCandidateAdmission({
-    companyId: execution.binding.companyId, model: execution.provider.model,
-  }, input.hostEnvironment ?? process.env);
-  if (!candidate || !input.useRunnerd || input.backend || input.restartRecovery || input.remoteTarget
+  let candidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
+  try {
+    candidate = resolveAntigravityCandidateAdmission({
+      companyId: execution.binding.companyId, model: execution.provider.model, target: antigravityCandidateTarget(input.remoteTarget),
+    }, input.hostEnvironment ?? process.env);
+  } catch { candidate = undefined; }
+  if (!candidate || !input.useRunnerd || input.backend || input.restartRecovery
     || execution.session.lifecyclePolicy.mode !== "per_turn"
     || ("homeMode" in execution && execution.homeMode === "preconfigured")) {
-    throw new Error("paperclip_runner_antigravity_candidate_ineligible: exact local per-turn candidate admission is required");
+    throw new Error("paperclip_runner_antigravity_candidate_ineligible: exact target-bound per-turn candidate admission is required");
   }
 }

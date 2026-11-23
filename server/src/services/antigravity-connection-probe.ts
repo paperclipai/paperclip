@@ -6,7 +6,7 @@ import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from
 import { runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { NativeEnvironmentProbeCleanupError, QUALIFIED_ACPX_PROFILES, probeNativeRunnerEnvironment, resolveAcpxRuntimeRoot } from "../vendor/paperclip-runner/index.js";
 import { logger } from "../middleware/logger.js";
-import { resolveAntigravityCandidateAdmission } from "./native-runtime/acpx-qualification.js";
+import { antigravityRemoteCandidateAdmitted, resolveAntigravityCandidateAdmission } from "./native-runtime/acpx-qualification.js";
 import { antigravityCredentialTurn, prepareAntigravityRunnerCredentials } from "./native-runtime/antigravity-runner-credentials.js";
 import { antigravityConnectionRefusal } from "./native-runtime/antigravity-connection-policy.js";
 import { antigravityReleasePending } from "./native-runtime/antigravity-release.js";
@@ -83,15 +83,18 @@ export async function probeAntigravityExecutionTarget(target: Extract<AdapterExe
   let manifest: Record<string, unknown> | null;
   try { manifest = asRecord(JSON.parse(manifestLines.join("\n"))); } catch { return unavailable(); }
   const payload = asRecord(manifest?.payload);
-  const providers = asRecord(payload?.providers), candidates = asRecord(payload?.candidateProviders);
-  const entry = asRecord(providers?.antigravity);
+  // While pending, the image lists the candidate closure under candidateProviders.
+  const pending = antigravityReleasePending();
+  const inventory = pending ? "candidateProviders" : "providers";
+  const listed = asRecord(payload?.[inventory]), other = asRecord(payload?.[pending ? "providers" : "candidateProviders"]);
+  const entry = asRecord(listed?.antigravity);
   const targetIdentity = asRecord(payload?.target);
-  if (!entry || entry.path !== expectedPath || entry.qualification !== "qualified"
+  if (!entry || entry.path !== expectedPath || entry.qualification !== (pending ? "pending" : "qualified")
     || typeof entry.version !== "string" || typeof entry.profileDigest !== "string" || typeof entry.closureDigest !== "string"
-    || antigravityProviderPackEntryRefusal({ inventory: "providers", inBoth: Boolean(candidates?.antigravity),
+    || antigravityProviderPackEntryRefusal({ inventory, inBoth: Boolean(other?.antigravity),
       target: { platform: String(targetIdentity?.platform), architecture: String(targetIdentity?.architecture) },
       entry: { version: entry.version, profileDigest: entry.profileDigest, closureDigest: entry.closureDigest },
-      releasePending: antigravityReleasePending(), profile: QUALIFIED_ACPX_PROFILES.antigravity,
+      releasePending: pending, profile: QUALIFIED_ACPX_PROFILES.antigravity,
       patchedClosures: ANTIGRAVITY_PATCHED_CLOSURE_SHA256 })) {
     return unavailable();
   }
@@ -106,12 +109,15 @@ export async function testAntigravityConnection(context: AdapterEnvironmentTestC
   const configuredKey = asRecord(configured)?.GEMINI_API_KEY;
   const pending = antigravityReleasePending();
   const target = context.executionTarget;
+  const remote = target?.kind === "remote";
   const refusal = antigravityConnectionRefusal({ apiKey: typeof configuredKey === "string" && configuredKey.trim().length > 0,
-    remote: target?.kind === "remote", releasePending: pending });
+    remote, releasePending: pending,
+    remoteCandidateAdmitted: remote && pending && antigravityRemoteCandidateAdmitted({ companyId: context.companyId, model }) });
   if (refusal) return failed(refusal.code, refusal.message);
   if (target?.kind === "remote") return probeAntigravityExecutionTarget(target);
   // Only the pending candidate needs the operator's grant; a released profile carries none.
-  const admission = pending ? resolveAntigravityCandidateAdmission({ companyId: context.companyId, model }) : undefined;
+  const admission = pending ? resolveAntigravityCandidateAdmission({ companyId: context.companyId, model,
+    target: { platform: process.platform, architecture: process.arch } }) : undefined;
   if (pending && !admission) throw new Error("Google Antigravity is not available for this company.");
   const environment = Object.fromEntries([
     ...TRANSPORT_KEYS.flatMap(key => typeof process.env[key] === "string" ? [[key, process.env[key]!]] : []),
