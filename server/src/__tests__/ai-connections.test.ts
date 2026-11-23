@@ -14,7 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -2613,6 +2613,31 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(remove).toHaveBeenCalledTimes(deletions);
       if (deletions) expect(remove.mock.calls[0]![0].endsWith(path.join("ai-local-logins", id))).toBe(true);
       expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("keeps a Claude sign-in pending for the expiry worker until its Keychain item is deleted", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = "keychain-retry";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Locked Keychain", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const directory = path.join(home, "instances", "ai-connection-fixture", "ai-local-logins", id);
+    const read = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]!;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(false);
+    try {
+      const login = localAiLoginService(db);
+      await mkdir(directory, { recursive: true });
+      await expect(login.cancel(companyId, owner, id)).rejects.toThrow("Keychain item");
+      expect(await read()).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+      await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, id));
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await read()).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+      await expect(stat(directory)).resolves.toBeTruthy();
+      expect(await login.nextCleanupAt()).not.toBeNull();
+      remove.mockResolvedValue(true);
+      await login.reapExpired();
+      expect(await read()).toMatchObject({ status: "timed_out", expiresAt: null });
+      await expect(stat(directory)).rejects.toThrow();
     } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {

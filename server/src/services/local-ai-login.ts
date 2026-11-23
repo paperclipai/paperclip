@@ -13,7 +13,6 @@ import { aiConnectionService } from "./ai-connections.js";
 import { environmentService } from "./environments.js";
 import { readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
 import { deleteIsolatedClaudeKeychainCredential } from "@paperclipai/adapter-claude-local/server";
-import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-browser-login.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
@@ -36,13 +35,14 @@ function loginHome(id: string) {
 }
 /**
  * Remove an attempt's private home. On macOS a Claude sign-in keeps its login
- * in a Keychain item bound to that home, not in the home, so delete that too.
+ * in a Keychain item bound to that home, not in the home, so delete that first.
+ * A failed delete fails the removal, like a failed `rm`: the attempt keeps its
+ * home and its expiry, and the expiry worker tries again.
  */
 async function removeLoginHome(id: string, provider: string | undefined) {
   const directory = loginHome(id);
   if (provider === "anthropic" && !(await deleteIsolatedClaudeKeychainCredential(directory))) {
-    // The error can carry Keychain output. Log only the attempt.
-    logger.warn({ sessionId: id }, "Local Claude sign-in Keychain item could not be deleted");
+    throw unprocessable("The Keychain item of this sign-in could not be deleted. Retry shortly.", { code: "ai_connection_busy" });
   }
   await rm(directory, { recursive: true, force: true });
 }
