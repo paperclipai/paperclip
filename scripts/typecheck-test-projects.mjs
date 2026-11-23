@@ -11,7 +11,7 @@
 // --reuse-declarations skips the build. Use it only straight after a server
 // typecheck on the same commit, because stale declarations pass silently.
 //
-// Usage: node scripts/typecheck-test-projects.mjs [--low-memory] [--reuse-declarations] [project ...]
+// Usage: node scripts/typecheck-test-projects.mjs [--low-memory] [--checkers <n>] [--reuse-declarations] [project ...]
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -28,6 +28,101 @@ export const PROJECTS = [
   "tests/runner-e2e",
   "tests/speko-native",
 ];
+
+const GLOBAL_PROJECT_INPUTS = new Set([
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "tsconfig.base.json",
+  ".npmrc",
+  "scripts/run-tsc.mjs",
+  "scripts/ci-typecheck-lane.mjs",
+  "scripts/typecheck-test-projects.mjs",
+  "server/scripts/typecheck-layers.mjs",
+  "server/tsconfig.json",
+]);
+
+const PROJECT_INPUT_PREFIXES = {
+  "server/src/__tests__/helpers/maintenance": [
+    "server/",
+    "packages/db/",
+    "packages/shared/",
+    "scripts/sleep-qualification/",
+  ],
+  "tests/e2e": [
+    "tests/e2e/",
+    "tests/fixtures/",
+    "tests/fetch-allowed-port",
+    "tests/runner-e2e/",
+    "cli/src/",
+    "packages/shared/",
+    "server/src/adapters/",
+    "server/src/lib/oauth-browser-return",
+    "server/src/agent-auth-jwt",
+  ],
+  "tests/lifecycle-baseline": [
+    "tests/lifecycle-baseline/",
+    "server/src/services/run-liveness",
+    "server/src/services/recovery/",
+    "server/src/services/native-runtime/",
+    "server/src/services/execution-recovery-attempt",
+    "server/src/services/heartbeat",
+    "packages/paperclip-runner/",
+    "packages/shared/",
+    "packages/db/src/schema/",
+    "packages/db/src/index.ts",
+  ],
+  "tests/restart-chaos": [
+    "tests/restart-chaos/",
+    "tests/runner-e2e/",
+    "server/src/services/recovery/",
+    "server/src/services/heartbeat",
+    "server/src/services/accounting-transaction",
+    "server/src/services/usage-receipts",
+    "server/src/__tests__/helpers/embedded-postgres",
+    "packages/db/src/schema/",
+    "packages/db/src/index.ts",
+    "packages/shared/",
+  ],
+  "tests/runner-e2e": [
+    "tests/runner-e2e/",
+    "packages/paperclip-runner/",
+    "packages/paperclip-eval-kernel/",
+    "packages/adapter-utils/",
+    "packages/plugins/sdk/",
+    "packages/shared/",
+    "packages/db/src/schema/",
+    "packages/db/src/index.ts",
+    "server/src/routes/native-run-mcp",
+    "server/src/services/native-runtime/",
+  ],
+  "tests/speko-native": [
+    "tests/speko-native/",
+    "packages/db/src/schema/",
+    "packages/db/src/index.ts",
+    "packages/shared/",
+    "server/src/services/chat-",
+    "server/src/routes/chat-",
+    "server/src/services/voice",
+  ],
+};
+
+/**
+ * Selects the test projects affected by `changedFiles` in PR mode.
+ * Returns all `projects` when `changedFiles` is null/undefined or touches global inputs.
+ */
+export function selectTestProjects(changedFiles, projects = PROJECTS) {
+  if (!Array.isArray(changedFiles)) return [...projects];
+  if (changedFiles.some((file) => GLOBAL_PROJECT_INPUTS.has(file) || file.startsWith("patches/"))) {
+    return [...projects];
+  }
+  return projects.filter((project) => {
+    const prefixes = PROJECT_INPUT_PREFIXES[project];
+    // Fail closed for any new project without explicit input rules.
+    if (!prefixes) return true;
+    return changedFiles.some((file) => prefixes.some((prefix) => file === prefix || file.startsWith(prefix)));
+  });
+}
 
 // The same steps as the server's typecheck script.
 export const PREPARE_STEPS = [
@@ -65,6 +160,7 @@ export function typecheckTestProjects({
   root,
   projects = PROJECTS,
   reuseDeclarations = false,
+  checkers,
   env = process.env,
   pnpm = runPnpm,
   run = runTsc,
@@ -82,6 +178,7 @@ export function typecheckTestProjects({
     const layers = typecheckLayers({
       serverRoot,
       declarationsOnly: true,
+      checkers,
       run: (args, options) => run(args, { ...options, env }),
       log,
     });
@@ -89,11 +186,12 @@ export function typecheckTestProjects({
     if (layers !== 0) return layers;
   }
 
+  const checkerArgs = Number.isInteger(checkers) && checkers >= 1 ? ["--checkers", String(checkers)] : [];
   let exitCode = 0;
   for (const project of projects) {
     log(`typecheck:test-projects: ${project}`);
     const config = path.posix.join(project, "tsconfig.layers.json");
-    const { status, signal } = run(["-p", config], { cwd: root, env });
+    const { status, signal } = run(["-p", config, ...checkerArgs], { cwd: root, env });
     if (signal) return status || 1;
     if (status !== 0) exitCode = status;
 
@@ -117,12 +215,33 @@ export function typecheckTestProjects({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  const flags = args.filter((arg) => arg.startsWith("--"));
-  const projects = args.filter((arg) => !arg.startsWith("--"));
-  const unknownFlags = flags.filter((flag) => !["--low-memory", "--reuse-declarations"].includes(flag));
+  let lowMemory = false;
+  let reuseDeclarations = false;
+  let checkers;
+  const projects = [];
+  const unknownFlags = [];
+  let invalidCheckers = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--low-memory") {
+      lowMemory = true;
+    } else if (arg === "--reuse-declarations") {
+      reuseDeclarations = true;
+    } else if (arg === "--checkers") {
+      checkers = Number(args[++i]);
+      if (!Number.isInteger(checkers) || checkers < 1) invalidCheckers = true;
+    } else if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+    } else {
+      projects.push(arg);
+    }
+  }
   const unknown = projects.filter((project) => !PROJECTS.includes(project));
   if (unknownFlags.length > 0) {
     console.error(`Unknown option: ${unknownFlags.join(", ")}`);
+    process.exitCode = 2;
+  } else if (invalidCheckers) {
+    console.error("--checkers requires a positive integer");
     process.exitCode = 2;
   } else if (unknown.length > 0) {
     console.error(`Unknown project: ${unknown.join(", ")}. Known projects: ${PROJECTS.join(", ")}`);
@@ -131,8 +250,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exitCode = typecheckTestProjects({
       root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
       projects: projects.length > 0 ? projects : PROJECTS,
-      reuseDeclarations: flags.includes("--reuse-declarations"),
-      env: args.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env,
+      reuseDeclarations,
+      checkers,
+      env: lowMemory ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env,
     });
   }
 }
