@@ -83,6 +83,7 @@ test("canary dry run, runner support, chat, docker and test-only edits select th
   assert.deepEqual([...selectedTasks(plan(["tests/runner-e2e/catalog.test.ts"]))].sort(), ["ci:runner-e2e-support", "ci:typecheck"]);
   assert.equal(selectedTasks(plan(["packages/paperclip-runner/src/index.ts"])).has("ci:runner-package"), true);
   assert.equal(selectedTasks(plan(["cli/src/commands/onboard.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selected(plan(["cli/src/commands/onboard.ts"]), "verify_paperclip_runner"), false);
   assert.equal(selectedTasks(plan(["packages/db/src/schema/issues.ts"])).has("ci:workspaces-a"), true);
 });
 
@@ -366,7 +367,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 19 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 29 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }

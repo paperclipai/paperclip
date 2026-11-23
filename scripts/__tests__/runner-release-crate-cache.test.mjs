@@ -362,11 +362,14 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   const lanes = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
     .verify_paperclip_runner.map((entry) => [entry.lane_label, entry.release_crate === true]);
   assert.deepEqual(lanes, [
-    ["static checks", false],
+    ["static checks", true],
     ["rust", true],
-    ["vitest package (1/3)", false],
-    ["vitest package (2/3)", false],
-    ["vitest package (3/3)", false],
+    ["vitest package (1/6)", false],
+    ["vitest package (2/6)", false],
+    ["vitest package (3/6)", false],
+    ["vitest package (4/6)", false],
+    ["vitest package (5/6)", false],
+    ["vitest package (6/6)", false],
     ["vitest native server", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
