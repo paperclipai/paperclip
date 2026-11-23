@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { requestBreakdown, type HostedApi, type RequestRecord } from "./hosted-api.js";
-import { hostedGate, hostedQueueWait, hostedR1, releaseOutages, subtaskRecord, type HostedAgentRow } from "./hosted-gate.js";
+import { hostedGate, hostedQueueWait, hostedR1, queuedBehindSlotCap, releaseOutages, slotQueuedRuns, subtaskRecord, type HostedAgentRow } from "./hosted-gate.js";
 import { trackBanner, type HostedTaskRecord, type RetryBanner } from "./hosted-workload.js";
 import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
 import { releaseMarkdown, type ContinuityReport, type DetectedRelease } from "./hosted-release.js";
@@ -55,9 +55,10 @@ export async function drainHosted(input: Pick<HostedGradeInput, "api" | "company
   Promise<{ reason: "quiet" | "cap" | "cancelled"; progressing: number }> {
   const now = input.now ?? Date.now;
   const settledAt = input.lastReleaseAt + input.settleMs;
-  const capAt = Math.max(settledAt, input.lastReleaseAt + input.drainMs);
+  const drainFrom = Math.max(input.lastReleaseAt, now());
+  const capAt = Math.max(settledAt, drainFrom + input.drainMs);
   const window = PROGRESS_WINDOW_MS;
-  input.record("hosted_settling", { settleUntil: new Date(settledAt).toISOString(), capAt: new Date(capAt).toISOString() });
+  input.record("hosted_settling", { settleUntil: new Date(settledAt).toISOString(), drainFrom: new Date(drainFrom).toISOString(), capAt: new Date(capAt).toISOString() });
   while (!input.cancelled() && now() < settledAt) await delay(Math.min(input.pollMs ?? 15_000, Math.max(1, settledAt - now())));
   for (;;) {
     const at = now();
@@ -118,6 +119,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     issues = startedIssues(all, runs);
     await readViews(issues.map(issue => issue.id));
   }
+  const gradedAt = now();
   runs = await hostedCompanyRuns(api, companyId, agentIds);
   const allIssues = await hostedIssues(api, companyId, agentIds);
   issues = startedIssues(allIssues, runs);
@@ -125,10 +127,20 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const person = await pendingPersonItems(api, issues.map(issue => issue.id));
   const runsByIssue = new Map<string, HostedRunRow[]>();
   for (const run of runs) if (run.issueId) runsByIssue.set(run.issueId, [...(runsByIssue.get(run.issueId) ?? []), run]);
-  const gradedAt = now();
+  const agents = (await api.get<HostedAgentRow[]>(`/api/companies/${companyId}/agents`).catch(error => {
+    input.record("hosted_agents_unavailable", { error: String(error) });
+    return [] as HostedAgentRow[];
+  })).filter(agent => agentIds.includes(String(agent.id)));
+  const slotProof = hostedQueueWait(agentIds, agents, runs);
+  if (slotProof.missing.length) input.record("hosted_agent_slots_unavailable", { agentIds: slotProof.missing });
+  const slotQueued = slotQueuedRuns(runs, gradedAt, slotProof);
+  const notGraded = issues.filter(issue => queuedBehindSlotCap(views.get(issue.id)?.status, runsByIssue.get(issue.id) ?? [], slotQueued))
+    .map(issue => ({ issueId: issue.id, identifier: issue.identifier, runIds: (runsByIssue.get(issue.id) ?? []).filter(run => slotQueued.has(run.runId)).map(run => run.runId) }));
+  const notGradedIds = new Set(notGraded.map(entry => entry.issueId));
+  if (notGraded.length) input.record("hosted_not_graded_slot_queued", { tasks: notGraded });
   const unreadable = issues.filter(issue => (views.get(issue.id) ?? { status: "unreadable" }).status === "unreadable" || person.unreadable.includes(issue.id));
   if (unreadable.length) input.record("hosted_views_unreadable", { count: unreadable.length, issueIds: unreadable.map(issue => issue.id) });
-  const grades: TaskGrade[] = issues.filter(issue => !unreadable.includes(issue)).map(issue => gradeReleaseSwapTask({
+  const grades: TaskGrade[] = issues.filter(issue => !unreadable.includes(issue) && !notGradedIds.has(issue.id)).map(issue => gradeReleaseSwapTask({
     now: gradedAt, staleAfterMs: PROGRESS_WINDOW_MS, issueId: issue.id, identifier: issue.identifier, title: issue.title, ...issueViewFields(views.get(issue.id)!),
     runs: gradeRuns(runsByIssue.get(issue.id) ?? []), queuedWakes: 0, retryClicks: clicks.get(issue.id) ?? [],
     pendingApproval: person.approvals.has(issue.id), pendingQuestion: person.questions.has(issue.id) }));
@@ -158,17 +170,11 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const health = input.health();
   const apiContinuity = input.apiContinuity();
   const handsOffPass = result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started;
-  const agents = (await api.get<HostedAgentRow[]>(`/api/companies/${companyId}/agents`).catch(error => {
-    input.record("hosted_agents_unavailable", { error: String(error) });
-    return [] as HostedAgentRow[];
-  })).filter(agent => agentIds.includes(String(agent.id)));
-  const slotProof = hostedQueueWait(agentIds, agents, runs);
-  if (slotProof.missing.length) input.record("hosted_agent_slots_unavailable", { agentIds: slotProof.missing });
   const outages = releaseOutages(input.releases);
-  const started = new Set(issues.map(issue => issue.id));
+  const started = new Set(issues.filter(issue => !notGradedIds.has(issue.id)).map(issue => issue.id));
   const planned = input.tasks();
   const plannedIds = new Set(planned.flatMap(task => task.issueId ? [task.issueId] : []));
-  const subtasks = issues.filter(issue => !plannedIds.has(issue.id) && issue.parentId !== null && plannedIds.has(issue.parentId)).map(issue => subtaskRecord({ ...views.get(issue.id), id: issue.id,
+  const subtasks = issues.filter(issue => started.has(issue.id) && !plannedIds.has(issue.id) && issue.parentId !== null && plannedIds.has(issue.parentId)).map(issue => subtaskRecord({ ...views.get(issue.id), id: issue.id,
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
@@ -184,6 +190,8 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     invariantLine(invariant),
     "",
     ...gate.lines,
+    ...(notGraded.length ? [`Not graded: ${notGraded.length} task(s) still queued behind a full agent slot cap when the grade read the runs, proven by the agent's slot evidence `
+      + `(${notGraded.map(entry => entry.identifier ?? entry.issueId).join(", ")}).`] : []),
     "",
     releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades, failedOutsideSwaps(windows, facts)).trimEnd(),
     "",
@@ -195,7 +203,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     ...UNAVAILABLE_OVER_API.map(item => `- ${item}`),
     "",
   ].join("\n");
-  await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, gate, r1, invariant,
+  await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, gate, r1, notGraded, invariant,
     releases: input.releases, health, api: apiContinuity, requestBreakdown: breakdown, metrics, duplicates, failedRuns, grades, drained,
     unavailable: UNAVAILABLE_OVER_API }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.dir, "SUMMARY.md"), markdown, { mode: 0o600 });

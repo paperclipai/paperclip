@@ -19,6 +19,7 @@ import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
 import { instanceSettingsService as experimentSettings } from "../services/instance-settings.js";
+import { dashboardOwner } from "./responsibility-owner.js";
 import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { agentPersonInCompany } from "./agent-person-authz.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -207,7 +208,8 @@ export function routineRoutes(
       && (await experimentSettings(db).getExperimental()).enableResponsibilities !== true) {
       throw responsibilitiesDisabledError();
     }
-    const result = await svc.list(companyId, { ...filters, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
+    const ownerUserId = filters.responsibilityId || unfiled === "true" ? await dashboardOwner(db, req, companyId) : undefined;
+    const result = await svc.list(companyId, { ...filters, ownerUserId, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
     res.json(result);
   });
 

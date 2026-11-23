@@ -154,8 +154,8 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
   describe("the read", () => {
     it("is 404 with the flag off, and follows the detail route's access", async () => {
       const seeded = await seed();
-      expect((await read(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id)).status).toBe(200);
-      expect((await read(createApp(agentActor(seeded.company.id, seeded.ceo.id)), seeded.id)).status).toBe(200);
+      expect((await read(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id)).status).toBe(404);
+      expect((await read(createApp(agentActor(seeded.company.id, seeded.ceo.id)), seeded.id)).status).toBe(403);
       // Another company's board user gets what the detail route gives them.
       const outsider = createApp(sessionBoardActor(randomUUID(), OTHER));
       const detail = await request(outsider).get(`/api/responsibilities/${seeded.id}`);
@@ -230,7 +230,7 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
       expect(row!.metricCurrent).toBe(11);
       expect((await record(analyst, seeded.id, "primary", { value: true })).status).toBe(422);
       // A teammate who does not own it may not record either.
-      expect((await record(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id, "primary", { value: 3 })).status).toBe(403);
+      expect((await record(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id, "primary", { value: 3 })).status).toBe(404);
       const logged = await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.companyId, seeded.company.id));
       expect(logged.map((entry) => entry.action)).toEqual(expect.arrayContaining(["responsibility.metric_reading_recorded", "responsibility.metric_updated"]));
     });
@@ -300,7 +300,7 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
   describe("chosen sets", () => {
     it("lets the owner set and remove supporting metrics; others may not", async () => {
       const seeded = await seed();
-      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).put(`/api/responsibilities/${seeded.id}/metrics`).send({ metrics: SUPPORTING })).status).toBe(403);
+      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).put(`/api/responsibilities/${seeded.id}/metrics`).send({ metrics: SUPPORTING })).status).toBe(404);
       expect((await request(createApp(agentActor(seeded.company.id, seeded.analyst.id))).put(`/api/responsibilities/${seeded.id}/metrics`).send({ metrics: SUPPORTING })).status).toBe(403);
       expect((await request(seeded.app).put(`/api/responsibilities/${seeded.id}/metrics`).send({ metrics: [...SUPPORTING, { ...SUPPORTING[1], title: "Third" }] })).status).toBe(400);
       const set = await request(seeded.app).put(`/api/responsibilities/${seeded.id}/metrics`).send({ metrics: SUPPORTING, primaryDisplay: "line" });
@@ -348,7 +348,7 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
       expect(primary.body).toMatchObject({ source: "chosen", chosenBy: { userId: OWNER } });
       expect((await showAs(seeded.app, seeded.id, "primary", "percent")).status).toBe(422);
 
-      expect((await showAs(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id, "primary", "line")).status).toBe(403);
+      expect((await showAs(createApp(sessionBoardActor(seeded.company.id, OTHER)), seeded.id, "primary", "line")).status).toBe(404);
       expect((await showAs(createApp(agentActor(seeded.company.id, seeded.analyst.id)), seeded.id, "primary", "line")).status).toBe(403);
       expect((await showAs(seeded.app, seeded.id, randomUUID(), "line")).status).toBe(404);
       const logged = await db.select({ details: activityLog.details }).from(activityLog)

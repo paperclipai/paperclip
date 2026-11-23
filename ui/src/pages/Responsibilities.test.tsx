@@ -27,10 +27,12 @@ const routinesApi = vi.hoisted(() => ({ update: vi.fn() }));
 const projectsApi = vi.hoisted(() => ({ update: vi.fn() }));
 const areasApi = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), update: vi.fn() }));
 const agentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const authApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const autoOpen = vi.hoisted(() => vi.fn());
 const breadcrumbs = vi.hoisted(() => vi.fn());
 vi.mock("@/api/responsibilities", () => ({ responsibilitiesApi: api, responsibilityAreasApi: areasApi }));
 vi.mock("@/api/agents", () => ({ agentsApi }));
+vi.mock("@/api/auth", () => ({ authApi }));
 vi.mock("@/api/issues", () => ({ issuesApi }));
 vi.mock("@/api/routines", () => ({ routinesApi }));
 vi.mock("@/api/projects", () => ({ projectsApi }));
@@ -87,6 +89,7 @@ beforeEach(() => {
   // These tests cover the full layout, which the Dashboard shows only when the address names it.
   location.search = "?view=full";
   agentsApi.list.mockResolvedValue([guide, codex]);
+  authApi.getSession.mockResolvedValue({ user: { id: "user-storybook" } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -301,7 +304,7 @@ describe("Responsibilities home", () => {
     expect(text()).not.toContain("Old fund");
     await act(async () => buttonByText("Show let-go responsibilities")!.click());
     await flush();
-    expect(api.overview).toHaveBeenLastCalledWith("company-storybook", { includeLetGo: true });
+    expect(api.overview).toHaveBeenLastCalledWith("company-storybook", { includeLetGo: true, ownerUserId: "user-storybook" });
     expect(text()).toContain("Old fund");
   });
 });
