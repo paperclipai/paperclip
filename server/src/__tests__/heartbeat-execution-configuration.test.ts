@@ -348,7 +348,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false, aiBinding?: HeartbeatExecutionConfigurationInput["config"]["aiBinding"]) {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false, aiBinding?: HeartbeatExecutionConfigurationInput["config"]["aiBinding"], reattachingLiveRunner = false) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -356,7 +356,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const environment = selectedEnvironmentForConfig ?? await environmentService(db).ensureLocalEnvironment();
     return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
-      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner,
+      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner, reattachingLiveRunner,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding },
@@ -371,14 +371,14 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }) };
   }
 
-  it.each([false, true])("names the run to the managed AI runtime only when no live runner holds its token (adopting=%s)", async adopting => {
+  it.each(["none", "remote", "local"] as const)("names the run to the managed AI runtime only when no live runner holds its token (live runner=%s)", async live => {
     const f = await seed(true);
     const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
     const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error("fixture managed account reached"));
-    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", null, undefined, adopting, binding);
+    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", null, undefined, live === "remote", binding, live !== "none");
     await opening.prepare().catch(() => undefined);
     expect(prepare).toHaveBeenCalledOnce();
-    expect(prepare.mock.calls[0]![1].currentRunId).toBe(adopting ? undefined : opening.run.id);
+    expect(prepare.mock.calls[0]![1].currentRunId).toBe(live === "none" ? opening.run.id : undefined);
   });
 
   it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {

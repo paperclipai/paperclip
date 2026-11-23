@@ -75,6 +75,8 @@ export interface HeartbeatExecutionConfigurationInput {
     pinnedSkillTest?: { key: string; versionId: string } | null;
     /** Restart recovery is reconnecting to this run's live remote Runner. */
     adoptingLiveRunner?: boolean;
+    /** Restart recovery reconnects this run to a runner process that is still alive, local or remote. */
+    reattachingLiveRunner?: boolean;
   };
   config: {
     sourceWorkspaceConfig: Record<string, unknown>;
@@ -228,9 +230,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   if (aiBinding) {
     try {
       managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig,
-        // An adopted live runner still uses the token this run started with, so
-        // the run stays counted as a holder and does not renew under itself.
-        currentRunId: input.task.adoptingLiveRunner ? undefined : run.id }));
+        // A live runner that this run reconnects to still uses the token the run
+        // started with, so the run stays counted as a holder and does not renew
+        // under itself.
+        currentRunId: input.task.adoptingLiveRunner || input.task.reattachingLiveRunner ? undefined : run.id }));
       onManagedAiRuntimeAcquired(managedAiRuntime);
     } catch (error) {
       // Only fresh executions can receive a pre-provider wait receipt. A
