@@ -16,7 +16,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
+import { activityLog, applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
 import * as storageModule from "../storage/index.js";
@@ -668,6 +668,66 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       const calls = fetchMock.mock.calls.length;
       expect((await maintenance.installations({ id: skill.id })).results[0]).toMatchObject({ status: "unchanged" });
       expect(fetchMock).toHaveBeenCalledTimes(calls);
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("rebuilds an unreachable remote installation from its saved instructions while moving storage", async () => {
+    const companyId = await company();
+    const commit = "b".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-stored", slug: "remote-stored", name: "Remote stored",
+      markdown: "---\nname: Remote stored\n---\n# Stored instructions", sourceType: "github",
+      sourceLocator: `https://github.com/fixture/skills/tree/${commit}/stored`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "stored" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.installations({ id: skill!.id, apply: true })).results[0])
+        .toMatchObject({ status: "blocked", code: "remote_source_unavailable" });
+      const [result] = (await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results;
+      expect(result).toMatchObject({ status: "converted", reconstructed: true });
+      const service = companySkillService(db);
+      expect(await service.readFile(companyId, skill!.id, "SKILL.md")).toMatchObject({ content: "---\nname: Remote stored\n---\n# Stored instructions" });
+      const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill!.id));
+      expect(row!.currentVersionId).toBe(result!.versionId);
+      expect(row!.metadata?.reconstructedFromStoredContent).toMatchObject({ missingFiles: ["reference.md"] });
+      const [version] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, result!.versionId!));
+      expect(version!.label).toBe("Rebuilt from saved instructions");
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, skill!.id))).toEqual([expect.objectContaining({
+        companyId, action: "company.skill_reconstructed_from_stored_content",
+        details: expect.objectContaining({ restoredFiles: ["SKILL.md"], missingFiles: ["reference.md"] }) })]);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "version_backed" });
+      expect((await maintenance.verifyVersions({ id: result!.versionId! })).results[0]!.status).not.toBe("incomplete_current_version");
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("keeps an unreachable remote installation without saved instructions present but unavailable", async () => {
+    const companyId = await company();
+    const commit = "c".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-empty", slug: "remote-empty", name: "Remote empty",
+      markdown: "---\nname: Remote empty\n---\n", sourceType: "github",
+      sourceLocator: `https://github.com/fixture/skills/tree/${commit}/empty`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "empty" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "missing_current_version" });
+      expect((await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results)
+        .toEqual([expect.objectContaining({ skillId: skill!.id, status: "source_unavailable", versionId: null })]);
+      const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill!.id));
+      expect(row).toMatchObject({ currentVersionId: null, sourceType: "github", markdown: skill!.markdown,
+        metadata: expect.objectContaining({ missingSource: expect.objectContaining({ reason: "remote_source_unavailable" }) }) });
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, skill!.id))).toEqual([expect.objectContaining({
+        companyId, action: "company.skill_source_unavailable" })]);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "source_unavailable" });
+      const calls = fetchMock.mock.calls.length;
+      expect((await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results[0])
+        .toMatchObject({ status: "source_unavailable" });
+      expect(fetchMock).toHaveBeenCalledTimes(calls);
+      const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill!.key]), materializeMissing: false });
+      expect(entries.find(entry => entry.key === skill!.key)).toMatchObject({ sourceStatus: "missing",
+        missingDetail: expect.stringContaining("Reinstall it to use it again") });
     } finally { fetchMock.mockRestore(); }
   });
 

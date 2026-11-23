@@ -375,8 +375,8 @@ type SkillSourceMeta = {
 };
 
 type SkillMissingSourceMarker = {
-  reason: "local_source_missing";
-  sourceType: "local_path";
+  reason: "local_source_missing" | "remote_source_unavailable";
+  sourceType: string;
   sourceLocator: string | null;
   sourcePath: string | null;
   detectedAt: string;
@@ -2420,8 +2420,15 @@ async function resolveExistingSkillDirectory(skillDir: string | null) {
   return dirStat?.isDirectory() && skillFileStat?.isFile() ? skillDir : null;
 }
 
+function remoteSourceUnavailable(skill: Pick<CompanySkill, "metadata">) {
+  return getMissingSourceMarker(skill.metadata)?.reason === "remote_source_unavailable";
+}
+
 function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata">) {
   const marker = getMissingSourceMarker(skill.metadata);
+  if (remoteSourceUnavailable(skill)) {
+    return `Company skill "${skill.name}" is in the library, but its files could not be recovered when Paperclip moved this company to new storage. Reinstall it to use it again.`;
+  }
   const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
   if (sourcePath) {
     return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
@@ -6036,6 +6043,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     skill: CompanySkill,
     options: RuntimeSkillEntryOptions,
   ): Promise<RuntimeSkillSourceResolution | null> {
+    if (remoteSourceUnavailable(skill)) {
+      return { status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill), detail: buildMissingRuntimeSourceDetail(skill) };
+    }
     const selectedVersionId = options.versionSelections?.get(skill.key)
       ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null);
     if (selectedVersionId) {

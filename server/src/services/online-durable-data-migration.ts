@@ -205,9 +205,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           return result.inspected < limit || !result.after ? null : result.after;
         }
         case "skill_installations": {
-          const result = await skills.installations({ apply: true, writersStopped: false, after, limit, signal });
+          const result = await skills.installations({ apply: true, writersStopped: false, settleUnavailableSources: true, after, limit, signal });
           for (const row of result.results) {
-            if (row.status === "converted") add(counts, "skillInstallations");
+            if (row.status === "converted") add(counts, row.reconstructed ? "skillInstallationsReconstructed" : "skillInstallations");
+            else if (row.status === "source_unavailable") add(counts, "skillInstallationsSourceUnavailable");
             else if (row.status !== "unchanged") defer(`skills:${row.status === "blocked" ? row.code ?? "blocked" : row.status}`);
           }
           return result.inspected < limit || !result.after ? null : result.after;

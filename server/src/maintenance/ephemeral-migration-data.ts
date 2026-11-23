@@ -116,9 +116,11 @@ export async function migrateEphemeralServerData(db: Db, input: {
   after = undefined;
   for (;;) {
     signal.throwIfAborted();
-    const page = await skills.installations({ apply: true, writersStopped: true, after, limit: 50, signal });
-    if (page.results.some(row => !["converted", "unchanged"].includes(row.status))) throw new Error("skill_installation_migration_blocked");
+    const page = await skills.installations({ apply: true, writersStopped: true, settleUnavailableSources: true, after, limit: 50, signal });
+    if (page.results.some(row => !["converted", "unchanged", "source_unavailable"].includes(row.status))) throw new Error("skill_installation_migration_blocked");
     counts.skillInstallations = (counts.skillInstallations ?? 0) + page.inspected;
+    counts.skillInstallationsReconstructed = (counts.skillInstallationsReconstructed ?? 0) + page.results.filter(row => row.reconstructed).length;
+    counts.skillInstallationsSourceUnavailable = (counts.skillInstallationsSourceUnavailable ?? 0) + page.results.filter(row => row.status === "source_unavailable").length;
     if (page.inspected < 50 || !page.after) break;
     after = page.after;
   }

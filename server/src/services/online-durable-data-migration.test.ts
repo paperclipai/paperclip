@@ -84,6 +84,18 @@ describe("online durable-data migration pass", () => {
       "run_logs:native_log_archive_source_unsettled": 2 });
   });
 
+  it("settles skills whose remote source is gone instead of deferring them", async () => {
+    const installations = vi.fn(async () => ({ inspected: 3, after: null, results: [
+      { skillId: "s1", companyId: "c", status: "converted", reconstructed: true },
+      { skillId: "s2", companyId: "c", status: "source_unavailable" },
+      { skillId: "s3", companyId: "c", status: "converted" }] }));
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 },
+      owners({ skillInstallations: () => ({ installations }) }).owners);
+    expect(installations).toHaveBeenCalledWith(expect.objectContaining({ apply: true, writersStopped: false, settleUnavailableSources: true }));
+    expect(result.counts).toMatchObject({ skillInstallations: 1, skillInstallationsReconstructed: 1, skillInstallationsSourceUnavailable: 1 });
+    expect(Object.keys(result.deferred).filter(key => key.startsWith("skills:"))).toEqual([]);
+  });
+
   it("migrates agent files with live writers, never the offline mode", async () => {
     const agentFiles = vi.fn(async () => ({ results: [], next: null }));
     await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ agentFiles }).owners);
