@@ -926,8 +926,8 @@ const apps = [
   ],
   [
     "anthropic",
-    "Anthropic",
-    "Use Anthropic APIs with a restricted key.",
+    "Anthropic (Claude)",
+    "Connect to Claude with Anthropic.",
     "ai",
     "anthropic.com",
     ["https://api.anthropic.com/*"],
