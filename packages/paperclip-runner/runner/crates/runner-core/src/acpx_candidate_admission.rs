@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::generated_acpx_profiles::{
-    acpx_release_profile, antigravity_native_closure, kimi_native_closure,
+    acpx_release_profile, antigravity_native_closure, kimi_native_closure, AcpxReleaseProfile,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
@@ -74,8 +74,23 @@ impl AcpxCandidateAdmission {
 
     fn validate_at(&self, now: u64, os: &str, architecture: &str) -> Result<(), LocalRunnerError> {
         let profile = acpx_release_profile(&self.agent).ok_or_else(invalid)?;
+        self.validate_against_profile(&profile, now, os, architecture)
+    }
+
+    /// A candidate grant authorizes only a profile whose generated declaration
+    /// is still pending qualification. Releasing a profile is therefore a
+    /// declaration change: every candidate grant for that agent stops working.
+    fn validate_against_profile(
+        &self,
+        profile: &AcpxReleaseProfile,
+        now: u64,
+        os: &str,
+        architecture: &str,
+    ) -> Result<(), LocalRunnerError> {
         let closure = match self.agent.as_str() {
-            "antigravity" => antigravity_native_closure(&self.platform, &self.architecture),
+            "antigravity" if profile.qualification_pending => {
+                antigravity_native_closure(&self.platform, &self.architecture)
+            }
             "kimi" if profile.qualification_pending => {
                 kimi_native_closure(&self.platform, &self.architecture)
             }
@@ -291,6 +306,40 @@ mod tests {
         }
         let error = AcpxCandidateAdmission::parse_json("private malformed input").unwrap_err();
         assert!(!error.to_string().contains("private"));
+    }
+
+    /// The generated Antigravity profile with its qualification flipped to
+    /// released, exactly as the declaration change at qualification would.
+    pub(crate) fn released_antigravity_profile() -> AcpxReleaseProfile {
+        AcpxReleaseProfile {
+            qualification_pending: false,
+            ..acpx_release_profile("antigravity").unwrap()
+        }
+    }
+
+    #[test]
+    fn released_antigravity_rejects_candidate_records_on_every_native_platform() {
+        let pending = acpx_release_profile("antigravity").unwrap();
+        assert!(pending.qualification_pending);
+        let released = released_antigravity_profile();
+        for (platform, architecture, os, host_arch) in ANTIGRAVITY_HOSTS {
+            let candidate = antigravity_admission(platform, architecture);
+            let now = candidate.expires_at - 1;
+            candidate
+                .validate_against_profile(&pending, now, os, host_arch)
+                .unwrap();
+            assert!(
+                candidate
+                    .validate_against_profile(&released, now, os, host_arch)
+                    .is_err(),
+                "{platform}-{architecture}"
+            );
+            let mut next = candidate.clone();
+            next.run_id = "run-2".to_owned();
+            assert!(next
+                .validate_against_profile(&released, now, os, host_arch)
+                .is_err());
+        }
     }
 
     fn kimi_admission(platform: &str, architecture: &str) -> AcpxCandidateAdmission {
