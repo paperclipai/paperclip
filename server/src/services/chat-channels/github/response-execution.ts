@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { githubRunReplyState } from "../../chat-run-publications.js";
-import { readGitHubResponseRun, type GitHubResponseRunRead, type GitHubResponseRunState } from "./response-run-state.js";
+import { FINISHED_RUN_STATUSES, readGitHubResponseRun, type GitHubResponseRunRead, type GitHubResponseRunState } from "./response-run-state.js";
 export { responseRunColumns as githubResponseRunColumns } from "./response-run-state.js";
 
 export type GitHubResponseExecutionInput = {
@@ -14,12 +14,12 @@ export type GitHubResponseExecutionInput = {
   deliveryCreatedAt: Date;
 };
 
-const finishedStatuses = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"];
+const finished = (status: string | undefined) => (FINISHED_RUN_STATUSES as readonly string[]).includes(status ?? "");
 
 /** Whether the task is idle and this request settles from the earlier run that
  * woke for it, because the latest run belongs to another request. */
 export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus: string) {
-  return !!state.latestRun && finishedStatuses.includes(state.latestRun.status) && !state.ownsLatestRequest &&
+  return !!state.latestRun && finished(state.latestRun.status) && !state.ownsLatestRequest &&
     issueStatus !== "blocked" && !!state.finishedRequestRun;
 }
 
@@ -29,7 +29,7 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
   if ("forbidden" in state) throw state.forbidden;
   const { latestRun, ownsLatestRequest, finishedRequestRun } = state;
   const requestRunning = ownsLatestRequest && latestRun?.status === "running";
-  const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
+  const terminal = latestRun && finished(latestRun.status);
   // Once the task is idle, a request whose own run finished earlier settles
   // from that run; otherwise its placeholder would wait for a run that never comes.
   const requestRun = settlesFromRequestRun(state, input.issueStatus) ? finishedRequestRun : null;

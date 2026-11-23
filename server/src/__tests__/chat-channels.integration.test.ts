@@ -3312,6 +3312,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         eq(chatActions.kind, "github_response_comment"), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
       expect(open).toHaveLength(statusCase === "paused" ? 0 : 1);
     });
+    it("settles an older request's status without replacing a newer main GitHub PR placeholder", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      // The first request's run stopped before the next request arrived.
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date(Date.now() - 60_000) })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "Review again", userId: "42", userName: "octocat", mentioned: true }) });
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      await responses.processPending();
+      expect(f.responseComments.size).toBe(1);
+      const body = [...f.responseComments.values()][0].body;
+      expect(body).not.toContain("stopped before completing");
+      const [first] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment"))).orderBy(asc(chatActions.createdAt)).limit(1);
+      expect(first).toMatchObject({ status: "processed", result: { final: true, code: "status_superseded" } });
+    });
     it("settles a GitHub working comment whose run finished just before another request's run started", async () => {
       const f = await toolReplyFixture();
       const [firstId] = [...f.responseComments.keys()];

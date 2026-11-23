@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
 import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { FINISHED_RUN_STATUSES, finishedRunStatusSql } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -398,7 +399,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         const source = await context(link.deliveryId!);
         const [current] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
         if (!current || current.agentId !== source.endpoint.assignedAgentId ||
-            !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
+            !(FINISHED_RUN_STATUSES as readonly string[]).includes(current.status) ||
             source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
             boundRunIssueId(current) !== input.issueId)
           throw forbidden("GitHub failure authority changed");
@@ -446,7 +447,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         sql`exists (select 1 from ${heartbeatRuns} r where r.company_id = ${chatActions.companyId}
           and r.agent_id = ${chatEndpoints.assignedAgentId}
           and coalesce(r.native_issue_id::text, r.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
-          and r.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
+          and ${finishedRunStatusSql(sql`r.status`)}
           and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = r.company_id
             and newer.agent_id = r.agent_id
             and coalesce(newer.native_issue_id::text, newer.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
@@ -454,7 +455,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           and (${issues.status} = 'blocked' or r.active_identity_context_id is not null or exists (select 1 from ${chatMessageLinks} l
             join ${heartbeatRuns} q on q.company_id = r.company_id and q.agent_id = r.agent_id
               and coalesce(q.native_issue_id::text, q.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
-              and q.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
+              and ${finishedRunStatusSql(sql`q.status`)}
             where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
               and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound'
               -- The run that woke for this request; a newer run may follow it.

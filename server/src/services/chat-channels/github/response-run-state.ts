@@ -3,6 +3,12 @@ import { chatMessageLinks, heartbeatRuns, runIdentityContexts, type Db } from "@
 import type { HttpError } from "../../../errors.js";
 import { chatRunSourceMessageId, chatRunSourceMessageIds } from "../run-origin.js";
 
+/** Run statuses after which a run publishes nothing more for its request. */
+export const FINISHED_RUN_STATUSES = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"] as const;
+/** `status in (...)` for FINISHED_RUN_STATUSES, for raw SQL over a run alias. */
+export const finishedRunStatusSql = (status: SQL) =>
+  sql`${status} in (${sql.raw(FINISHED_RUN_STATUSES.map(value => `'${value}'`).join(", "))})`;
+
 export const responseRunColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -95,7 +101,7 @@ const wokeForRequest = (of: Of) => requestLink(of, commentId => wokeFor(sql`${he
  * run woken by another request can follow it within seconds, so the task's
  * latest run alone cannot say how this request ended. */
 const finishedRequestRunId = (of: Of) => sql<string | null>`(select case
-    when q.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled') then q.id end
+    when ${finishedRunStatusSql(sql`q.status`)} then q.id end
   from ${heartbeatRuns} q
   where q.company_id = ${of.companyId}::uuid and q.agent_id = ${of.agentId}::uuid
     and (q.native_issue_id = ${of.issueId}::uuid or (q.native_issue_id is null and q.context_snapshot->>'issueId' = ${of.issueId}::text))
