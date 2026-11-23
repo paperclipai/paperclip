@@ -118,7 +118,12 @@ Invalid arguments for list_threads: unknown argument "q". Accepted arguments: pa
 advertised input schema that lists its `properties`, so agents see the rule.
 `strict-arguments.test.ts` builds its cases from the tool list, so a new tool
 is covered without a test change, and checks that the zod schema of each tool
-validates exactly the fields its JSON schema advertises.
+has the same objects, at the same paths, with the same fields, as its JSON
+schema. The check follows only `properties` and `items`, so `defineTool`
+refuses to define a tool whose input schema uses anything it cannot follow
+(`anyOf`, `oneOf`, `allOf`, `$ref`, tuple `items`, a schema in
+`additionalProperties` beside `properties`, and similar). A new schema shape
+fails at startup and in tests; it can never let an argument through unchecked.
 
 **Pass-through inputs.** These are Google's own request objects and are sent
 to Google as given. Their contents are not checked for unknown fields here
