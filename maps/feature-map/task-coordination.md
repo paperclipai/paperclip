@@ -67,7 +67,7 @@ A closed panel can be reopened from the launcher.
 Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
 [task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
 Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and
-[task panel tests](../../ui/src/components/task-side-panel/TaskSidePanel.test.tsx)
+task panel tests
 cover availability, task/agent changes, failures, inactivity and dismissal.
 These mocks do not establish a particular plugin's live transport behavior.
 

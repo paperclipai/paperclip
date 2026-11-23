@@ -72,7 +72,7 @@ cover durable ordering, authorization, steering acknowledgements, interrupt
 recovery, and concurrent dispatch. [Composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx)
 covers drafts and uncertain saves.
 
-[Task-detail delivery races](../../ui/src/pages/IssueDetail.test.tsx) cover a
+Task-detail delivery races cover a
 consumed message whose send response and queue snapshot arrive late. A started
 run's input receipt removes that message from pending, while a separate unsent
 message stays queued. Admission to a run that has not started is not delivery.
