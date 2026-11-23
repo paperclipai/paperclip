@@ -376,6 +376,56 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
 
+  it("leaves the marker nowhere after deleting a task whose only trace is a connection audit entry", async () => {
+    const logs = stores(path.join(baseDir, "task-audit-only"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: base.company.id, applicationId: base.application.id, name: "Docs audit", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    await db.insert(toolAccessAuditEvents).values({
+      companyId: base.company.id, connectionId: connection!.id, action: "tool_access.policy_decision", outcome: "denied",
+      details: { decision: "deny", issueId: base.issue.id, runId: null, toolName: "read_doc", argumentsSummary: summarizeToolValue({ query: marker }) },
+    });
+    expect((await scan([marker], logs)).length).toBeGreaterThan(0);
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("only checks open work while waiting, and clears content once the open run settles", async () => {
+    const logs = stores(path.join(baseDir, "task-wait-cheap"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    const openRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: openRunId, companyId: base.company.id, agentId: base.agent.id, issueId: base.issue.id, status: "running" });
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [first] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect((first!.progress as { phase: string }).phase).toBe("waiting");
+
+    const late = summarizeToolValue({ text: `Late ${marker}` });
+    const [lateCall] = await db.insert(toolInvocations).values({
+      companyId: base.company.id, connectionId: flow.connection.id, runId: flow.callingRunId, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: late, resultSummary: late,
+    }).returning();
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, first!.id));
+    await service.processPending(new AbortController().signal);
+    const [rechecked] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, first!.id));
+    expect((rechecked!.progress as { phase: string }).phase).toBe("waiting");
+    const [untouched] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, lateCall!.id));
+    expect(untouched!.resultSummary?.summary).toContain(marker);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, openRunId));
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, first!.id));
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
   it("removes content a run of the task writes after the task is deleted", async () => {
     const logs = stores(path.join(baseDir, "task-late"));
     const base = await seedCompany();

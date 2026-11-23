@@ -26,6 +26,7 @@ import { logActivity, type LogActivityInput } from "../../activity-log.js";
 import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
+import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
 
 const BATCH_SIZE = 200;
 const EVENT_BATCH_SIZE = 1000;
@@ -35,7 +36,6 @@ const SETTLED_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "
 const UNSETTLED_INVOCATION_STATUSES = ["pending", "authorized", "awaiting_approval", "executing"];
 const UNSETTLED_ACTION_REQUEST_STATUSES = ["pending", "approved", "executing"];
 const UNSETTLED_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
-const RESULT_TEXT_KEYS = ["summary", "result", "message", "text", "output", "content", "body"];
 const STRUCTURAL_EVENT_TYPES = [
   "lifecycle",
   "run.terminal",
@@ -50,7 +50,7 @@ const STRUCTURAL_EVENT_TYPES = [
   "harness.ready",
 ];
 
-type Phase = "invocations" | "events" | "auditEvents" | "appViews" | "deliveredResults" | "runs" | "done";
+type Phase = "invocations" | "events" | "auditEvents" | "appViews" | "deliveredResults" | "runs" | "done" | "waiting";
 const PHASES: Phase[] = ["invocations", "events", "auditEvents", "appViews", "deliveredResults", "runs", "done"];
 const RUN_BATCH_SIZE = 50;
 const DELIVERY_BATCH_SIZE = 50;
@@ -77,7 +77,7 @@ type JobActivity = Pick<LogActivityInput, "action" | "entityType" | "entityId" |
 type JobStore<Row extends JobRow> = {
   load(id: string): Promise<Row | undefined>;
   scope(row: Row): Scope;
-  waitMs(row: Row, progress: Progress): number | null;
+  waitMs(row: Row, open: number): number | null;
   save(tx: Db, row: Row, progress: Progress, waitMs: number | null): Promise<Row | undefined>;
   finish(tx: Db, row: Row, now: Date): Promise<Row | undefined>;
   activity(row: Row, counts: ToolConnectionContentDeletionCounts): JobActivity | null;
@@ -138,7 +138,7 @@ export function emptyContentDeletionCounts(): ToolConnectionContentDeletionCount
 function readProgress(row: { progress: unknown }): Progress {
   const raw = row.progress as Partial<Progress>;
   const counts = { ...emptyContentDeletionCounts(), ...(raw.counts ?? {}) };
-  const phase = PHASES.includes(raw.phase as Phase) ? raw.phase as Phase : "invocations";
+  const phase = PHASES.includes(raw.phase as Phase) || raw.phase === "waiting" ? raw.phase as Phase : "invocations";
   return { phase, cursor: raw.cursor ?? null, runCursor: raw.runCursor ?? null, currentRun: raw.currentRun ?? null, pendingRuns: raw.pendingRuns ?? [], counts };
 }
 
@@ -203,47 +203,6 @@ function contentEventSql(): SQL {
 function clearedSummary(column: SQL, deletedAt: string): SQL {
   return sql`case when ${column} is null then null
     else ${column} || jsonb_build_object('summary', '', 'contentDeletedAt', ${deletedAt}::text) end`;
-}
-
-export function withoutActionResults(value: unknown, actionRequestIds: ReadonlySet<string>): { value: unknown; changed: boolean } {
-  let changed = false;
-  const walk = (node: unknown): unknown => {
-    if (Array.isArray(node)) return node.map(walk);
-    if (!node || typeof node !== "object") return node;
-    const record = node as Record<string, unknown>;
-    const next: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(record)) next[key] = walk(entry);
-    if (typeof record.actionRequestId === "string" && actionRequestIds.has(record.actionRequestId)
-      && typeof record.resultSummary === "string" && record.resultSummary !== "") {
-      next.resultSummary = "";
-      changed = true;
-    }
-    return next;
-  };
-  const result = walk(value);
-  return { value: changed ? result : value, changed };
-}
-
-export function withoutResultText(value: Record<string, unknown> | null): { value: Record<string, unknown> | null; changed: boolean } {
-  if (!value || typeof value !== "object") return { value, changed: false };
-  let changed = false;
-  const walk = (node: unknown, topLevel: boolean): unknown => {
-    if (Array.isArray(node)) return node.map((entry) => walk(entry, false));
-    if (!node || typeof node !== "object") return node;
-    const next: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(node as Record<string, unknown>)) {
-      if (RESULT_TEXT_KEYS.includes(key) && typeof entry === "string") {
-        if (entry !== "") changed = true;
-        if (!topLevel) next[key] = "";
-        else if (entry === "") next[key] = entry;
-        continue;
-      }
-      next[key] = walk(entry, false);
-    }
-    return next;
-  };
-  const next = walk(value, true) as Record<string, unknown>;
-  return { value: changed ? next : value, changed };
 }
 
 function toDeletion(row: DeletionRow): ToolConnectionContentDeletion {
@@ -790,9 +749,9 @@ export function createConnectionContentDeletion(db: Db, deps: {
     load: async (id) => (await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, id)))[0],
     scope: (row) => ({ companyId: row.companyId, cutoff: null, connectionId: null, issueId: row.issueId,
       runIds: row.scope.runIds ?? [], invocationIds: row.scope.invocationIds ?? [], eventIds: row.scope.eventIds ?? [] }),
-    waitMs: (row, progress) => {
+    waitMs: (row, open) => {
       const waitedMs = Date.now() - row.requestedAt.getTime();
-      if (waitedMs >= ISSUE_WAIT_LIMIT_MS || progress.counts.itemsInProgress + progress.counts.runsInProgress === 0) return null;
+      if (waitedMs >= ISSUE_WAIT_LIMIT_MS || open === 0) return null;
       return Math.min(Math.max(ISSUE_WAIT_MS, waitedMs / 10), ISSUE_WAIT_MAX_MS);
     },
     save: async (tx, row, progress, waitMs) => (await tx
@@ -833,6 +792,23 @@ export function createConnectionContentDeletion(db: Db, deps: {
     },
   };
 
+  async function countOpenWork(tx: Db, scope: Scope) {
+    const [open] = await tx.execute<{ count: number }>(sql`select (
+      (select count(*) from ${heartbeatRuns} where ${heartbeatRuns.companyId} = ${scope.companyId}
+        and ${heartbeatRuns.id} = any(${uuidList(scope.runIds)}) and not ${settledRunSql(sql`${heartbeatRuns.id}`)})
+      + (select count(*) from ${toolInvocations} where ${toolInvocations.companyId} = ${scope.companyId}
+        and ${invocationsInScopeSql(scope)} and ${toolInvocations.status} in (${listSql(UNSETTLED_INVOCATION_STATUSES)}))
+      + (select count(*) from ${toolActionRequests} join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId}
+        where ${toolActionRequests.companyId} = ${scope.companyId} and ${invocationsInScopeSql(scope)}
+          and ${toolActionRequests.status} in (${listSql(UNSETTLED_ACTION_REQUEST_STATUSES)}))
+      + (select count(*) from ${agentWakeupRequests} where ${agentWakeupRequests.companyId} = ${scope.companyId}
+        and ${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}::text
+        and (${agentWakeupRequests.payload} ? 'toolActionRequestIds' or ${agentWakeupRequests.payload}->'_paperclipWakeContext' ? 'toolActionRequestIds')
+        and ${agentWakeupRequests.status} in (${listSql(UNSETTLED_WAKE_STATUSES)}))
+    )::int as count`);
+    return Number(open?.count ?? 0);
+  }
+
   async function countOpenRunsWithoutTools(tx: Db, scope: Scope) {
     if (scope.runIds.length === 0) return 0;
     const [open] = await tx
@@ -856,6 +832,18 @@ export function createConnectionContentDeletion(db: Db, deps: {
       const removedResults = await removeSavedResults(scope.companyId, progress.currentRun.id, signal);
       if (removedLog || removedResults) progress.currentRun.changed = true;
     }
+    if (progress.phase === "waiting") {
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        const waitMs = store.waitMs(job, await countOpenWork(tx, scope));
+        if (waitMs === null) {
+          Object.assign(progress, { ...initialContentDeletionProgress(), counts: { ...progress.counts, itemsInProgress: 0, runsInProgress: 0 } });
+        }
+        const saved = await store.save(tx, job, progress, waitMs);
+        if (!saved) throw new ProgressConflict();
+        return { row: saved, waiting: waitMs !== null };
+      });
+    }
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
       const done = progress.phase === "invocations" ? await invocationsStep(tx, scope, progress, deletedAt)
@@ -872,10 +860,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
         progress.pendingRuns = [];
         if (progress.phase === "done" && scope.issueId) progress.counts.runsInProgress += await countOpenRunsWithoutTools(tx, scope);
       }
-      const waitMs = progress.phase === "done" ? store.waitMs(job, progress) : null;
-      if (waitMs !== null) {
-        Object.assign(progress, { ...initialContentDeletionProgress(), counts: { ...progress.counts, itemsInProgress: 0, runsInProgress: 0 } });
-      }
+      const waitMs = progress.phase === "done" ? store.waitMs(job, progress.counts.itemsInProgress + progress.counts.runsInProgress) : null;
+      if (waitMs !== null) progress.phase = "waiting";
       const saved = await store.save(tx, job, progress, waitMs);
       if (!saved) throw new ProgressConflict();
       return { row: saved, waiting: waitMs !== null };
