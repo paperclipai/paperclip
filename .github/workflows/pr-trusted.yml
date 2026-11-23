@@ -243,7 +243,10 @@ jobs:
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
 
       - name: Test general-server shard partition
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/run-vitest-stable-shard.test.mjs
+        run: |
+          tests=(./scripts/__tests__/run-vitest-stable-shard.test.mjs)
+          if [[ -f ./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs ]]; then tests+=(./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs); fi
+          node "$CI_NODE_TEST" "${tests[@]}"
 
       - name: Test e2e shard partition
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
