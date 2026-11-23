@@ -484,4 +484,31 @@ describe("Paperclip runner adapter_type coverage", () => {
 
     expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([]);
   });
+
+  it("reports each runner harness as its expected adapter_type", () => {
+    const reported = Object.fromEntries([
+      ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
+        .filter((provider) => provider !== "acpx")
+        .map((provider) => [provider, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })]),
+      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => [`acpx:${value}`, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })]),
+    ]);
+
+    expect(reported).toEqual({
+      codex: "codex_local",
+      opencode: "opencode_local",
+      claude_managed: "claude_managed",
+      aws_agentcore: "aws_agentcore",
+      grok_bot: "grok_bot",
+      muse: "muse",
+      openai_dot: "openai_dot",
+      cursor_cloud: "cursor_cloud",
+      "acpx:grok": "grok_local",
+      "acpx:claude": "claude_local",
+      "acpx:cursor": "cursor",
+      "acpx:copilot": "copilot_runtime",
+      "acpx:pi": "pi_local",
+      "acpx:kimi": "kimi_local",
+      "acpx:antigravity": "antigravity_runtime",
+    });
+  });
 });
