@@ -353,7 +353,7 @@ describe("connection evidence", () => {
     const answer = await freshConnectionFetch(url);
     expect(answer.status).toBe(503);
     const text = await answer.text();
-    expect(text.length).toBe(64 * 1024);
+    expect(text.length).toBe(16 * 1024);
     const evidence = answerEvidence(503, answer.headers, text);
     expect(evidence).toMatchObject({ error: "Workspace is waking up", statusPageCode: "idle_sweep" });
     expect(Buffer.byteLength(evidence.bodyExcerpt)).toBe(512);

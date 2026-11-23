@@ -10,7 +10,7 @@ export const CONTROL_URL = "https://www.cloudflare.com/cdn-cgi/trace";
 export const CONTROL_TIMEOUT_MS = 5_000;
 export const STALL_MS = 1_000;
 export const BODY_EXCERPT_BYTES = 512;
-export const ERROR_BODY_READ_BYTES = 64 * 1024;
+export const ERROR_BODY_READ_BYTES = 16 * 1024;
 export const RETRY_TIMEOUT_MS = 2_000;
 export const EVIDENCE_HEADERS = ["x-paperclip-status", "retry-after", "server", "via", "x-railway-request-id", "x-railway-edge", "cf-ray", "date", "content-type",
   "cache-control", "connection"] as const;
