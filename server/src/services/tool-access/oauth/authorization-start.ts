@@ -24,6 +24,7 @@ import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { actorBinding } from "../actor.js";
 import { assertOAuthRedirectConstraints, randomOauthToken, base64UrlSha256 } from "./authorization-constraints.js";
 import type { createPersonalConnectionIdentity } from "../connections/personal-identity.js";
+import { connectionRemovedOrSignInCancelled } from "../connections/first-sign-in.js";
 
 type Dependencies = {
   now: () => Date;
@@ -77,7 +78,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
-    if (connection.status === "archived")
+    if (connectionRemovedOrSignInCancelled(connection))
       throw conflict("Archived app connections cannot start sign in");
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"

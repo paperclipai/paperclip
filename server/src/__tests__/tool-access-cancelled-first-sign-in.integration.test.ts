@@ -192,6 +192,16 @@ describe("cancelling an unfinished first sign-in", () => {
     expect(await visible()).toEqual([]);
   });
 
+  it("keeps a draft whose cancel is still being removed hidden and closed to sign-in", async () => {
+    const { app, connect, listed, visible } = await setup();
+    const { connectionId } = await connect();
+    await db.update(toolConnections).set({ status: "disabled", enabled: false, lastError: "oauth_sign_in_cancelled" }).where(eq(toolConnections.id, connectionId));
+    expect((await listed()).find((connection) => connection.id === connectionId)?.firstSignInPending).toBe(true);
+    expect(await visible()).toEqual([]);
+    await request(app).post(`/api/tools/oauth/${connectionId}/start`).send({}).expect(409);
+    await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body).toMatchObject({ abandoned: true, connection: { status: "archived" } }));
+  });
+
   it("treats a legacy draft with an inline token as a real connection", async () => {
     const { app, connect } = await setup();
     const { connectionId } = await connect();

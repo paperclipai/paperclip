@@ -19,6 +19,10 @@ function signInCancelled(connection: Pick<ConnectionRow, "status" | "lastError">
   return connection.status === "disabled" && connection.lastError === SIGN_IN_CANCELLED;
 }
 
+export function connectionRemovedOrSignInCancelled(connection: Pick<ConnectionRow, "status" | "lastError">): boolean {
+  return connection.status === "archived" || signInCancelled(connection);
+}
+
 function holdsInlineOAuthToken(config: unknown): boolean {
   const oauth = asRecord(asRecord(config).oauth);
   return INLINE_OAUTH_TOKEN_FIELDS.some((field) => field in oauth);
@@ -52,7 +56,7 @@ export async function lockConnectionForSignIn(
   const [locked] = await tx.select({ status: toolConnections.status, lastError: toolConnections.lastError }).from(toolConnections)
     .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
     .for("update");
-  if (locked && (locked.status === "archived" || signInCancelled(locked))) {
+  if (locked && connectionRemovedOrSignInCancelled(locked)) {
     throw conflict("This sign-in was cancelled. Start the connection again.", { code: SIGN_IN_CANCELLED });
   }
 }
