@@ -2374,6 +2374,38 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
+  it("stays on the sign-in page and lets Cancel retry when the cancel request fails", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
+    mockSearch.value = "source=google-workspace&stage=setup";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true },
+    }] });
+    const draft = { id: "workspace-draft", applicationId: "app-workspace", authKind: "oauth", credentialPolicy: "shared", status: "draft",
+      enabled: false, config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace" }, transportConfig: {} };
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [],
+      auth: { kind: "oauth", startUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=fixture" } });
+    cancelFirstSignInMock.mockRejectedValueOnce(new Error("Network unavailable"))
+      .mockResolvedValueOnce({ abandoned: true, connection: { ...draft, status: "archived" } });
+    await render();
+    await act(async () => buttonByText("Continue to sign in")!.click());
+    await flushReact();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === "Continue")!.click();
+    });
+    await flushReact();
+    await act(async () => buttonByText("Cancel")!.click());
+    await flushReact();
+    expect(mockNavigate).not.toHaveBeenCalledWith("/apps");
+    expect(container.textContent).toContain("Opening Google Workspace");
+    await act(async () => buttonByText("Cancel")!.click());
+    await flushReact();
+    expect(cancelFirstSignInMock).toHaveBeenCalledTimes(2);
+    expect(cancelFirstSignInMock).toHaveBeenLastCalledWith("workspace-draft");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
+  });
+
   it("renders Google Calendar as one minimal, unboxed setup screen", async () => {
     mockParams.appKey = "google-calendar";
     listGalleryMock.mockResolvedValue({ apps: [GOOGLE_CALENDAR] });

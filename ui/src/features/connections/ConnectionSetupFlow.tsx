@@ -897,19 +897,25 @@ function StandardConnectionSetupFlow({
       ? connection.id
       : null;
   }, [connectionIntentId, reconnectConnectionId, resumeConnectionId]);
-  const cancelFirstSignInDraft = useCallback(() => {
+  const [cancellingSignIn, setCancellingSignIn] = useState(false);
+  const cancelFirstSignInDraft = useCallback(async (): Promise<boolean> => {
     const connectionId = firstSignInDraftRef.current;
+    if (!connectionId || !selectedCompanyId) return true;
+    setCancellingSignIn(true);
+    try {
+      await toolsApi.cancelFirstSignIn(connectionId);
+    } catch (error) {
+      pushToast({ title: "Couldn’t cancel sign-in", body: `${describeError(error).body} Click Cancel to try again.`, tone: "error" });
+      return false;
+    } finally {
+      setCancellingSignIn(false);
+    }
     firstSignInDraftRef.current = null;
-    if (!connectionId || !selectedCompanyId) return;
     setConnectResult((current) => current?.connectionId === connectionId ? null : current);
-    void toolsApi.cancelFirstSignIn(connectionId).then(
-      () => Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId) }),
-      ]),
-      () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) }),
-    );
-  }, [queryClient, selectedCompanyId]);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId) });
+    return true;
+  }, [pushToast, queryClient, selectedCompanyId]);
   useEffect(() => {
     if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
       cancelOAuthLookup();
@@ -2579,10 +2585,11 @@ function StandardConnectionSetupFlow({
           setOAuthError(null);
           backToGallery();
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
-          cancelFirstSignInDraft();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -2626,10 +2633,11 @@ function StandardConnectionSetupFlow({
           setOAuthPhase("entry");
           setOAuthError(null);
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
-          cancelFirstSignInDraft();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
