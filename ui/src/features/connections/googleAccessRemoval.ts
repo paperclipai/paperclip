@@ -16,6 +16,7 @@ const openGoogleAccountConnections: ToastAction = {
 
 export function googleAccessRemovalNotice(
   providerAccess: ManagedGoogleAccessRemoval | null | undefined,
+  removed: "connection" | "credentials" = "connection",
 ): GoogleAccessRemovalNotice | null {
   if (providerAccess?.provider !== "google") return null;
   if (providerAccess.result === "ended") {
@@ -36,7 +37,7 @@ export function googleAccessRemovalNotice(
   }
   return {
     tone: "warn",
-    body: "Paperclip removed the connection but couldn't end its access at Google. You can remove Paperclip from your Google account's third-party connections.",
+    body: `Paperclip removed the ${removed} but couldn't end its access at Google. You can remove Paperclip from your Google account's third-party connections.`,
     action: openGoogleAccountConnections,
   };
 }

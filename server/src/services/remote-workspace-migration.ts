@@ -25,7 +25,7 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { createNestedWorkspaceImportVerifier, onlineOrdinarySourceBlockers, offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers, type WorkspaceMigrationCohort } from "./remote-workspace-migration-tree.js";
 
-import { inspectOnlineWorkspaceSource, requiresOnlineWorkspaceSource, type OnlineWorkspaceSource } from "./online-workspace-source.js";
+import { explainOnlineWorkspaceSource, inspectOnlineWorkspaceSource, requiresOnlineWorkspaceSource, type OnlineWorkspaceSource } from "./online-workspace-source.js";
 import { withWorkspaceSourceLocks, withIndependentWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, isTaskDispositionRecovery, lockOnlineLegacyWorkspaceRecoverySources, ONLINE_LEGACY_WORKSPACE_PRESERVATION, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
@@ -344,11 +344,12 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
 export async function inventoryRemoteWorkspaceMigration(db: Db, input: { companyId: string; workspaceId: string; writersStopped?: boolean }) {
   const [workspace] = !input.writersStopped ? await db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))) : [];
-  const onlineSource = workspace && !readRemoteWorkspaceAuthority(workspace.metadata)
-    ? await inspectOnlineWorkspaceSource(db, workspace) ?? undefined : undefined;
-  const result = await inspect(db, { ...input, onlineSource, onlineSourceUnproven: Boolean(workspace && !onlineSource
-    && !readRemoteWorkspaceAuthority(workspace.metadata) && await requiresOnlineWorkspaceSource(workspace)) });
+  const explained = workspace && !readRemoteWorkspaceAuthority(workspace.metadata) ? await explainOnlineWorkspaceSource(db, workspace) : undefined;
+  const onlineSource = explained && !("unproven" in explained) ? explained : undefined;
+  const onlineSourceUnproven = Boolean(workspace && explained && !onlineSource && await requiresOnlineWorkspaceSource(workspace));
+  const result = await inspect(db, { ...input, onlineSource, onlineSourceUnproven });
   return { companyId: input.companyId, workspaceId: input.workspaceId, eligible: result.reasons.length === 0,
+    ...(onlineSourceUnproven && explained && "unproven" in explained ? { sourceScopeUnproven: explained.unproven } : {}),
     alreadyMigrated: Boolean(result.authority), reasons: result.reasons, localPath: result.workspace.cwd ?? result.workspace.providerRef,
     source: result.source, operationId: typeof result.marker.operationId === "string" ? result.marker.operationId : null,
     snapshotId: result.authority?.snapshotId ?? null };
