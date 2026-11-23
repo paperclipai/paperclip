@@ -2,6 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { ISSUE_PRIORITIES, type AttentionHeldUpTask, type AttentionItem, type IssueLockedStub, type IssueRelationIssueSummary } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
 import { issuesApi } from "@/api/issues";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
@@ -66,7 +67,12 @@ function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: 
         <p className="border-b border-border px-3 py-2 text-sm font-medium">{issueLabel} holds up {blocks.length || moreCount} tasks</p>
         <div className="max-h-64 overflow-y-auto py-1">
           {issue.isLoading ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p> : null}
-          {issue.isError ? <p className="px-3 py-2 text-xs text-destructive">Couldn't load the list. Open {issueLabel} to see it.</p> : null}
+          {/* Cached rows stay visible when a refetch fails; the error shows only with nothing to list. */}
+          {issue.error && !issue.data ? (
+            <p role="alert" className="px-3 py-2 text-xs text-destructive">
+              {describeError(issue.error, { action: "load the list" }).body} Open {issueLabel} to see it.
+            </p>
+          ) : null}
           {blocks.map((entry) => (
             <div key={entry.id} className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm">
               <IssueReferencePill issue={entry} />
