@@ -296,6 +296,31 @@ describe("activity routes", () => {
     });
   });
 
+  it("rejects malformed agentId filters on company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/activity?agentId=dc04285a-"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
+  it("passes valid agentId filters to company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+    const agentId = "dc04285a-1b2c-4d3e-8f90-123456789abc";
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/company-1/activity?agentId=${agentId}`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith(expect.objectContaining({ agentId }));
+  });
+
   it("caps requested company activity list limits", async () => {
     mockActivityService.list.mockResolvedValue([]);
 

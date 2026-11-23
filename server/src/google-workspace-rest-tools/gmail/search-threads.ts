@@ -109,6 +109,7 @@ export async function readThreads(ids: string[], http: GoogleHttp): Promise<Arra
 export const searchThreads = defineTool({
   definition: {
     name: "search_threads",
+    title: "Search threads",
     description: "Lists the signed-in user's Gmail threads that match an optional Gmail search query, one page at a time. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. A thread matches when any of its messages matches.",
     inputSchema: {
       type: "object",

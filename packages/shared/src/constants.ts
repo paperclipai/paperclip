@@ -1132,6 +1132,7 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "agent_setup_progress.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1403,6 +1404,8 @@ export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
   "reconnected",
   "disconnected",
   "actions_quarantined",
+  "google_access_ended",
+  "google_access_not_ended",
 ] as const;
 export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
 

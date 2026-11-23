@@ -128,6 +128,7 @@ describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({
@@ -472,7 +473,7 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("hides cloud feedback and signs out through the harness (%#)", async (AccountMenu) => {
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("opens the current Cloud Slack channel and signs out through the harness (%#)", async (AccountMenu) => {
     const root = createRoot(container);
     const onOpenChange = vi.fn();
     const queryClient = new QueryClient({
@@ -488,7 +489,8 @@ describe("SidebarAccountMenu", () => {
         cloudBaseUrl: "https://cloud.example.test",
       },
     });
-    queryClient.setQueryData(queryKeys.cloud.stacks, cloudStacksPortfolio("owner"));
+    const channelUrl = "https://slack.com/app_redirect?channel=CTEST";
+    queryClient.setQueryData(queryKeys.cloud.stacks, { ...cloudStacksPortfolio("owner"), slackFeedback: { href: channelUrl } });
 
     await act(async () => {
       root.render(
@@ -506,6 +508,9 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(container.querySelector('a[aria-label="Share feedback"]')).toBeNull();
+    const slack = container.querySelector<HTMLButtonElement>('button[aria-label="Slack the Paperclip team"]');
+    expect(slack?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(slack?.querySelector("img")?.getAttribute("src")).toBe("/brands/apps/slack.svg");
 
     // Cloud manages invitations in the stack's People settings, reached with a
     // same-tab top-level navigation rather than the in-app router.
@@ -534,6 +539,13 @@ describe("SidebarAccountMenu", () => {
     expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
     expect(onOpenChange).toHaveBeenCalledWith(false);
 
+    await act(() => slack!.click());
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.textContent).toContain("inbox for the Slack invitation");
+    const channel = dialog?.querySelector("a");
+    expect(channel?.getAttribute("href")).toBe(channelUrl);
+    expect(channel?.target).toBe("_blank");
+
     await act(async () => {
       root.unmount();
     });
@@ -557,7 +569,8 @@ describe("SidebarAccountMenu", () => {
     // Company roles can differ from Cloud roles; the Members page only offers
     // the Cloud invite link to the current stack's owner/admin, so the menu
     // must match rather than send a plain member to People settings.
-    queryClient.setQueryData(queryKeys.cloud.stacks, cloudStacksPortfolio("member"));
+    const message = "Open the invitation emailed to your organization’s owner.";
+    queryClient.setQueryData(queryKeys.cloud.stacks, { ...cloudStacksPortfolio("member"), slackFeedback: { message } });
 
     await act(async () => {
       root.render(
@@ -575,6 +588,17 @@ describe("SidebarAccountMenu", () => {
     expect(popover?.querySelector('a[href^="https://cloud.example.test/"]')).toBeNull();
     expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
     expect(popover?.querySelector('a[aria-label="View profile"]')).not.toBeNull();
+
+    const slack = container.querySelector<HTMLButtonElement>('button[aria-label="Slack the Paperclip team"]');
+    expect(slack).not.toBeNull();
+    await act(() => slack!.click());
+    await flushReact();
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.querySelector('[data-slot="dialog-description"]')?.textContent).toBe(message);
+    expect(dialog?.querySelector("a")).toBeNull();
+    const done = Array.from(dialog!.querySelectorAll("button")).find((button) => button.textContent === "Got it");
+    await act(() => done!.click());
+    expect(document.body.querySelector('[data-slot="dialog-content"]')).toBeNull();
 
     await act(async () => {
       root.unmount();

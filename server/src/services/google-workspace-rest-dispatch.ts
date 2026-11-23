@@ -2,6 +2,8 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   GOOGLE_WORKSPACE_TOOL_TRANSPORT,
   googleWorkspaceServiceToolNames,
+  googleWorkspaceToolTarget,
+  googleWorkspaceToolTitle,
   type GoogleWorkspaceService,
   type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
@@ -39,6 +41,42 @@ export function googleWorkspaceRestAuditEndpoint(service: GoogleWorkspaceService
 
 export function listGoogleWorkspaceRest(service: GoogleWorkspaceService): Tool[] {
   return listGoogleWorkspaceRestTools(restService(service));
+}
+
+export interface GoogleWorkspaceRestToolDefinition {
+  name: string;
+  title: string | null;
+  description: string | null;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown> | null;
+  annotations: Record<string, unknown>;
+}
+
+export function googleWorkspaceRestToolDefinition(toolName: string): GoogleWorkspaceRestToolDefinition | null {
+  const target = googleWorkspaceToolTarget(toolName);
+  if (!target || target.transport !== "paperclip_rest" || !isGoogleWorkspaceRestService(target.service)) return null;
+  const tool = listGoogleWorkspaceRestTools(target.service).find((candidate) => candidate.name === target.leaf);
+  return tool ? {
+    name: tool.name,
+    title: googleWorkspaceCatalogToolTitle("google-workspace", toolName, tool.title),
+    description: tool.description ?? null,
+    inputSchema: { ...tool.inputSchema },
+    outputSchema: tool.outputSchema ? { ...tool.outputSchema } : null,
+    annotations: { ...tool.annotations },
+  } : null;
+}
+
+export function googleWorkspaceCatalogToolTitle(
+  sourceTemplateKey: unknown,
+  name: string,
+  title: string | null | undefined,
+): string | null {
+  if (sourceTemplateKey !== "google-workspace") return title ?? null;
+  const target = googleWorkspaceToolTarget(name);
+  const restTitle = target && isGoogleWorkspaceRestService(target.service)
+    ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
+    : undefined;
+  return googleWorkspaceToolTitle(name, restTitle ?? title);
 }
 
 export async function callGoogleWorkspaceRest(

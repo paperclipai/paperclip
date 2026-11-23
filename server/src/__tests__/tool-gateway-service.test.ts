@@ -69,6 +69,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { useGoogleMcpTransport } from "./helpers/google-workspace-transport.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -3308,6 +3309,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     ["people__get_user_profile", "userinfo.profile", "people"],
     ["search__search_corpus", null, "workspacemcp"],
   ] as const)("routes %s and denies cached actions after consent changes", async (toolName, permission, host) => {
+    useGoogleMcpTransport();
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "board", status: "active", membershipRole: "owner" });
     const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
@@ -3607,6 +3609,45 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
       .rejects.toMatchObject({ reasonCode: "grant_owner_membership_inactive" });
     expect(resolvedGrants).toHaveLength(3);
+  });
+
+  it("selects the managed GitHub identity of the person who opened the session", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+      config: { ...connection.config, sourceTemplateKey: "github" },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id,
+      connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    await db.insert(companyMemberships).values(["A", "B", "C"].map(principalId => ({ companyId: company.id,
+      principalType: "user", principalId, status: "active", membershipRole: "member" })));
+    const grants = await db.insert(connectionGrants).values(["A", "B"].map(subjectUserId => ({
+      companyId: company.id, connectionId: connection.id, kind: "user" as const, subjectUserId,
+      status: "active" as const, credentialSecretRefs: [],
+    }))).returning();
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: "A", cause: "instruction" });
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow reads"));
+    const resolvedGrants: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher: async ({ grantId }) => {
+        resolvedGrants.push(grantId);
+        return db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)).then(rows => rows[0]!);
+      },
+      remoteHttpRequest: async (_url, init) => new Response(JSON.stringify({ jsonrpc: "2.0",
+        id: JSON.parse(String(init.body)).id, result: { content: [{ type: "text", text: "ok" }] },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    const callAs = async (createdByUserId: string) => {
+      const session = await gateway.createSession({ ...runSessionInput(company, agent, run), createdByUserId });
+      const tool = (await gateway.listToolsForSession(session.token)).find(t => t.providerType === "mcp_remote_http")!;
+      return gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+    };
+
+    expect((await callAs("B")).status).toBe("completed");
+    expect(resolvedGrants).toEqual([grants[1]!.id]);
+    await expect(callAs("C")).rejects.toMatchObject({ reasonCode: "github_identity_unavailable" });
+    expect(resolvedGrants).toEqual([grants[1]!.id]);
   });
 
   it.each([false, true])("reselects a duplicate only before GitHub dispatch (upstream failure: %s)", async (upstreamFailure) => {

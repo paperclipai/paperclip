@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -349,6 +349,14 @@ function unconfiguredConnectorEnrollment() {
     environment: "staging",
     origins: [],
   };
+}
+
+function cloudQueryClient(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  client.setQueryData(queryKeys.health, {
+    deploymentMode: "authenticated",
+    cloud: { managed: true, managedBy: "paperclip-cloud", stackSlug: "stack-fixture", cloudBaseUrl: "https://my-staging.paperclip.app" },
+  });
+  return client;
 }
 
 function customerOwnedApp(app: typeof GMAIL) {
@@ -1740,6 +1748,62 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("offers a retry, not Cloud registration, when Paperclip could not reach Cloud to check GitHub sign-in", async () => {
+    // Production Cloud workspaces hit this when the broker rate-limited the
+    // status check: registration cannot succeed there and only looked broken.
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "unreachable",
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: "stack-test",
+      environment: "production",
+      origins: ["https://paperclip.example.test"],
+    });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(buttonByText("Connect with Paperclip")).toBeFalsy();
+    expect(container.textContent).toContain("Paperclip couldn’t reach Paperclip Cloud to start GitHub sign-in. Try again in a moment.");
+    const calls = getCloudConnectorEnrollmentMock.mock.calls.length;
+    getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(getCloudConnectorEnrollmentMock.mock.calls.length).toBeGreaterThan(calls);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it("asks for an administrator, not registration, when managed Cloud settings are incomplete", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ ...unconfiguredConnectorEnrollment(), status: "misconfigured" });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(container.textContent).toContain("Ask your instance administrator to finish the Paperclip Cloud settings.");
+  });
+
+  it("keeps Cloud registration available when the local Cloud identity is unverified", async () => {
+    // "unverified" is a local identity problem (for example a saved identity
+    // for another broker); registering again fixes it, a retry does not.
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ ...unconfiguredConnectorEnrollment(), status: "unverified" });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).toContain("You must connect this instance to Paperclip to connect to GitHub");
+    expect(container.textContent).not.toContain("couldn’t reach Paperclip Cloud");
+  });
+
   it("prompts for one-time Cloud registration inside Gmail when managed methods are not yet advertised", async () => {
     mockParams.appKey = "gmail";
     listGalleryMock.mockResolvedValue({
@@ -1747,7 +1811,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     getCloudConnectorEnrollmentMock.mockResolvedValueOnce(unconfiguredConnectorEnrollment());
 
-    await render();
+    await render(cloudQueryClient());
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect with Paperclip");
@@ -1773,8 +1837,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("offers only the customer's own Google client on a self-hosted instance and explains why", async () => {
+    mockParams.appKey = "gmail";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    const notice = Array.from(container.querySelectorAll('[role="note"]'))
+      .find((element) => element.textContent?.includes(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE));
+    expect(notice).toBeDefined();
+    const guide = notice!.querySelector<HTMLAnchorElement>("a");
+    expect(guide?.textContent).toBe("How to set up a Google OAuth client");
+    expect(guide?.href).toMatch(/^https:\/\/developers\.google\.com\//);
+    expect(container.textContent).toContain("Client ID");
+  });
+
+  it("never shows the self-hosted Google notice on Paperclip Cloud", async () => {
+    mockParams.appKey = "gmail";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+
+    await render(cloudQueryClient());
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE);
+    expect(buttonByText("Continue to sign in")).toBeDefined();
+  });
+
   it.each([false, true])("retains task access and interaction through enrollment (popup blocked: %s)", async (popupBlocked) => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = cloudQueryClient();
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     const open = vi.spyOn(window, "open").mockReturnValue(popupBlocked ? null : popup as unknown as Window);
     listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
@@ -1824,7 +1919,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         verificationUrl: failure === "missing-url" ? undefined : "javascript:alert(1)",
       });
     }
-    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await render(cloudQueryClient(), false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
     await passAccessStep();
     await act(async () => buttonByText("Connect with Paperclip")?.click());
     await flushReact();
@@ -5115,6 +5210,30 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     expect(container.textContent).toContain("Client ID");
     expect(container.textContent).toContain("Client secret");
     // No redirect happened: there is nothing to redirect to yet.
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+  });
+
+  it("shows why a client is needed when the deployment's sign-in app cannot be used", async () => {
+    const reason = "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.";
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "mcp.example.test" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null, manualClientRequired: true, manualClientReason: reason },
+    });
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain(reason);
+    expect(container.textContent).toContain("Client ID");
+    expect(container.textContent).toContain("Client secret");
     expect(navigateTopLevelMock).not.toHaveBeenCalled();
   });
 

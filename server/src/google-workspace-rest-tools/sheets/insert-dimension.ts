@@ -60,6 +60,7 @@ export function insertDimensionResult(input: InsertDimensionArgs, response: Batc
 export const insertDimension = defineTool({
   definition: {
     name: "insert_dimension",
+    title: "Insert rows or columns",
     description: "Inserts empty rows or columns into one sheet at a 0-based position, moving the existing rows down or columns right. It writes no cell values and deletes nothing. The result's status says which rows or columns were inserted. A failed insert is never retried automatically.",
     inputSchema: {
       type: "object",

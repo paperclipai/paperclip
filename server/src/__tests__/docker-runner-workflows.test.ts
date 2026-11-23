@@ -96,6 +96,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     buildArgs: [
       "PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}",
       "PAPERCLIP_BUILD_COMMIT=${{ github.sha }}",
+      "PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=${{ needs.macos_runner_runtime.outputs.inputs_digest }}",
       "CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}",
     ],
     buildContexts: [],
@@ -111,7 +112,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     }
   });
 
-  it("gives a build with no answer exactly the build arguments, contexts and labels it had before", () => {
+  it("keeps inline Runner arguments and includes the macOS runtime identity without a published Runner", () => {
     expect(buildInputs({})).toEqual(inlineBuild);
     expect(buildInputs({ mode: "inline" })).toEqual(inlineBuild);
   });
