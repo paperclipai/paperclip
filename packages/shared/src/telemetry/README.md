@@ -201,6 +201,41 @@ creator, else the task's responsible user, else the run owner (the acting
 person, the plan author, or the user who owns the model connection). A live
 request still wins. The self-hosted collector envelope does not change.
 
+## Connector Events
+
+`connection.created`, `connection.updated`, and `connection.invoked` describe
+tool connectors. `connection.app_linked` and `connection.app_requested`
+describe apps reached through the Composio, Arcade, and Executor aggregator
+gateways. The server emits all of them through
+`server/src/services/connector-telemetry.ts`.
+
+- `connector_key` is a slug from the shared connector catalog. Every other
+  connection, including custom MCP servers and plugin connectors, sends the
+  literal `custom`.
+- `server_domain` is sent only when `connector_key` is `custom`. It is the
+  registrable domain of the remote server (the ICANN public suffix plus one
+  label, from `tldts`), so `mcp.example.com/sse?token=...` sends `example.com`.
+  The path, query, port, credentials, and subdomains are never sent. IP
+  addresses, loopback, single-label hosts, non-ICANN or special-use suffixes
+  (such as `.local`, `.internal`, `.home.arpa`, `.onion`), non-HTTP schemes,
+  and unparsable addresses send `private`. Local stdio servers send `stdio`. A
+  remote connection with no address yet omits the field.
+- `app` is a slug from the shared aggregator app catalog
+  (`aggregator-app-catalog.ts`), resolved from the provider's toolkit name.
+  Every other toolkit, including Executor custom integrations, sends `other`.
+  The provider's own app name or account name is never sent.
+- `connection.app_linked` is sent when a person's cached app observation
+  changes to `connected` from any other status or from no observation. A
+  re-sync that finds the app still connected sends nothing.
+- `connection.app_requested` is sent once per request to add an app: from
+  the app setup screens (`origin: user`), or from the tool gateway when an
+  agent calls `COMPOSIO_MANAGE_CONNECTIONS` with `add`, or when an Arcade tool
+  call answers with an authorization step (`origin: agent`). `outcome` is
+  read from each app's own result: `needs_auth` when the provider returns a
+  sign-in step for that app, `succeeded` when the app is connected, and
+  `failed` otherwise. A sign-in link for another app in the same request
+  never counts.
+
 ## Cloud Direct Delivery
 
 Self-hosted installs are unchanged. They post every batch to the collector,

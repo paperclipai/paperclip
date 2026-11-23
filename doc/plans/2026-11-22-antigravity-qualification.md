@@ -137,6 +137,11 @@ While the profile is pending, a cloud (Daytona) run needs an operator grant
 for the company and exact model that names linux-x64 and the patched linux-x64
 closure, with an API-key connection, per-turn. The runner E2E harness stages
 that grant for Daytona cells; a local cell's grant names the host instead.
+With that grant, the agent picker offers Google Antigravity for a Core sandbox
+or SSH environment that is linux-x64 with a supported glibc (or the managed
+cloud image), and for this host only a grant that names this host. It offers
+nothing for a plugin Runner-task environment (the warm Agent Computer in
+Paperclip Cloud): that path cannot launch Antigravity yet (see Open decisions).
 
 ### Launch integrity follow-up (2026-11-22)
 
@@ -176,3 +181,11 @@ provider-death fixtures now target the store and per-launch directory layout.
 - Orchestrator mode: excluded for this release (not exposed over ACP in 1.5.2).
 - Merge and production flip after the PR is green.
 - Disposition of community PR #21121 (separate legacy-style adapter).
+- Plugin Runner-task environments. Paperclip Cloud's warm Agent Computer runs
+  agents only as plugin Runner tasks, and that path has no Antigravity launch:
+  the plugin task credential contract has no Gemini API key type, the plugin
+  prepares the provider launch without a candidate grant (so a pending profile
+  is refused by the sidecar), the Cloud plugin's harness table lists only Codex,
+  Claude and OpenCode, and Test refuses the path. Kimi, Copilot and Pi do not
+  run there either. Closing it needs a plugin SDK contract change plus a Cloud
+  plugin and image change.
