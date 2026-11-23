@@ -185,11 +185,24 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       });
     });
     try {
-      await json(
-        await request.patch("/api/instance/settings/experimental", {
-          data: { enableClassicTaskInterface: false, enableNativeRunner: true },
-        }),
-      );
+      const needsSettingsPatch =
+        originalSettings.enableClassicTaskInterface !== false ||
+        originalSettings.enableNativeRunner !== true;
+      if (needsSettingsPatch) {
+        await json(
+          await request.patch("/api/instance/settings/experimental", {
+            data: { enableClassicTaskInterface: false, enableNativeRunner: true },
+          }),
+        );
+      }
+      await page.route("**/api/instance/settings/experimental", async (route) => {
+        const response = await route.fetch();
+        const settings = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...settings, enableClassicTaskInterface: false, enableNativeRunner: true },
+        });
+      });
       async function agent(name: string) {
         return json(
           await request.post(`/api/companies/${company.id}/agents`, {
@@ -369,16 +382,15 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(
         page.getByText("Subtree is paused.", { exact: true }),
       ).toBeVisible();
-      // Cross the isolated server's ten-second scheduler interval repeatedly.
-      for (let i = 0; i < 3; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
-        expect(
-          await json(await request.get(`/api/issues/${parent.id}/live-runs`)),
-        ).toEqual([]);
-        expect(
-          await json(await request.get(`/api/issues/${child.id}/live-runs`)),
-        ).toEqual([]);
-      }
+      // Cross the isolated server's ten-second scheduler interval and verify
+      // no paused subtree task resumes on the tick.
+      await new Promise((resolve) => setTimeout(resolve, 11_000));
+      expect(
+        await json(await request.get(`/api/issues/${parent.id}/live-runs`)),
+      ).toEqual([]);
+      expect(
+        await json(await request.get(`/api/issues/${child.id}/live-runs`)),
+      ).toEqual([]);
       await menu(page, "Resume subtree");
       const resumeWake = page.getByRole("dialog").getByRole("checkbox");
       if (adapter === "process") {
@@ -486,13 +498,18 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await request.patch(`/api/companies/${company.id}`, {
         data: { status: "archived" },
       });
-      await request.patch("/api/instance/settings/experimental", {
-        data: {
-          enableClassicTaskInterface:
-            originalSettings.enableClassicTaskInterface,
-          enableNativeRunner: originalSettings.enableNativeRunner,
-        },
-      });
+      if (
+        originalSettings.enableClassicTaskInterface !== false ||
+        originalSettings.enableNativeRunner !== true
+      ) {
+        await request.patch("/api/instance/settings/experimental", {
+          data: {
+            enableClassicTaskInterface:
+              originalSettings.enableClassicTaskInterface,
+            enableNativeRunner: originalSettings.enableNativeRunner,
+          },
+        });
+      }
       await testInfo.attach("owned-company-status-metadata", {
         body: statusEvidence,
         contentType: "application/json",

@@ -177,7 +177,7 @@ test("Slack OAuth continuation reloads once from the callback origin without ech
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 });
 
-test.describe.serial("native chat adapter UI", () => {
+test.describe("native chat adapter UI", () => {
   test.setTimeout(180_000);
 
   let seed: Seed;
