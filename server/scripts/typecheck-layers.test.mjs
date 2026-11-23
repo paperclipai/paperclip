@@ -908,7 +908,10 @@ describe("typecheckTestProjects", () => {
   it("selectTestProjects skips untouched tests/* projects in PR mode and fails closed on global or unknown inputs", () => {
     expect(selectTestProjects(null)).toEqual(PROJECTS);
     expect(selectTestProjects(["tsconfig.base.json"])).toEqual(PROJECTS);
-    expect(selectTestProjects(["server/src/services/issues.ts"])).toEqual(["server/src/__tests__/helpers/maintenance"]);
+    expect(selectTestProjects(["server/src/services/isolated-unreferenced-feature.ts"])).toEqual([]);
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("server/src/__tests__/helpers/maintenance");
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("tests/runner-e2e");
+    expect(selectTestProjects(["ui/src/lib/company-routes.ts"])).toEqual(["tests/runner-e2e"]);
     expect(selectTestProjects(["ui/src/components/Sidebar.tsx"])).toEqual([]);
     expect(selectTestProjects(["tests/restart-chaos/invariants.ts"])).toEqual(["tests/restart-chaos"]);
     expect(selectTestProjects(["tests/lifecycle-baseline/authority.test.ts"])).toEqual(["tests/lifecycle-baseline"]);
