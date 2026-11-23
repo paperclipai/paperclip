@@ -9,6 +9,7 @@ import type {
   ResponsibilityDelegationResult,
   ResponsibilityDetail,
   ResponsibilityLink,
+  ResponsibilityLinkLookupResult,
   ResponsibilityOverview,
   ResponsibilityStatusReportState,
   ResponsibilityStatusReportsOverview,
@@ -73,6 +74,11 @@ export const responsibilitiesApi = {
     api.delete<ResponsibilityLink>(
       `/responsibilities/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`,
     ),
+  /** The responsibilities a routine is under, directly or through its project. */
+  lookupRoutineLinks: (companyId: string, routineId: string) =>
+    api.get<ResponsibilityLinkLookupResult>(
+      `/companies/${encodeURIComponent(companyId)}/responsibility-links/lookup?${new URLSearchParams({ routineId })}`,
+    ),
   delegate: (id: string, data: DelegateResponsibility) =>
     api.post<ResponsibilityDelegationResult>(`/responsibilities/${encodeURIComponent(id)}/delegate`, data),
   /** The agent-written status of every active responsibility the owner (default: the acting user) holds, in one read. */
@@ -94,8 +100,7 @@ export const responsibilitiesApi = {
 };
 
 /**
- * Areas: broad things a company cares about, with no owner. Any board user
- * manages them. Creating one whose title already exists returns that area.
+ * Areas on the acting person's dashboard. A repeated title returns their existing area.
  */
 export const responsibilityAreasApi = {
   list: (companyId: string, options?: { includeArchived?: boolean }) =>

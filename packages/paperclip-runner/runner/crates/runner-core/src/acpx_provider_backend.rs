@@ -7088,6 +7088,7 @@ mod tests {
             ("command_moved", "launch_shape_changed"),
             ("args_changed", "launch_shape_changed"),
             ("agent_server_release", ""),
+            ("agent_runtime_release", ""),
             ("acpx_release", ""),
         ] {
             let (directory, mut config, _, saved) =
@@ -7135,6 +7136,9 @@ mod tests {
                 }
                 "args_changed" => profile.args.push("--changed".into()),
                 "agent_server_release" => state.descriptor.agent_server_version = "0.0.1".into(),
+                "agent_runtime_release" => {
+                    state.descriptor.agent_runtime_version = Some("0.3.286".into())
+                }
                 "acpx_release" => {
                     state.descriptor.acpx_version = "0.0.1".into();
                     state.descriptor.provider_version = "0.0.1".into();
@@ -7220,5 +7224,50 @@ mod tests {
         // close path of a lost turn instead of failing the restore.
         assert!(restored.active_turn_id.is_none());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    // The previous release bundled Agent SDK 0.3.286 and Codex 0.160.0 behind
+    // the same bridge command digests. A runner that bundles a newer runtime
+    // cannot restore a session that runtime saved, whether the session was
+    // settled or a deploy landed mid-turn. Restore refuses it by name, opens no
+    // provider and keeps the saved bytes; the server then continues the task in
+    // a fresh provider session in the same workspace.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_saved_by_the_previous_agent_runtime_is_refused_by_name() {
+        let mut cases = Vec::new();
+        for (agent, runtime) in [("claude", "0.3.286"), ("codex", "0.160.0")] {
+            let (directory, config, _, _) =
+                settled_session_after_runner_upgrade(&format!("previous-runtime-{agent}"), agent);
+            cases.push((agent, runtime, directory, config));
+        }
+        let (directory, config, _) =
+            interrupted_turn_after_runner_upgrade("previous-runtime-mid-turn");
+        cases.push(("claude mid-turn", "0.3.286", directory, config));
+        for (label, runtime, directory, config) in cases {
+            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+            let mut prior: AcpxDurableState =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            prior.descriptor.agent_runtime_version = Some(runtime.into());
+            fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let error = recovered.restore().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not match a qualified immutable profile"),
+                "{label}: {error}"
+            );
+            assert_eq!(
+                error.classification(),
+                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+                "{label}"
+            );
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

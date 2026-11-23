@@ -125,7 +125,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { NativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
@@ -1787,6 +1787,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     },
   );
+
+  it("routes a credential sharing denial to its owner when the controller lease lapses during AI selection", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await db.update(agents).set({ runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+    } }).where(eq(agents.id, agentId));
+    let runController: AbortController | undefined;
+    const originalWatch = controllerLeases.watchLegacyControllerLease;
+    const watcher = vi.spyOn(controllerLeases, "watchLegacyControllerLease").mockImplementation((...args) => {
+      if (args[1].id === runId) runController = args[2];
+      return originalWatch(...args);
+    });
+    // The renewal deadline passes while selection reads the grant, then the
+    // selection's own sharing denial reaches the setup failure path.
+    const prepare = vi.spyOn(aiConnectionRuntime, "prepareManagedAiRuntime").mockImplementationOnce(async () => {
+      runController!.abort(new controllerLeases.LegacyControllerLeaseLostError("renewal_deadline",
+        { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+      throw aiConnectionCredentialNotSharedFailure();
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+        error: "This credential is not shared with the responsible user", resultJson: {
+          configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_credential_not_shared" },
+          controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418 },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      // No retry that would repeat the same denial before the owner acts.
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+      const [action] = await selectRecoveryActionsForIssue(issueId);
+      expect(action).toMatchObject({ status: "active", kind: "configuration_validation", cause: "configuration_incomplete", ownerType: "board" });
+    } finally {
+      await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+      prepare.mockRestore();
+      watcher.mockRestore();
+      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+    }
+  });
 
   it.each(["timeout", "upstream", "cleanup_pending", "cleanup_pending_edited", "cleanup_pending_exhausted", "edited", "exhausted", "new_message", "no_claim", "reassigned", "superseded", "stopped"])(
     "settles explicit retry admission through real executor cleanup: %s", async scenario => {
@@ -10063,9 +10111,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
+    await db.update(agents).set({ createdByUserId: "paperclip-id:agent-owner" }).where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
     const scopedCompanies: Array<string | undefined> = [];
-    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
+    const scopedPeople: unknown[] = [];
+    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => {
+      scopedCompanies.push(scopedTelemetryCompanyId());
+      scopedPeople.push(scopedTelemetryPerson());
+    });
 
     await heartbeat.cancelRun(runId);
 
@@ -10077,6 +10130,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     );
     expect(scopedCompanies).toEqual([companyId]);
+    expect(scopedPeople).toEqual([{ userId: "paperclip-id:agent-owner", attributedVia: "run_owner" }]);
   });
 
   it("preserves first-heartbeat telemetry after a timer interval claim", async () => {

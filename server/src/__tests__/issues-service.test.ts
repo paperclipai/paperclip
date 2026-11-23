@@ -880,6 +880,70 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
   });
 
+  it("excludes responsibility repair audits from Mine without hiding ordinary user updates", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const variants = [
+      { id: randomUUID(), action: "issue.updated", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.thread_interaction_created", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.inbox_touched", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.updated", details: null, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: {}, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: { source: "manual_edit" }, counts: true },
+    ];
+    await db.insert(issues).values(variants.map(({ id }) => ({
+      id, companyId, title: "Repaired routine task", status: "blocked", originKind: "routine_execution",
+      responsibleUserId: "other-user",
+    })));
+    await db.insert(activityLog).values(variants.map(({ id, action, details }) => ({
+      companyId, actorType: "user", actorId: userId, action, entityType: "issue", entityId: id, details,
+    })));
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: variants[0]!.id, kind: "request_confirmation", status: "expired",
+      addresseeUserId: userId, payload: { version: 1, prompt: "Obsolete request" },
+    });
+    await db.insert(issueComments).values(variants.map(({ id }) => ({
+      companyId, issueId: id, authorType: "system" as const, body: "Routine update",
+    })));
+
+    const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
+    const filters = { touchedByUserId: userId, inboxArchivedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
+    expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
+    expect((await svc.unreadInboxIssueIds(companyId, userId, sql<boolean>`true`)).sort()).toEqual(expectedIds);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
+  });
+
+  it("keeps repaired tasks in Mine when the viewer has independent participation", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const ids = { creator: randomUUID(), assignee: randomUUID(), commenter: randomUUID(), editor: randomUUID(), addressee: randomUUID() };
+    await db.insert(issues).values(Object.entries(ids).map(([kind, id]) => ({
+      id, companyId, title: "Participated repaired task", status: "blocked",
+      originKind: kind === "creator" ? "manual" : "routine_execution",
+      createdByUserId: kind === "creator" ? userId : null,
+      assigneeUserId: kind === "assignee" ? userId : null,
+    })));
+    await db.insert(activityLog).values(Object.values(ids).map(id => ({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: id,
+      details: { source: "needs_you_responsibility_repair" },
+    })));
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: ids.editor,
+    });
+    await db.insert(issueComments).values({ companyId, issueId: ids.commenter, authorUserId: userId, body: "Following this task" });
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: ids.addressee, kind: "request_confirmation", addresseeUserId: userId,
+      payload: { version: 1, prompt: "Please confirm" },
+    });
+
+    const expectedIds = Object.values(ids).sort();
+    const filters = { touchedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
+  });
+
   function agentRow(companyId: string, input: {
     id: string;
     name: string;

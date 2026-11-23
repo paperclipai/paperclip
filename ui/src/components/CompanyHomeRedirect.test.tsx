@@ -58,8 +58,8 @@ describe("CompanyHomeRedirect", () => {
     experimental.getExperimental.mockReturnValue(new Promise((done) => { resolve = done; }));
     const host = await render(<CompanyHomeRedirect />, false);
     expect(host.querySelector('[data-testid="navigate"]')).toBeNull();
-    await act(async () => { resolve({ enableResponsibilities: true }); await new Promise((done) => setTimeout(done, 1)); });
-    expect(host.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/responsibilities");
+    await act(async () => { resolve({ enableResponsibilities: true }); });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/responsibilities"));
   });
 });
 

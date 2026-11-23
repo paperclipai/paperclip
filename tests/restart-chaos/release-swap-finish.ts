@@ -6,7 +6,7 @@ import type { ChaosApi } from "./api.js";
 import { checkCrossServer, readCrossServerEvidence, type ServerProcessWindow } from "./multi-server.js";
 import { RUN_OWNER_BOOT_ID, type ReleaseSwapDriver } from "./release-swap-driver.js";
 import {
-  drainState, failedOutsideSwaps, gradeReleaseSwapTask, isAutoNotice, overlappingRuns, QUIET_PERIOD_MS, releaseSwapMarkdown, summarizeGrades, swapForFailedRun, swapMetrics,
+  drainState, failedOutsideSwaps, gradeReleaseSwapTask, isNoticeRepeat, overlappingRuns, QUIET_PERIOD_MS, releaseSwapMarkdown, summarizeGrades, swapForFailedRun, swapMetrics,
   type DuplicateFacts, type GradeTaskInput, type RetryClick, type SwapRunFact, type TaskGrade,
 } from "./release-swap-grade.js";
 import { runsStartedDuringSwap, swapMoments, swapMomentsMarkdown } from "./release-swap-moments.js";
@@ -175,10 +175,11 @@ async function duplicateFacts(input: ReleaseSwapFinishInput, facts: readonly Swa
   const cross = await readCrossServerEvidence(input.db as Db, input.companyId)
     .then(evidence => checkCrossServer({ ...evidence, windows: input.serverWindows })).catch(() => null);
   const repeated = await input.db.$client.unsafe(
-    `select issue_id::text as "issueId", body, count(*)::int as count from issue_comments
+    `select issue_id::text as "issueId", body, count(*)::int as count, array_agg(created_by_run_id::text) as "runIds" from issue_comments
       where company_id::text = $1 and author_agent_id is not null group by issue_id, author_agent_id, body having count(*) > 1`, [input.companyId]) as Row[];
-  const comments = repeated.filter(row => !isAutoNotice(String(row.body ?? "")));
-  const notices = repeated.filter(row => isAutoNotice(String(row.body ?? "")));
+  const notice = (row: Row) => isNoticeRepeat(String(row.body ?? ""), Array.isArray(row.runIds) ? row.runIds as Array<string | null> : []);
+  const comments = repeated.filter(row => !notice(row));
+  const notices = repeated.filter(notice);
   const children = await input.db.$client.unsafe(
     `select parent_id::text as "parentId", title, count(*)::int as count from issues
       where company_id::text = $1 and parent_id is not null and hidden_at is null group by parent_id, title having count(*) > 1`, [input.companyId]) as Row[];

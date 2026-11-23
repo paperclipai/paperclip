@@ -4,9 +4,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
-  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerReleaseResumeOutcome, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
+  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerReleaseResumeOutcome, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent,
+  isSettledReleasedRunnerCut } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
+
+const RELAUNCH_TICKET_TTL_MS = 60_000;
 
 export async function verifyPluginRunnerTaskReattachment(
   task: (operation: unknown) => Promise<unknown>, identity: unknown,
@@ -51,6 +54,8 @@ export function createPluginRunnerTaskOwner(input: {
   releaseResumeVersion?: 1;
   resumeLaunchInputsVersion?: 1;
   resumeRelaunchedRunnerVersion?: 1;
+  resumeIdentityVersion?: 1;
+  relaunch?: { source: DurableRecoveryIdentity; runner: { version: string; digest: string } };
   releasedSourceRunner?: { version: string; digest: string };
   launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
@@ -67,14 +72,17 @@ export function createPluginRunnerTaskOwner(input: {
   if (!taskId) throw new Error("Plugin Runner physical task unavailable");
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
+  let registeredAuthority: DurablePrpControlPlane | null = null;
+  let relaunchProgress: "none" | "sent" | "refused" = "none";
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
-  let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
-  let launched = !!input.adoptIdentity;
-  let launchIdentity = input.adoptIdentity;
+  const relaunchedTask = !input.adoptIdentity && input.resumeIdentityVersion === 1 ? input.relaunch?.source : undefined;
+  let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity ?? relaunchedTask;
+  let launched = !!(input.adoptIdentity ?? relaunchedTask);
+  let launchIdentity = input.adoptIdentity ?? relaunchedTask;
   let stopRequested = false;
   let released = false;
-  let submitted = !!input.adoptIdentity;
+  let submitted = launched;
   let detached = false;
   let adoptionVerified = false;
   let markReady!: () => void;
@@ -86,12 +94,16 @@ export function createPluginRunnerTaskOwner(input: {
   let rejectFailure!: (error: unknown) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
   void failure.catch(() => undefined);
-  const running = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
-  void running.catch(() => undefined);
+  const pendingLaunch = () => {
+    const launch = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
+    void launch.catch(() => undefined);
+    return launch;
+  };
+  let running = pendingLaunch();
   if (input.adoptIdentity) markReady();
   const configuredEnvironmentFields = (launchesRunner: boolean) =>
     input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
-  let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
+  let configuredEnvironmentDelivered: boolean | undefined = launched ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
@@ -201,7 +213,71 @@ export function createPluginRunnerTaskOwner(input: {
     } while (Date.now() < deadline);
     throw new Error("Plugin Runner termination is unconfirmed; retain the lease for cleanup");
   };
+  const relaunchStopped = (spec: RunnerProcessLaunchSpec, relaunch: NonNullable<typeof input.relaunch>): RunnerProcessHandle => {
+    const native = spec.nativeRunner;
+    const source = relaunch.source;
+    const authority = registeredAuthority;
+    if (!native || native.lifecyclePolicy?.mode !== "warm" || !authority || !preparedIdentity
+      || Object.entries(preparedIdentity).some(([key, value]) => native.identity[key as keyof DurableRecoveryIdentity] !== value)
+      || (["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"] as const).some(key => native.identity[key] !== source[key])
+      || native.identity.runId === source.runId) {
+      throw new Error("Plugin Runner relaunch identity mismatch");
+    }
+    requireReleaseResume();
+    relaunchProgress = "none";
+    running = pendingLaunch();
+    const operation = environmentTaskOperationSchema.parse({ kind: "resume", identity: source, bootstrapTicket: native.ticket,
+      ...resumeLaunchFields(),
+      runner: { runId: native.identity.runId, turnId: native.identity.turnId, itemId: native.identity.itemId } });
+    launchIdentity = native.identity;
+    configuredEnvironmentDelivered = "configuredEnvironment" in operation;
+    const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
+      kill: () => { stopRequested = true; void stopAndConfirm().catch(rejectFailure); return true; } };
+    const completion = new Promise<Awaited<RunnerProcessHandle["completion"]>>(resolve => {
+      confirmStopped = (code, error) => {
+        if (child.exitCode !== null) return;
+        child.exitCode = code;
+        failReady(error ?? new Error("Plugin Runner stopped before connection"));
+        resolve({ code, signal: null, stdout: "", stderr: error?.message ?? "" });
+      };
+    });
+    const deadline = Date.now() + RELAUNCH_TICKET_TTL_MS;
+    void (async () => {
+      await input.onDispatched?.();
+      for (;;) {
+        if (released || stopRequested || detached) throw new Error("Plugin Runner startup cancelled");
+        let result: PluginEnvironmentTaskResult;
+        try {
+          relaunchProgress = "sent";
+          result = await call(operation);
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await delay(250);
+          continue;
+        }
+        if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+        if (result.outcome === "unavailable") {
+          relaunchProgress = "refused";
+          const state = await call({ kind: "status" }).catch(() => undefined);
+          retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
+          throw new Error("native_runner_reuse_unavailable");
+        }
+        if (!result.archivedState || !result.runner || !isSettledReleasedRunnerCut(result.archivedState, source)) {
+          throw new Error("native_runner_released_state_unsettled");
+        }
+        authority.acceptRelaunchedRunner(native.ticket, result.runner, relaunch.runner);
+        await input.onResumed?.(source);
+        markReady();
+        return;
+      }
+    })().catch(error => {
+      failReady(error);
+      rejectFailure(error);
+    });
+    return { child, completion, restart: null };
+  };
   const launcher = (spec: RunnerProcessLaunchSpec): RunnerProcessHandle => {
+    if (launched && input.relaunch && input.resumeIdentityVersion === 1) return relaunchStopped(spec, input.relaunch);
     if (launched || released) throw new Error("Plugin Runner replacement requires a new task lease");
     const native = spec.nativeRunner;
     if (!preparedLaunchId) throw new Error("Plugin Runner launch requires preparation");
@@ -296,6 +372,7 @@ export function createPluginRunnerTaskOwner(input: {
   const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal, expectedIdentity?: DurableRecoveryIdentity) => {
     const desired = expectedIdentity ? structuredClone(expectedIdentity) : undefined;
     const generation = ++registrationGeneration;
+    registeredAuthority = authority;
     let registrationReleased = false;
     let outbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
     let activation: Promise<void> | null = null;
@@ -367,6 +444,16 @@ export function createPluginRunnerTaskOwner(input: {
       },
     };
   };
+  const adoptedRunner: NonNullable<RunnerExecutionDriver["adoptExistingRunner"]> = {
+    // Provider ownership is attested by Launcher, never by a controller-local PID.
+    pid: null, processGroupId: null, startedAt: null,
+    isAlive: async () => {
+      if (!adoptionVerified) { if ((await readStatus()).executionStopped === true) return false; adoptionVerified = true; }
+      // Authenticated PRP detects disconnects; this cache never asserts termination.
+      return stoppedState === undefined;
+    },
+    signal: async () => { stopRequested = true; await stopAndConfirm(); return true; },
+  };
   const driver: RunnerExecutionDriver = {
     get releaseResume() {
       if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
@@ -390,6 +477,7 @@ export function createPluginRunnerTaskOwner(input: {
       };
     },
     get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
+    get relaunchReleasedRunner() { return launched && input.resumeIdentityVersion === 1 ? input.relaunch?.source : undefined; },
     get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
@@ -401,16 +489,7 @@ export function createPluginRunnerTaskOwner(input: {
       return result.state;
     },
     controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal, identity),
-    ...(input.adoptIdentity ? { adoptExistingRunner: {
-      // Provider ownership is attested by Launcher, never by a controller-local PID.
-      pid: null, processGroupId: null, startedAt: null,
-      isAlive: async () => {
-        if (!adoptionVerified) { if ((await readStatus()).executionStopped === true) return false; adoptionVerified = true; }
-        // Authenticated PRP detects disconnects; this cache never asserts termination.
-        return stoppedState === undefined;
-      },
-      signal: async () => { stopRequested = true; await stopAndConfirm(); return true; },
-    } } : {}),
+    get adoptExistingRunner() { return input.adoptIdentity ? adoptedRunner : undefined; },
   };
   const readWorkspaceFile = async (path: string, maxBytes: number): Promise<Buffer> => {
     if (!submitted || !preparedIdentity || released || stopRequested) throw new Error("Plugin Runner file access unavailable");
@@ -428,6 +507,18 @@ export function createPluginRunnerTaskOwner(input: {
       throw new Error("Plugin Runner release/resume unavailable");
     }
   };
+  const resumeLaunchFields = () => {
+    const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
+      ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
+      : undefined;
+    const launchInputs = input.resumeLaunchInputsVersion === 1;
+    return {
+      ...(handoffCredential ? { handoffCredential } : {}),
+      ...(launchInputs && input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(!!input.sessionHandoff || launchInputs),
+      ...(input.resumeRelaunchedRunnerVersion === 1 ? { relaunchedRunnerVersion: 1 as const } : {}),
+    };
+  };
   // The caller owns settlement, connection quieting and exact-ticket retries.
   const release = async (identity: DurableRecoveryIdentity): Promise<void> => {
     requireReleaseResume();
@@ -436,16 +527,7 @@ export function createPluginRunnerTaskOwner(input: {
   };
   const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<RunnerReleaseResumeOutcome> => {
     requireReleaseResume();
-    const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
-      ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
-      : undefined;
-    const launchInputs = input.resumeLaunchInputsVersion === 1;
-    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
-      ...(handoffCredential ? { handoffCredential } : {}),
-      ...(launchInputs && input.credential ? { credential: input.credential } : {}),
-      ...configuredEnvironmentFields(!!input.sessionHandoff || launchInputs),
-      ...(input.resumeRelaunchedRunnerVersion === 1 ? { relaunchedRunnerVersion: 1 as const } : {}),
-    }));
+    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket, ...resumeLaunchFields() }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
     if (result.outcome === "resumed" && input.sessionHandoff) configuredEnvironmentDelivered = input.configuredEnvironmentVersion === 1;
@@ -485,6 +567,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    relaunchMayHaveStarted: () => relaunchProgress === "sent",
     configuredEnvironmentDelivered: () => configuredEnvironmentDelivered,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
@@ -492,6 +575,7 @@ export function createPluginRunnerTaskOwner(input: {
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;
       released = false;
+      relaunchProgress = "none";
       bindStartupAbort();
     },
   };

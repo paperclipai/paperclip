@@ -22,6 +22,25 @@ describe("dashboard change groups", () => {
     expect(dashboardChangeGroups(smallEditChanges).find((group) => group.name === "Team")!.changes.map((change) => change.op))
       .toEqual(["rename_area", "remove_responsibility"]);
   });
+
+  it("separates area edits from responsibility edits and identifies existing parents", () => {
+    const groups = dashboardChangeGroups([
+      ...createSizedChanges.slice(0, 3),
+      smallEditChanges[2]!,
+      smallEditChanges[3]!,
+      { ...smallEditChanges[0]!, index: 10, groupAreaId: null, groupName: "No area" },
+    ]);
+    expect(groups.map((group) => ({
+      name: group.name,
+      existing: group.hasExistingArea,
+      areaEdits: group.areaChanges.map((change) => change.op),
+      responsibilityEdits: group.responsibilityChanges.map((change) => change.op),
+    }))).toEqual([
+      { name: "Fundraising", existing: false, areaEdits: ["add_area"], responsibilityEdits: ["add_responsibility", "add_responsibility"] },
+      { name: "Team", existing: true, areaEdits: ["rename_area"], responsibilityEdits: ["remove_responsibility"] },
+      { name: "No area", existing: false, areaEdits: [], responsibilityEdits: ["reword_responsibility"] },
+    ]);
+  });
 });
 
 describe("dropping and keeping", () => {
@@ -56,6 +75,9 @@ describe("version words", () => {
     const name = (id: string) => (id === "agent-1" ? "Chief" : undefined);
     expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1" }, name)).toBe("Chief");
     expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-gone" }, name)).toBe("An agent");
+    // A change the agent made with its responsibility tools, not a proposal the person applied.
+    expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1", interactionId: null }, name)).toBe("Chief, for you");
+    expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1", interactionId: "card-1" }, name)).toBe("Chief");
     expect(dashboardVersionWho({ cause: "person", actorAgentId: null }, name)).toBe("You");
     expect(dashboardVersionWho({ cause: "restore", actorAgentId: null }, name)).toBe("Restored");
     expect(dashboardChangeLine({ cause: "change_set", summary: "Added 1 area" })).toBe("Added 1 area.");

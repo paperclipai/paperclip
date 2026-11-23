@@ -67,6 +67,10 @@ listing. See [CONNECTION-SEARCH.md](./CONNECTION-SEARCH.md).
 | View context | A view's `ui/update-model-context` is stored per view (`tool_mcp_app_views.model_context`, 16 KB at most) by `PUT …/:viewId/model-context`. Identical updates are deduped in the browser and on the server; a change logs `issue.mcp_app_context_updated`; an empty update clears it. The task's next run receives the three most recently updated contexts as an "App context (untrusted)" section of its wake prompt, quoted as JSON data and labelled as third-party data, not instructions. It is read in parallel with the other run preparation and never fails the run. | `server/src/services/mcp-app-views.ts`, `heartbeat/execution-configuration.ts`, `renderPaperclipWakePrompt` |
 | Tool icons | Provider `icons` (SEP-973) on MCP tools are sanitized into `tool_catalog_entries.icons`, outside the version hash. Task chat tool rows and the app's actions list show them, falling back to the usual icons. | `server/src/services/tool-access/catalog/`, `ui/src/components/ProviderToolIcon.tsx` |
 
+GitHub's `get_me` profile view (`ui://github-mcp-server/get-me`) is omitted from
+reply widgets, including views saved by earlier runs. Identity lookups remain
+in the folded tool history. Other app views keep their normal reply placement.
+
 ### Sandbox
 
 The view runs in a `srcdoc` iframe with `sandbox="allow-scripts allow-popups

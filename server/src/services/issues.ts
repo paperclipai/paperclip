@@ -2,7 +2,7 @@ import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { instancePublicOrigin, mayContainInventedHostLink, relativizeInventedHostLinks } from "./agent-invented-host-links.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
-import type { IssueDisplayStatus } from "@paperclipai/shared";
+import type { IssueDisplayStatus, IssueInboxArchiveFilter } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { finishedIdleWake } from "./idle-work-proof.js";
@@ -53,6 +53,8 @@ import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
+import { emitArtifactCreatedAfterCommit, emitTaskCreatedAfterCommit, emitTaskStatusTransitionAfterCommit } from "./product-telemetry.js";
+import { hasUnfinishedBlockers } from "./issue-dependency-wakeups.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { loadRunBoundIssue } from "./issue-creation-source.js";
@@ -1871,7 +1873,7 @@ export function parseStatusFilter(
 /** Closed, content-free phases of `issueService.list`, for response timing headers. */
 export type IssueListPhase =
   | "candidates" | "query" | "labels" | "active_runs" | "user_stats" | "read_stats" | "last_activity"
-  | "archives" | "blocked_by" | "live_descendants" | "attention";
+  | "archives" | "active_archives" | "blocked_by" | "live_descendants" | "attention";
 
 export interface IssueListOptions {
   /** Wraps each internal read so callers can report per-phase timing. */
@@ -1912,6 +1914,7 @@ export interface IssueFilters {
    */
   touchedCandidates?: "participation";
   inboxArchivedByUserId?: string;
+  inboxArchive?: { userId: string; mode: IssueInboxArchiveFilter };
   unreadForUserId?: string;
   /** Read projection only; never filters the result set by participation. */
   readStateForUserId?: string;
@@ -3128,7 +3131,7 @@ function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQ
   )`;
 }
 
-function inboxVisibleForUserCondition(companyId: string, userId: string) {
+export function inboxVisibleForUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -8589,11 +8592,16 @@ export function issueService(db: Db) {
         if (filters.parentIds.length === 0) return [];
         conditions.push(inArray(issues.parentId, filters.parentIds));
       }
+      const inboxArchive = filters?.inboxArchive;
+      const archivedCondition = inboxArchive
+        ? sql<boolean>`NOT (${inboxVisibleForUserCondition(companyId, inboxArchive.userId)})`
+        : undefined;
+      if (inboxArchive?.mode === "archived" && archivedCondition) conditions.push(archivedCondition);
       if (!filters?.q?.trim() && !filters?.issueIds) {
         conditions.push(isNull(issues.conversationAgentId));
         // Explicit child navigation includes waiting chat tasks, just like
         // readable-child counts. Ambient lists still omit idle conversations.
-        if (!filters?.parentId && !filters?.parentIds && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+        if (!filters?.parentId && !filters?.parentIds && !filters?.descendantOf && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId && inboxArchive?.mode !== "archived") {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }
@@ -8835,6 +8843,7 @@ export function issueService(db: Db) {
         readRows,
         lastActivityRows,
         archiveRows,
+        activeArchiveIds,
         blockedByMap,
         liveDescendantCountByIssueId,
       ] = await Promise.all([
@@ -8848,6 +8857,13 @@ export function issueService(db: Db) {
         contextUserId
           ? timePhase("archives", () => inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds))
           : Promise.resolve([]),
+        inboxArchive?.mode === "include" && archivedCondition
+          ? timePhase("active_archives", async () => {
+            const archived = await db.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), archivedCondition));
+            return new Set(archived.map(row => row.id));
+          })
+          : Promise.resolve(null),
         includeBlockedBy
           ? timePhase("blocked_by", () => blockedByMapForIssues(db, companyId, issueIds))
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
@@ -8880,6 +8896,10 @@ export function issueService(db: Db) {
             : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
         ]));
 
+      const archiveFields = (id: string) => inboxArchive
+        ? { isArchivedForMe: inboxArchive.mode === "archived" || activeArchiveIds?.has(id) === true }
+        : {};
+
       if (!contextUserId) {
         return withRuns.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
@@ -8891,6 +8911,7 @@ export function issueService(db: Db) {
             ) ?? row.updatedAt;
           return {
             ...row,
+            ...archiveFields(row.id),
             ...(includeBlockedBy
               ? { blockedBy: blockedByMap.get(row.id) ?? [] }
               : {}),
@@ -8932,6 +8953,7 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
         return {
           ...row,
+          ...archiveFields(row.id),
           ...activeInboxArchiveFields(
             archiveByIssueId.get(row.id),
             lastActivityAt,
@@ -11220,6 +11242,7 @@ export function issueService(db: Db) {
         await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
+        emitTaskCreatedAfterCommit(issue);
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
           await tx.insert(issueAccessGrants).values({
@@ -12519,6 +12542,21 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        const enteredBlocked = updated.status === "blocked" && receiptExisting.status !== "blocked";
+        emitTaskStatusTransitionAfterCommit({
+          companyId: updated.companyId,
+          previousStatus: receiptExisting.status,
+          nextStatus: updated.status,
+          parentId: updated.parentId,
+          conversationAgentId: updated.conversationAgentId,
+          actorAgentId,
+          actorUserId,
+          unblockDescriptor: updated.unblockDescriptor,
+          taskCreatedByUserId: updated.createdByUserId,
+          taskResponsibleUserId: updated.responsibleUserId,
+          runOwnerUserId: actorUserId,
+          hasOpenBlockers: enteredBlocked && await hasUnfinishedBlockers(tx, updated),
+        });
         if (
           issueData.executionWorkspaceSettings !== undefined &&
           nextExecutionWorkspaceId &&
@@ -14360,7 +14398,7 @@ export function issueService(db: Db) {
       createdByRunId?: string | null;
     }) => {
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
@@ -14534,6 +14572,10 @@ export function issueService(db: Db) {
               })
               .returning({ id: issueWorkProducts.id })
           : [];
+        if (artifactWorkProduct) {
+          emitArtifactCreatedAfterCommit({ companyId: issue.companyId, type: "artifact", provider: "paperclip", creationFlow: "run_deliverable",
+            task: issue, runOwnerUserId: input.createdByUserId });
+        }
 
         if (
           input.createdByAgentId &&

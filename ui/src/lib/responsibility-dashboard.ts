@@ -16,10 +16,15 @@ export interface DashboardChangeGroup {
   name: string;
   /** The group is a new area. */
   isNew: boolean;
+  hasExistingArea: boolean;
+  areaChanges: ResponsibilityDashboardChange[];
+  responsibilityChanges: ResponsibilityDashboardChange[];
   changes: ResponsibilityDashboardChange[];
 }
 
-const AREA_OPS = new Set<ResponsibilityDashboardChange["op"]>(["add_area", "rename_area", "remove_area"]);
+export function isDashboardAreaChange(change: ResponsibilityDashboardChange): boolean {
+  return change.op === "add_area" || change.op === "rename_area" || change.op === "remove_area";
+}
 
 function groupKey(change: Pick<ResponsibilityDashboardChange, "groupAreaId" | "groupRef">) {
   if (change.groupRef !== null) return `new:${change.groupRef}`;
@@ -28,18 +33,27 @@ function groupKey(change: Pick<ResponsibilityDashboardChange, "groupAreaId" | "g
 
 /** The changes by area, in the order the agent first named each area; area changes first within a group. */
 export function dashboardChangeGroups(changes: readonly ResponsibilityDashboardChange[]): DashboardChangeGroup[] {
-  const groups = new Map<string, DashboardChangeGroup>();
+  const groups = new Map<string, Omit<DashboardChangeGroup, "changes">>();
   for (const change of changes) {
     const key = groupKey(change);
-    const group = groups.get(key) ?? { key, name: change.groupName, isNew: false, changes: [] };
+    const group = groups.get(key) ?? {
+      key,
+      name: change.groupName,
+      isNew: false,
+      hasExistingArea: change.groupAreaId !== null,
+      areaChanges: [],
+      responsibilityChanges: [],
+    };
     if (change.op === "add_area") group.isNew = true;
-    group.changes.push(change);
+    if (isDashboardAreaChange(change)) group.areaChanges.push(change);
+    else group.responsibilityChanges.push(change);
     groups.set(key, group);
   }
-  return [...groups.values()].map((group) => ({
-    ...group,
-    changes: [...group.changes].sort((a, b) => Number(!AREA_OPS.has(a.op)) - Number(!AREA_OPS.has(b.op)) || a.index - b.index),
-  }));
+  return [...groups.values()].map((group) => {
+    group.areaChanges.sort((a, b) => a.index - b.index);
+    group.responsibilityChanges.sort((a, b) => a.index - b.index);
+    return { ...group, changes: [...group.areaChanges, ...group.responsibilityChanges] };
+  });
 }
 
 export interface DashboardChangeWords {
@@ -55,7 +69,7 @@ export interface DashboardChangeWords {
 export function dashboardChangeWords(change: ResponsibilityDashboardChange): DashboardChangeWords {
   switch (change.op) {
     case "add_area":
-      return { before: null, after: "New area", note: null };
+      return { before: null, after: change.name, note: null };
     case "rename_area":
       return {
         before: change.fromName,
@@ -63,7 +77,7 @@ export function dashboardChangeWords(change: ResponsibilityDashboardChange): Das
         note: change.sharedWith > 0 ? `Also renamed for ${change.sharedWith === 1 ? "1 other person" : `${change.sharedWith} other people`}` : null,
       };
     case "remove_area":
-      return { before: null, after: "Remove this area", note: null };
+      return { before: change.groupName, after: null, note: null };
     case "add_responsibility":
       return { before: null, after: change.sentence, note: null };
     case "reword_responsibility":
@@ -129,11 +143,15 @@ export function lettingGoWith(
   return items.filter((item) => !leaving.has(item.id)).map((item) => item.sentence);
 }
 
-/** Who caused a version, in a word or a name. */
-export function dashboardVersionWho(version: Pick<ResponsibilityDashboardVersionSummary, "cause" | "actorAgentId">, agentName: (id: string) => string | undefined): string {
+/** Who caused a version, in a word or a name; an agent's change made without a proposal reads "<agent>, for you". */
+export function dashboardVersionWho(
+  version: Pick<ResponsibilityDashboardVersionSummary, "cause" | "actorAgentId"> & { interactionId?: string | null },
+  agentName: (id: string) => string | undefined,
+): string {
   if (version.cause === "restore") return "Restored";
   if (version.cause === "person") return "You";
-  return (version.actorAgentId ? agentName(version.actorAgentId) : undefined) ?? "An agent";
+  const name = (version.actorAgentId ? agentName(version.actorAgentId) : undefined) ?? "An agent";
+  return version.interactionId === null ? `${name}, for you` : name;
 }
 
 /** The line the Dashboard shows right after a change, beside Undo. */

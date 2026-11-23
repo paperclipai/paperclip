@@ -38,6 +38,7 @@ import { buildProjectMentionHref, readRemoteWorkspaceAuthority } from "@papercli
 import { migrateRemoteWorkspace } from "../remote-workspace-migration.js";
 import { trace } from "@opentelemetry/api";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
+import { createPluginWorkspaceFixture } from "../../__tests__/helpers/plugin-workspaces.js";
 import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
@@ -631,6 +632,33 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     else expect(resolve).toHaveBeenCalledOnce();
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
     expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("names an incompatible project storage environment when a volume-free server rejects the run", async () => {
+    const { input, envOrchestrator } = await fixture();
+    const storage = await createPluginWorkspaceFixture(db, input.agent.companyId);
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      name: "Daytona", driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    configureRemotePersistence();
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    input.policy.projectExecutionWorkspacePolicy = { enabled: true, storageProviderPluginId: storage.pluginId };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure",
+      code: "configuration_incomplete",
+      message: `This project's workspace storage (Storage) does not support the environment "Daytona". Use an agent in a compatible environment, or create a project for this environment.`,
+      resultJson: { configurationIncomplete: { reason: "project_storage_environment_incompatible",
+        storageProviderPluginId: storage.pluginId, environmentId: input.environment.selectedEnvironmentForConfig.id,
+        fingerprint: `project_storage_environment:${storage.pluginId}:${input.environment.selectedEnvironmentForConfig.id}` } } });
+    // An unavailable provider cannot explain the rejection; keep the original reason.
+    input.policy.projectExecutionWorkspacePolicy = { enabled: true, storageProviderPluginId: randomUUID() };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
+      "Volume-free servers require native Paperclip Runner execution with remote workspace storage.");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId))).toHaveLength(0);
   });
 
   it.each(["configured-folder", "explicit-task-directory", "enrolled-remote"] as const)(

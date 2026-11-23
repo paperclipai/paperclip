@@ -200,9 +200,8 @@ describeEmbeddedPostgres("responsibility summary routes", () => {
     }).returning().then((rows) => rows[0]!);
     const agentApp = createApp(agentActor(company.id, agent.id)).app;
     const missingOwner = await request(agentApp).get(`/api/companies/${company.id}/responsibilities/summary`);
-    expect(missingOwner.status).toBe(422);
-    expect(missingOwner.body.error).toContain("ownerUserId is required");
-    expect((await request(agentApp).get(`/api/companies/${company.id}/responsibilities/summary?ownerUserId=${OWNER}`)).status).toBe(200);
-    expect((await request(agentApp).get(`/api/responsibilities/${created.body.id}/summary`)).status).toBe(200);
+    expect(missingOwner.status).toBe(403);
+    expect((await request(agentApp).get(`/api/companies/${company.id}/responsibilities/summary?ownerUserId=${OWNER}`)).status).toBe(403);
+    expect((await request(agentApp).get(`/api/responsibilities/${created.body.id}/summary`)).status).toBe(403);
   });
 });

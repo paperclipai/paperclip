@@ -1,4 +1,7 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, AWS_ROLE_ARN_PATTERN, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
+import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -29,6 +32,7 @@ import { toApplication } from "./tool-access/applications/projection.js";
 import { groupedActions } from "./tool-access/catalog/action-summary.js";
 import { createConnectionSetupPolicy, assertSupportedConnection } from "./tool-access/connections/setup-policy.js";
 import { createOrganizationGrantStore } from "./tool-access/connections/organization-grant.js";
+import { createAgentGrantStore } from "./tool-access/connections/agent-grant.js";
 import { createPersonalConnectionIdentity } from "./tool-access/connections/personal-identity.js";
 import { createOAuthStateStore } from "./tool-access/oauth/state.js";
 import { createOAuthCatalogCompletion } from "./tool-access/oauth/catalog-completion.js";
@@ -94,7 +98,7 @@ import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, pap
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -172,6 +176,8 @@ type ToolAccessServiceOptions = {
   paperclipCloudConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+  awsMcpClients?: AwsMcpClients;
 };
 
 const GOOGLE_SHEETS_SPREADSHEET_SCHEMA = {
@@ -750,6 +756,7 @@ export function toolAccessService(
   const { resolveInstalledConnectionsForAgent, listConnectionInstalls } = connectionInstalls;
   const audit = createToolAccessAudit(db);
   const ensureDefaultOrganizationGrant = createOrganizationGrantStore(db);
+  const agentGrants = createAgentGrantStore(db);
   const { mintConnectionTokenForAgent, loadBrokerRunContext } = createConnectionTokenBroker(db, { now, secrets, policySvc, audit, getConnectionRow, ensureDefaultOrganizationGrant });
   const profileService = createToolProfileService(db, now);
   const profileDetails = profileService.getProfile;
@@ -835,7 +842,7 @@ export function toolAccessService(
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
-  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
+  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients: options.awsMcpClients });
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentialAccess;
   const setupPolicy = createConnectionSetupPolicy(db);
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
@@ -2075,8 +2082,28 @@ export function toolAccessService(
         `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
       );
     }
-    const dedicatedAgentId =
+    // OAuth names the agent in its state and the callback writes that agent's
+    // grant. A curated method without sign-in (`none` or `api_key`) has no
+    // callback, so connect itself must create the agent's grant.
+    const createsAgentGrantAtConnect = Boolean(
+      requestedGrantKind === "agent" && galleryEntry && method && method.auth !== "oauth" && !remoteMcpConnector,
+    );
+    let dedicatedAgentId =
       requestedGrantKind === "agent" ? (input.subjectAgentId ?? null) : null;
+    if (createsAgentGrantAtConnect && !dedicatedAgentId) {
+      // Continuing the same identity (resume or reconnect) without naming the
+      // agent keeps its one active agent. A fresh connect that only recovered
+      // an archived row is a new identity decision and must name the agent.
+      const retainedAgentGrant = retainsIdentity && retainedConnection
+        ? await agentGrants.activeAgentGrant(companyId, retainedConnection.id)
+        : null;
+      dedicatedAgentId = retainedAgentGrant?.subjectAgentId ?? null;
+      if (!dedicatedAgentId) {
+        throw badRequest("Choose the agent that uses this connection", {
+          code: "connection_subject_agent_required",
+        });
+      }
+    }
     if (dedicatedAgentId) {
       const [subjectAgent] = await db
         .select({ id: agents.id })
@@ -2087,7 +2114,7 @@ export function toolAccessService(
         .limit(1);
       if (!subjectAgent)
         throw badRequest(
-          "Dedicated GitHub identity requires an agent in this company",
+          "A dedicated agent identity requires an agent in this company",
         );
     }
     const credentialSource: ToolConnectionCredentialSource =
@@ -2229,12 +2256,27 @@ export function toolAccessService(
               "",
           }
         : { templateId: method?.defaults?.templateKey };
+    // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
+    // gets a clear message instead of a role refusal. Testing a draft keeps the issuer recorded at the
+    // draft step; saving the draft again, any other setup, or a reconnect records the current address.
+    const recordedAwsIssuer = !input.reconnectConnectionId && !input.saveDraft && retainedConnection?.status === "draft"
+      ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
+      : undefined;
+    const awsIssuerOrigin = workloadIdentityIssuerOrigin();
+    const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
+      : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
+        : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
-          methodConfig: normalizedMethodConfig?.values ?? {},
+          methodConfig: input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry.slug, method?.key)
+            // A role ARN is only kept once AWS accepted it in a test, so an unchecked ARN never reaches
+            // the setup steps (which tell an AWS administrator to update that role).
+            ? Object.fromEntries(Object.entries(normalizedMethodConfig?.values ?? {}).filter(([key]) => key !== "roleArn"))
+            : normalizedMethodConfig?.values ?? {},
           ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
             ? { workspaceSetup: retainedConnection.config.workspaceSetup }
             : {}),
@@ -2393,8 +2435,22 @@ export function toolAccessService(
       retainedMethodKey === method?.key &&
       (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
+    // A dedicated agent's API key lives on its grant, not on the connection.
+    const [retainedAgentGrant] = canRetainCredentialMaterial && createsAgentGrantAtConnect && retainedConnection && dedicatedAgentId
+      ? await db
+          .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+          .from(connectionGrants)
+          .where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, retainedConnection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+          ))
+          .limit(1)
+      : [];
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
+        retainedAgentGrant?.credentialSecretRefs ??
         retainedConnection?.credentialSecretRefs ??
         [])
       : [];
@@ -2803,6 +2859,19 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // Without sign-in, the agent's grant is written here, carrying the
+        // API key when the method has one. The grant alone gives no tools:
+        // the agent still needs an install of the active connection.
+        if (createsAgentGrantAtConnect) {
+          const mutation = await agentGrants.upsertConnectAgentGrant({
+            companyId,
+            connectionId: connectionRow.id,
+            subjectAgentId: dedicatedAgentId,
+            credentialSecretRefs,
+            actor,
+          });
+          if (revivedConnectionPrevious) revivedGrantMutation = mutation;
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
@@ -2872,7 +2941,13 @@ export function toolAccessService(
       );
       await ensureRuntimeSlot(connectionRow);
 
-      if (input.saveDraft && remoteMcpConnector) {
+      // Minted-credential methods (AWS role) need the connection to exist before the
+      // provider can trust it, so they may also save a draft without contacting it.
+      // AWS validates the issuer's discovery document when the customer registers it, so publish the key now.
+      if (input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
+        await workloadIdentityService(db).ensureActiveKey(companyId);
+      }
+      if (input.saveDraft && (remoteMcpConnector || method?.credentialMinter)) {
         return { connectionId: connectionRow.id, application: toApplication(applicationRow), connection: toConnection(connectionRow),
           catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] } };
       }
@@ -3783,8 +3858,20 @@ export function toolAccessService(
       undefined,
       actor,
     );
+    // A dedicated agent's key lives on its grant, which is what the gateway
+    // reads for a per-agent connection. Rotate it there.
+    const agentGrant = connection.credentialPolicy === "per_agent"
+      ? await agentGrants.activeAgentGrant(companyId, connection.id)
+      : null;
+    if (connection.credentialPolicy === "per_agent" && !agentGrant) {
+      throw conflict("This connection has no agent to update. Connect it again and choose its agent.", {
+        code: "connection_subject_agent_required",
+      });
+    }
+    const grantIdentity = Boolean(personalIdentity || agentGrant);
     const credentialSecretRefs = [
       ...(personalIdentity?.grant?.credentialSecretRefs ??
+        agentGrant?.credentialSecretRefs ??
         connection.credentialSecretRefs),
     ];
     const credentialRefs: McpConnectionCredentialRef[] = [
@@ -3866,13 +3953,19 @@ export function toolAccessService(
           });
         }
       }
+      if (agentGrant) {
+        await tx
+          .update(connectionGrants)
+          .set({ credentialSecretRefs, updatedAt })
+          .where(eq(connectionGrants.id, agentGrant.id));
+      }
       const [nextConnection] = await tx
         .update(toolConnections)
         .set({
           credentialRefs,
-          // Personal reconnect rotates the existing user's grant. The
+          // Personal and agent reconnects rotate that identity's grant. The
           // connection-level organization slot stays exactly as it was.
-          credentialSecretRefs: personalIdentity
+          credentialSecretRefs: grantIdentity
             ? connection.credentialSecretRefs
             : credentialSecretRefs,
           lastError: null,
@@ -3881,7 +3974,7 @@ export function toolAccessService(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await syncConnectionCredentialBindings(tx, nextConnection,
-        personalIdentity ? credentialSecretRefs : []);
+        grantIdentity ? credentialSecretRefs : []);
       return nextConnection;
     });
     const health = await checkConnectionHealth(updated.id, actor);
@@ -3910,6 +4003,45 @@ export function toolAccessService(
       method.defaults.serverUrl,
     );
     return preflightConnectionMetadata(app, method, method.defaults, serverUrl, () => options.now?.() ?? new Date());
+  }
+
+  /** The values and template a customer needs to create an AWS role for this connection. */
+  async function getAwsSetup(
+    companyId: string, connectionId: string, options: { accessLevel?: "read_only" | "full" } = {},
+  ): Promise<AwsConnectionSetup> {
+    const [row] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+    if (!row) throw notFound("Tool connection not found");
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role") {
+      throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
+    }
+    // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
+    const origin = workloadIdentityIssuerOrigin();
+    if (!origin.available) return { available: false, reason: origin.reason };
+    const issuer = workloadIdentityIssuer(origin.origin, companyId);
+    // Paperclip signs only as its current address, so a draft set up for an older one could never pass
+    // the test: it is saved again first. Reconnecting a connection records the current address, so it
+    // gets setup for that address.
+    const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
+    if (row.status === "draft" && typeof recorded === "string" && recorded !== issuer) {
+      return { available: false, reason: "address_changed" };
+    }
+    const methodConfig = asRecord(row.config.methodConfig);
+    const setup = awsRoleSetup({
+      issuer, connectionId: row.id,
+      accessLevel: options.accessLevel ?? (methodConfig.accessLevel === "full" ? "full" : "read_only"),
+    });
+    return {
+      available: true,
+      ...setup,
+      // The setup steps tell an AWS administrator to update this role, so only the role made for this
+      // connection (named after it, so no other role shares the name) on a finished connection is
+      // offered. A draft's unchecked value, or any other role, could point that update at an unrelated role.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string"
+        && methodConfig.roleArn.split(":role/")[1] === setup.roleName && AWS_ROLE_ARN_PATTERN.test(methodConfig.roleArn)
+        ? methodConfig.roleArn : null,
+      issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
+    };
   }
 
   return {
@@ -4020,6 +4152,7 @@ export function toolAccessService(
     rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
+    getAwsSetup,
 
     reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 
