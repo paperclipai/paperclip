@@ -2397,12 +2397,16 @@ function StandardConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
+  // "unverified" means Paperclip could not reach Cloud to check, not that this
+  // instance is unenrolled. Offering enrollment there sends a Cloud workspace
+  // (or an already-enrolled instance) into a flow that cannot succeed.
+  const cloudConnectorUnreachable = connectorEnrollmentQuery.data?.status === "unverified";
   const managedConnectorUnavailable = Boolean(
     step === "key"
     && entry
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
-    && connectorEnrollmentQuery.data?.configured === true
+    && (connectorEnrollmentQuery.data?.configured === true || cloudConnectorUnreachable)
   );
 
   const showConnectorEnrollmentStep = Boolean(
@@ -2410,6 +2414,7 @@ function StandardConnectionSetupFlow({
     && entry
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
+    && !cloudConnectorUnreachable
     && (
       connectorEnrollmentQuery.isLoading
       || connectorEnrollmentView.kind === "error"
@@ -2714,7 +2719,9 @@ function StandardConnectionSetupFlow({
         <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
           <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+            {cloudConnectorUnreachable
+              ? `Paperclip couldn’t reach Paperclip Cloud to start ${entry.name} sign-in. Try again in a moment.`
+              : `This instance is connected to Paperclip, but ${entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.`}
           </p>
           {customOAuthMethod ? (
             <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
@@ -2723,8 +2730,15 @@ function StandardConnectionSetupFlow({
           ) : null}
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={backToGallery}>Back</Button>
-            <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
-              {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            <Button
+              type="button"
+              disabled={galleryQuery.isFetching || connectorEnrollmentQuery.isFetching}
+              onClick={() => {
+                void galleryQuery.refetch();
+                void connectorEnrollmentQuery.refetch();
+              }}
+            >
+              {galleryQuery.isFetching || connectorEnrollmentQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Try again
             </Button>
           </div>

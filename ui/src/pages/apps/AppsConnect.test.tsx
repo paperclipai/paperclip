@@ -1740,6 +1740,36 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("offers a retry, not Cloud registration, when Paperclip could not reach Cloud to check GitHub sign-in", async () => {
+    // Production Cloud workspaces hit this when the broker rate-limited the
+    // status check: registration cannot succeed there and only looked broken.
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "unverified",
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: "stack-test",
+      environment: "production",
+      origins: ["https://paperclip.example.test"],
+    });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(buttonByText("Connect with Paperclip")).toBeFalsy();
+    expect(container.textContent).toContain("Paperclip couldn’t reach Paperclip Cloud to start GitHub sign-in. Try again in a moment.");
+    const calls = getCloudConnectorEnrollmentMock.mock.calls.length;
+    getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(getCloudConnectorEnrollmentMock.mock.calls.length).toBeGreaterThan(calls);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
   it("prompts for one-time Cloud registration inside Gmail when managed methods are not yet advertised", async () => {
     mockParams.appKey = "gmail";
     listGalleryMock.mockResolvedValue({

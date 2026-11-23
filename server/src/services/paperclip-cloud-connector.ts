@@ -224,6 +224,26 @@ export class PaperclipCloudConnectorError extends Error {
   }
 }
 
+/**
+ * True when the broker never gave a verdict: it was unreachable, rate-limited
+ * the request, or failed on its side. Such a failure says nothing about the
+ * instance's enrollment or which sign-ins it has.
+ */
+export function isTransientPaperclipCloudConnectorError(error: unknown): boolean {
+  if (!(error instanceof PaperclipCloudConnectorError)) return false;
+  if (error.code === "CONNECTOR_UNAVAILABLE") return true;
+  const status = error.status ?? 0;
+  return status === 429 || status >= 500;
+}
+
+// Last answers the broker confirmed, per connector identity, for this process.
+const lastKnownCapabilities = new Map<string, PaperclipCloudConnectorProfileId[]>();
+const lastKnownInstanceStatus = new Map<string, "active" | "suspended" | "removed">();
+
+function connectorConfigKey(config: PaperclipCloudConnectorConfig): string {
+  return `${config.baseUrl}|${config.instanceId}|${config.environment}`;
+}
+
 export function paperclipCloudConnectorConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): PaperclipCloudConnectorConfig | null {
@@ -301,6 +321,11 @@ export function createPaperclipCloudConnector(input: {
   const now = input.now ?? Date.now;
   const signingKey = privateKey(config.signPrivateKey, "ed25519");
   const sealKey = privateKey(config.sealPrivateKey, "x25519");
+  const configKey = connectorConfigKey(config);
+  function remember<T>(store: Map<string, T>, value: T): T {
+    store.set(configKey, value);
+    return value;
+  }
   let eventWakeVersion: 1 | null = null;
 
   async function call(
@@ -412,6 +437,33 @@ export function createPaperclipCloudConnector(input: {
     return credentials;
   }
 
+  async function readCapabilities(): Promise<{ profiles: PaperclipCloudConnectorProfileId[]; confirmed: boolean }> {
+    let response: ConnectorResponse;
+    try {
+      response = await call("status", {
+        subject: "instance-capabilities",
+        companyId: "instance-capabilities",
+      });
+    } catch (error) {
+      // A rate limit or outage says nothing about which sign-ins this
+      // instance has. Falling back to "none" hid managed sign-in and offered
+      // a pasted key instead, so keep the last confirmed list.
+      if (isTransientPaperclipCloudConnectorError(error)) {
+        return { profiles: lastKnownCapabilities.get(configKey) ?? [], confirmed: false };
+      }
+      return { profiles: [], confirmed: false };
+    }
+    if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) {
+      return { profiles: remember(lastKnownCapabilities, []), confirmed: true };
+    }
+    return {
+      profiles: remember(lastKnownCapabilities, [...new Set(response.profiles.flatMap((value) =>
+        typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
+      ))]),
+      confirmed: true,
+    };
+  }
+
   return {
     instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
     async syncMcpClientMirror(serialized: string): Promise<unknown> {
@@ -499,28 +551,21 @@ export function createPaperclipCloudConnector(input: {
           companyId: "instance-status",
         });
       } catch (error) {
-        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return "removed";
+        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return remember(lastKnownInstanceStatus, "removed");
+        // A busy or unreachable broker gave no verdict on this instance. Keep
+        // the standing it last confirmed rather than reporting it unenrolled.
+        const known = lastKnownInstanceStatus.get(configKey);
+        if (known && isTransientPaperclipCloudConnectorError(error)) return known;
         throw error;
       }
-      if (response.status === "active" && response.active === true) return "active";
-      if (response.status === "suspended" && response.active === false) return "suspended";
-      if (response.status === "removed" && response.active === false) return "removed";
+      if (response.status === "active" && response.active === true) return remember(lastKnownInstanceStatus, "active");
+      if (response.status === "suspended" && response.active === false) return remember(lastKnownInstanceStatus, "suspended");
+      if (response.status === "removed" && response.active === false) return remember(lastKnownInstanceStatus, "removed");
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
     },
+    readCapabilities,
     async getCapabilities(): Promise<PaperclipCloudConnectorProfileId[]> {
-      let response: ConnectorResponse;
-      try {
-        response = await call("status", {
-          subject: "instance-capabilities",
-          companyId: "instance-capabilities",
-        });
-      } catch {
-        return [];
-      }
-      if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) return [];
-      return [...new Set(response.profiles.flatMap((value) =>
-        typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
-      ))];
+      return (await readCapabilities()).profiles;
     },
     async getSlackManagerAppId(): Promise<string | null> {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
@@ -734,7 +779,8 @@ function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: 
   return { kind: "paperclip_cloud", session };
 }
 
-export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation"> & {
+export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation" | "readCapabilities"> & {
+  readCapabilities?: ReturnType<typeof createPaperclipCloudConnector>["readCapabilities"];
   instanceIdentity?: () => Readonly<{ instanceId: string; environment: PaperclipCloudConnectorEnvironment }>;
   slackFormOperation?: ReturnType<typeof createPaperclipCloudConnector>["slackFormOperation"];
 };
@@ -777,6 +823,8 @@ let capabilityCacheGeneration = 0;
 export function invalidatePaperclipCloudConnectorCapabilities(): void {
   capabilityCacheGeneration += 1;
   capabilityCache = null;
+  lastKnownCapabilities.clear();
+  lastKnownInstanceStatus.clear();
 }
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
@@ -794,12 +842,14 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
     throw error;
   }
   if (!config) return [];
-  const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
+  const key = connectorConfigKey(config);
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
   const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
-  const profiles = await connector.getCapabilities();
-  if (generation === capabilityCacheGeneration) {
+  const { profiles, confirmed } = await connector.readCapabilities();
+  // Only a confirmed answer is cached; an unanswered check is asked again on
+  // the next request instead of pinning a fallback for a minute.
+  if (confirmed && generation === capabilityCacheGeneration) {
     capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
   }
   return profiles;
