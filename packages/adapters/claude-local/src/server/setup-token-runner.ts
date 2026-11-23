@@ -133,6 +133,7 @@ export interface SetupTokenLoginResult extends LoginRunnerResult {
 export interface RunSetupTokenLoginOptions extends LoginRunnerLifecycleOptions {
   /** The login command. Defaults to {@link CLAUDE_SETUP_TOKEN_COMMAND}. */
   command?: string;
+  completionMode?: "browser_callback" | "submitted_code";
   /** Receives the parsed prompt one time in memory. The caller displays it. */
   onPrompt: SetupTokenPromptSink;
   /** Returns the one browser code. The runner writes it to the matched prompt. */
@@ -219,7 +220,7 @@ export async function runSetupTokenLogin(
 
   let promptSurfaced = false;
   let codeSubmitted = false;
-  let submitStarted = false;
+  let completedBeforeSubmission = false;
   let oauthError = false;
   // The runner sets this true one time, only after the mandatory sink resolves.
   let credentialDelivered = false;
@@ -232,19 +233,7 @@ export async function runSetupTokenLogin(
   // rejects, so an unresolved provider cannot become an unhandled rejection.
   let submitPromise: Promise<void> = Promise.resolve();
 
-  // The in-memory prompt buffer. The runner drops it as soon as it finds the
-  // prompt, so the secret-bearing stream never lives longer than one parse. The
-  // runner parses the full buffer, and it includes the whole new chunk. So a
-  // prompt at the start of one large chunk still parses. The runner bounds only
-  // the buffer that it keeps for the next chunk to
-  // {@link CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS}. The runner keeps the trailing
-  // window and drops the oldest characters.
   let buffer = "";
-  // The in-memory token buffer. The runner accumulates the post-prompt stream
-  // here, parses the full buffer before any truncation, and drops it as soon as
-  // it binds the token. It bounds the retained window the same way as the prompt
-  // buffer, so the secret-bearing stream never grows without a bound.
-  let tokenBuffer = "";
 
   // Reads the browser code and writes it to the matched prompt one time. The
   // routine never throws: it logs a fixed line on a provider error or a write
@@ -257,7 +246,7 @@ export async function runSetupTokenLogin(
       log("[paperclip] Setup-token login: the code input step errored.");
       return;
     }
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || (options.completionMode === "submitted_code" && !code.trim())) return;
     try {
       // Write the code, let the Ink paste buffer settle, then write the Return as
       // its own write. A glued `code + "\r"` burst folds the Return into the
@@ -266,25 +255,22 @@ export async function runSetupTokenLogin(
       driver.write(code);
       await settleDelay(codeSubmitSettleMs, controller.signal);
       if (controller.signal.aborted) return;
-      driver.write(CODE_SUBMISSION_TERMINATOR);
+      if (options.completionMode === "submitted_code") buffer = "";
       codeSubmitted = true;
+      driver.write(CODE_SUBMISSION_TERMINATOR);
       log("[paperclip] Setup-token login: sent the browser code to the prompt.");
     } catch {
+      codeSubmitted = false;
       log("[paperclip] Setup-token login: the code input step errored.");
     }
   };
 
-  // Binds the token from the token buffer one time and holds the bytes in
-  // memory. The runner scans only when a caller provides an `onCredential` sink,
-  // so it never holds the secret-bearing stream without a need. It drops the
-  // token buffer as soon as the parser binds the token. The runner delivers the
-  // bytes later, after a clean exit, through {@link deliverCredential}.
   const captureCredential = (): void => {
     if (!onCredential || tokenBytes) return;
-    const token = parseSetupTokenCredential(tokenBuffer);
+    const token = parseSetupTokenCredential(buffer);
     if (!token) return;
     tokenBytes = Buffer.from(token, "utf8");
-    tokenBuffer = "";
+    buffer = "";
   };
 
   // Awaits the mandatory sink one time with the bound token bytes and reports
@@ -311,40 +297,36 @@ export async function runSetupTokenLogin(
   };
 
   const onData = (chunk: string): void => {
+    if (tokenBytes || oauthError || completedBeforeSubmission) return;
+    buffer += chunk;
     if (!promptSurfaced) {
-      // Parse the full buffer before any truncation. This order finds an early
-      // prompt inside one large chunk, so the runner never drops it.
-      buffer += chunk;
       const prompt = parseSetupTokenPrompt(buffer);
       if (prompt) {
         promptSurfaced = true;
-        buffer = "";
+        if (!options.completionMode) buffer = "";
         onPrompt(prompt);
         log("[paperclip] Setup-token login: surfaced the sign-in prompt.");
-        if (!submitStarted) {
-          submitStarted = true;
-          submitPromise = submitCode();
-        }
-        return;
+        submitPromise = submitCode();
       }
-      if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
-        buffer = buffer.slice(buffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
-      }
-      return;
     }
-    // Observe a rejected code even if the CLI remains open waiting for Enter.
-    // Retain only the bounded private buffer; return a fixed failure reason.
-    if (tokenBytes || oauthError) return;
-    tokenBuffer += chunk;
-    if (hasSetupTokenOAuthError(tokenBuffer)) {
+    if ((promptSurfaced || options.completionMode === "browser_callback") && hasSetupTokenOAuthError(buffer)) {
       oauthError = true;
-      tokenBuffer = "";
+      buffer = "";
       controller.abort();
       return;
     }
-    captureCredential();
-    if (!tokenBytes && tokenBuffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
-      tokenBuffer = tokenBuffer.slice(tokenBuffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
+    if (options.completionMode === "submitted_code" && !codeSubmitted) {
+      if (parseSetupTokenCredential(buffer)) {
+        completedBeforeSubmission = true;
+        buffer = "";
+        controller.abort();
+        return;
+      }
+    } else if (promptSurfaced && (codeSubmitted || !options.completionMode)) {
+      captureCredential();
+    }
+    if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
+      buffer = buffer.slice(-CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
     }
   };
 
@@ -370,6 +352,8 @@ export async function runSetupTokenLogin(
     controller.abort();
     await submitPromise;
 
+    if (completedBeforeSubmission) return result("failure", null);
+
     if (oauthError) {
       log("[paperclip] Setup-token login: the provider rejected the authorization code.");
       return result("failure", null);
@@ -390,11 +374,14 @@ export async function runSetupTokenLogin(
       return result("failure", exitCode);
     }
 
+    if (options.completionMode === "browser_callback") captureCredential();
+    buffer = "";
+
     // The command exited cleanly. Deliver the bound token through the mandatory
     // sink and await it. The runner fails closed: a missing sink, a clean exit
     // with no bound token, and a sink rejection each end the run as a failure. It
     // reports success only after the sink resolves.
-    const delivered = await deliverCredential();
+    const delivered = (options.completionMode !== "submitted_code" || codeSubmitted) && await deliverCredential();
     if (!delivered) {
       log("[paperclip] Setup-token login: the credential did not land; treating the run as a failure.");
       return result("failure", exitCode);

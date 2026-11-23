@@ -4,6 +4,7 @@ export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
+export { resolveClaudeHostCommand } from "./probe-env.js";
 export {
   claudeCliVersionAtLeast,
   claudeCodeVersionForAgentSdk,

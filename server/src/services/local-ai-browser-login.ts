@@ -2,9 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
+import { resolveClaudeHostCommand, runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
 import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
+import type { DeploymentMode } from "@paperclipai/shared";
 import { resolveCodexCommand, startAntigravityBrowserLogin } from "../vendor/paperclip-runner/index.js";
 
 export type LocalBrowserLoginState = {
@@ -12,6 +13,7 @@ export type LocalBrowserLoginState = {
   code?: string;
   outcome?: "success" | "failure";
   error?: string;
+  completedAfterCodeSubmission?: boolean;
   submitCode?: (code: string) => void;
   abort: () => void;
 };
@@ -47,7 +49,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
 `;
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
-export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
+export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string, deploymentMode?: DeploymentMode): LocalBrowserLoginState {
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
@@ -55,8 +57,15 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
-      let executable = "claude";
-      if (provider === "openai") {
+      let executable: string;
+      if (provider === "anthropic") {
+        const command = await resolveClaudeHostCommand();
+        if (!command) {
+          state.error = "Claude browser sign-in requires Claude Code. Install Claude Code on the machine running Paperclip, then start sign-in again.";
+          throw new Error("Browser login runtime unavailable");
+        }
+        executable = command;
+      } else {
         const legacyPlatform = !((process.platform === "linux" || process.platform === "darwin")
           && (process.arch === "x64" || process.arch === "arm64"));
         try {
@@ -80,6 +89,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
         CLAUDE_CONFIG_DIR: provider === "anthropic" ? home : process.env.CLAUDE_CONFIG_DIR,
         CODEX_HOME: provider === "openai" ? home : process.env.CODEX_HOME,
         BROWSER: "true",
+        ...(provider === "anthropic" ? { CLAUDE_CODE_FULL_SIGN_IN_LINK: "1" } : {}),
       };
       return new Promise((resolve, reject) => {
         child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
@@ -104,6 +114,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
     state.submitCode = (code) => { deliverCode?.(code); deliverCode = undefined; };
     void runSetupTokenLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
+      completionMode: deploymentMode === "local_trusted" ? "browser_callback" : "submitted_code",
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; },
       provideCode: (signal) => new Promise<string>((resolve, reject) => {
         const abort = () => reject(new Error("Local sign-in cancelled"));
@@ -122,7 +133,16 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
       },
     }).then((result) => {
       state.outcome = result.outcome === "success" ? "success" : "failure";
-      if (result.failureReason === "oauth_error") state.error = "Claude rejected the authorization code. Start sign-in again and use the code from the new sign-in tab.";
+      if (result.outcome === "success" && result.codeSubmitted) state.completedAfterCodeSubmission = true;
+      if (result.failureReason === "oauth_error") {
+        state.error ??= "Claude rejected the authorization code. Start sign-in again and use the code from the new sign-in tab.";
+      } else if (result.outcome === "timeout") {
+        state.error ??= state.authorizationUrl
+          ? "Claude browser sign-in timed out. Start sign-in again."
+          : "Claude Code did not provide a sign-in link or complete browser sign-in in time. Start sign-in again.";
+      } else if (result.outcome === "failure") {
+        state.error ??= "Paperclip could not obtain a Claude sign-in credential. Start sign-in again.";
+      }
     })
       .catch(() => { state.outcome = "failure"; });
   } else {

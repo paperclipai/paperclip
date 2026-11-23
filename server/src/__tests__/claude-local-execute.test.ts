@@ -361,6 +361,32 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it.skipIf(process.platform === "win32")("runs the default Claude CLI from its native install when PATH omits it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-native-install-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const nativeBin = path.join(root, ".local", "bin");
+      await fs.mkdir(nativeBin, { recursive: true });
+      await fs.rename(commandPath, path.join(nativeBin, "claude"));
+      process.env.PATH = [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter);
+
+      const result = await execute({
+        runId: "run-native-install",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", cwd: workspace, env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath } },
+        context: {},
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(await fs.readFile(capturePath, "utf8")).argv).toContain("--print");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes real assignment markdown and ordered current events once through the CLI", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-context-owner-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);

@@ -1,4 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseSetupTokenPrompt,
@@ -31,8 +34,8 @@ const OPT_IN = process.env.RUN_CLAUDE_SETUP_TOKEN_CHARACTERIZATION === "1";
 // pseudo-terminal with a wide window, streams the raw terminal bytes to its own
 // standard output, and stops when it sees the prompt phrase or after a timeout.
 // It never submits a code, so the command never mints a token.
-const PTY_HARNESS = `
-import os, pty, sys, select, time, fcntl, termios, struct, signal
+const PTY_HARNESS = String.raw`
+import os, pty, re, sys, select, time, fcntl, termios, struct, signal
 duration = float(os.environ.get("STCHAR_DURATION", "40"))
 cols, rows = 200, 50
 pid, fd = pty.fork()
@@ -54,7 +57,9 @@ try:
                 break
             acc += data
             os.write(1, data)
-            if b"Paste code here if prompted" in acc:
+            rendered = re.sub(rb"\x1b\[[0-9;]*[GC]", b" ", acc)
+            rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", rendered)
+            if re.search(rb"Paste code here[^\n]*\n", rendered):
                 break
 finally:
     try:
@@ -105,13 +110,21 @@ run("claude setup-token live characterization", () => {
 
       const version = readClaudeVersion();
 
-      const result = spawnSync("python3", ["-c", PTY_HARNESS], {
-        encoding: "buffer",
-        maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, STCHAR_DURATION: "40" },
-      });
-      if (result.error) throw result.error;
-      const raw = (result.stdout ?? Buffer.alloc(0)).toString("utf8");
+      const home = mkdtempSync(path.join(tmpdir(), "paperclip-claude-prompt-"));
+      let raw: string;
+      try {
+        const result = spawnSync("python3", ["-c", PTY_HARNESS], {
+          encoding: "buffer",
+          maxBuffer: 8 * 1024 * 1024,
+          env: { ...process.env, STCHAR_DURATION: "40", BROWSER: "true",
+            CLAUDE_CODE_FULL_SIGN_IN_LINK: "1", CLAUDE_CONFIG_DIR: home,
+            ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "" },
+        });
+        if (result.error) throw new Error("Could not run the Claude sign-in prompt characterization");
+        raw = (result.stdout ?? Buffer.alloc(0)).toString("utf8");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
 
       // Fail loudly on a parse miss. A terminal-contract drift breaks the suite
       // here instead of passing silently.
@@ -122,14 +135,15 @@ run("claude setup-token live characterization", () => {
       // The live CLI emits one of the two accepted origin-and-path pairs. The
       // installed version decides which pair the run records.
       expect(SETUP_TOKEN_AUTH_URLS).toContain(`${url.origin}${url.pathname}`);
-      expect([...url.searchParams.keys()].sort()).toEqual([...SETUP_TOKEN_URL_QUERY_KEYS].sort());
-      expect(url.hash).toBe("");
+      expect(url.searchParams.size).toBe(SETUP_TOKEN_URL_QUERY_KEYS.length);
+      expect(SETUP_TOKEN_URL_QUERY_KEYS.every(key => url.searchParams.has(key))).toBe(true);
+      expect(url.hash.length).toBe(0);
       expect(parsed!.prompt).toBe(SETUP_TOKEN_PROMPT);
 
       // The banner names the tested Claude Code version. This ties the recorded
       // contract to the version that produced it.
       const banner = renderForBanner(raw);
-      expect(banner).toContain(`Claude Code v${version}`);
+      expect(banner.includes(`Claude Code v${version}`), "the CLI banner must identify the tested version").toBe(true);
 
       // Record the tested version and the non-secret anchors. The reporter shows
       // this line; it names no secret.

@@ -134,7 +134,7 @@ export async function testEnvironment(
   // env sanitization.
   const localProbe = targetIsRemote
     ? null
-    : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
+    : await buildLocalAdapterTestProbeEnv({ callerEnv: env, includeHostInstallPaths: true });
   let cleanupManagedProbe: (() => Promise<void>) | undefined;
   try {
     checks.push(
@@ -154,12 +154,15 @@ export async function testEnvironment(
       })),
     );
     const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+    const runtimeCommand = !targetIsRemote && command === "claude" && env.PATH === undefined && env.Path === undefined
+      ? localProbe?.command ?? command
+      : command;
     let localRuntimeCommand: string | null = null;
     try {
-      await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+      await ensureAdapterExecutionTargetCommandResolvable(runtimeCommand, target, cwd, runtimeEnv);
       if (!targetIsRemote) {
         localRuntimeCommand = await resolveAdapterExecutionTargetCommandForLogs(
-          command,
+          runtimeCommand,
           target,
           cwd,
           runtimeEnv,

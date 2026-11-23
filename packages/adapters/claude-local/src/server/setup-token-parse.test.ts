@@ -95,6 +95,18 @@ function hardWrap(text: string, width: number): string {
 }
 
 describe("parseSetupTokenPrompt", () => {
+  it("reads the short 2.1.330 prompt above its input box", () => {
+    const text = ["Use the URL below to sign in (c to copy)", CLAUDE_AI_URL,
+      chaSpaced(["Paste", "code", "here"]), "╭────────────────╮", ""].join("\r\n");
+    expect(parseSetupTokenPrompt(text)).toEqual({ url: CLAUDE_AI_URL, prompt: SETUP_TOKEN_PROMPT });
+  });
+
+  it("waits for the short prompt line to finish before accepting it", () => {
+    const partial = ["Use the URL below to sign in (c to copy)", CLAUDE_AI_URL, "Paste code here"].join("\n");
+    expect(parseSetupTokenPrompt(partial)).toBeNull();
+    expect(parseSetupTokenPrompt(partial + " in an unrelated field\n")).toBeNull();
+  });
+
   it("returns the exact claude.com URL and prompt from a complete output", () => {
     const result = parseSetupTokenPrompt(completeOutput(CLAUDE_COM_URL));
     expect(result).not.toBeNull();
