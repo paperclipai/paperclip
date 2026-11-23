@@ -8,6 +8,7 @@ import {
   INSPECTION_PERMIT_TYPE,
   INSPECTION_HEADER,
   type InspectionPermit,
+  type InspectionQuery,
 } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { getCloudRuntimeIdentity } from "../services/cloud-runtime-identity.js";
@@ -138,7 +139,7 @@ export const MAX_INSPECTION_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export function fitInspectionResponse(
   result: unknown,
-  operation: string | undefined,
+  operation: InspectionQuery["operation"],
   offset: number,
   maxBytes = MAX_INSPECTION_RESPONSE_BYTES,
 ): string | null {
