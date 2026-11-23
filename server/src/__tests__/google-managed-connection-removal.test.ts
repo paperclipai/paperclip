@@ -47,6 +47,7 @@ import {
 } from "../services/tool-access/connections/google-pending-revocation.js";
 import { secretService } from "../services/secrets.js";
 import { deleteCompany } from "../services/company-deletion.js";
+import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
 vi.mock("../services/paperclip-cloud-connector-status.js", () => ({
   reconcilePaperclipCloudConnectorEnrollmentStatus: async (_env: unknown, _request: unknown, onRemoved?: () => Promise<unknown>) => {
@@ -752,6 +753,8 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await db.select().from(googlePendingRevocations)).toEqual([]);
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
     expect(await retryActivity(fixture.company.id)).toEqual(["tool_connection.google_access_ended"]);
+    const lifecycle = await listConnectionLifecycleEvents(db, { companyId: fixture.company.id, connectionIds: [fixture.connectionId], limit: 50 });
+    expect(lifecycle.map((event) => event.type)).toContain("google_access_ended");
   });
 
   it("keeps the token before calling Cloud, so a restart during the call still revokes it", async () => {

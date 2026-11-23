@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectionRemovalToast, GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice } from "./googleAccessRemoval";
+import { connectionRemovalToast, GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice, googleAccessRetrySummary } from "./googleAccessRemoval";
 
 describe("googleAccessRemovalNotice", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -57,5 +57,11 @@ describe("googleAccessRemovalNotice", () => {
       .toEqual({ title: "Connection removed", body: "Removed.", tone: "success" });
     expect(connectionRemovalToast({ title: "Connection removed", body: "Removed.", providerAccess: { provider: "google", result: "ended", outcomes: ["revoked"] } }))
       .toEqual({ title: "Connection removed", body: "Removed. Paperclip's access to this Google account was also ended at Google.", tone: "success" });
+  });
+
+  it("describes how a background retry to end Google access finished, without codes", () => {
+    expect(googleAccessRetrySummary("google_access_ended", { result: "ended" })).toBe("Google confirmed that Paperclip's access to this Google account has ended");
+    expect(googleAccessRetrySummary("google_access_not_ended", { result: "other_connections_remain" })).toBe("Google kept Paperclip's access because other Paperclip connections use this Google account");
+    expect(googleAccessRetrySummary("google_access_not_ended", { result: "gave_up" })).toBe("Paperclip stopped trying to end its access at Google without a confirmation");
   });
 });

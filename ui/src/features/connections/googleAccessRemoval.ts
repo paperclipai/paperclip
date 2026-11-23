@@ -60,3 +60,9 @@ export function connectionRemovalToast(input: {
     ...(notice?.action ? { action: notice.action } : {}),
   };
 }
+
+export function googleAccessRetrySummary(type: "google_access_ended" | "google_access_not_ended", details: Record<string, unknown> | null): string {
+  if (type === "google_access_ended") return "Google confirmed that Paperclip's access to this Google account has ended";
+  if (details?.result === "other_connections_remain") return "Google kept Paperclip's access because other Paperclip connections use this Google account";
+  return "Paperclip stopped trying to end its access at Google without a confirmation";
+}
