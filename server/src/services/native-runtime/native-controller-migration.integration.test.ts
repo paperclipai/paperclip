@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
@@ -25,9 +25,10 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { claimVolumeFreeControllerState } from "./volume-free-controller-state.js";
-import { assertEphemeralServerData } from "../ephemeral-server-contract.js";
+import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../ephemeral-server-contract.js";
+import { readOnlineEphemeralEnrollmentEligibility } from "../ephemeral-enrollment.js";
 
-describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
+describeEmbeddedPostgres.each(["volume_free_owner", "eligibility_unreadable", "archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
   "active_warm", "source_scan", "active_durable", "active_durable_cold", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
@@ -96,6 +97,25 @@ describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_o
       taskKey: f.issueId, lastRunId: f.runId }).returning();
     return { ...f, companyId, agentId, paperclipHome, runtimeRoot, paths, file, source, profile, session, queuedId, identity, snapshot };
   }
+  if (scenario === "eligibility_unreadable") it("names a controller check that cannot read its source instead of failing the eligibility read", async () => {
+    const f = await fixture();
+    await link(f.file, `${f.file}.alias`);
+    const failed = "native_controllers_check_failed:native_controller_migration_unsafe_source";
+    expect((await readEphemeralServerDataEligibility(f.db, { purpose: "startup" })).blockers).toContain(failed);
+    const online = await readOnlineEphemeralEnrollmentEligibility(f.db);
+    expect(online.eligible).toBe(false);
+    expect(online.blockers).toContain(failed);
+    expect(online.blockers).not.toContain("native_controllers_require_migration");
+    expect(await readFile(f.file, "utf8")).toBe(f.source);
+    await rm(`${f.file}.alias`);
+    if (process.getuid?.() !== 0) {
+      await chmod(f.file, 0o000);
+      try {
+        expect((await readEphemeralServerDataEligibility(f.db, { purpose: "startup" })).blockers)
+          .toContain("native_controllers_check_failed:source_eacces");
+      } finally { await chmod(f.file, 0o600); }
+    }
+  });
   if (scenario === "volume_free_owner") it("starts a volume-free server over controller state it wrote itself and keeps unmarked state blocked", async () => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     expect(await claimVolumeFreeControllerState(true)).toBe("claimed");

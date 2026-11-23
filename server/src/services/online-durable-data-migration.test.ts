@@ -194,6 +194,34 @@ describe("online durable-data migration pass", () => {
     expect(result.deferred).toMatchObject({ "runtime_skill_assets:runtime_skill_source_absent:missing": 1 });
   });
 
+  it("names each retained runtime skill run it could not save", async () => {
+    const fixture = owners({ runtimeSkillAssets: async () => ({ inspected: 3, after: null, results: [
+      { runId: "r1", status: "preserved", preserved: 1 },
+      { runId: "r2", status: "unsaved", code: "runtime_skill_source_absent:missing" },
+      { runId: "r3", status: "unsaved", code: "runtime_skill_source_absent:missing" }] }) });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(result.counts.runtimeSkillRuns).toBe(1);
+    expect(result.deferred["runtime_skill_assets:runtime_skill_source_absent:missing"]).toBe(2);
+  });
+
+  it("keeps naming an unsaved runtime skill run after a later pass resumes past it", async () => {
+    let clock = 0;
+    const fixture = owners({
+      runtimeSkillAssets: async () => {
+        clock = 61_000;
+        return { inspected: 1, after: null, results: [{ runId: "r1", status: "unsaved", code: "runtime_skill_source_absent:missing" }] };
+      },
+      eligibility: vi.fn(async () => ({ eligible: false, blockers: ["runtime_skill_assets_require_migration"] })),
+    });
+    const first = await runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
+    expect(first).toMatchObject({ state: "budget_exhausted", resumePhase: "run_logs" });
+    clock = 0;
+    const second = await runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
+    expect(second.state).toBe("completed");
+    expect(second.deferred["runtime_skill_assets:runtime_skill_source_absent:missing"]).toBe(1);
+    expect(second.deferred["runtime_skill_assets:pending_inspection"]).toBeUndefined();
+  });
+
   it("passes the page size to the skill object copy so a slow page can shrink", async () => {
     const skillObjects = vi.fn(async () => ({ inspected: 0, migrated: 0, busy: 0, after: null }));
     await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ skillObjects }).owners);
@@ -343,6 +371,18 @@ describe("online durable-data migration pass", () => {
       const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
       expect(result.deferred).not.toHaveProperty("workspaces:active_execution");
       expect(result.deferred).toMatchObject({ "workspaces:pending_inspection": 1 });
+    });
+
+    it("names why a workspace source scope is unproven", async () => {
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1), workspace(2)],
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => input.workspaceId === "w1"
+          ? { reasons: ["online_workspace_source_scope_unproven"], sourceScopeUnproven: "git_link_stale" }
+          : { reasons: ["online_workspace_source_scope_unproven"], sourceScopeUnproven: "/private path" },
+      });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:online_workspace_source_scope_unproven": 2, "workspaces:source_scope_git_link_stale": 1 });
+      expect(JSON.stringify(result)).not.toContain("private");
     });
 
     it("migrates an idle workspace through the online owner with a bounded source-lock wait, never the offline mode", async () => {

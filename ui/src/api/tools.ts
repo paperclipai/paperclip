@@ -113,7 +113,7 @@ export type ToolGalleryResponse = {
 export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type CloudConnectorEnrollmentStatus = {
   configured: boolean;
-  status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified";
+  status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified" | "misconfigured" | "unreachable";
   brokerBaseUrl: string;
   instanceId: string | null;
   environment: "development" | "test" | "staging" | "production";
