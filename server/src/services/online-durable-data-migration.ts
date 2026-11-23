@@ -214,7 +214,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
         }
         case "runtime_skill_assets": {
           const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
-          add(counts, "runtimeSkillRuns", result.results.filter(row => row.status === "preserved").length);
+          for (const row of result.results) {
+            if (row.status === "preserved") add(counts, "runtimeSkillRuns");
+            else if (row.status === "unsaved") add(deferred, `runtime_skill_assets:${row.code}`);
+          }
           return result.inspected < limit || !result.after ? null : result.after;
         }
         case "run_logs":

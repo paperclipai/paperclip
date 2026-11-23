@@ -194,6 +194,16 @@ describe("online durable-data migration pass", () => {
     expect(result.deferred).toMatchObject({ "runtime_skill_assets:runtime_skill_source_absent:missing": 1 });
   });
 
+  it("names each retained runtime skill run it could not save", async () => {
+    const fixture = owners({ runtimeSkillAssets: async () => ({ inspected: 3, after: null, results: [
+      { runId: "r1", status: "preserved", preserved: 1 },
+      { runId: "r2", status: "unsaved", code: "runtime_skill_source_absent:missing" },
+      { runId: "r3", status: "unsaved", code: "runtime_skill_source_absent:missing" }] }) });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(result.counts.runtimeSkillRuns).toBe(1);
+    expect(result.deferred["runtime_skill_assets:runtime_skill_source_absent:missing"]).toBe(2);
+  });
+
   it("passes the page size to the skill object copy so a slow page can shrink", async () => {
     const skillObjects = vi.fn(async () => ({ inspected: 0, migrated: 0, busy: 0, after: null }));
     await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ skillObjects }).owners);
