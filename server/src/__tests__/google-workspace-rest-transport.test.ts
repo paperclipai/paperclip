@@ -609,6 +609,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(update.parametersSchema).toEqual(restDefinition.inputSchema);
       expect((update.parametersSchema as { required: string[] }).required).toContain("writeControl");
       expect(update.description).toBe(restDefinition.description);
+      expect(update.displayName).toBe("Docs: Edit a document");
       expect(update.description).toContain("requiredRevisionId");
       const read = await f.toolNamed("docs__read_doc");
       expect(read.parametersSchema).toEqual(restDispatch.listGoogleWorkspaceRest("docs").find((tool) => tool.name === "read_doc")!.inputSchema);

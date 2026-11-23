@@ -198,6 +198,21 @@ export function googleWorkspaceToolTarget(name: string) {
     transport: GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] };
 }
 
+const GOOGLE_WORKSPACE_SERVICE_TITLES: Record<GoogleWorkspaceService, string> = {
+  gmail: "Gmail", drive: "Drive", docs: "Docs", sheets: "Sheets", slides: "Slides",
+  calendar: "Calendar", chat: "Chat", people: "People", search: "Workspace search",
+};
+
+export function googleWorkspaceToolTitle(name: string, title?: string | null): string | null {
+  const target = googleWorkspaceToolTarget(name);
+  const given = title?.trim() || null;
+  if (!target) return given;
+  const service = GOOGLE_WORKSPACE_SERVICE_TITLES[target.service];
+  if (given?.startsWith(`${service}: `)) return given;
+  const leaf = target.leaf.replace(/_/g, " ");
+  return `${service}: ${given ?? leaf.charAt(0).toUpperCase() + leaf.slice(1)}`;
+}
+
 export function googleWorkspaceServiceToolNames(service: GoogleWorkspaceService): string[] {
   return Object.keys(toolScopes[service]);
 }

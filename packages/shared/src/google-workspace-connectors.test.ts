@@ -8,8 +8,22 @@ import {
   googleWorkspaceDraftRequestedScopes, GOOGLE_WORKSPACE_SERVICE_GROUPS, GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, googleWorkspaceProfileWithinSubmittedScopes,
   GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames, googleWorkspaceSelectionForScopes,
-  type GoogleWorkspaceServiceSelection,
+  googleWorkspaceToolTitle, type GoogleWorkspaceServiceSelection,
 } from "./google-workspace-connectors.js";
+
+describe("googleWorkspaceToolTitle", () => {
+  it("names a Google tool by service and action, never by its internal name", () => {
+    expect(googleWorkspaceToolTitle("gmail__get_message")).toBe("Gmail: Get message");
+    expect(googleWorkspaceToolTitle("gmail__get_message", "Read a message")).toBe("Gmail: Read a message");
+    expect(googleWorkspaceToolTitle("calendar__list_events", "Calendar: List events")).toBe("Calendar: List events");
+    expect(googleWorkspaceToolTitle("search__search_corpus")).toBe("Workspace search: Search corpus");
+  });
+
+  it("returns the given title for anything that is not an allowlisted Google tool", () => {
+    expect(googleWorkspaceToolTitle("gmail__send_message")).toBeNull();
+    expect(googleWorkspaceToolTitle("create_issue", " Create issue ")).toBe("Create issue");
+  });
+});
 
 const scope = (value: string) => `https://www.googleapis.com/auth/${value}`;
 

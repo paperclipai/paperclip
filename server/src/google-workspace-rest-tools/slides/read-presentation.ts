@@ -44,6 +44,7 @@ export function readPresentationResult(presentation: RestPresentation, input: Re
 export const readPresentation = defineTool({
   definition: {
     name: "read_presentation",
+    title: "Read a presentation",
     description: [
       "Reads a Google Slides presentation.",
       "Without fields, content.text is every slide in order as Markdown-style text: each slide starts with ## Slide N, title placeholders start with ###, bullets keep their glyph, tables use | cells |, links are [text](url), and each slide's speaker notes follow under Speaker notes:.",
