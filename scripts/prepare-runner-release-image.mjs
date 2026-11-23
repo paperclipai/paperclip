@@ -61,6 +61,17 @@ export function decodeReleaseJson(file, path) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
+export function decodeReleaseKimiClosures(file, path) {
+  if (file?.type !== 'file' || file.path !== path || file.encoding !== 'base64'
+    || !Number.isSafeInteger(file.size) || file.size < 1 || file.size > 1024 * 1024
+    || typeof file.content !== 'string') throw Error('Invalid frozen Kimi closure source');
+  const bytes = Buffer.from(file.content, 'base64');
+  if (bytes.length !== file.size) throw Error('Frozen Kimi closure source size mismatch');
+  const matches = [...bytes.toString('utf8').matchAll(/export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = Object\.freeze\(\{\s*"darwin-arm64": "([a-f0-9]{64})",\s*"linux-x64": "([a-f0-9]{64})",?\s*\}\);/g)];
+  if (matches.length !== 1) throw Error('Invalid frozen Kimi closure declaration');
+  return { 'darwin-arm64': matches[0][1], 'linux-x64': matches[0][2] };
+}
+
 const digestFile = async file => {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -134,7 +145,12 @@ z.extractall(dest)
     const path = `packages/paperclip-runner/${name}`;
     return decodeReleaseJson(await api(`contents/${path}?ref=${source}`), path);
   }));
-  verifyReleaseProviderPack(pack, source, 'linux-x64', { profiles, distributions });
+  let kimiClosures;
+  if (profiles.profiles.kimi && profiles.profiles.kimi.qualificationStatus !== 'pending') {
+    const path = 'packages/paperclip-runner/src/drivers/acpx/kimi-closure-pins.ts';
+    kimiClosures = decodeReleaseKimiClosures(await api(`contents/${path}?ref=${source}`), path);
+  }
+  verifyReleaseProviderPack(pack, source, 'linux-x64', { profiles, distributions, kimiClosures });
   const packages = JSON.parse(await readFile(join(dirs[2], 'manifest.json'), 'utf8'));
   if (packages.schema !== 'paperclip.runner.public-packages/v1' || packages.sourceRevision !== source) throw Error('Wrong public-package source');
   const server = packages.archives?.filter(a => a.name === '@paperclipai/server');

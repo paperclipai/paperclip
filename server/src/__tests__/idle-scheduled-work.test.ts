@@ -24,7 +24,7 @@ describe("bounded idle routine catalog", () => {
     const formatter = vi.spyOn(Intl, "DateTimeFormat");
     try {
       expect(await readIdleRoutineSchedule(database(Array(10_001).fill(trigger)), "owner", now))
-        .toEqual({ blocked: true });
+        .toEqual({ blocked: true, inspectionComplete: false });
       expect(formatter).not.toHaveBeenCalled();
     } finally { formatter.mockRestore(); }
   });

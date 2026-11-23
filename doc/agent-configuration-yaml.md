@@ -1,6 +1,6 @@
 # Agent configuration YAML
 
-Status: v1, October 28, 2026.
+Status: v1, compact editor updated October 29, 2026.
 
 The **Advanced** tab at `/:companyPrefix/agents/:agentRef/advanced` edits an
 agent's settings as one YAML document. It covers the configuration tabs through
@@ -13,14 +13,14 @@ this is not a file on the agent's computer or a harness-specific format.
 | --- | --- | --- |
 | Agent identity / profile | `spec.name`, `role`, `title`, `icon`, `appearance`, `reportsTo`, `capabilities`, `metadata` | Existing agent update, including avatar appearance and reporting relationships. |
 | Harness / Runtime | `spec.adapterType`, `adapterConfig`, `runtimeConfig`, `defaultEnvironmentId`, `budgetMonthlyCents` | Existing adapter, environment, AI connection, heartbeat, run-policy and budget validation. Adapter-specific extensions are preserved. |
-| Instructions | `spec.instructions` | Bundle mode, root, entry file, and editable text files. Managed files and entry revisions enforce concurrency preconditions; omitted text files are deleted. Legacy prompt templates remain in `adapterConfig`. |
+| Instructions | `spec.instructions` | Bundle mode, root, entry file, and editable text files. Managed files and entry revisions enforce concurrency preconditions; omitted files are preserved; `null` deletes a named file. Legacy prompt templates stay in Instructions unless explicitly supplied. |
 | Skills | `spec.skills` | Desired skill keys and version pins, synchronized through the skills API. |
 | Secrets & variables | `spec.adapterConfig.env`, `adapterConfig["access.<ALIAS>"]`, `spec.secrets` | Environment values, secret references, API-delivery bindings, creation, rotation, metadata/status updates, and proposal decisions. |
-| Tools | `spec.tools` | Direct connection installs, profile bindings and definitions, and agent-scoped policies. Inherited access is visible under `observed`. |
+| Tools | `spec.tools` | Direct connection installs, profile bindings and definitions, and agent-scoped policies. Inherited access remains in the Tools tab. |
 | Channels | `spec.channels`, `spec.channelOperations` | Existing endpoint settings, communication instructions, execution defaults, resource selection, setup/credentials and lifecycle actions, creation, and identity revocation. |
 | Permissions / Trust | `spec.permissions` | Agent creation, skill creation, task assignment, trust preset and full authorization policy, including allowed projects in `authorizationPolicy.trustBoundary.projectIds`. |
-| API Keys | `spec.apiKeys` | Explicit create and revoke operations; key metadata is under `observed.apiKeys`. New tokens appear once outside the YAML. |
-| Revisions | `spec.revisions.restore` | Restore an existing revision, as the only operation in a save; history is under `observed.revisions`. |
+| API Keys | `spec.apiKeys` | Explicit create and revoke operations; key metadata remains in the API Keys tab. New tokens appear once outside the YAML. |
+| Revisions | `spec.revisions.restore` | Restore an existing revision, as the only operation in a save; history remains in the Revisions tab. |
 
 Read-only information stays read-only: organization-wide inherited access,
 immutable history, binary instruction assets, live status/spend, and provider
@@ -37,15 +37,6 @@ kind: Agent
 spec:
   name: Codie
   role: engineer
-  title: Software engineer
-  icon: null
-  appearance:
-    schemaVersion: 1
-    characterVersion: cap-v1
-    paletteId: bubblegum-sky
-  reportsTo: null
-  capabilities: |
-    Implement features, review code, and maintain tests.
   adapterType: codex_local
   adapterConfig:
     model: gpt-5
@@ -59,61 +50,40 @@ spec:
     heartbeat:
       enabled: true
       intervalSec: 3600
-      wakeOnDemand: true
-  defaultEnvironmentId: null
   budgetMonthlyCents: 10000
-  metadata: null
-  permissions:
-    canCreateAgents: false
-    canCreateSkills: true
-    canAssignTasks: false
-    trustPreset: standard
   instructions:
     mode: managed
-    rootPath: /managed/agents/codie
     entryFile: AGENTS.md
-    files:
-      AGENTS.md: |
-        # Codie
-        Read the task, make focused changes, and verify the result.
-      references/workflow.md: |
-        Run the relevant tests before handing work back.
   skills:
-    - key: paperclip
-      versionId: null
+    - paperclip
   tools:
-    connections: []
-    profiles: []
-    policies: []
-  channels: []
-  secrets:
-    create: []
-    rotate: []
-    update: []
-    proposals: []
-  channelOperations:
-    create: []
-    setup: []
-    revokeIdentityLinks: []
-  apiKeys:
-    create: []
-    revoke: []
-  revisions:
-    restore: null
-observed: {}
+    profiles:
+      - profileKey: engineering
 ```
 
-This illustrates the format; model, paths, and secret IDs depend on the
-installation. Edit the document loaded for the agent. Do not replace its
-`observed` block with the example's empty block.
+This illustrates the compact format; model, paths, and references depend on the
+installation. The default editor contains agent-specific settings and references.
+It does not embed company catalogs, inherited profile definitions, history,
+credential metadata, or instruction file contents. Empty commands, unset nullable
+fields, zero budget, empty maps/lists, and standard permission defaults are omitted.
+Unpinned skills use their key strings. Non-default values remain explicit.
 
-`apiVersion`, `kind`, `spec`, and every core field from `name` through `metadata`
-are required, including explicit `null` for unset nullable fields. Resource
-sections (`permissions` onward) are optional: omitting an entire section
-preserves it. The editor emits all
-sections. Unknown fields at the document, spec, or structured resource level
-are errors. Open adapter/runtime/metadata maps retain their existing extension
-contracts. Future incompatible changes require a new API version.
+`apiVersion`, `kind`, and `spec` are required. All settings inside `spec` are
+optional when editing an existing agent. Omission preserves the saved value,
+including omitted instruction files, tool subsections, channel settings, and
+permissions. To clear a value, supply its supported empty value explicitly:
+`title: null`, `skills: []`, `tools: { profiles: [] }`, or `adapterConfig: {}`.
+An explicit list replaces that list. An explicit adapter/runtime/metadata map
+replaces that map. The one adapter exception is hidden legacy `promptTemplate`:
+omission preserves it, and an explicit empty string clears it.
+
+All settings remain expressible. Add an optional section when needed. Use the
+owning settings tabs to inspect instruction contents, available profiles,
+inherited access, API key metadata, secret proposals, and revision history.
+A supplied legacy `observed` block is read-only; remove it before editing an old
+export. Unknown fields remain errors. Open adapter/runtime/metadata maps retain
+their existing extension contracts. Future incompatible changes require a new
+API version.
 
 Executable contracts:
 [core document](../packages/shared/src/agent-configuration.ts) and
@@ -127,12 +97,16 @@ secret, channel, skill, and tool validators.
 
 `instructions.mode` is `managed`, `external`, or `null` for an unconfigured
 bundle. `external` requires an absolute `rootPath`. File names and `entryFile`
-are relative paths; traversal and absolute file names are rejected. Each file
-value is its text content (up to 1 MiB). Adding a mapping creates a file;
-changing one edits it; removing one deletes it. The entry file cannot be
-removed. Binary/read-only/virtual files are described in
-`observed.instructionFiles`. A legacy virtual prompt template is edited using
-`adapterConfig.promptTemplate` rather than a second writable copy.
+are relative paths; traversal and absolute file names are rejected. File
+contents are omitted from the default YAML. The Instructions tab owns
+normal content editing. To edit a file inline, add `files: { workflow.md: "text" }`
+under `instructions`; only named files are changed. Each text value supports up
+to 1 MiB. Use `files: { workflow.md: null }` to delete that file. Omitted files
+and an empty `files: {}` are preserved. The entry file cannot be removed.
+Binary/read-only/virtual files remain visible in Instructions. A legacy virtual
+prompt template can still be edited explicitly with `adapterConfig.promptTemplate`.
+It is hidden by default and preserved when another adapter setting changes.
+Managed root paths are assigned by Paperclip and omitted from the default YAML.
 
 Changing the mode, root, or entry file is a separate save from editing file
 contents. That save loads the destination files without writing the old YAML's
@@ -152,15 +126,23 @@ sections cannot disagree about the same setting.
 
 ### Tools
 
-`tools.connections` contains `{ connectionId, installed }` for each available
-connection. These are direct agent installations; inherited company
-installations appear in `observed.connections`. Removing a direct installation
+`tools.connections` contains only selected direct agent installations.
+Each row has `connectionId`; omitted `installed` means `true`. Use
+`installed: false` or remove a row from an explicitly supplied list to uninstall.
+Inherited company installations remain in Tools. Removing a direct installation
 row has the same effect as `installed: false`. Saves preserve other agents'
 installations. Company installations cannot be overridden here.
 The installation service can add an access profile and binding for an installed
-connection. The canonical reload includes those generated profiles.
+connection. The compact reload references those generated profiles by key.
 
-Each profile contains:
+Existing profiles normally use a reference: `{ profileKey: engineering }`.
+`profileId` is also accepted. If both are provided, they must identify the same
+company profile. Optional `priority` and `metadata` affect only this binding;
+omission preserves an existing binding or uses 100/null for a new one.
+A reference never updates the shared definition. Omit `tools.profiles` to
+preserve bindings; use `profiles: []` to unbind all direct profiles.
+
+To create a profile or explicitly edit its definition, supply:
 
 ```yaml
 profileId: null # null creates a profile; an existing ID binds/edits it
@@ -186,8 +168,8 @@ When other targets share it, changes to the definition require explicitly
 setting `updateSharedDefinition: true`. The flag resets after reload; changing
 only the flag does not write anything. Binding an unchanged shared definition
 does not require the flag. Use `profileId: null` for a separate profile.
-Removing a profile row only unbinds it from this agent. Available profile
-configurations are listed under `observed.availableProfiles`.
+Removing a profile row from an explicitly supplied list only unbinds it from
+this agent. Available profile definitions remain in Tools.
 
 Keep existing profile and policy fields explicit. Removing a field from an
 existing definition is rejected because the native PATCH would otherwise
@@ -197,17 +179,16 @@ Policies use `{ id, configuration }`, with `id: null` creating a policy.
 Configuration includes `name`, `description`, `policyType`, `priority`,
 `enabled`, `selectors`, `conditions`, and `config`. Policies in this section
 must target only this agent; newly created policies are scoped to it. Removing
-a row deletes that agent-scoped policy. Shared/inherited policies are read-only
-under `observed.inheritedPolicies`.
+a row deletes that agent-scoped policy. Shared/inherited policies remain read-only in Tools.
 
 ### Channels
 
-Each `channels` row has immutable `id` and `provider`, plus `settings` and
-`resources`. Settings follow the native endpoint update contract:
+Each `channels` row has immutable `id`; `provider` can be omitted or must match
+the saved provider. Omitted `settings` and `resources` preserve their saved values. Settings follow the native endpoint update contract:
 `executionDefaults`, `communicationInstructions`, `allowUnlinkedPeople`,
 `allowDirectMessages`, `requireAtMention`, `allowGroupChats`, `slackApp`, and
-`slackSetupMethod`, where applicable. Keep saved settings explicit; omission
-cannot silently clear a PATCH field. Resources contain `{ id, enabled,
+`slackSetupMethod`, where applicable. Omitted settings fields are preserved; an explicit empty value clears a field
+where its native API supports it. Resources contain `{ id, enabled,
 executionDefaults }`; removing a resource row disables it. Removing a channel
 row removes the endpoint using its existing setup API.
 
@@ -219,7 +200,7 @@ has an `action` (`configure`, `verify`, `pause`, `resume`, `reconnect`, `remove`
 and optional `credentials` or Photon configuration. `revokeIdentityLinks`
 accepts `{ endpointId, principalId }`. Provider authorization is still enforced
 by the channel service. IDs, resources, linked people, and state are available
-under `observed.channels`.
+in the Channels tab.
 
 An endpoint cannot be removed and also edited, configured, or have its identities
 revoked in the same save. Duplicate setup commands and identity revocations are
@@ -234,8 +215,7 @@ provider configuration and metadata). After creation, `bind` can attach its ID
 to environment names or API aliases. An empty bind creates without attaching.
 `rotate` and `update` accept `{ id, input }` using their native contracts.
 `proposals` accepts `{ id, decision: approve|reject, reason? }`; rejection
-requires a reason. Secrets and pending proposals are listed without values
-under `observed.secrets` and `observed.secretProposals`.
+requires a reason. Secrets and pending proposals remain in Secrets & variables.
 
 New secrets must use distinct binding targets. A target cannot also be edited
 in `adapterConfig` in the same save. Binding targets are checked again before
@@ -255,9 +235,8 @@ the only change in that save. It uses the same rollback operation as the
 Revisions tab and restores only the fields covered by that revision; it is not
 a rollback of all external resources.
 
-Operation lists reset to empty after a successful save/reload. Deleting an
-`observed` history row does not revoke a key or restore a revision: editing
-`observed` is rejected. Lifecycle commands for the agent itself (pause, resume,
+Empty operation lists are omitted after a successful save/reload. Commands are
+not replayed from history. Read-only history and catalogs are excluded from YAML. Lifecycle commands for the agent itself (pause, resume,
 terminate) are actions outside configuration.
 
 ## YAML, secrets, and save guarantees
@@ -335,7 +314,8 @@ Run the browser acceptance suite against its disposable checkout instance:
 pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/agent-configuration.spec.ts
 ```
 
-The suite checks resource saves and clears, one-time key receipts, secret
+The suite checks compact output with large company catalogs and instruction
+files, sparse saves, profile-key bindings, resource saves and explicit clears, one-time key receipts, secret
 redaction, stale drafts, a lost creation response, instruction relocation, and
 revision restore through real APIs. It enables and restores the Beta skills and
 chat connector flags. Its local MCP fixture provides a connection target; it

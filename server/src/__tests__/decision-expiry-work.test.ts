@@ -164,8 +164,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   });
 
   it("reconstructs a future expiry on restart and does not expire it early", async () => {
-    const row = await create(); await start();
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(row.expiresAt.getTime()));
+    const row = await create(); const { expiry } = await start();
+    await vi.waitFor(async () => {
+      expect(await expiry.nextExpiryAt()).toBe(row.expiresAt.getTime());
+      // Another queue may reconcile sooner than this decision's expiry.
+      const next = coordinator!.nextWakeAt();
+      expect(next).not.toBeNull();
+      expect(next!).toBeGreaterThan(Date.now());
+      expect(next!).toBeLessThanOrEqual(row.expiresAt.getTime());
+    });
     await vi.advanceTimersByTimeAsync(60_000);
     expect((await service().get(row.id))?.status).toBe("open");
     await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);

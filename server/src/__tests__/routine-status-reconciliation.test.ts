@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -5,11 +6,12 @@ import { companies, createDb, issues, routineRuns, routines } from "@paperclipai
 import { routineService } from "../services/routines.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ROUTINE_STATUS_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping routine status database tests: ${support.reason}`);
 (support.supported ? describe : describe.skip)("routine status reconciliation", () => {
   let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("routine-status-"); db = createDb(database.connectionString); }, 60_000);
+  beforeAll(async () => { if (!external) database = await startEmbeddedPostgresTestDatabase("routine-status-"); db = createDb(external ?? database.connectionString, { maxConnections: 6 }); }, 60_000);
   afterEach(async () => { vi.restoreAllMocks(); await db.execute(sql`SET client_min_messages = warning; TRUNCATE companies CASCADE`); });
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
   async function seed(status = "blocked") {
@@ -36,11 +38,10 @@ if (!support.supported) console.warn(`Skipping routine status database tests: ${
       expect((await db.select().from(routineRuns))[0]).toMatchObject({ status: "issue_created", completedAt: null });
     }
   });
-  it.each(["active_issue", "wrong_origin", "wrong_routine", "wrong_run", "wrong_company", "wrong_routine_company", "different_status"])("does not settle an unsupported handoff: %s", async mode => {
+  it.each(["active_issue", "wrong_origin", "wrong_run", "wrong_company", "wrong_routine_company", "different_status"])("does not settle an unsupported handoff: %s", async mode => {
     const f = await seed();
     if (mode === "active_issue") await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
     if (mode === "wrong_origin") await db.update(issues).set({ originKind: "manual" }).where(eq(issues.id, f.issue.id));
-    if (mode === "wrong_routine") await db.update(issues).set({ originId: randomUUID() }).where(eq(issues.id, f.issue.id));
     if (mode === "wrong_run") await db.update(issues).set({ originRunId: randomUUID() }).where(eq(issues.id, f.issue.id));
     if (mode === "wrong_company") { const other = await seed("done"); await db.update(routineRuns).set({ companyId: other.companyId }).where(eq(routineRuns.id, f.run.id)); }
     if (mode === "wrong_routine_company") { const other = await seed("done");
@@ -52,6 +53,20 @@ if (!support.supported) console.warn(`Skipping routine status database tests: ${
     expect(result.settled).toBe(["wrong_company", "wrong_routine_company"].includes(mode) ? 1 : 0);
     expect((await db.select().from(routineRuns)).find(row => row.id === f.run.id)).toEqual(before.find(row => row.id === f.run.id));
     if (mode === "wrong_routine_company") await expect(routineService(db).syncRunStatusForIssue(f.issue.id)).resolves.toBeNull();
+  });
+  it("uses reciprocal durable custody when a retained origin no longer names the current routine declaration", async () => {
+    const f = await seed("done");
+    await db.update(issues).set({ originId: "previous-declaration-origin" }).where(eq(issues.id, f.issue.id));
+    expect(await routineService(db).reconcileExecutionRunStatuses()).toEqual({ scanned: 1, settled: 1, deferred: 0 });
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.run.id)))[0].status).toBe("completed");
+  });
+  it.each(["unknown-status", "other-code"])("preserves a failed invocation with an unrelated transient marker: %s", async mode => {
+    const f = await seed("in_progress");
+    await db.update(routineRuns).set({ status: "failed", failureReason: null,
+      triggerPayload: { transientFailure: { code: mode === "other-code" ? "unrelated_failure" : "execution_issue_status",
+        status: mode === "unknown-status" ? "unrecognized" : "blocked" } } }).where(eq(routineRuns.id, f.run.id));
+    expect(await routineService(db).reconcileExecutionRunStatuses()).toEqual({ scanned: 0, settled: 0, deferred: 0 });
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.run.id)))[0].status).toBe("failed");
   });
   it.each(["resume", "retarget", "routine_transfer"])("rechecks %s after candidate selection and before repair", async mode => {
     const f = await seed(); const transaction = db.transaction.bind(db);

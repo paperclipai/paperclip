@@ -5,9 +5,9 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAppStoreDefinition } from "@paperclipai/shared";
+import { getAppStoreDefinition, googleWorkspaceSelectedScopes } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
-import { ApiError } from "@/api/client";
+import { api, ApiError, detachInflightGets, type RequestOptions } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
@@ -19,7 +19,7 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
-const listProfilesMock = vi.hoisted(() => vi.fn());
+const listConnectionProfileConfigurationMock = vi.hoisted(() => vi.fn());
 const listPoliciesMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
@@ -49,20 +49,25 @@ const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "permissions
 const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+const popupAssignMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/components/ai-connections/AiConnectionPoolConnector", () => ({
+  AiConnectionPoolConnector: () => <div>Connection pool controls</div>,
+}));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listAggregatorApps: (connectionId: string) => listAggregatorAppsMock(connectionId),
     syncAggregatorApps: (connectionId: string, force: boolean) => syncAggregatorAppsMock(connectionId, force),
-    getConnection: (connectionId: string) => getConnectionMock(connectionId),
-    getConnectionInstalls: (connectionId: string) => getConnectionInstallsMock(connectionId),
+    getConnection: (connectionId: string, options?: RequestOptions) => options ? getConnectionMock(connectionId, options) : getConnectionMock(connectionId),
+    getConnectionInstalls: (connectionId: string, options?: RequestOptions) => options ? getConnectionInstallsMock(connectionId, options) : getConnectionInstallsMock(connectionId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
-    listProfiles: (companyId: string) => listProfilesMock(companyId),
+    listConnectionProfileConfiguration: (connectionId: string, options?: RequestOptions) => options ? listConnectionProfileConfigurationMock(connectionId, options) : listConnectionProfileConfigurationMock(connectionId),
     deleteProfile: (profileId: string) => deleteProfileMock(profileId),
-    listPolicies: (companyId: string) => listPoliciesMock(companyId),
+    listPolicies: (companyId: string, options?: RequestOptions) => options ? listPoliciesMock(companyId, options) : listPoliciesMock(companyId),
     listConnectionActivity: (connectionId: string, limit: number) =>
       listConnectionActivityMock(connectionId, limit),
     listActionRequests: (companyId: string, status: string) =>
@@ -78,7 +83,7 @@ vi.mock("@/api/tools", () => ({
       finalizeOAuthAccessMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
       putConnectionInstallsMock(connectionId, installs),
-    archiveConnection: vi.fn(),
+    archiveConnection: (connectionId: string) => archiveConnectionMock(connectionId),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
     checkConnectionHealth: (connectionId: string) => checkConnectionHealthMock(connectionId),
     startOAuth: (connectionId: string, input?: unknown) => input === undefined
@@ -174,8 +179,10 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 }));
 
 const pushToastMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
+  useOptionalToastActions: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -353,6 +360,9 @@ describe("AppDetail", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -409,7 +419,7 @@ describe("AppDetail", () => {
         }),
       ],
     });
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [
         {
           profileKey: "app:conn-1",
@@ -603,6 +613,25 @@ describe("AppDetail", () => {
     expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "Reconnect")).toBe(false);
   });
 
+  it("tells the user when Google access could not be ended after removing the app", async () => {
+    getConnectionMock.mockResolvedValue(connection({ transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" }, enabled: false, healthStatus: "error" }));
+    archiveConnectionMock.mockResolvedValueOnce({ removal: { providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] } } });
+    await renderAppDetail();
+    const danger = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Danger zone"))!;
+    await act(async () => danger.click());
+    const remove = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Remove app")!;
+    await act(async () => remove.click());
+    const confirm = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Yes, remove it")!;
+    await act(async () => confirm.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Disconnected",
+      tone: "warn",
+      body: expect.stringContaining("couldn't end its access at Google"),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
+  });
+
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "permissions",
@@ -713,6 +742,55 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("Loading tools…");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("keeps the loaded connection visible when a refetch fails transiently", async () => {
+    mockParams.tab = "permissions";
+    const client = await renderAppDetail();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+
+    getConnectionMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry for a real connection failure", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+
+    await renderAppDetail();
+
+    const errorView = container.querySelector('[data-query-view="error"]');
+    expect(errorView?.textContent).toContain("Couldn't load the connection");
+    expect(container.textContent).not.toContain("Which agents can use this connection?");
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+    await act(async () => retry!.click());
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+  });
+
+  it.each([false, true])("replaces a cached connection with not-found after deletion (router: %s)", async router => {
+    if (router) getConnectionMock.mockResolvedValue(connection({ config: { aiRouter: { pluginKey: "test-router" } } }));
+    const client = await renderAppDetail();
+    const controls = router ? "Connection pool controls" : "Which agents can use this connection?";
+    expect(container.textContent).toContain(controls);
+    getConnectionMock.mockRejectedValue(new ApiError("not_found", 404, null));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+    expect(client.getQueryData(queryKeys.tools.connection("conn-1"))).toBeDefined();
+    expect(container.textContent).toContain("We couldn't find that app.");
+    expect(container.textContent).toContain("Back to connectors");
+    expect(container.textContent).not.toContain(controls);
+    expect(container.textContent).not.toContain("not_found");
   });
 
   it("redirects the retired Test tab into Permissions", async () => {
@@ -1034,6 +1112,15 @@ describe("AppDetail", () => {
     });
   });
 
+  it("fetches the connection configuration under a distinct child of the profiles cache", async () => {
+    await renderAppDetail();
+    expect(listConnectionProfileConfigurationMock).toHaveBeenCalledWith("conn-1", expect.objectContaining({ signal: expect.any(AbortSignal), fresh: true }));
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1").slice(0, 3))
+      .toEqual(queryKeys.tools.profiles("company-1"));
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1"))
+      .not.toEqual(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-2"));
+  });
+
   it("shows and removes task-granted access without changing the connection's default permissions", async () => {
     const grant = {
       id: "task-grant", status: "active", profileKey: "connection-intent:conn-1:agent-1",
@@ -1041,7 +1128,7 @@ describe("AppDetail", () => {
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
       entries: [{ effect: "include", catalogEntryId: "catalog-write" }],
     };
-    listProfilesMock.mockResolvedValue({ profiles: [grant] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [grant] });
     listPoliciesMock.mockResolvedValue({ policies: [{
       enabled: true, policyType: "require_approval",
       selectors: { catalogEntryId: "catalog-write" },
@@ -1051,7 +1138,7 @@ describe("AppDetail", () => {
     const section = Array.from(container.querySelectorAll("section")).find(section => section.textContent?.includes("Additional agent access"))!;
     expect(section.textContent).toContain("Write issue");
     expect(section.textContent).toContain("Ask first");
-    listProfilesMock.mockResolvedValue({ profiles: [] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [] });
     await act(async () => section.querySelector("button")!.click());
     await flushReact();
     expect(deleteProfileMock).toHaveBeenCalledWith("task-grant");
@@ -1061,7 +1148,7 @@ describe("AppDetail", () => {
   });
 
   it("keeps the task grant visible when removal fails", async () => {
-    listProfilesMock.mockResolvedValue({ profiles: [{
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [{
       id: "task-grant", status: "active", profileKey: "connection-intent:conn-1:agent-1",
       metadata: { source: "connection_intent", connectionId: "conn-1", agentId: "agent-1" },
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
@@ -1076,9 +1163,147 @@ describe("AppDetail", () => {
     expect(button.disabled).toBe(false);
   });
 
+  it("saves AI agent access through installs and keeps the response during refresh", async () => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose: "ai", transport: "runtime_auth", config: { provider: "openai", method: "api_key" } }));
+    const client = await renderAppDetail();
+    getConnectionInstallsMock.mockReturnValue(new Promise(() => {}));
+    const saved = { connectionId: "conn-1", installs: [{ targetType: "company", targetId: "company-1" }] };
+    putConnectionInstallsMock.mockResolvedValueOnce(saved);
+    const accessRadio = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find(radio => radio.textContent?.includes(label))!;
+    await act(() => accessRadio("Any agent").click());
+    await flushReact();
+    expect(putConnectionInstallsMock).toHaveBeenLastCalledWith("conn-1", [{ targetType: "company", targetId: "company-1" }]);
+    expect(client.getQueryData(queryKeys.tools.connectionInstalls("conn-1"))).toEqual(saved);
+    expect(accessRadio("Any agent").getAttribute("aria-checked")).toBe("true");
+    await act(() => accessRadio("Just agents I pick").click());
+    await flushReact();
+    expect(putConnectionInstallsMock).toHaveBeenLastCalledWith("conn-1", []);
+    expect(client.getQueryData(queryKeys.tools.connectionInstalls("conn-1"))).toEqual({ connectionId: "conn-1", installs: [] });
+    expect(accessRadio("Just agents I pick").getAttribute("aria-checked")).toBe("true");
+    expect(finishAppMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the saved permission response for the next edit while refresh reads are pending", async () => {
+    const client = await renderAppDetail();
+    listConnectionProfileConfigurationMock.mockReturnValue(new Promise(() => {}));
+    listPoliciesMock.mockReturnValue(new Promise(() => {}));
+    finishAppMock.mockResolvedValue({
+      connection: connection(),
+      profile: { id: "app-profile", profileKey: "app:conn-1" },
+      profileEntries: [{ effect: "include", catalogEntryId: "catalog-read" }],
+      profileBindings: [{ targetType: "company", targetId: "company-1" }],
+      policies: [],
+    });
+    const writeOff = container.querySelector<HTMLButtonElement>('[aria-label="Write issue: Off"]')!;
+    await act(() => writeOff.click());
+    await flushReact();
+    expect(writeOff.getAttribute("aria-checked")).toBe("true");
+    expect(writeOff.disabled).toBe(false);
+    expect(client.getQueryData(queryKeys.tools.policies("company-1"))).toEqual({ policies: [] });
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Read repo: Ask first"]')!.click());
+    await flushReact();
+    expect(finishAppMock).toHaveBeenLastCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read"],
+      askFirstCatalogEntryIds: ["catalog-read"],
+      access: "all_agents",
+    });
+  });
+
+  it.each(["tool", "ai"])("keeps saved %s permissions when shared pre-save reads arrive late", async (connectionPurpose) => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose }));
+    const client = await renderAppDetail();
+    const { toolsApi: realToolsApi } = await vi.importActual<typeof import("@/api/tools")>("@/api/tools");
+    const savedConnection = connection({ connectionPurpose, name: "Saved connection" });
+    const savedProfile = {
+      id: "app-profile", profileKey: "app:conn-1",
+      entries: [{ effect: "include", catalogEntryId: "catalog-read" }],
+      bindings: [{ targetType: "company", targetId: "company-1" }],
+    };
+    const savedInstalls = { connectionId: "conn-1", installs: [{ targetType: "company", targetId: "company-1" }] };
+    const snapshots = new Map<string, { key: readonly unknown[]; data: unknown }>([
+      ["/tool-connections/conn-1", { key: queryKeys.tools.connection("conn-1"), data: savedConnection }],
+      ["/tool-connections/conn-1/installs", { key: queryKeys.tools.connectionInstalls("conn-1"), data: savedInstalls }],
+      ["/tool-connections/conn-1/profile-configuration", { key: queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1"), data: { profiles: [savedProfile] } }],
+      ["/companies/company-1/tools/policies", { key: queryKeys.tools.policies("company-1"), data: { policies: [] } }],
+    ]);
+    const resolveOldReads: Array<() => void> = [];
+    let saved = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input).replace(/^\/api/, "");
+      const snapshot = snapshots.get(path);
+      if (!snapshot) throw new Error(`Unexpected fetch: ${path}`);
+      if (!saved) {
+        const stale = client.getQueryData(snapshot.key);
+        return new Promise<Response>(resolve => resolveOldReads.push(() => resolve(Response.json(stale))));
+      }
+      return Response.json(snapshot.data);
+    });
+    const sharedReads = [...snapshots.keys()].map(path => api.get(path));
+    getConnectionMock.mockImplementation(realToolsApi.getConnection);
+    getConnectionInstallsMock.mockImplementation(realToolsApi.getConnectionInstalls);
+    listConnectionProfileConfigurationMock.mockImplementation(realToolsApi.listConnectionProfileConfiguration);
+    listPoliciesMock.mockImplementation(realToolsApi.listPolicies);
+    try {
+      void client.refetchQueries({ predicate: query => [...snapshots.values()].some(snapshot => JSON.stringify(snapshot.key) === JSON.stringify(query.queryKey)) });
+      await flushReact();
+      finishAppMock.mockImplementation(async () => {
+        saved = true;
+        return { connection: savedConnection, profile: savedProfile,
+          profileEntries: savedProfile.entries, profileBindings: savedProfile.bindings, policies: [] };
+      });
+      putConnectionInstallsMock.mockImplementation(async () => { saved = true; return savedInstalls; });
+      await act(() => {
+        if (connectionPurpose === "tool") {
+          container.querySelector<HTMLButtonElement>('[aria-label="Write issue: Off"]')!.click();
+        } else {
+          Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+            .find(radio => radio.textContent?.includes("Any agent"))!.click();
+        }
+      });
+      await flushReact();
+      resolveOldReads.forEach(resolve => resolve());
+      await Promise.all(sharedReads);
+      await flushReact();
+      for (const snapshot of snapshots.values()) expect(client.getQueryData(snapshot.key)).toEqual(JSON.parse(JSON.stringify(snapshot.data)));
+      if (connectionPurpose === "tool") {
+        await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Read repo: Ask first"]')!.click());
+        await flushReact();
+        expect(finishAppMock).toHaveBeenLastCalledWith("company-1", "conn-1", {
+          enabledCatalogEntryIds: ["catalog-read"], askFirstCatalogEntryIds: ["catalog-read"], access: "all_agents",
+        });
+      } else {
+        expect(Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+          .find(radio => radio.textContent?.includes("Any agent"))!.getAttribute("aria-checked")).toBe("true");
+      }
+    } finally {
+      resolveOldReads.forEach(resolve => resolve());
+      await Promise.all(sharedReads);
+      detachInflightGets();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("shows an agent access change immediately and restores it if the save fails", async () => {
+    let rejectSave!: (error: Error) => void;
+    finishAppMock.mockReturnValue(new Promise((_, reject) => { rejectSave = reject; }));
+    await renderAppDetail();
+    const picked = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find(radio => radio.textContent?.includes("Just agents I pick"))!;
+    await act(() => picked.click());
+    expect(picked.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Choose agents");
+    expect(picked.disabled).toBe(true);
+    await act(async () => rejectSave(new Error("Save rejected")));
+    await flushReact();
+    expect(picked.getAttribute("aria-checked")).toBe("false");
+    expect(picked.disabled).toBe(false);
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn't save that", tone: "error" }));
+  });
+
   it("persists agent access independently from always-installed agents", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1144,7 +1369,7 @@ describe("AppDetail", () => {
 
   it("uses the setup-style agent access question without install terminology", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1498,7 +1723,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("reconnects an OAuth warning through the connection's existing personal identity", async () => {
@@ -1520,7 +1745,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("does not offer a personal reconnect to someone other than its fixed owner", async () => {
@@ -1675,7 +1900,7 @@ describe("AppDetail", () => {
       subjectUserId: "user-1",
       returnTo: "/apps/conn-1/permissions",
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
   });
 
   it("keeps personal managed authorization in the tenant until the provider is ready", async () => {
@@ -1701,7 +1926,7 @@ describe("AppDetail", () => {
       body: JSON.stringify({ session }),
     }));
     await vi.waitFor(() => {
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(popupAssignMock).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=personal",
       );
     });
@@ -2047,5 +2272,97 @@ describe("AppDetail", () => {
     const dialogText = document.body.textContent ?? "";
     expect(dialogText).toContain("Who can use this identity");
     expect(dialogText).toContain("Every audience member must be an active company member");
+  });
+  describe("Google Workspace consent always shows the service picker first", () => {
+    const GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly";
+    function workspaceConnection(overrides: Record<string, unknown> = {}) {
+      return connection({
+        name: "Google Workspace", authKind: "oauth", credentialPolicy: "shared",
+        config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "oauth" },
+        ...overrides,
+      });
+    }
+    function bodyButton(label: string) {
+      return Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === label);
+    }
+    async function clickBody(label: string) {
+      await act(async () => { bodyButton(label)?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+    }
+    const disclosure = () => document.body.querySelector('[aria-label="How Paperclip uses your Google data"]');
+
+    it("reconnects an expired shared account only after the picker, with the saved services", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+        grants: [organizationGrant({ providerTenant: { oauth: { requestedScopes: [GMAIL_READ] } } })] });
+
+      await renderAppDetail();
+      await clickBody("Reconnect");
+
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email.");
+      expect(disclosure()?.textContent).not.toContain("Drive");
+      await clickBody("Continue");
+
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { workspaceServices: { gmail: "read" } });
+      expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
+    });
+
+    it("reconnects a personal account through the picker as the signed-in user", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ credentialPolicy: "per_user", createdByUserId: "user-1", healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+        grants: [personalGrant({ providerTenant: { oauth: { requestedScopes: [GMAIL_READ] } } })] });
+
+      await renderAppDetail();
+      await clickBody("Reconnect");
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(disclosure()).not.toBeNull();
+      await clickBody("Continue");
+
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true, workspaceServices: { gmail: "read" } });
+    });
+
+    it("cancelling the picker starts no sign-in", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      await renderAppDetail();
+      await clickBody("Reconnect");
+      await clickBody("Cancel");
+      expect(disclosure()).toBeNull();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(popupAssignMock).not.toHaveBeenCalled();
+    });
+
+    it("connects the organization identity through the picker", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection());
+      await renderAppDetail();
+      await clickBody("Connect organization identity");
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      await act(async () => { document.body.querySelector<HTMLElement>("#workspace-service-gmail")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.");
+      await clickBody("Continue");
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { workspaceServices: { gmail: "write" } });
+    });
+
+    it("connects a personal identity through the picker with the chosen services", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ credentialPolicy: "per_user" }));
+      startPersonalAuthorizationMock.mockResolvedValue({ url: "https://accounts.example.test/authorize" });
+      await renderAppDetail();
+      await clickBody("Connect as me");
+      expect(startPersonalAuthorizationMock).not.toHaveBeenCalled();
+      await act(async () => { document.body.querySelector<HTMLElement>("#workspace-service-calendar")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+      await clickBody("Continue");
+      expect(startPersonalAuthorizationMock).toHaveBeenCalledWith("company-1", "conn-1", {
+        subjectUserId: "user-1",
+        returnTo: "/apps/conn-1/permissions",
+        scopes: googleWorkspaceSelectedScopes({ calendar: "write" }),
+      });
+    });
   });
 });

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -186,7 +187,7 @@ it("does not navigate after closing while an adapter save is pending", async () 
   expect(state.navigate).not.toHaveBeenCalled();
 });
 it("can save the name when the process adapter is disabled", async () => {
-  await act(async () => cache.setQueryData(queryKeys.adapters.all, [...state.adapters, { type: "process", loaded: true, disabled: true }]));
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters, { type: "process", loaded: true, disabled: true }]));
   await name();
   expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", metadata: { setupAdapterPending: true } });
   expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
@@ -218,6 +219,46 @@ it("offers one Codex harness without a runner/provider tile", async () => {
   expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
   expect(document.querySelector("select")).toBeNull();
 });
+it("withholds Cursor Cloud from the hosted picker even when its native backend is available", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+  });
+  await name();
+  const cursor = document.querySelector<HTMLInputElement>('input[value="cursor_cloud"]');
+  expect(cursor).toBeNull();
+  expect(agents.update).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("withholds unavailable backends and limits Cloud to released harnesses (cloud=%s)", async cloud => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: cloud ? { managed: true, availableHarnesses: sampleHarnesses } : null });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [
+      { type: "codex_local", loaded: true, supportedRunners: [] },
+      { type: "opencode_local", loaded: true, supportedRunners: [] },
+      { type: "paperclip_runner", loaded: true, supportedRunners: [] },
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" },
+    ]);
+  });
+  await name();
+  expect(document.querySelector('input[value="codex_local"]')).toBeNull();
+  expect(document.querySelector('input[value="opencode_local"]')).toBeNull();
+  expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="cursor_cloud"]') !== null).toBe(!cloud);
+});
+
+it.each(["gate off", "native unavailable"])("keeps hosted Cursor Cloud hidden when %s", async reason => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
+    if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: reason === "native unavailable" ? ["legacy"] : ["paperclip"], defaultRunner: "legacy" }]);
+  });
+  await name();
+  expect(document.querySelector('input[value="cursor_cloud"]')).toBeNull();
+});
 it.each([true, false, undefined])("opens saved-token Copilot setup without an experimental override (%s)", async enableNativeRunner => {
   await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
   await name();
@@ -228,10 +269,59 @@ it.each([true, false, undefined])("opens saved-token Copilot setup without an ex
   expect(query.get("runnerProvider")).toBe("copilot");
 });
 it("hides Copilot when its runtime adapter is disabled", async () => {
-  await act(async () => cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
   await name();
   expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
 });
+it.each([true, false])("offers Google Antigravity in the ordinary picker while execution is pending (experimental=%s)", async enableNativeRunner => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
+  await name();
+  const choice = document.querySelector<HTMLInputElement>('input[value="antigravity_runtime"]');
+  expect(choice).not.toBeNull();
+  expect(choice!.disabled).toBe(false);
+  expect(choice!.closest("label")?.textContent).toContain("Google Antigravity");
+  expect(choice!.closest("label")?.textContent).toContain("Not available yet");
+  expect(choice!.closest("details")).toBeNull();
+  await act(async () => choice!.click());
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("antigravity");
+  expect(query.get("setupAgentId")).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, {
+    name: "Ada & Co", metadata: { setupAdapterPending: true,
+      setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } },
+  }, "company-1");
+  expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "process", metadata: { setupAdapterPending: true } });
+});
+it("hides Google Antigravity when the runtime adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await name();
+  expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
+});
+it.each([
+  { availableHarnesses: ["gemini_local"], expected: [] },
+  { availableHarnesses: [], expected: [] },
+  { availableHarnesses: ["grok_local"], expected: ["grok"] },
+  { availableHarnesses: ["opencode_local"], expected: ["opencode"] },
+])("filters Advanced native choices using the deployment policy ($availableHarnesses)", async ({ availableHarnesses, expected }) => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  await name();
+  const picker = document.querySelector<HTMLButtonElement>('[aria-label="Experimental harness"]');
+  if (expected.length === 0) {
+    expect(picker).toBeNull();
+    expect(document.querySelector("summary")).toBeNull();
+  } else {
+    expect(picker).toBeTruthy();
+    await act(async () => (document.querySelector("summary") as HTMLElement).click());
+    await act(async () => picker!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.getAttribute("data-value"))).toEqual(expected);
+  }
+});
+
 it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
   await act(async () => (document.querySelector("summary") as HTMLElement).click());
@@ -248,7 +338,7 @@ it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Ad
 it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {
   await act(async () => {
     if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
-    else cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
+    else cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
   });
   await name();
   expect(document.querySelector('[aria-label="Experimental harness"]')).toBeNull();
@@ -292,12 +382,12 @@ it("provides a readable prompt and copy retry when the clipboard fails", async (
   expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
 });
 
-it.each([{ enableOpenAiDot: false, enablePublicMcp: true }, { enableOpenAiDot: true, enablePublicMcp: false }])("requires both Dot experimental prerequisites: %j", async flags => {
-  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, flags));
+it("requires the Dot experimental setting", async () => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableOpenAiDot: false }));
   await click("Invite an external agent");
   const dot = [...document.querySelectorAll("button")].find(b => b.textContent?.startsWith("Dot"));
   expect(dot?.disabled).toBe(true);
-  expect(document.body.textContent).toContain("Assistant connections (MCP)");
+  expect(document.body.textContent).toContain("Enable OpenAI Dot in experimental settings.");
   expect(dotApi.create).not.toHaveBeenCalled();
 });
 
@@ -358,7 +448,7 @@ it("waits for company approval before issuing a Dot capability", async () => {
 it("allows the scoped Dot invitation on cloud when its prerequisites are enabled", async () => {
   await act(async () => {
     cache.setQueryData(queryKeys.instance.experimentalSettings, { enableOpenAiDot: true, enablePublicMcp: true });
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
   });
   await click("Invite an external agent");
   const dot = [...document.querySelectorAll("button")].find(b => b.textContent?.startsWith("Dot"))!;

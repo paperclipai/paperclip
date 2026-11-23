@@ -6,7 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
-import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "./IssuePropertiesArtifactsTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -16,11 +17,21 @@ const mockIssuesApi = vi.hoisted(() => ({
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "user-1" } }) } }));
+let editorOptions: TaskDocumentEditorOptions | undefined;
+const documentEditor = vi.hoisted(() => vi.fn());
+vi.mock("@/components/IssueDocumentsSection", () => ({
+  IssueDocumentsSection: (props: { issue: Issue; generalDocumentsOnly?: boolean }) => {
+    documentEditor(props);
+    return <section data-testid="general-document-editor"><button>New document</button></section>;
+  },
+}));
 vi.mock("@/api/activity", () => ({ activityApi: { runsForIssue: vi.fn(async (): Promise<unknown[]> => []) } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async (): Promise<unknown[]> => []) } }));
 const mockUseIssueDocuments = vi.hoisted(() => vi.fn((): { data: IssueDocument[] } => ({ data: [] })));
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
-vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => ({ enabled: true, loaded: true }) }));
+const artifactsV1 = vi.hoisted(() => ({ enabled: true, loaded: true }));
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => artifactsV1 }));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
   useLocation: () => ({ hash: "" }),
@@ -157,6 +168,8 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     mockIssuesApi.listAttachments.mockResolvedValue([heroAttachment]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([pdfWorkProduct]);
     mockUseIssueDocuments.mockReturnValue({ data: [planDocument] });
+    editorOptions = undefined;
+    artifactsV1.enabled = true;
   });
 
   afterEach(() => {
@@ -165,16 +178,91 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     vi.clearAllMocks();
   });
 
-  function render(props: { onOpenDocument?: (document: IssueDocument) => void } = {}) {
+  function render(props: { onOpenDocument?: (document: IssueDocument) => void; documentEditor?: TaskDocumentEditorOptions; documentDeepLink?: { requestId: number; documentKey: string } } = {}, openText?: (attachmentId: string, name: string) => void) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          <TextAttachmentContext.Provider value={openText ?? null}>
+            <IssuePropertiesArtifactsTab issue={issue} documentEditor={editorOptions} {...props} />
+          </TextAttachmentContext.Provider>
         </QueryClientProvider>,
       );
     });
   }
+
+  it("restores the shared general document editor in the default chat Artifacts pane without duplicate cards", async () => {
+    editorOptions = {};
+    const note = { ...planDocument, id: "doc-note", key: "notes", title: "Task note", body: "Saved note" };
+    mockUseIssueDocuments.mockReturnValue({ data: [planDocument, note] });
+    render();
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="artifact-v1-row"]')).toHaveLength(3);
+      expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+    });
+    expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({ issue, generalDocumentsOnly: true }));
+    expect(container.querySelector('[aria-label="Open Task note"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Open plan.md"]')).not.toBeNull();
+    expect(container.querySelector('a[aria-label="Download acmehats-interface-craft.pdf"]')).not.toBeNull();
+    expect(container.querySelector('img[src="/api/attachments/' + IMAGE_ID + '/content"]')).not.toBeNull();
+  });
+
+  it("leaves Classic authoring in the task body when this host does not own the editor", async () => {
+    render();
+    await waitFor(() => expect(container.querySelector('[aria-label="Open plan.md"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="general-document-editor"]')).toBeNull();
+    expect(documentEditor).not.toHaveBeenCalled();
+  });
+
+  it("makes document creation available on an empty default-chat task", async () => {
+    editorOptions = {};
+    mockUseIssueDocuments.mockReturnValue({ data: [] });
+    mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    render();
+    await waitFor(() => expect(container.textContent).toContain("No artifacts yet"));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+  });
+
+  it("forwards image upload, mentions, references and feedback from the owning task shell", async () => {
+    const options: TaskDocumentEditorOptions = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/image/content"),
+      mentions: [{ id: "agent", name: "Author", kind: "agent" }],
+      externalReferences: {}, feedbackVotes: [], feedbackDataSharingPreference: "prompt",
+      feedbackTermsUrl: "https://example.test/terms", onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    render({ documentEditor: options });
+    await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining(options)));
+  });
+
+  it("uses the same conversation-scoped editor and signed-in permissions beside agent artifacts", async () => {
+    const conversation = { ...issue, conversationAgentId: "agent-1" };
+    const options: TaskDocumentEditorOptions = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/conversation-image/content"),
+      mentions: [{ id: "agent-1", name: "Agent", kind: "agent" }],
+      externalReferences: {}, onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}>
+      <TaskGeneralDocuments issue={conversation} documentEditor={options} />
+    </QueryClientProvider>));
+    await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({
+      ...options, issue: conversation, generalDocumentsOnly: true, canDeleteDocuments: true, canManageDocumentLocks: true,
+    })));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+  });
+
+  it("keeps the same general document authoring with the legacy artifact cards", async () => {
+    editorOptions = {};
+    artifactsV1.enabled = false;
+    mockUseIssueDocuments.mockReturnValue({ data: [planDocument, { ...planDocument, id: "note", key: "notes", title: "Task note" }] });
+    render();
+    await waitFor(() => expect(container.textContent).toContain("acmehats-interface-craft.pdf"));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+    expect(container.textContent).not.toContain("Task note");
+    expect(container.textContent).toContain("plan.md");
+    expect(container.textContent).toContain("contact-sheet.png");
+  });
 
   it("lists every artifact as one flat set of V1 rows, newest first, with no run sections", async () => {
     render();
@@ -212,6 +300,55 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     const service = container.querySelector('a[aria-label="Open Preview server"]')?.closest('[data-testid="artifact-v1-row"]');
     expect(service?.textContent).toContain("Unhealthy");
     expect(service?.textContent).not.toContain("Running");
+  });
+
+  describe("a Markdown work product", () => {
+    const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
+    const reviewKey = "artifact-review-wp-report";
+    const markdownWorkProduct = {
+      ...pdfWorkProduct,
+      id: "wp-report",
+      title: "Verification report",
+      metadata: { attachmentId: ATTACHMENT_ID, contentType: "text/markdown", byteSize: 64, contentPath, openPath: contentPath, downloadPath: `${contentPath}?download=1`, originalFilename: "report.md" },
+    };
+    const reviewDocument = { ...planDocument, id: "doc-review", key: reviewKey, title: "Verification report", body: "Rendered review body" };
+    const reviewRow = () => container.querySelector<HTMLButtonElement>('button[aria-label="Open report.md"]');
+
+    beforeEach(() => {
+      mockIssuesApi.listAttachments.mockResolvedValue([]);
+      mockIssuesApi.listWorkProducts.mockResolvedValue([markdownWorkProduct]);
+      mockUseIssueDocuments.mockReturnValue({ data: [reviewDocument] });
+    });
+
+    it("expands its review in place from the row", async () => {
+      render();
+      await waitFor(() => expect(reviewRow()).not.toBeNull());
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("false");
+      expect(container.textContent).not.toContain("Rendered review body");
+      act(() => reviewRow()!.click());
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("true");
+      await waitFor(() => expect(container.textContent).toContain("Rendered review body"));
+      expect(mockIssuesApi.ensureWorkProductReviewDocument).not.toHaveBeenCalled();
+    });
+
+    it("opens its review from a deep link", async () => {
+      render({ documentDeepLink: { requestId: 1, documentKey: reviewKey } });
+      await waitFor(() => expect(container.textContent).toContain("Rendered review body"));
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("keeps its open, raw and download actions beside the row", async () => {
+      const openText = vi.fn();
+      render({}, openText);
+      await waitFor(() => expect(reviewRow()).not.toBeNull());
+      const raw = container.querySelector<HTMLAnchorElement>('a[aria-label="Open raw Verification report"]');
+      expect(raw?.getAttribute("href")).toBe(contentPath);
+      expect(raw?.getAttribute("target")).toBe("_blank");
+      expect(container.querySelector('a[aria-label="Download Verification report"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+      act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Open in tab: Verification report"]')!.click());
+      expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("false");
+    });
   });
 
   it("opens a task document the way the panel asks, through onOpenDocument", async () => {

@@ -227,15 +227,28 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const agentId = req.query.agentId;
     if (agentId !== undefined && !z.string().uuid().safeParse(agentId).success)
       throw unprocessable("Invalid agent ID");
+    const accounts = await filterConnectionManagementRows(db, req, "connections:read", await service.list(
+      companyId, currentUserId, agentId as string | undefined,
+    ), account => ({ connectionId: account.id }));
+    const viewer = (req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships)
+      ?.some(m => m.companyId === companyId && m.membershipRole === "viewer");
+    const management = connectionManagementService(db);
+    const context = connectionRequestContext(req);
+    const personalDefaultCapability = req.actor.type === "board" ? !viewer && (await management.capability(req.actor, "connections:configure", {
+      type: "connection_management", companyId, purpose: "ai", selfServiceUserId: currentUserId,
+      operation: "PUT /companies/:companyId/ai-connections/default", readOnly: false,
+    }, { mutation: false, readContext: context })).allowed : undefined;
+    const connections = accounts.map(account => ({
+      ...account,
+      ...(personalDefaultCapability === undefined ? {} : {
+        canSetDefault: personalDefaultCapability && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing,
+      }),
+    }));
     res.json({
       currentUserId,
       pools: await filterConnectionManagementRows(db, req, "connections:read", await pools.selectable(companyId, currentUserId), pool => ({ connectionId: pool.id })),
       canManageConnections: await canManageAiConnections(db, req, companyId),
-      connections: await filterConnectionManagementRows(db, req, "connections:read", await service.list(
-        companyId,
-        currentUserId,
-        agentId as string | undefined,
-      ), account => ({ connectionId: account.id })),
+      connections,
     } satisfies AiConnectionList);
   });
   router.get(
@@ -249,6 +262,22 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       if (!connectionId.success || !grantId.success) throw unprocessable("Invalid connection or grant ID");
       res.setHeader("Cache-Control", "no-store");
       res.json(await service.probeUsage(companyId, responsibleUserForAiRequest(req)!, connectionId.data, grantId.data));
+    },
+  );
+  router.get(
+    "/companies/:companyId/ai-connections/:connectionId/identity", managementGuard("connections:read", "GET /companies/:companyId/ai-connections/:connectionId/identity", { personal: true }),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoardOrAgent(req);
+      assertCompanyAccess(req, companyId);
+      const connectionId = z.string().uuid().safeParse(req.params.connectionId);
+      const grantId = z.string().uuid().optional().safeParse(req.query.grantId);
+      if (!connectionId.success || !grantId.success) throw unprocessable("Invalid connection or grant ID");
+      res.setHeader("Cache-Control", "no-store");
+      const actor = getActorInfo(req);
+      res.json(await service.accountIdentity(companyId, responsibleUserForAiRequest(req)!, connectionId.data, grantId.data, {
+        actorType: actor.actorType, actorId: actor.actorId, heartbeatRunId: actor.runId,
+      }));
     },
   );
   router.get(

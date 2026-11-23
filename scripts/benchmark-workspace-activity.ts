@@ -24,7 +24,9 @@ const sha256 = (source: string) => createHash("sha256").update(source).digest("h
 const baselineOnly = process.argv.includes("--baseline-only");
 const dockerPostgres = process.argv.includes("--docker-postgres=17");
 const small = process.argv.includes("--small");
-const runsPerWorkspace = small ? 16 : 600;
+const runsPerWorkspace = Number(process.argv.find(arg => arg.startsWith("--runs-per-workspace="))?.slice(21) ?? (small ? 16 : 600));
+assert.ok(Number.isInteger(runsPerWorkspace) && runsPerWorkspace >= 16 && runsPerWorkspace <= 20000,
+  "--runs-per-workspace must be an integer between 16 and 20000");
 const bindingRows = Math.max(1, Math.floor(runsPerWorkspace / 20));
 const descendantsPerWorkspace = Number(process.argv.find(arg => arg.startsWith("--descendants="))?.slice(14) ?? 1);
 assert.ok(Number.isInteger(descendantsPerWorkspace) && descendantsPerWorkspace >= 1 && descendantsPerWorkspace <= 500,
@@ -114,7 +116,8 @@ try {
       title: `Child ${n}/${child}`, status: "done", completedAt: old, updatedAt: old })));
   }
   const padding = randomBytes(24 * 1024).toString("base64");
-  // Most history is unrelated, as in the reported scan; contexts and results are
+  // Most history is unrelated, as in the reported scan, and unrelated runs carry
+  // distinct legacy issue, task and workspace IDs as real history does; contexts and results are
   // incompressible and wide enough to live in TOAST. Existing indexes are retained.
   for (let n = 0; n < 8; n++) {
     const workspace = workspaces[n];
@@ -122,9 +125,9 @@ try {
       SELECT $1::uuid, $2::uuid, 'succeeded', CASE WHEN i <= ${bindingRows} THEN 'issue' ELSE 'company' END,
         CASE WHEN i <= ${bindingRows} THEN $3::uuid END, CASE WHEN i > ${bindingRows} AND i <= ${bindingRows * 2} THEN $3::uuid END,
         $6::timestamptz + i * interval '1 second', $6::timestamptz + i * interval '2 seconds', $6::timestamptz + i * interval '3 seconds',
-        jsonb_build_object('issueId', CASE WHEN i > ${bindingRows * 2} AND i <= ${bindingRows * 3} THEN $3::text ELSE $5::text END,
-          'taskId', CASE WHEN i > ${bindingRows * 3} AND i <= ${bindingRows * 4} THEN $3::text ELSE $5::text END,
-          'executionWorkspaceId', CASE WHEN i > ${bindingRows * 4} AND i <= ${bindingRows * 5} THEN $4::text ELSE 'unrelated' END,
+        jsonb_build_object('issueId', CASE WHEN i > ${bindingRows * 2} AND i <= ${bindingRows * 3} THEN $3::text WHEN i % 50 = 0 THEN $5::text ELSE gen_random_uuid()::text END,
+          'taskId', CASE WHEN i > ${bindingRows * 3} AND i <= ${bindingRows * 4} THEN $3::text ELSE gen_random_uuid()::text END,
+          'executionWorkspaceId', CASE WHEN i > ${bindingRows * 4} AND i <= ${bindingRows * 5} THEN $4::text ELSE gen_random_uuid()::text END,
           'fixtureRun', ${n * runsPerWorkspace} + i, 'padding', $7::text),
         jsonb_build_object('stdout', $7::text)
       FROM generate_series(1, ${runsPerWorkspace}) i`, [companyId, agentId, workspace.sourceIssueId, workspace.id, unrelatedIssueId, old.toISOString(), padding]);

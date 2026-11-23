@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { isAcknowledgedNativeStop } from "../services/acknowledged-native-stop.js";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../services/activity-log.js", () => ({
@@ -44,18 +45,31 @@ const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string;
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (_runId: string): Promise<Record<string, unknown> | null> => null),
   getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
+  cancelRun: vi.fn(async (
+    _runId: string,
+    _reason: string,
+    _options: { resultJson: Record<string, unknown> },
+  ): Promise<Record<string, unknown> | null> => null),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
-  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByComment: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
-  projection: vi.fn(async () => null),
+  projection: vi.fn(async (): Promise<{ goal: { status: "active" }; workingNow: boolean } | null> => null),
   act: vi.fn(),
+}));
+
+const mockQueueLiveRunnerPrpCommand = vi.hoisted(() => vi.fn<
+  typeof import("../realtime/runner-prp-ws.js").queueLiveRunnerPrpCommand
+>());
+vi.mock("../realtime/runner-prp-ws.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../realtime/runner-prp-ws.js")>(),
+  queueLiveRunnerPrpCommand: mockQueueLiveRunnerPrpCommand,
 }));
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
@@ -70,7 +84,7 @@ vi.mock("../services/runner-goals.js", () => ({
   RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
 }));
 
-vi.mock("../services/index.js", () => ({
+const createServicesMock = vi.hoisted(() => () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1" })),
   }),
@@ -139,6 +153,7 @@ vi.mock("../services/index.js", () => ({
   }),
   workProductService: () => ({}),
 }));
+vi.mock("../services/index.js", createServicesMock);
 
 function registerModuleMocks() {
   vi.doMock("../services/external-objects.js", () => ({
@@ -148,75 +163,7 @@ function registerModuleMocks() {
     }),
   }));
 
-  vi.doMock("../services/index.js", () => ({
-    companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1" })),
-    }),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: mockAccessDecide,
-      hasPermission: vi.fn(async () => true),
-    }),
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-      resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-        ambiguous: false,
-        agent: { id: raw },
-      })),
-    }),
-    companySkillService: () => ({
-      completeTestRunForIssue: vi.fn(async () => null),
-    }),
-    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => ({
-      listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-    }),
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
-    issueApprovalService: () => ({}),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-      listActiveForIssues: vi.fn(async () => new Map()),
-    }),
-    issueTreeControlService: () => ({ getActivePauseHoldGate: mockPauseGate }),
-  issueService: () => mockIssueService,
-    issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: vi.fn(async () => undefined),
-    projectService: () => ({}),
-    questionResponseDeliveryService: () => ({
-      deliver: vi.fn(async () => undefined),
-    }),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
-    workProductService: () => ({}),
-  }));
+  vi.doMock("../services/index.js", createServicesMock);
 }
 
 async function loadAppModules() {
@@ -335,6 +282,93 @@ describe("issue update comment wakeups", () => {
     },
   );
 
+  it.each(["done", "cancelled"])("stops a goal-less native run before a board marks its task %s", async (status) => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "native", status: "running",
+      nativeIssueId: existing.id, contextSnapshot: { issueId: existing.id } });
+    const effects: string[] = [];
+    mockHeartbeatService.cancelRun.mockImplementation(async () => {
+      effects.push("stop");
+      return { id: SOURCE_RUN_ID, companyId: existing.companyId, status: "cancelled" };
+    });
+    mockIssueService.update.mockImplementation(async () => {
+      effects.push("update");
+      return { ...existing, status, executionRunId: null };
+    });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status });
+
+    expect(res.status).toBe(200);
+    expect(effects).toEqual(["stop", "update"]);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledOnce();
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(SOURCE_RUN_ID,
+      "Cancelled before issue terminalization", expect.objectContaining({
+        errorCode: "issue_terminalized",
+        resultJson: expect.objectContaining({ terminalizationStopConfirmed: true }),
+        eventPayload: { issueId: existing.id, status },
+      }));
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    // Exercise the recovery consumer with the route's actual producer fields.
+    // A Stop receipt alone must not authorize this intentional-stop exception.
+    expect(isAcknowledgedNativeStop({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      status: "cancelled", nativeIssueId: existing.id, resultJson: { ...stopMetadata,
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID,
+          companyId: existing.companyId, issueId: existing.id, scope: "run",
+          reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+          intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" },
+      } })).toBe(true);
+    expect(res.body).toMatchObject({ status, executionRunId: null });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the task open when a goal-less native run cannot confirm its stop", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "native", status: "running",
+      nativeIssueId: existing.id, contextSnapshot: { issueId: existing.id } });
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionRunId: null });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not inspect agent runs when closing a task without an execution owner", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done" });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunForAgent).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves legacy completion without a native goal", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "legacy", status: "running", contextSnapshot: { issueId: existing.id } });
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionRunId: null });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("still wakes explicitly reopened work (reassigned: %s)", async (reassigned) => {
     const existing = makeIssue({ status: "done", assigneeAgentId: PREVIOUS_AGENT_ID, assigneeUserId: null });
     const agentId = reassigned ? ASSIGNEE_AGENT_ID : PREVIOUS_AGENT_ID;
@@ -355,11 +389,12 @@ describe("issue update comment wakeups", () => {
 
   it.each([null, "active"] as const)("includes the new comment and shared session key in assignment wakes (external: %s)", async (externalConversationState) => {
     const existing = makeIssue({ externalConversationState });
+    const assigneeAdapterOverrides = { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true } };
     const updated = makeIssue({
       externalConversationState,
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
-      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true } },
+      assigneeAdapterOverrides,
     });
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
@@ -377,12 +412,12 @@ describe("issue update comment wakeups", () => {
         assigneeUserId: null,
         comment: "write the whole thing",
         commentClientRequestId: "55555555-5555-4555-8555-555555555555",
-        assigneeAdapterOverrides: updated.assigneeAdapterOverrides,
+        assigneeAdapterOverrides,
       });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
-      assigneeAdapterOverrides: updated.assigneeAdapterOverrides,
+      assigneeAdapterOverrides,
     }), expect.anything());
     expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "write the whole thing", expect.anything(),
       expect.objectContaining({ clientRequestId: "55555555-5555-4555-8555-555555555555" }), expect.anything());
@@ -526,6 +561,23 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("records an interrupt comment as the board user's acknowledged native Stop", async () => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, executionRunId: SOURCE_RUN_ID, status: "in_progress" });
+    const run = { id: SOURCE_RUN_ID, companyId: existing.companyId, agentId: ASSIGNEE_AGENT_ID, nativeIssueId: existing.id };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-interrupt-redirect", issueId: existing.id, companyId: existing.companyId, body: "Redirect" });
+    mockHeartbeatService.getRun.mockResolvedValue({ ...run, runtimeMode: "native", status: "running", contextSnapshot: { issueId: existing.id } });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ ...run, status: "cancelled" });
+    const res = await request(await createApp()).post(`/api/issues/${existing.id}/comments`).send({ body: "Redirect", interrupt: true });
+    expect(res.status).toBe(201);
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    expect(stopMetadata).toMatchObject({ operatorInterrupted: true, cancelledByActorType: "user", cancelledByUserId: "local-board" });
+    expect(isAcknowledgedNativeStop({ ...run, status: "cancelled", resultJson: { ...stopMetadata,
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID, companyId: existing.companyId,
+        issueId: existing.id, scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+        intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" } } })).toBe(true);
   });
 
   it("interrupts the active run without waking an agent when the handoff assigns a user", async () => {
@@ -792,6 +844,47 @@ describe("issue update comment wakeups", () => {
       }));
     }
     expect(mockIssueService.update.mock.calls.every(([id]) => id === existing.id)).toBe(true);
+  });
+
+  it.each((["post", "patch"] as const).flatMap((method) =>
+    (["acknowledged", "rejected", "timeout", "unavailable"] as const).map((delivery) => ({ method, delivery })),
+  ))("uses automatic goal steering for $method comments with $delivery delivery", async ({ method, delivery }) => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+    const body = "Use a darker shade of blue.";
+    const comment = { id: "goal-steering-comment", issueId: existing.id, companyId: existing.companyId, body };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue(comment);
+    mockRunnerGoalService.projection.mockResolvedValue({ goal: { status: "active" }, workingNow: true });
+    const commandId = `goal_comment_${comment.id}`;
+    mockQueueLiveRunnerPrpCommand.mockImplementation(() => delivery === "unavailable" ? null : {
+      runId: SOURCE_RUN_ID,
+      commandId,
+      controllerSeq: 1,
+      completion: delivery === "acknowledged" ? Promise.resolve(null) : Promise.reject(new Error(delivery)),
+    });
+
+    const app = await createApp();
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body })
+      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: body });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockIssueService.addComment).toHaveBeenCalledOnce();
+    expect(mockRunnerGoalService.projection).toHaveBeenCalledExactlyOnceWith(existing.companyId, existing.id, ASSIGNEE_AGENT_ID);
+    expect(mockQueueLiveRunnerPrpCommand).toHaveBeenCalledExactlyOnceWith({
+      companyId: existing.companyId, issueId: existing.id, agentId: ASSIGNEE_AGENT_ID,
+      type: "turn.steer", payload: { text: body }, commandId,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (delivery === "acknowledged") {
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    } else {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({ issueId: existing.id, commentId: comment.id }),
+      }));
+    }
   });
 
   it("preserves an explicit resume on a run-authenticated top-level comment", async () => {

@@ -95,7 +95,9 @@ export function gradePiFileEvidence(input: {
   requireEvidence(edits.length === 1, "one native edit required; final-only writes cannot qualify");
   const edit = edits[0]!;
   requireEvidence(edit.p.name === "edit" && edit.p.target === c.filename, "exact native edit and relative target required");
-  function lifecycle(end: typeof edit) {
+  // `names[0]` is the opening name. Later names may only refine it once, to
+  // the final name (the runner keeps the latest concrete ACP title, #19265).
+  function lifecycle(end: typeof edit, names: readonly unknown[] = [end.p.name]) {
     const matches = tools.filter(x => x.p.executionId === end.p.executionId);
     const starts = matches.filter(x => x.e.eventType === "tool.execution.started");
     requireEvidence(typeof end.p.executionId === "string" && end.p.executionId.length > 0
@@ -105,7 +107,7 @@ export function gradePiFileEvidence(input: {
       && typeof end.e.normalizedSessionId === "string" && end.e.normalizedSessionId.length > 0
       && starts.length === 1 && starts[0]!.row.seq < end.row.seq
       && matches.filter(x => x.e.eventType === "tool.execution.completed").length === 1
-      && matches.every(x => x.p.schema === end.p.schema && x.p.name === end.p.name && x.p.operation === end.p.operation
+      && matches.every(x => x.p.schema === end.p.schema && names.includes(x.p.name) && x.p.operation === end.p.operation
         && x.row.seq >= starts[0]!.row.seq && x.row.seq <= end.row.seq
         && x.e.sourceKind === "runner" && x.e.turnId === end.e.turnId
         && x.e.normalizedSessionId === end.e.normalizedSessionId && x.e.sourceInstanceId === end.e.sourceInstanceId
@@ -118,19 +120,27 @@ export function gradePiFileEvidence(input: {
       requireEvidence(x.p.target === end.p.target || (!resolved && x.p.target === null), "conflicting native tool target");
       if (x.p.target !== null) resolved = true;
     }
+    let refined = false;
+    for (const x of matches) {
+      requireEvidence(!refined || x.p.name === end.p.name && x.p.name !== names[0], "conflicting or regressed native tool name");
+      if (x.p.name !== names[0]) refined = true;
+    }
     return { start: starts[0]!, matches };
   }
   lifecycle(edit);
-  const validations = tools.filter(x => x.e.eventType === "tool.execution.completed" && x.p.operation === "execute"
-    && x.p.name === "bash");
+  // Count every completed shell execution, whatever its name, so a refined
+  // title cannot hide a second command from the one-bash-call rule.
+  const validations = tools.filter(x => x.e.eventType === "tool.execution.completed" && x.p.operation === "execute");
   requireEvidence(validations.length === 1, "one observed provider validation execution");
-  const validation = validations[0]!, { start, matches } = lifecycle(validation);
+  const validationNames = ["bash", c.validationCommand] as const;
+  requireEvidence(validationNames.includes(validations[0]!.p.name as never), "exact native validation command required");
+  const validation = validations[0]!, { start, matches } = lifecycle(validation, validationNames);
   requireEvidence(start.row.seq > edit.row.seq && validation.e.turnId === edit.e.turnId
     && validation.e.normalizedSessionId === edit.e.normalizedSessionId
     && validation.e.sourceInstanceId === edit.e.sourceInstanceId && validation.p.outputTruncated === false,
   "validation must follow the edit in the same native turn");
-  // The common lifecycle preserves the opening name (bash). ACPX's resolved
-  // command is retained as progress, rather than replacing that stable name.
+  // The lifecycle opens as bash. The resolved command is retained as
+  // progress, and may also become the name once the runner sees it.
   const commandProgress = `${c.validationCommand} (in_progress): ${c.validationCommand}`;
   const allowedProgress = new Set([`bash (pending): [terminal] ${validation.p.executionId}`,
     `${c.validationCommand} (pending): ${c.validationCommand}`, commandProgress]);

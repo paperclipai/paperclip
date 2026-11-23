@@ -1,5 +1,5 @@
 import { REST_CONNECTORS } from "./rest-registry.js";
-import type { ToolRiskLevel } from "@paperclipai/shared";
+import { getConnectableAppDefinition, reviewedToolRisk, type ToolRiskLevel } from "@paperclipai/shared";
 import { NATIVE_PROVIDER_CATALOGS } from "../native-provider-catalogs.js";
 import { classifyRailwayToolRisk, isRailwayEndpoint } from "../railway.js";
 import { braintrustRisk } from "./braintrust/risk.js";
@@ -52,6 +52,23 @@ const reviewedPolicies: ReviewedToolPolicy[] = [
   { sourceTemplateKey: "braintrust", quarantineNewEntries: true, classifyRisk: braintrustRisk },
 ];
 
+/**
+ * A reviewed tool list declared in the connector's own definition. This is
+ * how a connector without provider code (including one a plugin provides)
+ * gets the same reviewed risk wherever its definition is installed.
+ */
+function declaredPolicy(sourceTemplateKey: string | null | undefined): ReviewedToolPolicy | null {
+  if (!sourceTemplateKey) return null;
+  const app = getConnectableAppDefinition(sourceTemplateKey);
+  const review = app?.reviewedTools;
+  if (!review) return null;
+  return {
+    sourceTemplateKey,
+    quarantineNewEntries: review.quarantineNewEntries ?? false,
+    classifyRisk: tool => reviewedToolRisk(review, tool),
+  };
+}
+
 const bySource = new Map(reviewedPolicies.map(policy => [policy.sourceTemplateKey, policy]));
 
 export function connectorToolPolicy(sourceTemplateKey?: string | null, connection?: ConnectionIdentity): {
@@ -60,7 +77,8 @@ export function connectorToolPolicy(sourceTemplateKey?: string | null, connectio
   quarantineNewEntries: boolean;
 } {
   const policy = (connection && reviewedPolicies.find(candidate => candidate.matchesEndpoint?.(connection)))
-    || bySource.get(sourceTemplateKey ?? "");
+    || bySource.get(sourceTemplateKey ?? "")
+    || declaredPolicy(sourceTemplateKey);
   return {
     sourceTemplateKey: policy?.sourceTemplateKey ?? sourceTemplateKey ?? null,
     classifyRisk: policy?.classifyRisk,
