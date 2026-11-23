@@ -297,14 +297,13 @@ export function localAiLoginService(db: Db) {
       return presentAttempt(id, expiresAt, intent.provider);
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
-    ensureBrowserLogin(attempt.sessionId, intent.provider);
-    const waiting = await db.transaction(async tx => (await tx.select().from(adapterAuthSessions)
-      .where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update"))[0]?.status === "waiting_for_user");
-    if (!waiting) {
-      await stopBrowserLogin(attempt.sessionId);
-      await rm(loginHome(attempt.sessionId), { recursive: true, force: true });
-      throw unprocessable("This sign-in was cancelled. Start sign-in again.");
-    }
+    const launched = await db.transaction(async tx => {
+      const [current] = await tx.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update");
+      if (current?.status !== "waiting_for_user") return false;
+      ensureBrowserLogin(attempt.sessionId, intent.provider);
+      return true;
+    });
+    if (!launched) throw unprocessable("This sign-in was cancelled. Start sign-in again.");
     return attempt;
   }
 

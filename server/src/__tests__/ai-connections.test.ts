@@ -2635,6 +2635,29 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
   });
+  it("launches no sign-in process when the attempt cannot be read under its lock", async () => {
+    const owner = "launch-read-fails";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Read fails", allAgents: false, agentIds: [] as string[] } as const;
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { launched += 1; return { abort: () => {} } as never; });
+    const login = localAiLoginService(db);
+    const transaction = db.transaction.bind(db);
+    let calls = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+      calls += 1;
+      if (calls === 2) throw new Error("database unavailable");
+      return transaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(login.start(companyId, owner, intent)).rejects.toThrow("database unavailable");
+      expect(launched).toBe(0);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+    } finally {
+      spy.mockRestore(); browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();
