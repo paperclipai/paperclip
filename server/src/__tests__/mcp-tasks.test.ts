@@ -720,15 +720,35 @@ const support = await getEmbeddedPostgresTestSupport();
 
     const opened = await startTask("task-opener", "opener");
     expect(opened.row).toMatchObject({ grantId: grants.get("task-opener"), createdByUserId: "task-opener", responsibleUserId: "task-opener" });
-    const toolCallsBefore = server.count("tools/call");
-    const agentSession = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: ctx.run.id });
-    const agentTool = (await ctx.gateway().listToolsForSession(agentSession.token)).find((candidate) => candidate.name.endsWith(":build"))!;
-    await expect(ctx.gateway().executeTool({ sessionToken: agentSession.token, tool: agentTool.name, parameters: { ref: "opener" }, timeoutMs: 400 }))
-      .rejects.toMatchObject({ reasonCode: "mcp_task_started_by_other_person" });
-    expect(server.count("tools/call")).toBe(toolCallsBefore);
+    const callAs = async (createdByUserId: string | null, ref: string, extra: { idempotencyKey?: string; timeoutMs?: number } = {}) => {
+      const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: ctx.run.id, createdByUserId });
+      const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+      return ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref },
+        timeoutMs: extra.timeoutMs ?? 400, idempotencyKey: extra.idempotencyKey });
+    };
+    const ownerCallsBefore = server.count("tools/call");
+    await expect(callAs("task-owner", "opener")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(ownerCallsBefore + 1);
+    const openerTasks = (await ctx.rows()).filter((row) => row.createdByUserId === "task-opener");
+    expect(openerTasks).toHaveLength(1);
+    expect(openerTasks[0]!.status).toBe("working");
+    expect((await ctx.rows()).filter((row) => row.createdByUserId === "task-owner")).toHaveLength(1);
+
     const openedAfter = await pollUntilSettled(opened.row.id, opened.taskId);
     expect(openedAfter.errorCode).not.toBe("access_removed");
     expect(openedAfter.status).toBe("completed");
+    await db.update(toolMcpTasks).set({ leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.id, opened.row.id));
+    const continuationCallsBefore = server.count("tools/call");
+    expect(await callAs(null, "opener", { timeoutMs: 2_000 })).toMatchObject({ status: "completed" });
+    expect(server.count("tools/call")).toBe(continuationCallsBefore);
+    const [collected] = await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, opened.row.id));
+    expect(collected!.deliveredAt).toBeInstanceOf(Date);
+
+    await expect(callAs("task-opener", "keyed", { idempotencyKey: "keyed-retry" })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const keyedCalls = server.count("tools/call");
+    await db.update(toolMcpTasks).set({ leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    await expect(callAs("task-opener", "keyed", { idempotencyKey: "keyed-retry" })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(keyedCalls);
 
     const legacy = await startTask(null, "legacy");
     expect(legacy.row).toMatchObject({ grantId: grants.get("task-owner"), createdByUserId: null });

@@ -7713,31 +7713,15 @@ export function createToolGatewayService(
       ...(input.rowId ? [eq(toolMcpTasks.id, input.rowId)] : []),
       eq(toolMcpTasks.connectionId, input.connectionId),
       eq(toolMcpTasks.requestHash, input.requestHash),
-      eq(toolMcpTasks.grantId, input.grantId),
+      input.session.createdByUserId
+        ? and(eq(toolMcpTasks.grantId, input.grantId), eq(toolMcpTasks.createdByUserId, input.session.createdByUserId))
+        : or(and(eq(toolMcpTasks.grantId, input.grantId), isNull(toolMcpTasks.createdByUserId)), isNotNull(toolMcpTasks.createdByUserId)),
       input.session.agentId ? eq(toolMcpTasks.agentId, input.session.agentId) : isNull(toolMcpTasks.agentId),
       input.session.issueId ? eq(toolMcpTasks.issueId, input.session.issueId) : isNull(toolMcpTasks.issueId),
       eq(toolMcpTasks.actorType, input.session.actorType ?? "agent"),
       input.session.actorId ? eq(toolMcpTasks.actorId, input.session.actorId) : isNull(toolMcpTasks.actorId),
       mcpTaskCollectable(),
-    )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
-    return row ?? null;
-  }
-
-  async function findOtherPersonsMcpTask(input: {
-    session: ToolGatewaySession; connectionId: string; requestHash: string;
-  }): Promise<McpTaskRow | null> {
-    const opener = input.session.createdByUserId ?? null;
-    const [row] = await db.select().from(toolMcpTasks).where(and(
-      eq(toolMcpTasks.companyId, input.session.companyId),
-      eq(toolMcpTasks.connectionId, input.connectionId),
-      eq(toolMcpTasks.requestHash, input.requestHash),
-      input.session.agentId ? eq(toolMcpTasks.agentId, input.session.agentId) : isNull(toolMcpTasks.agentId),
-      input.session.issueId ? eq(toolMcpTasks.issueId, input.session.issueId) : isNull(toolMcpTasks.issueId),
-      opener
-        ? or(isNull(toolMcpTasks.createdByUserId), ne(toolMcpTasks.createdByUserId, opener))
-        : isNotNull(toolMcpTasks.createdByUserId),
-      mcpTaskCollectable(),
-    )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
+    )).orderBy(desc(sql`${toolMcpTasks.status} in ('completed', 'failed')`), desc(toolMcpTasks.createdAt)).limit(1);
     return row ?? null;
   }
 
@@ -8578,13 +8562,14 @@ export function createToolGatewayService(
           // it means this call is told to try again, never handed a copy.
           const claimed = await claimMcpTask(attachable, taskOwner, ms + 15_000, { lastInvocationId: invocationId, runId: session.runId ?? attachable.runId });
           if (!claimed) throw mcpTaskPendingError();
-          return await completeRemoteMcpCall(await waitOnTask(claimed, attachedTaskId));
+          if (claimed.grantId === grant.id) return await completeRemoteMcpCall(await waitOnTask(claimed, attachedTaskId));
+          const original = await storedMcpTaskContext(claimed);
+          if ("closed" in original) throw mcpTaskExpiredError();
+          return await completeRemoteMcpCall(await waitForMcpTask({
+            row: claimed, owner: taskOwner, taskId: original.taskId, session, tool, invocationId, transport: original.transport,
+            deadline: controller.signal, runSignal: taskSignals.run, callerSignal: taskSignals.caller, execution,
+          }));
         }
-      }
-      if (taskIdentity && await findOtherPersonsMcpTask({ session, connectionId: connection.id, requestHash: taskIdentity.requestHash })) {
-        throw new ToolGatewayHttpError(409,
-          "This work is already running for another person on this task. Do not repeat the call; the person who started it collects the result.",
-          "mcp_task_started_by_other_person");
       }
       if (taskSignals.attachToTaskRecordId) {
         // The keyed retry's task is no longer collectable here (its grant or
