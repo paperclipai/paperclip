@@ -156,9 +156,7 @@ export class HostedApi {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([Promise.all(waits), new Promise<void>(resolve => { timer = setTimeout(resolve, deadlineMs); })]);
     clearTimeout(timer);
-    const unfinished = targets.filter(failure => failure.state === "pending");
-    for (const failure of unfinished) Object.assign(failure, { state: "unfinished", reason: `diagnosis did not finish within ${Math.round(deadlineMs / 1000)} s of the grade` });
-    return unfinished.length;
+    return targets.filter(failure => failure.state === "pending").length;
   }
 
   diagnosed(failure: FailureRecord | undefined): Promise<void> {

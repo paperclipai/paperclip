@@ -27,7 +27,8 @@ export interface FailureDiagnosis { url: string; method: string; aborted: boolea
   clock: ClientClock; control: FollowUp | null; retry: FollowUp | null; controlReachedThisRun: boolean }
 export type FailureClass = "client" | "server" | "unclassified";
 export interface Classified { class: FailureClass; reason: string }
-export type FailureRecord = FailureDiagnosis & Classified & { state: "pending" | "settled" | "unfinished" };
+export type FailureRecord = FailureDiagnosis & Classified & { state: "pending" | "settled" };
+export const isClientSide = (failure: FailureRecord | null | undefined) => failure?.state === "settled" && failure.class === "client";
 export interface ProbeContext { gapBeforeMs: number | null; intervalMs: number | null }
 
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA", "EAI_NONAME"]);
@@ -239,19 +240,20 @@ function freshHop(url: URL, init: RequestInit, headers: Record<string, string>, 
       const status = response.statusCode ?? 0;
       const limit = status >= 200 && status < 300 ? Number.POSITIVE_INFINITY : BODY_EXCERPT_BYTES;
       let kept = 0;
+      const complete = () => finish(() => resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(answered!.chunks),
+        { status, statusText: response.statusMessage, headers: answerHeaders(response.headers) })));
       response.on("data", (chunk: Buffer) => {
-        if (kept >= limit) return;
         const piece = chunk.subarray(0, Math.min(chunk.length, limit - kept));
         kept += piece.length;
         answered!.chunks.push(Buffer.from(piece));
+        if (kept >= limit) {
+          complete();
+          request.destroy();
+        }
       });
       response.on("error", error => finish(() => reject(failed(error))));
       response.on("aborted", () => finish(() => reject(failed(Object.assign(new Error("the answer was cut short"), { code: "ECONNRESET" })))));
-      response.on("end", () => finish(() => {
-        const status = response.statusCode ?? 0;
-        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(answered!.chunks), { status, statusText: response.statusMessage,
-          headers: answerHeaders(response.headers) }));
-      }));
+      response.on("end", complete);
     });
     request.on("error", error => finish(() => reject(failed(error))));
     request.end(typeof init.body === "string" ? init.body : undefined);
@@ -370,7 +372,7 @@ export interface FailureClassSummary { client: number; server: number; unclassif
 export function summarizeFailures(entries: ReadonlyArray<{ at: number; ok: boolean; failure?: FailureRecord | null }>): FailureClassSummary {
   const classOf = (failure: FailureRecord | null | undefined): Classified => !failure ? { class: "unclassified", reason: "no diagnosis recorded" }
     : failure.state === "settled" ? { class: failure.class, reason: failure.reason }
-      : { class: "unclassified", reason: failure.state === "pending" ? "diagnosis still pending at the grade" : failure.reason };
+      : { class: "unclassified", reason: "diagnosis did not finish before the grade" };
   const failures = entries.filter(entry => !entry.ok).map((entry): ClassifiedFailure => ({ at: entry.at, ...classOf(entry.failure), evidence: failureEvidence(entry.failure) }));
   return { client: failures.filter(entry => entry.class === "client").length, server: failures.filter(entry => entry.class === "server").length,
     unclassified: failures.filter(entry => entry.class === "unclassified").length, failures };

@@ -1,4 +1,4 @@
-import type { ConnectionInfo, FailureRecord } from "./hosted-diagnostics.js";
+import { isClientSide, type ConnectionInfo, type FailureRecord } from "./hosted-diagnostics.js";
 
 export interface HealthSample {
   at: number;
@@ -47,7 +47,7 @@ export const identityOf = (sample: Pick<HealthSample, "processStartedAt" | "comm
 export function detectReleases(samples: readonly HealthSample[], options: { slowMs?: number; settleMs?: number; now?: number } = {}): DetectedRelease[] {
   const slowMs = options.slowMs ?? SLOW_REQUEST_MS;
   const settleMs = options.settleMs ?? RELEASE_SETTLE_MS;
-  const sorted = samples.filter(sample => sample.ok || sample.failure?.class !== "client").sort((left, right) => left.at - right.at);
+  const sorted = samples.filter(sample => sample.ok || !isClientSide(sample.failure)).sort((left, right) => left.at - right.at);
   const now = options.now ?? samples.reduce((latest, sample) => Math.max(latest, sample.at), 0);
   const releases: DetectedRelease[] = [];
   let current: HealthSample | null = null;

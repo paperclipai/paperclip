@@ -167,13 +167,11 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
     }
     for (const entry of workload.records) if (entry.issueId) state.issueIds.push(entry.issueId);
     timeline.add("hosted_arrivals_ended", { launched: workload.launched, releases: detectReleases(probe.samples).length, interrupted: input.interrupted(), timedOut: Date.now() - started > options.maxWaitMs });
-    const arrivalSamples = [...probe.samples];
-    await api.settleDiagnostics(arrivalSamples.map(sample => sample.failure));
-    const releases = detectReleases(arrivalSamples, { now: Date.now() });
+    const releases = detectReleases(probe.samples, { now: Date.now() });
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: () => continuity(probe.samples), healthSamples: () => probe.samples, settleDiagnostics: failures => api.settleDiagnostics(failures), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
+      health: () => continuity(probe.samples), healthSamples: () => probe.samples, stopHealthProbe: () => probe.stop(), settleDiagnostics: failures => api.settleDiagnostics(failures), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
       quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       tasks: () => workload.records, wantedReleases: options.releases,
@@ -189,7 +187,6 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   } finally {
     await polling?.stop();
     await probe.stop();
-    await api.settleDiagnostics();
     await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
       api: continuity(requestSamples(apiRequests(api.requests))), inventory: census }, null, 2)}\n`, { mode: 0o600 });
     const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });

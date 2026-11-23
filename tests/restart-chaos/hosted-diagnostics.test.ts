@@ -74,7 +74,11 @@ describe("gate D failure classifier", () => {
   it("counts a pending diagnosis as unclassified in the summary", () => {
     const pending = sample(1, diagnosis({ control: down }));
     pending.failure = { ...pending.failure!, state: "pending" };
-    expect(summarizeFailures([pending]).failures[0]).toMatchObject({ class: "unclassified", reason: "diagnosis still pending at the grade" });
+    expect(summarizeFailures([pending]).failures[0]).toMatchObject({ class: "unclassified", reason: "diagnosis did not finish before the grade" });
+    pending.failure = { ...pending.failure!, class: "client" };
+    const gap = [{ at: 0, ok: true, status: 200, ms: 40, processStartedAt: "old", commit: "c" }, { ...pending, at: 2_000 },
+      { at: 4_000, ok: true, status: 200, ms: 40, processStartedAt: "new", commit: "c" }];
+    expect(detectReleases(gap, { now: 600_000 })[0]!.shape).toBe("stop_then_start");
   });
 
   it("counts a client DNS failure as client-side", () => {
@@ -208,7 +212,8 @@ describe("hosted request failure recording", () => {
     const health = await api.health();
     expect(await api.settleDiagnostics([])).toBe(0);
     expect(await api.settleDiagnostics([health.failure], 20)).toBe(1);
-    expect(health.failure).toMatchObject({ class: "unclassified", reason: "diagnosis did not finish within 0 s of the grade" });
+    expect(health.failure).toMatchObject({ state: "pending" });
+    expect(summarizeFailures([health]).failures[0]).toMatchObject({ class: "unclassified", reason: "diagnosis did not finish before the grade" });
     const gate = hostedGate(gateInput([health]));
     expect(gate.pass).toBe(false);
   });
