@@ -124,4 +124,16 @@ describe("instance OAuth clients", () => {
       expect(configuredOAuthClientForConnection(notion, "notion", tokenUrl).clientId).toBeNull();
     }
   });
+
+  it.each([
+    ["asana", "mcp-own-oauth", "https://app.asana.com/-/oauth_token"],
+    ["railway", "mcp-oauth", "https://backboard.railway.com/oauth/token"],
+  ])("allows the token endpoint that the %s definition pins", (slug, methodKey, tokenUrl) => {
+    vi.stubEnv(`PAPERCLIP_TOOL_OAUTH_${slug.toUpperCase()}_CLIENT_ID`, "instance-id");
+    vi.stubEnv(`PAPERCLIP_TOOL_OAUTH_${slug.toUpperCase()}_CLIENT_SECRET`, "instance-secret");
+    const pinned = connection({ sourceTemplateKey: slug, connectionMethodKey: methodKey });
+
+    expect(configuredOAuthClientForConnection(pinned, slug, tokenUrl).clientId).toBe("instance-id");
+    expect(configuredOAuthClientForConnection(pinned, slug, "https://attacker.example/token").clientId).toBeNull();
+  });
 });
