@@ -1,4 +1,5 @@
 import { runnerMatrix } from "./catalog.js";
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import type { MatrixExecution, MatrixJob } from "./types.js";
 
 export interface RunnerSelectorOptions {
@@ -269,4 +270,20 @@ export function buildMatrixJobs(
       needsDaytona: execution.environment.id === "daytona",
     }))
     .sort((left, right) => left.executionId.localeCompare(right.executionId));
+}
+
+/**
+ * The pending ACPX candidates the selected Daytona cells run. The Daytona
+ * image and the controller's provider pack must both carry exactly these
+ * (`--candidate-providers`), derived from the profiles rather than typed in.
+ * A released provider is in the default pack and is never listed.
+ */
+export function daytonaCandidateProviders(executions: readonly MatrixExecution[]): string[] {
+  const candidates = new Set<string>();
+  for (const execution of executions) {
+    const candidate = execution.profile.qualificationCandidate;
+    if (execution.environment.id === "daytona" && candidate &&
+        QUALIFIED_ACPX_PROFILES[candidate].qualificationStatus === "pending") candidates.add(candidate);
+  }
+  return [...candidates].sort();
 }

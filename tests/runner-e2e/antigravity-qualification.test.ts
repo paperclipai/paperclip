@@ -10,7 +10,7 @@ import { buildRunnerE2EProcessEnvironment, buildPaperclipServerEnvironment } fro
 import { evaluateMatchers } from "./matchers.js";
 import { observeActiveStopPending, readActiveStopCaller, readActiveStopSettlement } from "./native-active-stop-evidence.js";
 import { assertProviderLossSettlement } from "./native-provider-loss-flow.js";
-import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
+import { buildMatrixJobs, daytonaCandidateProviders, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { readRestartRequest } from "./server-restart-request.js";
 
 type Row = Record<string, any>;
@@ -67,6 +67,14 @@ describe("Google Antigravity explicit Product qualification", () => {
     expect(new Set(jobs.map(job => job.credentialName))).toEqual(new Set(["GEMINI_API_KEY"]));
     expect(jobs.filter(job => job.needsDaytona)).toHaveLength(11);
     expect(() => buildMatrixJobs(select("--suite", "antigravity-agent-journey"))).toThrow("Attended connection journeys");
+  });
+
+  it("asks CI for an Antigravity image and controller pack only for pending Daytona cells", () => {
+    const pending = QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus === "pending";
+    expect(daytonaCandidateProviders(select("--suite", suiteId))).toEqual(pending ? ["antigravity"] : []);
+    expect(daytonaCandidateProviders(select("--suite", suiteId, "--environment", "local"))).toEqual([]);
+    // Released providers live in the default pack and are never requested.
+    expect(daytonaCandidateProviders(select("--id", "rolling-web-deployment.runner-acpx-kimi.daytona.recover-controller"))).toEqual([]);
   });
 
   it("keeps candidate authority out of the shared operator list and rejects unrelated suites", () => {
