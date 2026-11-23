@@ -47,10 +47,6 @@ function httpsUrl(value: string | null | undefined): URL | null {
   }
 }
 
-function siteOf(host: string): string {
-  return host.toLowerCase().split(".").slice(-2).join(".");
-}
-
 function instanceClientTokenUrlAllowed(
   connection: typeof toolConnections.$inferSelect,
   provider: string,
@@ -73,11 +69,11 @@ function instanceClientTokenUrlAllowed(
   if (defaults.tokenEndpoint) {
     return httpsUrl(defaults.tokenEndpoint)?.href === target.href;
   }
-  const fixedSites = [defaults.serverUrl, defaults.discoveryUrl, defaults.metadataUrl, defaults.authorizationEndpoint]
+  const fixedHosts = [defaults.serverUrl, defaults.discoveryUrl, defaults.metadataUrl, defaults.authorizationEndpoint]
     .map((value) => httpsUrl(value))
     .filter((url): url is URL => url !== null)
-    .map((url) => siteOf(url.hostname));
-  return fixedSites.includes(siteOf(target.hostname));
+    .map((url) => url.host.toLowerCase());
+  return fixedHosts.includes(target.host.toLowerCase());
 }
 
 export function configuredOAuthClientForConnection(

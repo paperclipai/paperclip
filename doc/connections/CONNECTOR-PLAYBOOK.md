@@ -2173,9 +2173,10 @@ registers a client on the fly and stores it on the connection:
   `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID/_SECRET` are configured, the
   broker uses them (`customer` ownership) and skips registration. The broker
   sends an env client only to the method's `defaults.tokenEndpoint`, or, when
-  the method has none, to a token endpoint on the same site as its fixed
-  `serverUrl`, `discoveryUrl`, `metadataUrl` or `authorizationEndpoint`. The
-  method must list `customer` ownership. List both
+  the method has none, to a token endpoint on the exact host of its fixed
+  `serverUrl`, `discoveryUrl`, `metadataUrl` or `authorizationEndpoint`. Set
+  `defaults.tokenEndpoint` when the vendor's token endpoint is on another host.
+  The method must list `customer` ownership. List both
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 

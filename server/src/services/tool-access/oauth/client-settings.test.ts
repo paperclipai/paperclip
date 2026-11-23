@@ -109,13 +109,19 @@ describe("instance OAuth clients", () => {
     expect(client.clientSecret).toBeNull();
   });
 
-  it("allows a discovered token endpoint on the app's own site when the definition fixes no token endpoint", () => {
+  it("allows a discovered token endpoint only on a host the definition fixes when it fixes no token endpoint", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "instance-notion-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "instance-notion-secret");
     const notion = connection({ sourceTemplateKey: "notion", connectionMethodKey: "mcp-oauth" });
 
     expect(configuredOAuthClientForConnection(notion, "notion", "https://mcp.notion.com/token").clientId).toBe("instance-notion-id");
-    expect(configuredOAuthClientForConnection(notion, "notion", "https://api.notion.com/v1/oauth/token").clientId).toBe("instance-notion-id");
-    expect(configuredOAuthClientForConnection(notion, "notion", "https://attacker.example/token").clientId).toBeNull();
+    for (const tokenUrl of [
+      "https://api.notion.com/v1/oauth/token",
+      "https://evil.notion.com/token",
+      "https://mcp.notion.com:8443/token",
+      "https://attacker.example/token",
+    ]) {
+      expect(configuredOAuthClientForConnection(notion, "notion", tokenUrl).clientId).toBeNull();
+    }
   });
 });
