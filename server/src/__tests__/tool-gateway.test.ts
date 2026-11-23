@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { LiveEvent } from "@paperclipai/shared";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -6862,6 +6862,152 @@ rl.on("line", (line) => {
       status: "pending",
       continuationPolicy: "wake_assignee",
     });
+  });
+
+  async function setupNoteApprovals() {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run: firstRun } = await createIssueAndRun(db, company.id, agent.id);
+    await allowToolsForAgent(db, company.id, agent.id, ["mcp-remote-fixture:update_note"]);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note updates",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const requestFrom = async (runId: string, body: string) => {
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: "mcp-remote-fixture:update_note",
+        parameters: { noteId: "n1", body },
+      }).then(
+        () => { throw new Error("Expected an approval request"); },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+    };
+    const startRun = async () => {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: company.id,
+        agentId: agent.id,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: firstRun.contextSnapshot,
+      }).returning();
+      return run!;
+    };
+    const finishRun = (runId: string) =>
+      db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const requestStatuses = async () =>
+      (await db.select().from(toolActionRequests).orderBy(asc(toolActionRequests.createdAt))).map((request) => request.status);
+    return { issue, firstRun, requestFrom, startRun, finishRun, requestStatuses };
+  }
+
+  it("withdraws an earlier unanswered request when a newer run asks again for the same action", async () => {
+    const { issue, firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    // The first run asks, then ends waiting for an answer. The reader replies
+    // with a comment instead, and the agent's next run asks again differently.
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["cancelled", "pending"]);
+    const cards = await db.select().from(issueThreadInteractions).orderBy(asc(issueThreadInteractions.createdAt));
+    expect(cards.map((card) => card.status)).toEqual(["cancelled", "pending"]);
+    expect(cards[0]!.result).toMatchObject({
+      outcome: "stale_target",
+      toolAction: { status: "expired", errorCode: "superseded_by_newer_request" },
+    });
+    expect(cards.every((card) => card.issueId === issue.id)).toBe(true);
+  });
+
+  it("withdraws an ended run's other requests when a newer run repeats one of them", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await requestFrom(firstRun.id, "Draft B");
+    await finishRun(firstRun.id);
+    // The repeat reuses the pending "Draft B" request instead of creating one.
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["cancelled", "pending"]);
+  });
+
+  it("keeps a repeated request when the same run then asks for another action", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    // The next run still wants A, and also asks for B. The reused A request
+    // stays linked to the first run, but this run asked for it too.
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft A");
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["pending", "pending"]);
+  });
+
+  it("leaves one live request per action when a newer run repeats each of an ended run's requests", async () => {
+    const { firstRun, requestFrom, startRun, finishRun } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await requestFrom(firstRun.id, "Draft B");
+    await finishRun(firstRun.id);
+    const secondRun = await startRun();
+    // Repeating A reuses it and withdraws the first run's B, which this run
+    // has not asked for yet. Repeating B then asks for B afresh.
+    await requestFrom(secondRun.id, "Draft A");
+    await requestFrom(secondRun.id, "Draft B");
+
+    const requests = await db.select().from(toolActionRequests).orderBy(asc(toolActionRequests.createdAt));
+    const live = requests.filter((request) => request.status === "pending");
+    expect(new Set(live.map((request) => request.canonicalArgumentsHash)).size).toBe(2);
+    expect(live[0]!.id).toBe(requests[0]!.id);
+    expect(requests.map((request) => request.status)).toEqual(["pending", "cancelled", "pending"]);
+  });
+
+  it("withdraws a repeated request once the run that repeated it has ended", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft A");
+    await finishRun(secondRun.id);
+    const thirdRun = await startRun();
+    await requestFrom(thirdRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["cancelled", "pending"]);
+  });
+
+  it("never withdraws a request that was already approved", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    // The person approves A before the next run asks for B.
+    await db.update(toolActionRequests).set({ status: "approved", decidedAt: new Date() });
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["approved", "pending"]);
+  });
+
+  it("keeps earlier requests from runs that are still in progress", async () => {
+    const { firstRun, requestFrom, startRun, requestStatuses } = await setupNoteApprovals();
+
+    // One run may ask for several actions of the same tool.
+    await requestFrom(firstRun.id, "Draft A");
+    await requestFrom(firstRun.id, "Draft B");
+    // Another run on the task that is still running keeps its request too.
+    const otherRun = await startRun();
+    await requestFrom(otherRun.id, "Draft C");
+
+    expect(await requestStatuses()).toEqual(["pending", "pending", "pending"]);
   });
 
   it.each([1, 2])("wraps plugin tool discovery and execution behind the same gateway policy (%i copies)", async copies => {
