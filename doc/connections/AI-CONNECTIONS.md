@@ -22,6 +22,11 @@ Failed or expired sign-ins show a short message and a Retry sign-in footer
 button. Retry releases the old session before starting a fresh sign-in. It keeps
 the onboarding setup and clears the old code.
 
+When the selected environment does not support browser sign-in and no saved
+subscription is available, onboarding disables Connect and keyboard submission.
+It explains the limitation and directs the user back to use an API key or choose
+another model. Saved subscriptions and API-key connections remain available.
+
 Returning from Review to Connect can change the existing agent's connection.
 Connect verifies and saves the current selection before returning to Review;
 it does not create another agent. A new API account selected in onboarding becomes
