@@ -306,6 +306,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           const client = await oauthClientForConnection(
             connection,
             oauthProvider,
+            oauthTokenUrl,
             credentialActor,
           );
           if (!client.clientId)

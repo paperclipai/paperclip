@@ -1063,9 +1063,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // client they registered themselves. Report that instead of a 4xx so
           // the wizard can ask for it rather than losing the draft.
           const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
-          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required"
+            && code !== "oauth_instance_client_endpoint_mismatch") throw error;
+          const reason = (error as HttpError).details as { reason?: unknown } | undefined;
           result.auth.startUrl = null;
           result.auth.manualClientRequired = true;
+          result.auth.manualClientReason = typeof reason?.reason === "string"
+            ? reason.reason
+            : code === "oauth_instance_client_endpoint_mismatch" ? (error as HttpError).message : null;
         }
       }
       await logActivity(db, {
