@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,7 @@ import { captureRemoteWorkspaceDirectory } from "./remote-workspace-snapshot-arc
 import { immutableRemoteWorkspaceRecoveryAttachment, verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { remoteWorkspaceReplacementEvidence } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { attachPreservedRemoteWorkspaceSnapshots } from "./remote-workspace-recovery-attachments.js";
 import {
   createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
@@ -113,28 +114,39 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
       captures: () => captures - capturesBefore };
   }
 
-  async function recoveredReuseFixture() {
-    const f = await fixture(), saved = await f.save();
-    const run = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.b.runId)))[0]!;
+  /** Fails a writer after its final save and records the recovery receipt that
+   * workspace recovery keeps for that saved version. */
+  async function recoverFailedWriter(f: Awaited<ReturnType<typeof fixture>>, writer: { runId: string; lease: { id: string } },
+    saved: { snapshotId: string; sha256: string; generation: number }) {
+    const run = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, writer.runId)))[0]!;
     const current = await run(), reference = remoteWorkspaceRunReferenceSchema.parse(current.runnerProfileJson?.remoteWorkspace);
-    const [originalLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.b.lease.id));
+    const [originalLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, writer.lease.id));
     const [stoppedLease] = await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
       metadata: { ...originalLease.metadata, remoteExecutionTermination: remoteTerminationReceipt(originalLease,
         { providerLeaseId: originalLease.providerLeaseId!, state: "stopped" }) } }).where(eq(environmentLeases.id, originalLease.id)).returning();
     await db.update(issues).set({ executionWorkspaceId: f.a.workspaceId }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: f.issueId, finishedAt: new Date(),
       runnerProfileJson: { ...current.runnerProfileJson, nativeExecutionInput: { workspace: { cwd: reference.remoteCwd } } } })
-      .where(eq(heartbeatRuns.id, f.b.runId));
+      .where(eq(heartbeatRuns.id, writer.runId));
+    // An earlier failed writer's recovery has settled before this one fails.
+    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(and(
+      eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.sourceIssueId, f.issueId),
+      eq(issueRecoveryActions.status, "active")));
     const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "stranded_assigned_issue", cause: "fixture", fingerprint: randomUUID(), ownerType: "board",
       nextAction: "Continue recovered work", evidence: { workspaceRecovery: { schema: "paperclip.workspace-recovery.v1",
-        runId: f.b.runId, status: "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] } } }).returning();
+        runId: writer.runId, status: "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] } } }).returning();
     const [receipt] = await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
-      executionWorkspaceId: f.a.workspaceId, heartbeatRunId: f.b.runId, phase: "workspace_recovery", status: "succeeded",
+      executionWorkspaceId: f.a.workspaceId, heartbeatRunId: writer.runId, phase: "workspace_recovery", status: "succeeded",
       metadata: { storage: "remote_workspace", recoveryActionId: action.id, leaseId: reference.leaseId,
         providerLeaseId: reference.providerLeaseId, epoch: reference.epoch, snapshotId: saved.snapshotId,
         sha256: saved.sha256, generation: saved.generation } }).returning();
-    return { ...f, saved, run, stoppedLease, receipt };
+    return { run, stoppedLease, receipt };
+  }
+
+  async function recoveredReuseFixture() {
+    const f = await fixture(), saved = await f.save();
+    return { ...f, saved, ...await recoverFailedWriter(f, f.b, saved) };
   }
 
   it("accepts a verified reused archive for recovery and stopped native replacement", async () => {
@@ -159,6 +171,42 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
     expect(await verifiedWorkspaceRepairReceipt(db, run)).toBeNull();
     expect(await remoteWorkspaceReplacementEvidence(db, run, f.issueId, [f.stoppedLease]))
       .toEqual({ workspacePreserved: false, providerStopped: true });
+  });
+
+  it.each(["same", "changed"] as const)("attaches each saved version once when two recovered runs saved the %s version", async version => {
+    // Each failed run that restored a save and saved it again keeps its own
+    // recovery receipt for that one version. A new workspace receives every
+    // such run as a predecessor. Staging attached six copies of one 1 GB save
+    // this way, so each new sandbox filled its disk before its first save.
+    const f = await recoveredReuseFixture();
+    const c = await f.writer(f.a.workspaceId);
+    if (version === "changed") await writeFile(path.join(c.remoteRoot, "saved.txt"), "later recovered result\n");
+    const savedC = await saveRemoteWorkspace({ db, storage: f.storage, workspace: await f.workspace(), runId: c.runId,
+      lease: c.lease, target: f.target(c.lease.id), assertOwned: async () => undefined });
+    expect(savedC.snapshotId === f.saved.snapshotId).toBe(version === "same");
+    const recoveredC = await recoverFailedWriter(f, c, savedC);
+    expect(await immutableRemoteWorkspaceRecoveryAttachment(db, await recoveredC.run()))
+      .toMatchObject({ operationId: recoveredC.receipt.id, snapshotId: savedC.snapshotId });
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      runtimeMode: "legacy", status: "running", responsibleUserId: "local-board", contextSnapshot: { issueId: f.issueId } }).returning();
+    const scope = { db, storage: f.storage, companyId: f.companyId, issueId: f.issueId, runId: successor.id,
+      workspaceId: randomUUID(), sourceRunIds: [f.b.runId, c.runId] };
+    const destination = await realpath(await mkdtemp(path.join(root, "recovered-attachments-")));
+    const attached = await attachPreservedRemoteWorkspaceSnapshots({ ...scope, cwd: destination });
+    const copies = await readdir(path.join(destination, ".paperclip-recovered"));
+    if (version === "same") {
+      expect(attached).toEqual([expect.objectContaining({ operationId: f.receipt.id, sourceRunId: f.b.runId })]);
+      expect(copies).toEqual([f.receipt.id]);
+    } else {
+      expect(attached.map(item => item.operationId).sort()).toEqual([f.receipt.id, recoveredC.receipt.id].sort());
+      expect(copies.sort()).toEqual([f.receipt.id, recoveredC.receipt.id].sort());
+    }
+    expect(await readFile(path.join(destination, ".paperclip-recovered", f.receipt.id, "files", "saved.txt"), "utf8")).toBe("saved result\n");
+    // Retiring the copy that was shown retires every receipt of its version.
+    const later = await realpath(await mkdtemp(path.join(root, "retired-attachments-")));
+    const remaining = await attachPreservedRemoteWorkspaceSnapshots({ ...scope, cwd: later,
+      retiredOperationIds: new Set([f.receipt.id]) });
+    expect(remaining.map(item => item.operationId)).toEqual(version === "same" ? [] : [recoveredC.receipt.id]);
   });
 
   it.each(["missing_marker", "pending_generation", "journaled_upload", "wrong_epoch", "wrong_lease",

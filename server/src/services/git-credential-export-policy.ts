@@ -5,7 +5,8 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isLowTrustQuarantined } from "./source-trust.js";
 
 /** A raw Git credential cannot enforce the low-trust read-only tool boundary. */
-export async function allowsGitCredentialExport(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+export async function allowsGitCredentialExport(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "companyId" | "agentId" | "nativeIssueId" | "contextSnapshot">) {
   const issueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.nativeIssueId;
   if (issueId !== undefined && issueId !== null && (typeof issueId !== "string" || !isUuidLike(issueId))) return false;
   const [agent] = await db.select({ companyId: agents.companyId, permissions: agents.permissions }).from(agents)

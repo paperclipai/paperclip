@@ -892,7 +892,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
   });
 
-  it("retries expired upload claims with fresh keys and only deletes the abandoned attempt", async () => {
+  it("retries failed upload claims immediately with fresh keys and only deletes the abandoned attempt", async () => {
     const companyId = await company();
     const store = skillPackageStore(db, storage);
     const put = vi.spyOn(storage, "putFile").mockRejectedValueOnce(new Error("connection lost"));
@@ -900,8 +900,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     put.mockRestore();
     const [pending] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
     expect(pending!.storage).toBeNull();
-    await expect(store.prepare(companyId, files)).rejects.toThrow("being saved");
-    await db.update(snapshots).set({ upload: { ...pending!.upload!, expiresAt: new Date(0).toISOString() } }).where(eq(snapshots.id, pending!.id));
+    expect(new Date(pending!.upload!.expiresAt).getTime()).toBeLessThanOrEqual(Date.now());
     const id = await store.prepare(companyId, files);
     expect(id).toBe(pending!.id);
     const receipt = (await store.descriptor(companyId, id)).storage!;

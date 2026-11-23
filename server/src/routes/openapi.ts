@@ -2115,6 +2115,7 @@ registry.registerPath({
     200: r.ok(),
     403: r.forbidden,
     404: r.notFound,
+    429: { description: "Paperclip Cloud is rate limiting portfolio reads (code cloud_portfolio_rate_limited). Retry-After, when present, gives whole seconds from 1 to 300. Not cached." },
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,
@@ -13069,6 +13070,15 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/profiles",
   tags: ["tool-access"],
   summary: "List tool access profiles with entries and bindings",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles/summary",
+  tags: ["tool-access"],
+  summary: "List tool access profile summaries",
 });
 
 registerCurrentRoute({
