@@ -675,11 +675,17 @@ describe("requestConfirmationPayloadSchema custom target key length", () => {
     const key =
       "connection:app-gallery:google-drive:9ae3b8fd-1234-4abc-8def-eb476aa91fde/google-drive-396cb713:user:qpYBSE2yxjUXBqlWGLIT1WTysNNjSDWn";
     expect(key.length).toBe(132);
-    expect(requestConfirmationPayloadSchema.parse(payloadWithKey(key)).target?.key).toBe(key);
+    const target = requestConfirmationPayloadSchema.parse(payloadWithKey(key)).target;
+    expect(target?.type).toBe("custom");
+    if (target?.type !== "custom") throw new Error("Expected a custom target");
+    expect(target.key).toBe(key);
   });
 
   it("accepts keys up to the 255 cap and rejects longer ones", () => {
-    expect(requestConfirmationPayloadSchema.parse(payloadWithKey("k".repeat(255))).target?.key).toHaveLength(255);
+    const target = requestConfirmationPayloadSchema.parse(payloadWithKey("k".repeat(255))).target;
+    expect(target?.type).toBe("custom");
+    if (target?.type !== "custom") throw new Error("Expected a custom target");
+    expect(target.key).toHaveLength(255);
     expect(() => requestConfirmationPayloadSchema.parse(payloadWithKey("k".repeat(256)))).toThrow();
   });
 });

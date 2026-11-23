@@ -20,16 +20,16 @@ describe("WorkspaceExportRecovery", () => {
   });
   it("does not mistake platform identity for confirmed recovery", async () => {
     await mount({ ...action, evidence: { ...action.evidence, owner: { ...(action.evidence.owner as object), worker: { provider: "railway", deploymentId: "old" } } } });
-    expect(container.textContent).toContain("operator assistance");
+    expect(container.textContent).toContain("Saved work is not recovered yet");
   });
   it("states that an operator is needed for legacy receipts", async () => {
     await mount(action);
-    expect(container.textContent).toContain("Workspace recovery needs operator assistance");
+    expect(container.textContent).toContain("Saved work is not recovered yet");
   });
   it("keeps export repair out of the task", async () => {
     const cause = "native_workspace_sync_out_retry_exhausted";
     await mount({ ...action, cause });
-    expect(container.textContent).toContain("operator assistance");
+    expect(container.textContent).toContain("Saved work is not recovered yet");
   });
   it("removes the status when recovery resolves, including updates in place", async () => {
     await mount({ ...action, evidence: { ...action.evidence, workspaceOwnerStop: {} } });
