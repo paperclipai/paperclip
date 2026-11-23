@@ -159,19 +159,22 @@ export async function queueCompanyGoogleRevocations(tx: Db, companyId: string, r
     const grants = await tx.select().from(connectionGrants)
       .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connection.id)));
     for (const grant of grants) {
-      const secretId = (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token")?.secretId;
-      if (!secretId || seen.has(secretId)) continue;
-      seen.add(secretId);
+      const refreshRef = (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token");
+      if (!refreshRef) continue;
+      const secretId = refreshRef.secretId;
       const subject = managedConnectorConsentSubject(grant, oauth);
       if (!subject) continue;
       const [secret] = await tx.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets)
         .where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt), ne(companySecrets.status, "deleted")));
       if (!secret) continue;
+      const version = typeof refreshRef.versionSelector === "number" ? refreshRef.versionSelector : secret.latestVersion;
+      if (seen.has(`${secretId}:${version}`)) continue;
+      seen.add(`${secretId}:${version}`);
       const id = await insertFromSecret(tx, {
         companyId, connectionId: connection.id, grantId: grant.id, subject, profile: profile.id,
-        secretId, version: secret.latestVersion, reason, nextAttemptAt: now, now,
+        secretId, version, reason, nextAttemptAt: now, now,
       });
-      if (id) queued.push({ secretId, version: secret.latestVersion });
+      if (id && !queued.some((entry) => entry.secretId === secretId)) queued.push({ secretId, version: secret.latestVersion });
     }
   }
   return queued;
@@ -187,20 +190,22 @@ export function createGooglePendingRevocation(db: Db, deps: {
 
   async function heldByLiveSecret(row: PendingRow) {
     if (row.reason === "instance_removed") return false;
-    const rows = await db.select({ id: companySecrets.id }).from(companySecrets)
-      .innerJoin(companySecretVersions, and(
-        eq(companySecretVersions.secretId, companySecrets.id),
-        eq(companySecretVersions.version, companySecrets.latestVersion),
-      ))
-      .where(and(
-        eq(companySecrets.companyId, row.companyId),
-        isNull(companySecrets.deletedAt),
-        ne(companySecrets.status, "deleted"),
-        eq(companySecretVersions.valueSha256, row.tokenSha256),
-        liveSecretReference(sql`${companySecrets.id}`, sql`${companySecrets.companyId}`),
-      ))
-      .limit(1);
-    return rows.length > 0;
+    const selectedVersion = sql`case when ref.value->>'versionSelector' ~ '^[0-9]+$' then (ref.value->>'versionSelector')::integer else secret.latest_version end`;
+    const usesToken = (refs: SQL) => sql`exists (
+      select 1 from jsonb_array_elements(${refs}) ref
+      join ${companySecrets} secret on secret.id::text = ref.value->>'secretId'
+        and secret.company_id = ${row.companyId}::uuid and secret.deleted_at is null and secret.status <> 'deleted'
+      join ${companySecretVersions} version on version.secret_id = secret.id and version.version = ${selectedVersion}
+      where version.value_sha256 = ${row.tokenSha256})`;
+    const rows = await db.execute<{ held: boolean }>(sql`select (
+      exists (select 1 from ${connectionGrants} live_grant
+        where live_grant.company_id = ${row.companyId}::uuid and live_grant.status <> 'revoked'
+          and ${usesToken(sql`live_grant.credential_secret_refs`)})
+      or exists (select 1 from ${toolConnections} live_connection
+        where live_connection.company_id = ${row.companyId}::uuid and live_connection.status <> 'archived'
+          and (${usesToken(sql`live_connection.credential_secret_refs`)} or ${usesToken(sql`live_connection.credential_refs`)}))
+    ) as held`);
+    return Boolean(rows[0]?.held);
   }
 
   async function record(row: PendingRow, result: RetryResult, outcome: string | null) {

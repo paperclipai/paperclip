@@ -927,6 +927,50 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await liveSecretCount(fixture.company.id)).toBe(rows === 1 ? 1 : 2);
   });
 
+  async function pinOlderRefreshVersion(fixture: Awaited<ReturnType<typeof connectManagedGmail>>) {
+    const refreshRef = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!;
+    const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshRef.secretId));
+    await secretService(db).rotate(refreshRef.secretId, { value: "newer-refresh-token-do-not-log" });
+    await db.update(connectionGrants).set({
+      credentialSecretRefs: fixture.grant.credentialSecretRefs.map((ref) => ref.secretId === refreshRef.secretId ? { ...ref, versionSelector: secret!.latestVersion } : ref),
+    }).where(eq(connectionGrants.id, fixture.grant.id));
+    return { secretId: refreshRef.secretId, pinned: secret!.latestVersion };
+  }
+
+  it("queues the grant's pinned token version when the company is deleted", async () => {
+    const fixture = await connectManagedGmail();
+    await pinOlderRefreshVersion(fixture);
+
+    await deleteCompany(db, fixture.company.id);
+    await drain(fixture.connector, Date.now());
+
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+  });
+
+  it("judges live use by the version a live grant selects, not the latest version", async () => {
+    const fixture = await connectManagedGmail();
+    const { secretId, pinned } = await pinOlderRefreshVersion(fixture);
+    await queueGoogleRevocationFromSecret(db, {
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, subject: fixture.userId,
+      profile: "gmail.draft", secretId, version: pinned, reason: "grant_revoked",
+    });
+    const [held] = await db.select().from(googlePendingRevocations);
+
+    await drain(fixture.connector, held!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+
+    const [latest] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, secretId));
+    await queueGoogleRevocationFromSecret(db, {
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, subject: fixture.userId,
+      profile: "gmail.draft", secretId, version: latest!.latestVersion, reason: "grant_revoked",
+    });
+    const [unused] = await db.select().from(googlePendingRevocations);
+    await drain(fixture.connector, unused!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: "newer-refresh-token-do-not-log" }));
+  });
+
   it("keeps one company's pending revocation apart from another company's with the same token", async () => {
     const first = await connectManagedGmail();
     const second = await connectManagedGmail();
