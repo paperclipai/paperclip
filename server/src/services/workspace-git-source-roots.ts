@@ -57,6 +57,15 @@ async function onlyEntry(directory: string, name: string): Promise<boolean> {
   return found;
 }
 
+async function emptyDirectory(directory: string): Promise<boolean> {
+  try {
+    for await (const _ of await fs.opendir(directory)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancestors?: boolean } = {}): Promise<WorkspaceGitSourceRoots | null> {
   let root = path.resolve(cwd), marker = "", markerEntry: Awaited<ReturnType<typeof entry>>;
   for (let depth = 0; ; depth++) {
@@ -66,6 +75,7 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
     if (!source.isDirectory() || source.isSymbolicLink()) throw invalid();
     root = await fs.realpath(root);
     marker = path.join(root, ".git"); markerEntry = await entry(marker);
+    if (markerEntry?.isDirectory() && !markerEntry.isSymbolicLink() && await emptyDirectory(marker)) markerEntry = null;
     if (markerEntry) break;
     if (await entry(path.join(root, "objects")) && await entry(path.join(root, "HEAD"))) throw invalid();
     if (!options.ancestors || path.dirname(root) === root) return null;
@@ -123,7 +133,9 @@ export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<Wo
     const children = (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     entries += children.length;
     if (entries > 100_000) throw invalid();
-    if (children.some(child => child.name === ".git")) {
+    const git = children.find(child => child.name === ".git");
+    const hasGit = git && !(git.isDirectory() && !git.isSymbolicLink() && await emptyDirectory(path.join(directory, ".git")));
+    if (hasGit) {
       const source = await readWorkspaceGitSourceRoots(directory);
       if (!source || roots.length >= 64) throw invalid();
       roots.push(source); inRepository = true;
