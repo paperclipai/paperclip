@@ -4,6 +4,13 @@ navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order
 
 # Connection setup
 
+Typed model authentication failures open the task's existing reconnect request.
+Compatible unmanaged agents can explicitly adopt a validated connection there.
+Typed quota exhaustion without a reported reset offers **Review AI account**
+in the task and asks for billing/usage repair before Retry. Rate limits and
+reported allowance resets keep their existing waits. PostgreSQL service and
+component regressions cover these states; live incident recovery is unverified.
+
 People connect an app or account, choose who may use it, and recover incomplete
 setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.

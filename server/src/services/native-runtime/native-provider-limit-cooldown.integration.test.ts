@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { agentProviderLimitCooldown } from "./native-startup-retry.js";
 
@@ -72,6 +73,29 @@ describe("native provider limit cooldown", () => {
     const agentId = await limitedAgent(resetAt);
     expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
       .toMatchObject({ resetAt, resetReported: true, category: "quota_exhausted" });
+  });
+
+  it("does not invent a reset for an account quota that needs billing action", async () => {
+    const agentId = await limitedAgent(new Date(Date.now() + HOUR_MS));
+    const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    // A prior weekly reset must not resurrect a wait after a newer billing refusal.
+    await db.insert(heartbeatRuns).values({ ...prior, id: randomUUID(), startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { providerFailure: {
+        schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", providerCode: "insufficient_quota",
+        message: "Check your plan and billing details.", retryability: "requires_action",
+      } } });
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() })).toBeNull();
+  });
+
+  it("keeps the default cooldown for a rate limit without a reset", async () => {
+    const agentId = await limitedAgent(new Date(Date.now() + HOUR_MS));
+    await db.update(heartbeatRuns).set({ resultJson: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+      category: "rate_limit", message: "Try again later.", retryability: "unknown",
+    } } }).where(eq(heartbeatRuns.agentId, agentId));
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+      .toMatchObject({ resetReported: false, category: "rate_limit" });
   });
 
   it("re-checks a dated reset days away within one day", async () => {

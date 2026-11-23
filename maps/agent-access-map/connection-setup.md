@@ -1,5 +1,12 @@
 # Connection setup — agent access
 
+Typed provider authentication repair uses the existing controller-only failed-run
+entry point. A stopped agent token cannot create the repair request. Provider
+matching and credential-generation checks protect other and newer accounts;
+legacy adoption still requires the addressed person's validated confirmation.
+Typed quota exhaustion without a reset does not grant an automatic retry or an
+authentication change. See [AI connections](../../doc/connections/AI-CONNECTIONS.md).
+
 Google Antigravity runtime sign-in reuses the existing company/owner-bound local
 AI connection attempts. Agent callers cannot import host credentials, complete
 another user's attempt, or turn a tool OAuth grant into runtime authentication.
