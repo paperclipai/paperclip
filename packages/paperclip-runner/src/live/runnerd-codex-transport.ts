@@ -1397,8 +1397,6 @@ function runnerCloseDrainBudgetMs(
   preparationDeadline: number,
 ): number {
   const remainingMs = Math.max(0, preparationDeadline - Date.now());
-  // A settled Claude session can still be waiting for a durable journal receipt.
-  // Give it the rest of preparation without borrowing from suspension.
   if (options.provider === "acpx" && options.acpxAgent === "claude") return remainingMs;
   return Math.min(5_000, remainingMs);
 }

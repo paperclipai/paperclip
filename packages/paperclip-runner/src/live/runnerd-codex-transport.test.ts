@@ -2946,6 +2946,7 @@ it.each([
 it.each([
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: undefined, stopMs: 35_200, ackMs: 2_800, drained: true },
   { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, stopMs: 5_200, ackMs: 2_800, drained: false },
+  { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, stopMs: 1_000, ackMs: 5_600, drained: false },
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, stopMs: 5_200, ackMs: 2_800, drained: false },
   { provider: "acpx" as const, acpxAgent: "claude" as const, closeGraceMs: undefined, stopMs: 1_000, ackMs: 5_600, drained: true },
   { provider: "acpx" as const, acpxAgent: "claude" as const, closeGraceMs: undefined, stopMs: 1_000, ackMs: 7_000, drained: false },
