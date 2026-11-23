@@ -3479,7 +3479,7 @@ export function createToolGatewayService(
           session.companyId,
           {
             agentId: session.agentId,
-            responsibleUserId: session.responsibleUserId,
+            responsibleUserId: session.createdByUserId ?? session.responsibleUserId,
             allowStandingDelegation: false,
           },
         );
@@ -3540,7 +3540,7 @@ export function createToolGatewayService(
               session.companyId,
               {
                 agentId: session.agentId,
-                responsibleUserId: session.responsibleUserId,
+                responsibleUserId: session.createdByUserId ?? session.responsibleUserId,
                 allowStandingDelegation: false,
                 excludeGrantId: original.id,
               },
