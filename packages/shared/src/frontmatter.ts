@@ -545,14 +545,20 @@ function parseYamlBlock(
     }
     let scalar = remainder;
     if (!/^["'[{]/.test(remainder)) {
-      while (
-        index < lines.length
-        && !lines[index]!.isBlank
-        && !lines[index]!.isComment
-        && lines[index]!.indent > indentLevel
-      ) {
-        scalar += ` ${lines[index]!.content}`;
-        index += 1;
+      let cursor = index;
+      let blankLines = 0;
+      while (cursor < lines.length) {
+        const next = lines[cursor]!;
+        if (next.isBlank) {
+          blankLines += 1;
+          cursor += 1;
+          continue;
+        }
+        if (next.isComment || next.indent <= indentLevel) break;
+        scalar += blankLines > 0 ? `${"\n".repeat(blankLines)}${next.content}` : ` ${next.content}`;
+        blankLines = 0;
+        cursor += 1;
+        index = cursor;
       }
     }
     record[key] = parseYamlScalar(scalar);

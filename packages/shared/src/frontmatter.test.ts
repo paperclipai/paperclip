@@ -81,6 +81,30 @@ describe("parseFrontmatterMarkdown", () => {
     });
   });
 
+  it("keeps blank-line breaks inside a multi-line plain scalar", () => {
+    const parsed = parseFrontmatterMarkdown([
+      "---",
+      "name: pdf-tools",
+      "description: First paragraph",
+      "",
+      "  Second paragraph",
+      "",
+      "",
+      "  Third paragraph",
+      "",
+      "next: x",
+      "---",
+      "",
+      "Body",
+    ].join("\n"));
+
+    expect(parsed.frontmatter).toEqual({
+      name: "pdf-tools",
+      description: "First paragraph\nSecond paragraph\n\nThird paragraph",
+      next: "x",
+    });
+  });
+
   it("respects block-scalar chomping indicators", () => {
     const foldedStrip = parseFrontmatterMarkdown([
       "---",
