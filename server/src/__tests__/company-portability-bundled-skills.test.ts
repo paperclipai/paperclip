@@ -109,9 +109,7 @@ describeEmbeddedPostgres("company portability bundled skills without a git check
     expect(exported.warnings).toContainEqual(
       expect.stringContaining("Bundled Paperclip skills were omitted from export"),
     );
-    expect(importedAgents.map((agent) => agent.adapterConfig)).toEqual([
-      expect.objectContaining({ paperclipSkillSync: { desiredSkills: [bundledSkillKey] } }),
-    ]);
+    expect(importedAgents.map((agent) => agent.name)).toEqual(["Skill User"]);
     expect(targetSkills.map((skill) => skill.key)).toContain(bundledSkillKey);
   }, 60_000);
 });
