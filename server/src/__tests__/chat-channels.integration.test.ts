@@ -3216,16 +3216,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               commentAction: "none", reasonCodes: [missing ? "no_final_response" : "yielded_control_plane_wait"] },
           } }).where(eq(heartbeatRuns.id, next.id));
         await responses.processPending();
-        if (failed || missing) expect(f.responseComments.get(originalId)!.body).toContain(failed
-          ? "This turn stopped before completing" : "This turn ended without publishing a final response");
-        else expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
+        // A status for the new request never replaces the published review.
+        expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
         expect((await readChatActionsById(response.id))[0]).toMatchObject({
           status: failed || missing ? "processed" : "cancelled", result: { final: true },
         });
       } else {
-        expect(f.responseComments.get(originalId)!.body).toContain(scenario === "failed"
-          ? "This turn stopped before completing" : "This turn ended without publishing a final response");
-        expect(response).toMatchObject({ status: "processed", result: { final: true } });
+        expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
+        expect(response).toMatchObject({ status: "processed", result: { final: true, code: "published_response_kept" } });
       }
       const writes = f.responseWrites.length;
       await responses.processPending();
@@ -3271,6 +3269,76 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect([...f.responseComments.keys()]).toEqual([originalId]);
       expect(f.responseComments.get(originalId)?.body).toContain("Second assessment");
       expect(f.responseWrites.filter(write => write.method === "POST")).toHaveLength(1);
+    });
+    it.each(["ended_without_reply", "paused"] as const)(
+      "keeps the published review in the main GitHub PR comment when a later request has only a status: %s", async statusCase => {
+      const f = await publicationRetryFixture();
+      await f.service.execute(f.session, "submit_review", f.assessment, "first-review");
+      const [mainId] = [...f.responseComments.keys()];
+      expect(f.responseComments.get(mainId)?.body).toContain("Advisory review");
+      const committed = { status: "succeeded" as const, nativePhase: "committed", resultJson: {
+        presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "none" } } };
+      await db.update(heartbeatRuns).set(committed).where(eq(heartbeatRuns.id, f.run.id));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      // Production saw several queued re-review requests while one run owned
+      // the task: the run's own request ends without a reply, and the older
+      // queued request is shown as paused while the task is blocked.
+      for (const id of ["41802", "41803"]) await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id, text: "Review again", userId: "42", userName: "octocat", mentioned: true }) });
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41803",
+        }) }).returning();
+      await db.update(heartbeatRuns).set(committed).where(eq(heartbeatRuns.id, next.id));
+      if (statusCase === "paused") {
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
+      } else {
+        await githubResponseCommentService(db, f.providerFetch).failRun({ companyId: f.companyId, endpointId: f.endpoint.id,
+          issueId: f.conversation.issueId!, runId: next.id,
+          body: "This turn ended without publishing a final response. See the Paperclip task for details." });
+      }
+      for (let pass = 0; pass < 3; pass++) await githubResponseCommentService(db, f.providerFetch).processPending();
+      expect([...f.responseComments.keys()]).toEqual([mainId]);
+      const body = f.responseComments.get(mainId)?.body ?? "";
+      expect(body).toContain("Advisory review");
+      expect(body).not.toContain("Work is paused");
+      expect(body).not.toContain("without publishing a final response");
+      // Requests with a status settle against the kept review instead of
+      // retrying. Unpaused, the older queued request still waits for its run.
+      const open = await db.select({ id: chatActions.id }).from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment"), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+      expect(open).toHaveLength(statusCase === "paused" ? 0 : 1);
+    });
+    it("settles a GitHub working comment whose run finished just before another request's run started", async () => {
+      const f = await toolReplyFixture();
+      const [firstId] = [...f.responseComments.keys()];
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      const committed = { status: "succeeded" as const, nativePhase: "committed", resultJson: {
+        presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "none" } } };
+      // The first request's run ends without a reply, and the next request's run
+      // starts before any sweep sees the first run as the task's latest.
+      await db.update(heartbeatRuns).set(committed).where(eq(heartbeatRuns.id, f.run.id));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "One more thing", userId: "42", userName: "octocat", mentioned: true }) });
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
+        }) }).returning();
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      // Work is still running on the task, so the first request waits.
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      await db.update(heartbeatRuns).set(committed).where(eq(heartbeatRuns.id, next.id));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("ended without publishing a final response");
+      const open = await db.select({ id: chatActions.id }).from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment"), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+      expect(open).toEqual([]);
+      const writes = f.responseWrites.length;
+      await responses.processPending();
+      expect(f.responseWrites).toHaveLength(writes);
     });
     it("ignores a review request addressed to an external GitHub bot", async () => {
       const f = await subscribedGitHubFixture("github:paperclipai/paperclip:419");
@@ -3431,8 +3499,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
         trigger: "mention", message: makeMessage({ id: "41802", text: "New request", userId: "42", userName: "octocat", mentioned: true }) });
       await githubResponseCommentService(db, f.providerFetch).processPending();
+      // The published reply stays; the paused request is not marked handled.
       const body = [...f.responseComments.values()][0].body;
-      expect(body).toContain("paused");
+      expect(body).toContain("Earlier result");
+      expect(body).not.toContain("paused");
       expect(body).not.toContain("has been handled");
       expect(f.responseComments.size).toBe(1);
     });

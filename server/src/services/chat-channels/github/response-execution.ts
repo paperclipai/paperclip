@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { githubRunReplyState } from "../../chat-run-publications.js";
-import { readGitHubResponseRun, type GitHubResponseRunRead } from "./response-run-state.js";
+import { readGitHubResponseRun, readResponseRunById, type GitHubResponseRunRead } from "./response-run-state.js";
 export { responseRunColumns as githubResponseRunColumns } from "./response-run-state.js";
 
 export type GitHubResponseExecutionInput = {
@@ -18,18 +18,23 @@ export type GitHubResponseExecutionInput = {
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
   if ("forbidden" in state) throw state.forbidden;
-  const { latestRun, ownsLatestRequest } = state;
+  const { latestRun, ownsLatestRequest, finishedRequestRunId } = state;
   const requestRunning = ownsLatestRequest && latestRun?.status === "running";
   const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
-  const run = terminal && (ownsLatestRequest || input.issueStatus === "blocked") ? latestRun : null;
+  // Once the task is idle, a request whose own run finished earlier settles
+  // from that run; otherwise its placeholder would wait for a run that never comes.
+  const requestRun = terminal && !ownsLatestRequest && input.issueStatus !== "blocked" && finishedRequestRunId
+    ? await readResponseRunById(db, input.companyId, finishedRequestRunId) ?? null : null;
+  const run = requestRun ?? (terminal && (ownsLatestRequest || input.issueStatus === "blocked") ? latestRun : null);
+  const answersRequest = ownsLatestRequest || !!requestRun;
 
-  const reply = run && ownsLatestRequest ? await githubRunReplyState(db, {
+  const reply = run && answersRequest ? await githubRunReplyState(db, {
     companyId: input.companyId, endpointId: input.endpointId, issueId: input.issueId, runId: run.id,
   }) : "none";
-  const paused = !!run ? input.issueStatus === "blocked" && !ownsLatestRequest
+  const paused = !!run ? input.issueStatus === "blocked" && !answersRequest
     : input.issueStatus === "blocked" && latestRun?.status !== "running";
-  const presentationPending = !!run && ownsLatestRequest && run.nativePresentationPending && reply === "none";
-  const passiveResponseWait = !!run && ownsLatestRequest && run.passiveResponseWait && reply === "none";
+  const presentationPending = !!run && answersRequest && run.nativePresentationPending && reply === "none";
+  const passiveResponseWait = !!run && answersRequest && run.passiveResponseWait && reply === "none";
   const body = presentationPending ? undefined : run ? reply === "confirmed" ? "This request has been handled. See the response in this conversation."
     : paused ? "Work is paused. Your request is saved. See the Paperclip task for details."
     : run.status === "succeeded" ? "This turn ended without publishing a final response. See the Paperclip task for details."
@@ -40,6 +45,6 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
       : paused ? input.deliveryCreatedAt : undefined,
     version: JSON.stringify([latestRun?.id ?? null, latestRun?.status ?? null,
-      latestRun?.updatedAt.toISOString() ?? null, ownsLatestRequest, input.issueStatus === "blocked", reply]),
+      latestRun?.updatedAt.toISOString() ?? null, ownsLatestRequest, input.issueStatus === "blocked", reply, requestRun?.id ?? null]),
   };
 }

@@ -28,7 +28,16 @@ async function previousReadGitHubResponseRun(db: Db, input: Input) {
     { allowLegacyWakeComment: true, provider: "github" }) : null;
   const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
     (!!input.sourceMessageId && originMessageId === input.sourceMessageId));
-  return { latestRun, ownsLatestRequest };
+  const [finished] = latestRun ? await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).innerJoin(chatMessageLinks, and(
+    eq(chatMessageLinks.companyId, input.companyId), eq(chatMessageLinks.endpointId, input.endpointId),
+    eq(chatMessageLinks.deliveryId, input.deliveryId), eq(chatMessageLinks.direction, "inbound"),
+    or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
+      sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`),
+  )).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
+    sql`${heartbeatRuns.status} in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')`,
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`))
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1) : [];
+  return { latestRun, ownsLatestRequest, finishedRequestRunId: finished?.runId ?? null };
 }
 
 function random(seed: number) {

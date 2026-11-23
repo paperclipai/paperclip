@@ -54,7 +54,9 @@ export type GitHubResponseRunInput = {
   deliveryId: string; sourceMessageId: string | null;
 };
 type RunRow = Omit<Awaited<ReturnType<typeof readRunRows>>[number], "ordinal">;
-export type GitHubResponseRunState = { latestRun: Omit<RunRow, "wokeForRequest"> | undefined; ownsLatestRequest: boolean };
+export type GitHubResponseRunState = { latestRun: Omit<RunRow, "wokeForRequest" | "requestRunId"> | undefined; ownsLatestRequest: boolean;
+  /** The latest finished run that woke for this request, which can differ from the latest run. */
+  finishedRequestRunId: string | null };
 /** The state of one request of a batch, or the 403 that its single read throws. */
 export type GitHubResponseRunRead = GitHubResponseRunState | { forbidden: HttpError };
 
@@ -83,6 +85,20 @@ const wokeForRequest = (of: Of) => sql<boolean>`exists (select 1 from ${chatMess
     and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
       or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))`;
 
+/** The latest finished run that woke for the request. A newer run woken by
+ * another request can follow it within seconds, so the task's latest run alone
+ * cannot say how this request ended. */
+const finishedRequestRunId = (of: Of) => sql<string | null>`(select q.id from ${heartbeatRuns} q
+  where q.company_id = ${of.companyId}::uuid and q.agent_id = ${of.agentId}::uuid
+    and (q.native_issue_id = ${of.issueId}::uuid or (q.native_issue_id is null and q.context_snapshot->>'issueId' = ${of.issueId}::text))
+    and q.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
+    and exists (select 1 from ${chatMessageLinks} l
+      where l.company_id = ${of.companyId}::uuid and l.endpoint_id = ${of.endpointId}::uuid
+        and l.delivery_id = ${of.deliveryId}::uuid and l.direction = 'inbound'
+        and (l.comment_id::text = q.context_snapshot->>'wakeCommentId'
+          or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))
+  order by q.created_at desc, q.id desc limit 1)`;
+
 const request = sql.identifier("github_response_request");
 const column = (name: string) => sql`${request}.${sql.identifier(name)}`;
 const columns: Array<[keyof Of, string]> = [["companyId", "company_id"], ["endpointId", "endpoint_id"],
@@ -94,7 +110,7 @@ const columns: Array<[keyof Of, string]> = [["companyId", "company_id"], ["endpo
 async function readRunRows(db: Db, inputs: Array<GitHubResponseRunInput & { issueId: string }>) {
   const of = Object.fromEntries(columns.map(([key, name]) => [key, column(name)])) as Of;
   return db.select({ ordinal: sql<number>`${column("ordinal")}`.mapWith(Number), ...responseRunColumns,
-    wokeForRequest: wokeForRequest(of) })
+    wokeForRequest: wokeForRequest(of), requestRunId: finishedRequestRunId(of) })
     .from(sql`unnest(${sql.join(columns.map(([key]) => sql`${sql.param(inputs.map(input => input[key]))}::uuid[]`), sql`, `)})
       with ordinality as ${request}(${sql.join([...columns.map(([, name]) => sql.identifier(name)), sql.identifier("ordinal")], sql`, `)})
       cross join lateral (select ${latestRunId(of)} as id) latest_request_run`)
@@ -103,23 +119,31 @@ async function readRunRows(db: Db, inputs: Array<GitHubResponseRunInput & { issu
 }
 
 function ownership(input: GitHubResponseRunInput, row: RunRow | undefined, originMessageId: string | null): GitHubResponseRunState {
-  if (!row) return { latestRun: undefined, ownsLatestRequest: false };
-  const { wokeForRequest: requestRunIsLatest, ...latestRun } = row;
+  if (!row) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRunId: null };
+  const { wokeForRequest: requestRunIsLatest, requestRunId, ...latestRun } = row;
   const ownsLatestRequest = requestRunIsLatest ||
     (!!input.sourceMessageId && originMessageId === input.sourceMessageId);
-  return { latestRun, ownsLatestRequest };
+  return { latestRun, ownsLatestRequest, finishedRequestRunId: requestRunId ?? null };
 }
 
 /** Shared request ownership and presentation state for delivery and recovery. */
 export async function readGitHubResponseRun(db: Db, input: GitHubResponseRunInput): Promise<GitHubResponseRunState> {
   const { issueId } = input;
-  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false };
+  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRunId: null };
   const of = { ...input, issueId };
-  const [row] = await db.select({ ...responseRunColumns, wokeForRequest: wokeForRequest(of) }).from(heartbeatRuns)
+  const [row] = await db.select({ ...responseRunColumns, wokeForRequest: wokeForRequest(of),
+    requestRunId: finishedRequestRunId(of) }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.companyId), sql`${heartbeatRuns.id} = ${latestRunId(of)}`));
   const originMessageId = row?.activeIdentityContextId ? await chatRunSourceMessageId(db, row,
     { allowLegacyWakeComment: true, provider: "github" }) : null;
   return ownership(input, row, originMessageId);
+}
+
+/** One run's response columns, read only when a request settles from it. */
+export async function readResponseRunById(db: Db, companyId: string, runId: string) {
+  const [row] = await db.select(responseRunColumns).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+  return row;
 }
 
 /** `readGitHubResponseRun` for a page of requests: one latest-run read for the
