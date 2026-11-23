@@ -391,8 +391,26 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       expect(
         await json(await request.get(`/api/issues/${child.id}/live-runs`)),
       ).toEqual([]);
+      if (adapter === "process") {
+        // Stopped legacy runs settle asynchronously into the reconciliation gate
+        // (status "blocked"). Wait for both tasks to settle so Resume preview
+        // sees 0 wakeable agents instead of racing mid-transition.
+        await expect.poll(async () => {
+          const [parentIssue, childIssue] = await Promise.all([
+            json(await request.get(`/api/issues/${parent.id}`)),
+            json(await request.get(`/api/issues/${child.id}`)),
+          ]);
+          return [parentIssue.status, childIssue.status];
+        }, { timeout: 30_000 }).toEqual(["blocked", "blocked"]);
+      }
       await menu(page, "Resume subtree");
-      const resumeWake = page.getByRole("dialog").getByRole("checkbox");
+      const resumeDialog = page.getByRole("dialog");
+      const resumeApply = resumeDialog.getByRole("button", {
+        name: "Resume subtree",
+        exact: true,
+      });
+      await expect(resumeApply).toBeEnabled();
+      const resumeWake = resumeDialog.getByRole("checkbox");
       if (adapter === "process") {
         // Stopped legacy work is blocked pending reconciliation. Removing the
         // pause must not promise or request a wake through that recovery gate.
@@ -402,11 +420,8 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       } else {
         await resumeWake.check();
       }
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: "Resume subtree", exact: true })
-        .click();
-      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await resumeApply.click();
+      await expect(resumeDialog).toHaveCount(0);
       if (adapter === "process") {
         // Legacy processes lack runner stop/action proof, so releasing the hold
         // preserves their recovery gate until the fixture reconciles them.
