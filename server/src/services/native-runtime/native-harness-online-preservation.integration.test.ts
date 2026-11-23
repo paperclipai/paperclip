@@ -208,6 +208,23 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(run.runnerProfileJson?.nativeHarnessBackupSourceAbsent).toBeUndefined();
   });
+  it("names a gone backup source whose run row is busy and records it on the next pass", async () => {
+    const f = await fixture(), signal = AbortSignal.timeout(15_000);
+    const baseline = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+    await f.db.delete(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    await rm(join(f.base, f.scopeDigest), { recursive: true });
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    const holder = f.db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)).for("update"); entered(); await gate;
+    });
+    try {
+      await ready;
+      const busy = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+      expect(busy.deferred.selected_source_busy).toBe((baseline.deferred.selected_source_busy ?? 0) + 1);
+    } finally { release(); await holder; }
+    expect((await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal })).sourceGone).toBe(1);
+  });
   it("stops the selected-source scan once the pass is cancelled", async () => {
     const f = await fixture(), controller = new AbortController();
     await rm(join(f.base, f.scopeDigest), { recursive: true });

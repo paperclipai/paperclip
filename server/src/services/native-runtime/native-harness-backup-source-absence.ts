@@ -11,7 +11,7 @@ export const NATIVE_HARNESS_BACKUP_SOURCE_ABSENT_KEY = "nativeHarnessBackupSourc
 const SCHEMA = "paperclip.native-harness-backup-source-absent.v1";
 const terminal = ["succeeded", "failed", "cancelled", "interrupted", "timed_out"];
 type Scopes = Record<string, { manifestSha256s: string[]; recordedAt: string }>;
-export type NativeHarnessBackupSourceAbsence = "source_gone_recorded" | "selected_source_absent" | "selected_source_retiring";
+export type NativeHarnessBackupSourceAbsence = "source_gone_recorded" | "selected_source_absent" | "selected_source_retiring" | "selected_source_busy";
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -81,6 +81,10 @@ export async function recordNativeHarnessBackupSourceAbsence(db: Db, input: {
       agentId: run.agentId, runId: run.id, details: { scopeDigest: input.scopeDigest, manifestSha256s: manifests,
         selectedSessionId: input.selectedSessionId } }, publications);
     return "source_gone_recorded" as const;
+  }).catch((error: { code?: string; cause?: { code?: string } }) => {
+    input.signal.throwIfAborted();
+    if ((error?.code ?? error?.cause?.code) === "55P03") return "selected_source_busy" as const;
+    throw error;
   });
   for (const publication of publications) publishActivity(publication);
   return outcome;
