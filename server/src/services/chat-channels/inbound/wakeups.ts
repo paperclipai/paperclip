@@ -382,7 +382,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         contextSource: `chat:${context.endpoint.provider}`,
         requestedByActorType: request.requestedByActorType,
         requestedByActorId: request.requestedByActorId,
-        taskKey: context.issue.identifier,
+        taskKey: context.issue.id,
         wakeCommentId: request.commentId,
         chatConversationId: context.conversation.id,
         ...githubAdmission?.options,
@@ -564,7 +564,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     assertDurableChatWakeupReceipt(request, primaryReceipt);
     await queueIssueAssignmentWakeup({ heartbeat: options.heartbeat, issue: context.issue,
       reason: EXTERNAL_CHAT_MESSAGE_WAKE_REASON, mutation: EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION,
-      contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
+      contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.id,
       requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
       wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
       ...githubAdmission?.options,
