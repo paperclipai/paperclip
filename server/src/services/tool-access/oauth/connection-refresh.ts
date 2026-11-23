@@ -148,6 +148,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
     const client = machineSignIn ? null : await oauthClientForConnection(
       connection,
       oauth.provider,
+      oauth.tokenUrl,
       actor,
     );
     if (client && !client.clientId)

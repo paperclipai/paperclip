@@ -4,6 +4,7 @@ import {
 } from "./paperclip-cloud-connector-enrollment.js";
 import {
   createPaperclipCloudConnector,
+  isTransientPaperclipCloudConnectorError,
   paperclipCloudConnectorConfigFromEnv,
 } from "./paperclip-cloud-connector.js";
 
@@ -22,7 +23,11 @@ export async function reconcilePaperclipCloudConnectorEnrollmentStatus(
     if (status === "suspended") return { ...local, configured: false, status: "suspended" };
     if (status === "removed") await onRemoved?.().catch(() => undefined);
     return { ...local, configured: false, status: "not_configured" };
-  } catch {
-    return { ...local, configured: false, status: "unverified" };
+  } catch (error) {
+    return {
+      ...local,
+      configured: false,
+      status: isTransientPaperclipCloudConnectorError(error) ? "unreachable" : "unverified",
+    };
   }
 }

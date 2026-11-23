@@ -1282,6 +1282,8 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+  /** Plain-language reason shown with the client fields, when Paperclip has one. */
+  manualClientReason?: string | null;
 }
 
 /** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
