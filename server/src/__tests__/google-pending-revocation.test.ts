@@ -342,6 +342,42 @@ describeEmbeddedPostgres("retrying an unconfirmed Google access removal", () => 
     expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: "newer-refresh-token-do-not-log" }));
   });
 
+  it("keeps retrying the old token when the user signs in again with a new token during the first call", async () => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    fixture.connector.revoke.mockImplementationOnce(async () => {
+      await secretService(db).rotate(refreshSecretId, { value: "signed-in-again-token-do-not-log" });
+      await db.update(connectionGrants).set({ status: "active", revokedAt: null }).where(eq(connectionGrants.id, fixture.grant.id));
+      return { outcome: "broker_error" };
+    });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.body.providerAccess).toEqual({ provider: "google", result: "retrying", outcomes: ["broker_error"] });
+    const [pending] = await db.select().from(googlePendingRevocations);
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "other_connections_remain" });
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenLastCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+  });
+
+  it("moves a pending removal to the removed-instance rule when Cloud removes the instance", async () => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    await queueGoogleRevocationFromSecret(db, {
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, subject: fixture.userId,
+      profile: "gmail.draft", secretId: refreshSecretId, version: secret!.latestVersion, reason: "grant_revoked",
+    });
+
+    await revokeGoogleAccessForRemovedInstance(db, async () => { throw new Error("stopped before the token was dropped"); });
+
+    const [pending] = await db.select().from(googlePendingRevocations);
+    expect(pending!.reason).toBe("instance_removed");
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+  });
+
   it("keeps one company's pending revocation apart from another company's with the same token", async () => {
     const first = await connectManagedGmail();
     const second = await connectManagedGmail();

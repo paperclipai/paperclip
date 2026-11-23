@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { companySecrets, connectionGrants, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
+import { companySecrets, connectionGrants, googlePendingRevocations, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { ManagedGoogleAccessRemoval, ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
 import { logger } from "../../../middleware/logger.js";
@@ -12,8 +12,8 @@ import {
   googleRevocationOutcomeForError,
   isRetryableGoogleRevocationOutcome,
   queueGoogleRevocationFromSecret,
-  secretsInLiveUse,
   settleQueuedGoogleRevocation,
+  tokenInLiveUse,
 } from "./google-pending-revocation.js";
 import type { ActorInfo } from "../types.js";
 import { actorBinding } from "../actor.js";
@@ -130,22 +130,23 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     return { outcomes, retrying };
   }
 
-  async function keepRetryingOnlyRemovedSecrets(
+  async function keepRetryingUnusedTokens(
     connection: typeof toolConnections.$inferSelect,
     retrying: Array<{ id: string; secretId: string }>,
   ): Promise<number> {
-    if (retrying.length === 0) return 0;
-    const live = await secretsInLiveUse(db, connection.companyId, retrying.map((entry) => entry.secretId));
     let kept = 0;
     for (const entry of retrying) {
-      if (!live.has(entry.secretId)) {
+      const [row] = await db.select({ tokenSha256: googlePendingRevocations.tokenSha256 }).from(googlePendingRevocations)
+        .where(and(eq(googlePendingRevocations.id, entry.id), eq(googlePendingRevocations.companyId, connection.companyId)));
+      if (row && !(await tokenInLiveUse(db, connection.companyId, row.tokenSha256))) {
         kept += 1;
         continue;
       }
-      await dropQueuedGoogleRevocation(db, connection.companyId, entry.id);
+      if (row) await dropQueuedGoogleRevocation(db, connection.companyId, entry.id);
     }
     return kept;
   }
+
 
   function unexpectedFailure(connection: typeof toolConnections.$inferSelect, error: unknown): PreparedGoogleAccessRemoval {
     logger.warn(
@@ -291,7 +292,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
           let retrying = 0;
           if (sent) {
             try {
-              retrying = await keepRetryingOnlyRemovedSecrets(connection, sent.retrying);
+              retrying = await keepRetryingUnusedTokens(connection, sent.retrying);
             } catch {
               retrying = sent.retrying.length;
             }

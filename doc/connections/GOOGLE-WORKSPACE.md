@@ -335,10 +335,12 @@ Cloud still stores no provider token.
 - After the call: a final outcome (`revoked`, `other_connections_remain`,
   `binding_not_known`, `provider_revocation_disabled`,
   `revocation_not_available`) deletes the row. A retryable outcome keeps it and
-  the result is `retrying`. If a live grant or connection still uses the
-  connection secret after the conditional delete (for example, the user signed
-  in again during the call), the row is deleted, because a live sign-in now
-  uses the grant.
+  the result is `retrying`. If a live grant or connection still selects the
+  same token after the conditional delete, the row is deleted. A sign-in during
+  the call that writes a new token keeps the row: the broker's last-binding rule
+  answers `other_connections_remain` for the old token while the new sign-in is
+  live. Cleanup for a removed instance moves an existing row to
+  `instance_removed`.
 - The `google-pending-revocation` delivery queue drains due rows. Each attempt
   takes a 2-minute lease on the row, then calls the broker with a 15-second
   timeout. Backoff is 1, 2, 4 ... minutes, capped at 6 hours. A row stops

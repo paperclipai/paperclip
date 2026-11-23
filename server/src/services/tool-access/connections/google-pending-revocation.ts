@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, ne, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, ne, sql, type SQL } from "drizzle-orm";
 import {
   companies,
   companySecrets,
@@ -66,7 +66,7 @@ async function insertFromSecret(tx: Db, input: {
 }): Promise<string | null> {
   const giveUpAt = new Date(input.now.getTime() + GOOGLE_REVOCATION_LIFETIME_MS);
   const [row] = await tx.execute<{ id: string }>(sql`
-    insert into ${googlePendingRevocations}
+    insert into ${googlePendingRevocations} as pending
       (company_id, connection_id, grant_id, source_secret_id, subject, profile, token_material, token_sha256, reason, next_attempt_at, give_up_at, created_at, updated_at)
     select secret.company_id, ${input.connectionId}::uuid, ${input.grantId}::uuid, secret.id, ${input.subject}::text, ${input.profile}::text,
       version.material, version.value_sha256, ${input.reason}::text, ${input.nextAttemptAt.toISOString()}::timestamptz,
@@ -75,7 +75,8 @@ async function insertFromSecret(tx: Db, input: {
     join ${companySecretVersions} version on version.secret_id = secret.id and version.version = ${input.version}::integer
     where secret.id = ${input.secretId}::uuid and secret.company_id = ${input.companyId}::uuid
       and secret.provider = 'local_encrypted' and secret.deleted_at is null
-    on conflict (company_id, token_sha256) do update set updated_at = excluded.updated_at
+    on conflict (company_id, token_sha256) do update set updated_at = excluded.updated_at,
+      reason = case when excluded.reason = 'instance_removed' then excluded.reason else pending.reason end
     returning id`);
   return row?.id ?? null;
 }
@@ -100,26 +101,23 @@ export async function queueGoogleRevocationFromSecret(db: Db, input: {
   });
 }
 
-function liveSecretReference(secretId: SQL, companyId: SQL) {
-  const ref = sql`jsonb_build_array(jsonb_build_object('secretId', ${secretId}::text))`;
-  return sql`(exists (select 1 from ${connectionGrants} live_grant
-      where live_grant.company_id = ${companyId} and live_grant.status <> 'revoked'
-        and live_grant.credential_secret_refs @> ${ref})
+export async function tokenInLiveUse(db: Db, companyId: string, tokenSha256: string): Promise<boolean> {
+  const selectedVersion = sql`case when ref.value->>'versionSelector' ~ '^[0-9]+$' then (ref.value->>'versionSelector')::integer else secret.latest_version end`;
+  const usesToken = (refs: SQL) => sql`exists (
+    select 1 from jsonb_array_elements(${refs}) ref
+    join ${companySecrets} secret on secret.id::text = ref.value->>'secretId'
+      and secret.company_id = ${companyId}::uuid and secret.deleted_at is null and secret.status <> 'deleted'
+    join ${companySecretVersions} version on version.secret_id = secret.id and version.version = ${selectedVersion}
+    where version.value_sha256 = ${tokenSha256})`;
+  const rows = await db.execute<{ held: boolean }>(sql`select (
+    exists (select 1 from ${connectionGrants} live_grant
+      where live_grant.company_id = ${companyId}::uuid and live_grant.status <> 'revoked'
+        and ${usesToken(sql`live_grant.credential_secret_refs`)})
     or exists (select 1 from ${toolConnections} live_connection
-      where live_connection.company_id = ${companyId} and live_connection.status <> 'archived'
-        and (live_connection.credential_secret_refs @> ${ref} or live_connection.credential_refs @> ${ref})))`;
-}
-
-export async function secretsInLiveUse(db: Db, companyId: string, secretIds: string[]): Promise<Set<string>> {
-  if (secretIds.length === 0) return new Set();
-  const rows = await db.select({ id: companySecrets.id }).from(companySecrets)
-    .where(and(
-      eq(companySecrets.companyId, companyId),
-      inArray(companySecrets.id, secretIds),
-      isNull(companySecrets.deletedAt),
-      liveSecretReference(sql`${companySecrets.id}`, sql`${companySecrets.companyId}`),
-    ));
-  return new Set(rows.map((row) => row.id));
+      where live_connection.company_id = ${companyId}::uuid and live_connection.status <> 'archived'
+        and (${usesToken(sql`live_connection.credential_secret_refs`)} or ${usesToken(sql`live_connection.credential_refs`)}))
+  ) as held`);
+  return Boolean(rows[0]?.held);
 }
 
 export async function settleQueuedGoogleRevocation(db: Db, companyId: string, id: string, outcome: ManagedGoogleRevocationOutcome, now = new Date()) {
@@ -190,22 +188,7 @@ export function createGooglePendingRevocation(db: Db, deps: {
 
   async function heldByLiveSecret(row: PendingRow) {
     if (row.reason === "instance_removed") return false;
-    const selectedVersion = sql`case when ref.value->>'versionSelector' ~ '^[0-9]+$' then (ref.value->>'versionSelector')::integer else secret.latest_version end`;
-    const usesToken = (refs: SQL) => sql`exists (
-      select 1 from jsonb_array_elements(${refs}) ref
-      join ${companySecrets} secret on secret.id::text = ref.value->>'secretId'
-        and secret.company_id = ${row.companyId}::uuid and secret.deleted_at is null and secret.status <> 'deleted'
-      join ${companySecretVersions} version on version.secret_id = secret.id and version.version = ${selectedVersion}
-      where version.value_sha256 = ${row.tokenSha256})`;
-    const rows = await db.execute<{ held: boolean }>(sql`select (
-      exists (select 1 from ${connectionGrants} live_grant
-        where live_grant.company_id = ${row.companyId}::uuid and live_grant.status <> 'revoked'
-          and ${usesToken(sql`live_grant.credential_secret_refs`)})
-      or exists (select 1 from ${toolConnections} live_connection
-        where live_connection.company_id = ${row.companyId}::uuid and live_connection.status <> 'archived'
-          and (${usesToken(sql`live_connection.credential_secret_refs`)} or ${usesToken(sql`live_connection.credential_refs`)}))
-    ) as held`);
-    return Boolean(rows[0]?.held);
+    return tokenInLiveUse(db, row.companyId, row.tokenSha256);
   }
 
   async function record(row: PendingRow, result: RetryResult, outcome: string | null) {
