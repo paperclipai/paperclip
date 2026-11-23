@@ -719,9 +719,17 @@ const support = await getEmbeddedPostgresTestSupport();
 
     await expect(callAs(ctx, null, "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
     const agentTaskId = server.only().id;
+    await releaseLeases(ctx.org.id);
+    const callsBeforeOwnerRetry = server.count("tools/call");
+    await expect(callAs(ctx, "task-owner", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(callsBeforeOwnerRetry);
     await expect(callAs(ctx, "task-opener", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
     const openerTaskId = server.only().id;
     expect(openerTaskId).not.toBe(agentTaskId);
+    await releaseLeases(ctx.org.id);
+    const callsBeforeOpenerRetry = server.count("tools/call");
+    await expect(callAs(ctx, "task-opener", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(callsBeforeOpenerRetry);
     const rows = await ctx.rows();
     const openerRow = rows.find((row) => row.createdByUserId === "task-opener")!;
     expect(openerRow).toMatchObject({ grantId: grants.get("task-opener"), responsibleUserId: "task-opener" });
