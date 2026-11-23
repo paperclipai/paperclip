@@ -76,8 +76,8 @@ describe("server image init", () => {
     for (const line of lines) {
       expect(
         line,
-        "node must not inherit PID 1: wrap the entrypoint in tini so adopted orphans are reaped",
-      ).toBe('ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]');
+        "node must not inherit PID 1: wrap the entrypoint in tini (as a subreaper) so adopted orphans are reaped",
+      ).toBe('ENTRYPOINT ["/usr/bin/tini", "-s", "--", "docker-entrypoint.sh"]');
     }
   });
 
@@ -133,6 +133,21 @@ describe("orphan-reaping probe", () => {
     // A probe nothing runs proves nothing. The static assertions above only
     // check configuration; this is what keeps the behavioural check wired up.
     expect(source).toContain("scripts/assert-orphan-reaping.sh");
+  });
+
+  it("probes each pushed platform digest before it can be published or signed", () => {
+    // The probe runs in every native build leg, before that leg exports the
+    // digest merge-and-push assembles. Publication then signs only an index
+    // whose Linux images are those probed digests, instead of pulling the
+    // image again after the exact-source gate.
+    const leg = dockerWorkflow.split("\n  build-and-push:\n")[1].split("\n  publication_verification:\n")[0];
+    const probe = leg.indexOf("- name: Verify PID 1 reaps orphaned processes");
+    expect(probe).toBeGreaterThan(leg.indexOf("- name: Build and push by digest"));
+    expect(probe).toBeLessThan(leg.indexOf("- name: Export digest"));
+    expect(leg).toContain('--platform "$PLATFORM" "$IMAGE_NAME@$IMAGE_DIGEST" sh -s < scripts/assert-orphan-reaping.sh');
+    const publisher = dockerWorkflow.split("\n  merge-and-push:\n")[1].split("\n  promote_canary_channel:\n")[0];
+    expect(publisher).toContain('standard-image-contract.mjs --resolve "$GITHUB_SHA" --verified-digests /tmp/digests');
+    expect(publisher).not.toContain("docker run");
   });
 
   it("fails closed when the orphan is never adopted by PID 1", () => {

@@ -14,8 +14,9 @@ function fixture() {
   vi.useFakeTimers();
   const select = vi.fn(() => ({ from: () => ({ where: async () => [] }) }));
   const execute = vi.fn(async () => [{ xid: "42", status: "aborted" }]);
+  type FixtureTx = { execute: typeof execute; transaction: <T>(callback: (tx: FixtureTx) => Promise<T>) => Promise<T> };
   const db = installDatabaseWorkSignals({ select, execute,
-    async transaction(callback: (tx: any) => Promise<any>) {
+    async transaction<T>(callback: (tx: FixtureTx) => Promise<T>): Promise<T> {
       return callback({ execute, transaction: db.transaction });
     },
   });

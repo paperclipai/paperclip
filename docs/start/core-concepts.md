@@ -52,14 +52,14 @@ The transition to `in_progress` requires an **atomic checkout** — only one age
 
 ## Delegation
 
-The CEO is the primary delegator. When you set company goals, the CEO:
+When your request includes delegation, the CEO can:
 
-1. Creates a strategy and submits it for your approval
-2. Breaks approved goals into tasks
-3. Assigns tasks to agents based on their role and capabilities
-4. Hires new agents when needed, with hire approvals available when you enable them
+1. Create a strategy and submit it for your approval
+2. Break approved goals into tasks
+3. Assign tasks to agents based on their role and capabilities
+4. Hire new agents when needed, with hire approvals available when you enable them
 
-You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions such as strategy, can enable hire approvals when you want a gate, and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
+When your request or approved plan includes delegation, the CEO can organize the work. You approve key decisions such as strategy, can enable hire approvals when you want a gate, and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
 
 ## Heartbeats
 

@@ -1,9 +1,47 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 import { idle, json, send, setup } from "./agent-chat.shared";
 
 test.use({ trace: "retain-on-failure" });
 test.setTimeout(120_000);
+
+test("cleanup restores agent chat experiments when cancellation fails", async ({ request }) => {
+  const original = await json(await request.get("/api/instance/settings/experimental"));
+  const response = (status: number, body: unknown) => ({
+    ok: () => status >= 200 && status < 300,
+    status: () => status,
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  }) as APIResponse;
+  const failingRequest = new Proxy(request, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<APIRequestContext["get"]>) =>
+        args[0].endsWith("/live-runs")
+          ? response(200, [{ id: "cleanup-cancellation-fixture" }])
+          : target.get(...args);
+      if (property === "post") return async (...args: Parameters<APIRequestContext["post"]>) =>
+        args[0].endsWith("/heartbeat-runs/cleanup-cancellation-fixture/cancel")
+          ? response(500, { error: "simulated cancellation failure" })
+          : target.post(...args);
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    const f = await setup(failingRequest);
+    await expect(f.restore()).rejects.toThrow("500");
+    const restored = await json(await request.get("/api/instance/settings/experimental"));
+    expect(restored).toMatchObject({
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    });
+  } finally {
+    await json(await request.patch("/api/instance/settings/experimental", { data: {
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    } }));
+  }
+});
 
 /**
  * Agent chat project and content coverage: project cards, split handoff,
@@ -124,12 +162,19 @@ test("split handoff commits relevant plans before execution and never creates ch
       const runs = await json(
         await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
       );
-      const run = runs.find(
+      const taskRuns = runs.filter(
         (run: any) => run.contextSnapshot?.issueId === task.id,
       );
-      expect(run).toBeTruthy();
+      expect(taskRuns.length).toBeGreaterThan(0);
+      const startedAt = taskRuns
+        .filter((run: any) => run.startedAt != null)
+        .map((run: any) => Date.parse(run.startedAt));
+      // A newer queued/cancelled run need not have started. Preserve the
+      // invariant against the first actual execution, not list ordering.
+      expect(startedAt.length).toBeGreaterThan(0);
+      expect(startedAt.every(Number.isFinite)).toBe(true);
       expect(Date.parse(plan.updatedAt)).toBeLessThanOrEqual(
-        Date.parse(run.startedAt),
+        Math.min(...startedAt),
       );
     }
     expect(
@@ -150,6 +195,19 @@ test("split handoff commits relevant plans before execution and never creates ch
         })
       ).status(),
     ).toBe(422);
+    await expect.poll(async () => {
+      const comments = await json(await request.get(`/api/issues/${chat.id}/comments`));
+      const completed = comments.filter((comment: any) => comment.authorAgentId === f.agent.id &&
+        comment.body.startsWith("Delegated work completed:"));
+      return tasks.every((task: any) => completed.some((comment: any) => comment.body.includes(task.identifier)));
+    }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => await json(await request.get(`/api/companies/${f.company.id}/live-runs`)),
+      { timeout: 30_000 }).toEqual([]);
+    const settledTasks = await json(await request.get(`/api/companies/${f.company.id}/issues`));
+    expect(settledTasks.map((task: any) => ({ id: task.id, status: task.status, parentId: task.parentId }))
+      .sort((a: any, b: any) => a.id.localeCompare(b.id))).toEqual(tasks.map((task: any) => ({
+        id: task.id, status: "done", parentId: null,
+      })).sort((a: any, b: any) => a.id.localeCompare(b.id)));
   } finally {
     await f.restore();
   }
@@ -277,9 +335,8 @@ for (const mode of ["Ask", "Plan"])
         );
         expect(revised.latestRevisionId).not.toBe(first.latestRevisionId);
         expect(revised.body).toContain("Revised plan");
-        await expect(
-          page.getByRole("tab", { name: "Plan", exact: true }),
-        ).toBeVisible();
+        await page.getByRole("link", { name: /Open Revised plan revision 2 in task sidebar/ }).click();
+        await expect(page.getByRole("tab", { name: "Plan", exact: true })).toBeVisible();
       }
       expect(
         await json(await request.get(`/api/companies/${f.company.id}/issues`)),
@@ -414,12 +471,18 @@ test("plan approval hands the preserved revision to an assigned project task", a
         { timeout: 60_000 },
       )
       .toBe(1);
+    // Task completion is delivered back to the chat as another real turn.
+    await idle(request, f.chatPath, 3);
     const task = (
       await json(await request.get(`/api/companies/${f.company.id}/issues`))
     )[0];
     expect(task.parentId).toBeNull();
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
+    const completion = page.getByText("Delegated work completed:", { exact: false });
+    await expect(completion.getByRole("link").and(page.locator(
+      `a[href="/${f.company.issuePrefix}/issues/${task.identifier}"]`,
+    ))).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );
@@ -455,6 +518,7 @@ test("shared questions resume and existing project reuse creates no project card
     );
     await page.goto(f.route);
     await send(page, { action: "question" });
+    await idle(request, f.chatPath);
     await expect(
       page.getByRole("radio", { name: "Garden club", exact: true }).last(),
     ).toBeVisible();
@@ -551,21 +615,22 @@ test("shared history loads older messages without replacing the latest turn", as
   }
 });
 
-test("disabling the experiment lets an active turn settle and keeps idle history", async ({
+test("retired Chat opt-outs do not interrupt active turns or hide existing history", async ({
   page,
   request,
 }) => {
   const original = await json(
     await request.get("/api/instance/settings/experimental"),
   );
-  expect(original.enableAgentChat).toBe(false);
+  expect(original.enableAgentChat).toBe(true);
   const f = await setup(request);
   try {
     await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
     await send(page, { action: "delayed" });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     const chat = await json(await request.get(f.chatPath));
     await json(
       await request.patch("/api/instance/settings/experimental", {
@@ -586,20 +651,13 @@ test("disabling the experiment lets an active turn settle and keeps idle history
             .conversationState,
       )
       .toBe("waiting");
-    expect(
-      (
-        await request.post(`/api/issues/${chat.id}/comments`, {
-          data: { body: "/new" },
-        })
-      ).status(),
-    ).toBe(404);
     const before = (
       await json(
         await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
       )
     ).length;
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Active turn settled after feature disable.", { exact: true })).toBeVisible();
     expect(
       (
         await json(

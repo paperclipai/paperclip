@@ -5,6 +5,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Link } from "@/lib/router";
 import { formatDateTime } from "@/lib/utils";
 import { AppLogo } from "../AppLogo";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function conversationDestination(
   row: ChatConversation,
@@ -40,7 +42,9 @@ export function ChatConversationList({
         icon={MessageSquare}
         message="No conversations yet"
         description={
-          provider === "agentmail"
+          provider === "speko"
+            ? "Open an assigned task and choose Talk to agent."
+            : provider === "agentmail"
             ? "Send an email to this agent’s address to start one."
             : "Mention the agent in an enabled destination to start one."
         }
@@ -85,12 +89,12 @@ export function ChatConversationList({
                   href={row.externalUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="break-words hover:text-foreground hover:underline"
+                  className={cn("break-words hover:text-foreground hover:underline", ANALYTICS_MASK_CLASS)}
                 >
                   {conversationDestination(row, provider)}
                 </a>
               ) : (
-                <span className="break-all">{row.externalLabel}</span>
+                <span className={cn("break-all", ANALYTICS_MASK_CLASS)}>{row.externalLabel}</span>
               )}
               {row.updatedAt && (
                 <time dateTime={row.updatedAt}>
