@@ -1672,7 +1672,8 @@ function StandardConnectionSetupFlow({
         if (result.auth.manualClientRequired) {
           oauthPopupRef.current?.close();
           oauthPopupRef.current = null;
-          setLinkGuidance(genericConnectGuidance("oauth_manual_client_required", null));
+          const guidance = genericConnectGuidance("oauth_manual_client_required", null);
+          setLinkGuidance(result.auth.manualClientReason ? { ...guidance, body: result.auth.manualClientReason } : guidance);
           setLinkAuthMode("oauth");
           setLinkAdvancedOpen(true);
           setGenericOAuthPending(false);

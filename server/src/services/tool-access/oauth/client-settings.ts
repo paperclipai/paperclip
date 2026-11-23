@@ -76,12 +76,20 @@ function instanceClientTokenUrlAllowed(
   return fixedHosts.includes(target.host.toLowerCase());
 }
 
+const REFUSED_DEPLOYMENT_CLIENT_MESSAGE =
+  "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.";
+
 export function refusedDeploymentClientError(provider: string) {
   if (!oauthClientConfig(provider).clientId) return null;
-  return unprocessable(
-    "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.",
-    { code: "oauth_instance_client_endpoint_mismatch" },
-  );
+  return unprocessable(REFUSED_DEPLOYMENT_CLIENT_MESSAGE, { code: "oauth_instance_client_endpoint_mismatch" });
+}
+
+export function manualOAuthClientRequiredError(provider: string, message: string) {
+  const refused = Boolean(oauthClientConfig(provider).clientId);
+  return unprocessable(refused ? REFUSED_DEPLOYMENT_CLIENT_MESSAGE : message, {
+    code: "oauth_manual_client_required",
+    ...(refused ? { reason: REFUSED_DEPLOYMENT_CLIENT_MESSAGE } : {}),
+  });
 }
 
 export function configuredOAuthClientForConnection(

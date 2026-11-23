@@ -5118,6 +5118,30 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     expect(navigateTopLevelMock).not.toHaveBeenCalled();
   });
 
+  it("shows why a client is needed when the deployment's sign-in app cannot be used", async () => {
+    const reason = "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.";
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "mcp.example.test" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null, manualClientRequired: true, manualClientReason: reason },
+    });
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain(reason);
+    expect(container.textContent).toContain("Client ID");
+    expect(container.textContent).toContain("Client secret");
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+  });
+
   it("submits custom headers as secret-backed credential values", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");

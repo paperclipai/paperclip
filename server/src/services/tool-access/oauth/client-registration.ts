@@ -13,7 +13,7 @@ import { type RemoteHttpEndpointLookup } from "../../remote-http-endpoint-guard.
 
 import type { OAuthCredentialStore } from "./credential-store.js";
 import { singleFlight } from "../single-flight.js";
-import { configuredOAuthClientForConnection, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
+import { configuredOAuthClientForConnection, manualOAuthClientRequiredError, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
 
 type RegistrationDependencies = {
@@ -490,7 +490,10 @@ function canRegisterOAuthClientDynamically(
         input.galleryEntry,
       )
     ) {
-      throw refusedDeploymentClientError(input.endpoints.provider) ?? unprocessable(
+      if (refusedDeploymentClientError(input.endpoints.provider)) {
+        throw manualOAuthClientRequiredError(input.endpoints.provider, "");
+      }
+      throw unprocessable(
         `OAuth client id is not configured for ${input.endpoints.provider}`,
         {
           code: "oauth_client_registration_unavailable",
@@ -569,9 +572,9 @@ function canRegisterOAuthClientDynamically(
       }
       // 4. Dynamic client registration.
       if (!input.endpoints.registrationUrl) {
-        throw refusedDeploymentClientError(input.endpoints.provider) ?? unprocessable(
+        throw manualOAuthClientRequiredError(
+          input.endpoints.provider,
           "This server needs sign-in details you create yourself. Register Paperclip with the provider, then add the client ID and secret it gives you.",
-          { code: "oauth_manual_client_required" },
         );
       }
       const registered = await registerOAuthClient({
