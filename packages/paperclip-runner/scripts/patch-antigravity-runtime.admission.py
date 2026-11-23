@@ -1,8 +1,9 @@
-"""Paperclip-owned admission for the pinned Antigravity 1.4.3 native runtime.
+"""Paperclip-owned admission for the pinned Antigravity 1.5.2 native runtime.
 
-Loaded inside Google's hermetic distribution. No credentials or prompt content
-are persisted in receipts. Native creation must acknowledge the exact config
-before the ACP client receives authority to send a managed prompt.
+Loaded inside Google's hermetic distribution on every patched platform. No
+credentials or prompt content are persisted in receipts. Native creation must
+acknowledge the exact config before the ACP client receives authority to send
+a managed prompt.
 """
 import asyncio
 import contextvars
@@ -13,9 +14,11 @@ import hashlib
 import os
 import stat
 import re
+import sys
 import uuid
 
 from acp import exceptions
+from google3.cloud.developer_experience.antigravity_extensions.acp_server import paperclip_native_identity
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import request_meta
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import system_prompt
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import hooks as acp_hooks
@@ -58,25 +61,40 @@ def _read_request(kwargs):
   return {**value, "content": prompt["append"]}
 
 
+def _owned_executable_path():
+  """The kernel's record of this process image, never argv or the environment."""
+  if sys.platform == "darwin":
+    executable_path = ctypes.create_string_buffer(4096)
+    path_size = ctypes.c_uint32(len(executable_path))
+    get_executable_path = ctypes.CDLL("/usr/lib/libSystem.B.dylib")._NSGetExecutablePath
+    get_executable_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    get_executable_path.restype = ctypes.c_int
+    if get_executable_path(executable_path, ctypes.byref(path_size)) != 0:
+      _fail("cannot resolve the owned native executable path")
+    return os.path.realpath(os.fsdecode(executable_path.value))
+  if sys.platform.startswith("linux"):
+    try:
+      path = os.readlink("/proc/self/exe")
+    except OSError:
+      _fail("cannot resolve the owned native executable path")
+    if not os.path.isabs(path) or path.endswith(" (deleted)"):
+      _fail("cannot resolve the owned native executable path")
+    return os.path.realpath(path)
+  _fail("unsupported native host")
+
+
 def prepare_native_config(config, strategy):
   """Inspect the protobuf that will actually be sent to this owned harness."""
   admission = _CONTEXT.get()
   if admission is None:
     return None
-  executable_path = ctypes.create_string_buffer(4096)
-  path_size = ctypes.c_uint32(len(executable_path))
-  get_executable_path = ctypes.CDLL("/usr/lib/libSystem.B.dylib")._NSGetExecutablePath
-  get_executable_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-  get_executable_path.restype = ctypes.c_int
-  if get_executable_path(executable_path, ctypes.byref(path_size)) != 0:
-    _fail("cannot resolve the owned native executable path")
-  helper = os.path.join(os.path.dirname(os.path.realpath(os.fsdecode(executable_path.value))), "localharness_external")
+  helper = os.path.join(os.path.dirname(_owned_executable_path()), "localharness_external")
   helper_stat = os.lstat(helper)
   if not stat.S_ISREG(helper_stat.st_mode) or helper_stat.st_nlink != 1:
     _fail("native helper must be the immutable sibling executable")
   with open(helper, "rb") as helper_file:
     helper_digest = hashlib.file_digest(helper_file, "sha256").hexdigest()
-  if helper_digest != "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200":
+  if helper_digest != paperclip_native_identity.HELPER_SHA256:
     _fail("native sibling helper digest differs")
   # The SDK resolves this attribute in its constructor. Updating the global
   # environment alone cannot replace that already-cached executable path.
@@ -230,6 +248,10 @@ def install(adapter_type):
         or kwargs.get("system_instructions") != admission["content"]
     ):
       _fail("native model or instruction input differs")
+    if admission is not None and kwargs.get("additional_directories"):
+      # 1.5.2 lets a client widen the native workspace and file-tool roots.
+      # A managed session keeps the single workspace Paperclip prepared.
+      _fail("managed sessions cannot add workspace directories")
     if admission is not None:
       requested_filter = kwargs.get("tool_filter", tool_filter.ToolFilterConfig())
       if not isinstance(requested_filter, tool_filter.ToolFilterConfig):

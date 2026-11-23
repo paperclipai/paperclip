@@ -3,7 +3,7 @@ import { ANTIGRAVITY_ADMISSION_SCHEMA, createAntigravityAdmission } from "./anti
 
 const content = "  Exact governance 🧷\n\n";
 const model = "caller/model-not-in-catalog";
-const initialize = { agentInfo: { name: "antigravity-acp", version: "1.4.3" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
+const initialize = { agentInfo: { name: "antigravity-acp", version: "1.5.2" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
 function fixture() {
   const admission = createAntigravityAdmission(content, model);
   const guard = admission.createGuard();

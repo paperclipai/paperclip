@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createAntigravityQuestionBridge } from "./antigravity-questions.js";
+import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
 
 export const ANTIGRAVITY_ADMISSION_SCHEMA = "paperclip.antigravity.admission.v1";
 const SESSION_METHODS = new Set(["session/new", "session/load", "session/resume"]);
@@ -103,7 +104,7 @@ export function createAntigravityAdmission(content: string, model: string) {
               if (request.method === "initialize") {
                 const info = record(result.agentInfo);
                 const native = record(record(record(result.agentCapabilities)._meta).antigravity);
-                if (info.name !== "antigravity-acp" || info.version !== "1.4.3" || native.paperclipAdmission !== 1) fail("runtime identity or native admission patch is unavailable");
+                if (info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION || native.paperclipAdmission !== 1) fail("runtime identity or native admission patch is unavailable");
                 initialized = true;
               } else if (request.nonce) {
                 const ack = record(record(result._meta).paperclipAntigravityAdmission);

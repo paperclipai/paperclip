@@ -60,7 +60,7 @@ async function fixture(behavior: "accept" | "missing" | "mismatch" | "question" 
         ]:null;
         readline.createInterface({input:process.stdin}).on('line',line=>{
           const m=JSON.parse(line);
-          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},
+          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.5.2'},
             agentCapabilities:{loadSession:true,_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[]}});
           else if(['session/new','session/load','session/resume','session/set_config_option','session/set_model'].includes(m.method)) {
             const a=m.params._meta.antigravity.paperclipAdmission;
