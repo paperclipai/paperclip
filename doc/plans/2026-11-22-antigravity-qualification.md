@@ -35,6 +35,43 @@ is the current release contract and acceptance ledger.
   the built-in `agent_platform_only` marking. Inference is a separate question.
 - The ACP layer exposes no Orchestrator mode.
 
+## Swarm (`/swarm`) and Orchestrator (2026-11-23)
+
+These are two different features. The pinned 1.5.2 ACP server offers neither.
+
+- **Orchestrator** is a model choice ("Orchestrator (Neon)": Neon plans,
+  Hydrogen implements). The 1.5.2 server lists no Orchestrator entry in its
+  model picker.
+- **`/swarm`** is a slash command. It turns the conversation into a
+  coordinator that adds named workers and a verifier. The members talk on a
+  shared message board. Workers share the workspace or get their own working
+  copy. Google's docs list it for the Antigravity App and the Antigravity CLI
+  only, on all plans. It does not need Neon: workers use the conversation's
+  model. Sources: [Swarm](https://antigravity.google/docs/swarm),
+  [Slash commands](https://antigravity.google/docs/slash-commands), App
+  changelog 2.31.0 (2026-11-09).
+- The 1.5.2 server (registry entry `antigravity-acp`, the IDE-extension
+  server) does not offer `/swarm`:
+  - Live `available_commands_update` after `session/new` lists only `plan`,
+    `logout` and `usage`. Session modes are `default`, `auto_edit` and
+    `yolo`. Config options are `model`, `thinking_level` and `mode`.
+  - The bundled SDK knows one built-in slash command (`plan`). Its built-in
+    tool list has no swarm or board tools. The server sends `/swarm` text to
+    the model as ordinary prompt text.
+  - The helper `localharness_external` contains swarm code behind
+    `enable-native-swarm` flags, but the 1.5.2 server does not enable it.
+- Google now documents `agy acp` (part of the Antigravity CLI) as the ACP
+  route, and says CLI slash commands appear in the client's command menu.
+  Paperclip does not use `agy acp`. Whether `agy acp` offers `/swarm` is not
+  verified.
+- Paperclip side: the task prompt is one JSON line, so `/swarm` in a task
+  never starts a prompt line and the slash-command guard does not fire. In a
+  local run on Gemini 3.8 Flash (Google sign-in), the agent read `/swarm` as a
+  plain request. It hired three new agents and made three subtasks with
+  Paperclip's own tools. No native swarm started. The parent task finished
+  after five successful runs across four agents (about 270k input tokens);
+  one verifier run failed with a provider error and its retry passed.
+
 ## Routes to Neon
 
 State as of the end of 2026-11-22. "Admitted" means the patched server returned
@@ -102,6 +139,7 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
+| Swarm (`/swarm`) | Native swarm starts from a task | Not supported by 1.5.2 (2026-11-23): not advertised, no swarm tools. A live `/swarm` task ran as a plain request |
 
 ### First live tasks (2026-11-23, local, Google sign-in)
 
@@ -151,7 +189,9 @@ must not claim `recovery: "session-load"`.
 
 ### Excluded or unsupported for this release
 
-- Orchestrator mode: excluded. 1.5.2 does not expose it over ACP.
+- Orchestrator model: excluded. 1.5.2 does not list it over ACP.
+- `/swarm`: not available. The live 1.5.2 `available_commands_update` lists
+  only `plan`, `logout` and `usage`, and the agent gets no swarm tools.
 - Google sign-in in a cloud sandbox: refused at save and Test.
 - Warm (session-reusing) runs: per-turn only.
 - darwin-x64: no native host; inventory only.
@@ -168,7 +208,7 @@ must not claim `recovery: "session-load"`.
    level. A free-tier key can be admitted but may be refused at prompt time;
    Neon needs a paid key.
 4. Not supported: Google sign-in in a cloud sandbox, warm sessions,
-   Orchestrator mode, darwin-x64.
+   the Orchestrator model, `/swarm`, darwin-x64.
 
 While the profile is pending, a cloud (Daytona) run needs an operator grant
 for the company and exact model that names linux-x64 and the patched linux-x64
@@ -224,7 +264,18 @@ provider-death fixtures now target the store and per-launch directory layout.
 
 - A paid Gemini key for the prompt-dependent gates (the API-key route to Neon
   is admitted; inference is unproven).
-- Orchestrator mode: excluded for this release (not exposed over ACP in 1.5.2).
+- Orchestrator model: excluded for this release (not listed over ACP in 1.5.2).
+- `/swarm`. Options:
+  1. Keep it excluded (current state). A `/swarm` task runs as a plain
+     request, and the agent may hire agents and make subtasks.
+  2. Evaluate `agy acp` as the runtime. If it offers `/swarm`, swarm workers
+     are sub-conversations inside one native process. Decide how their tool
+     calls, approvals, usage and Stop map to one Paperclip run with one
+     assignee and one budget.
+  3. Map `/swarm` to Paperclip delegation: subtasks for existing agents, each
+     with its own workspace, budget and approvals. Hiring needs a decision.
+  Recommendation: option 1 now. Then evaluate option 2 with a paid key, and
+  keep option 3 as the cross-agent pattern.
 - Merge and production flip after the PR is green.
 - Disposition of community PR #21121 (separate legacy-style adapter).
 - Plugin Runner-task environments. Paperclip Cloud's warm Agent Computer runs
