@@ -141,7 +141,8 @@ describe("Paperclip Cloud connector saved answers", () => {
     await expect(connector.getInstanceStatus()).resolves.toBe("removed");
     answerLate(active());
     await inFlight;
-    fetchMock.mockResolvedValue(Response.json({ active: false, status: "removed" }));
+    // Cloud is now busy: the fallback must be the removal, not the late list.
+    fetchMock.mockResolvedValue(busy());
     await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
   });
 

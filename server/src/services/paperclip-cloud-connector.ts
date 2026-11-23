@@ -563,18 +563,17 @@ export function createPaperclipCloudConnector(input: {
     async getInstanceStatus(): Promise<"active" | "suspended" | "removed"> {
       const generation = savedAnswerGeneration;
       const settle = (status: "active" | "suspended" | "removed") => {
+        remember(lastKnownInstanceStatus, status, generation);
         // An inactive registration has no usable sign-ins either, including
-        // the list the gallery cached from before.
+        // the gallery's cached list. Advancing both generations stops reads
+        // already in flight from saving or caching their pre-removal list.
         if (status !== "active") {
           remember(lastKnownCapabilities, [], generation);
-          if (capabilityCache?.key === configKey) {
-            // Advance the generation too, so a gallery read already in flight
-            // cannot write its pre-removal list back.
-            capabilityCacheGeneration += 1;
-            capabilityCache = null;
-          }
+          savedAnswerGeneration += 1;
+          capabilityCacheGeneration += 1;
+          if (capabilityCache?.key === configKey) capabilityCache = null;
         }
-        return remember(lastKnownInstanceStatus, status, generation);
+        return status;
       };
       let response: ConnectorResponse;
       try {
