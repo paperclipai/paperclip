@@ -531,16 +531,18 @@ describe("customer-success read authority", () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns null only when a single item cannot fit", () => {
+  it("returns null only when a single item cannot fit, and fits only list pages", () => {
+    const files = { kind: "files", truncated: true, items: ["a".repeat(40), "b".repeat(40), "c".repeat(40)] };
+    expect(fitInspectionResponse(files, "files.list", 0, 120)).toBeNull();
     const small = { items: [1, 2, 3], nextOffset: null };
-    expect(fitInspectionResponse(small, 0, 1024)).toEqual(JSON.stringify(small));
+    expect(fitInspectionResponse(small, "list", 0, 1024)).toEqual(JSON.stringify(small));
     const big = { items: ["a".repeat(40), "b".repeat(40), "c".repeat(40)], nextOffset: 3 };
-    expect(JSON.parse(fitInspectionResponse(big, 10, 120)!)).toEqual({
+    expect(JSON.parse(fitInspectionResponse(big, "list", 10, 120)!)).toEqual({
       items: ["a".repeat(40), "b".repeat(40)],
       nextOffset: 12,
     });
-    expect(fitInspectionResponse({ items: ["a".repeat(200), "b"], nextOffset: null }, 0, 100)).toBeNull();
-    expect(fitInspectionResponse({ content: "a".repeat(200) }, 0, 100)).toBeNull();
+    expect(fitInspectionResponse({ items: ["a".repeat(200), "b"], nextOffset: null }, "list", 0, 100)).toBeNull();
+    expect(fitInspectionResponse({ content: "a".repeat(200) }, "get", 0, 100)).toBeNull();
   });
 
   it("reads assigned repository URLs, snapshotted skill files, and workspace downloads with existing file restrictions", async () => {

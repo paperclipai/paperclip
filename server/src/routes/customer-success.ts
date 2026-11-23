@@ -138,11 +138,13 @@ export const MAX_INSPECTION_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export function fitInspectionResponse(
   result: unknown,
+  operation: string | undefined,
   offset: number,
   maxBytes = MAX_INSPECTION_RESPONSE_BYTES,
 ): string | null {
   const body = JSON.stringify(result);
   if (Buffer.byteLength(body) <= maxBytes) return body;
+  if (operation !== "list") return null;
   const page = result as { items?: unknown; nextOffset?: unknown } | null;
   if (!page || !Array.isArray(page.items) || page.items.length < 2) return null;
   const items = page.items;
@@ -151,7 +153,7 @@ export function fitInspectionResponse(
   let fitted: string | null = null;
   while (low < high) {
     const count = Math.ceil((low + high) / 2);
-    const candidate = JSON.stringify({ items: items.slice(0, count), nextOffset: offset + count });
+    const candidate = JSON.stringify({ ...page, items: items.slice(0, count), nextOffset: offset + count });
     if (Buffer.byteLength(candidate) <= maxBytes) {
       low = count;
       fitted = candidate;
@@ -216,7 +218,7 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
     });
     if (!consumed.ok) throw forbidden("Inspection permit could not be consumed");
     const result = await readCustomerSuccessResource(db, storage, query, options);
-    const body = fitInspectionResponse(result, query.offset ?? 0);
+    const body = fitInspectionResponse(result, query.operation, query.offset ?? 0);
     if (body === null)
       throw unprocessable("Inspection response is too large; use pagination or a byte range");
     res.type("application/json").send(body);
