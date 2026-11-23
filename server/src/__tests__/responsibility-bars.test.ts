@@ -292,7 +292,7 @@ describeEmbeddedPostgres("responsibility bar templates and bar conversations", (
     it("lets only the agent in the conversation propose, validates the bar, and writes nothing to the responsibility", async () => {
       const seeded = await seed();
       const issueId = (await startConversation(seeded)).body.conversation.issueId as string;
-      expect((await propose(seeded.company.id, seeded.analyst.id, issueId)).status).toBe(403);
+      expect((await propose(seeded.company.id, seeded.analyst.id, issueId)).status).toBe(404);
       expect((await request(seeded.app).post(`/api/issues/${issueId}/bar-proposals`).send(RANGE_PROPOSAL)).status).toBe(403);
       // An agent from another company cannot reach it.
       const elsewhere = await seed();
@@ -356,11 +356,11 @@ describeEmbeddedPostgres("responsibility bar templates and bar conversations", (
       const accept = (actor: Actor) => request(createApp(actor)).post(`/api/issues/${issueId}/bar-proposals/${offered.body.id}/accept`).send({});
 
       expect((await accept(agentActor(seeded.company.id, seeded.ceo.id))).status).toBe(403);
-      expect((await accept(sessionBoardActor(seeded.company.id, OTHER))).status).toBe(403);
-      // An admin who does not own it may.
-      const res = await accept(sessionBoardActor(seeded.company.id, OTHER, "admin"));
+      expect((await accept(sessionBoardActor(seeded.company.id, OTHER))).status).toBe(404);
+      await accept(sessionBoardActor(seeded.company.id, OTHER, "admin")).expect(404);
+      const res = await accept(localBoardActor());
       expect(res.status).toBe(200);
-      expect(res.body.interaction).toMatchObject({ status: "accepted", resolvedByUserId: OTHER, result: { outcome: "accepted", responsibilityId: seeded.responsibility.id } });
+      expect(res.body.interaction).toMatchObject({ status: "accepted", resolvedByUserId: OWNER, result: { outcome: "accepted", responsibilityId: seeded.responsibility.id } });
       expect(res.body.responsibility).toMatchObject({
         id: seeded.responsibility.id,
         standard: RANGE_PROPOSAL.standard,
@@ -404,7 +404,7 @@ describeEmbeddedPostgres("responsibility bar templates and bar conversations", (
       const issueId = (await startConversation(seeded)).body.conversation.issueId as string;
       const offered = await propose(seeded.company.id, seeded.ceo.id, issueId);
       expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER)))
-        .post(`/api/issues/${issueId}/bar-proposals/${offered.body.id}/decline`).send({})).status).toBe(403);
+        .post(`/api/issues/${issueId}/bar-proposals/${offered.body.id}/decline`).send({})).status).toBe(404);
       const declined = await request(seeded.app).post(`/api/issues/${issueId}/bar-proposals/${offered.body.id}/decline`).send({});
       expect(declined.status).toBe(200);
       expect(declined.body).toMatchObject({ status: "rejected", result: { outcome: "declined" } });

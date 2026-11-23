@@ -24,7 +24,7 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
     if (!before.isDirectory() || before.isSymbolicLink() || await fs.realpath(directory) !== directory) fail();
     const names: string[] = [];
     for await (const entry of await fs.opendir(directory)) {
-      check(); if (++scannedEntries > 100_000) budget(); names.push(entry.name);
+      check(); if (++scannedEntries > 2_000_000) budget(); names.push(entry.name);
     }
     const inGit = relative.split("/").includes(".git");
     const repository = !inGit && names.includes(".git") ? directory : parentRepository;

@@ -1,3 +1,4 @@
+import { agentMayReportFor, dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -38,7 +39,7 @@ export function responsibilityMetricRoutes(db: Db) {
   }
 
   /** The detail route's read rule: company access, board or agent, and agents inside the company-scope boundary. */
-  async function loadForRead(req: Request, res: Response) {
+  async function loadForRead(req: Request, res: Response, reporting = false) {
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
     if (req.actor.type !== "board" && req.actor.type !== "agent") throw forbidden("Board or agent access required");
@@ -48,12 +49,13 @@ export function responsibilityMetricRoutes(db: Db) {
         throw forbidden("Responsibilities are outside this agent's authorization boundary", authorizationDeniedDetails(decision));
       }
     }
+    if (!(reporting && agentMayReportFor(req, row.ownerUserId))) await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     return row;
   }
 
   function assertOwnerOrAdmin(req: Request, row: { companyId: string; ownerUserId: string }) {
     if (!boardCanManageResponsibilityOwner(req, row.companyId, row.ownerUserId)) {
-      throw forbidden("Only the person who owns this responsibility, or a company admin, can change its metrics");
+      throw forbidden("Only the person who owns this responsibility can change its metrics");
     }
   }
 
@@ -129,7 +131,7 @@ export function responsibilityMetricRoutes(db: Db) {
     validate(recordResponsibilityMetricReadingSchema),
     async (req, res) => {
       await svc.assertEnabled();
-      const row = await loadForRead(req, res);
+      const row = await loadForRead(req, res, true);
       if (!row) return;
       const scope = await readScope(req);
       const actor = getActorInfo(req);

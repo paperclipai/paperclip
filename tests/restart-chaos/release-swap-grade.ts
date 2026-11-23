@@ -239,6 +239,14 @@ export function drainState(runs: readonly DrainRun[], now: number, windowMs: num
 
 export const AUTO_NOTICE = /^Prepared .+ for this response\.$/;
 export const isAutoNotice = (body: string) => AUTO_NOTICE.test(body.trim());
+export const LOOP_GUARD_NOTICE = "Paperclip stopped a tool call that kept failing the same way. The task continues in a fresh session.";
+
+export function isNoticeRepeat(body: string, runIds: ReadonlyArray<string | null>): boolean {
+  if (isAutoNotice(body)) return true;
+  if (body.trim() !== LOOP_GUARD_NOTICE) return false;
+  const known = runIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+  return runIds.length > 1 && known.length === runIds.length && new Set(known).size === known.length;
+}
 
 export function swapMetrics(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], firstEventAfterStop: ReadonlyMap<string, number>, waveEnd: number,
   failureWindowMs = RELEASE_FAILURE_WINDOW_MS): SwapMetrics[] {
@@ -347,7 +355,7 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
     `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
       + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s)`
-      + `${duplicates.autoNoticeRepeats ? `; informational: ${duplicates.autoNoticeRepeats.length} task(s) repeat the "Prepared ... for this response." notice` : ""}.`,
+      + `${duplicates.autoNoticeRepeats ? `; informational: ${duplicates.autoNoticeRepeats.length} task(s) repeat the "Prepared ... for this response." notice or a once-per-run "stopped a tool call" notice` : ""}.`,
     `Failed outside a release window (more than ${RELEASE_FAILURE_WINDOW_MS / 60_000} min after a stop and not live at it): ${failedOutside.length ? failedOutside.join(", ") : "none"}.`,
     "",
     "| Swap | Failed runs | Lost while old alive | Survivors | Next event p50 | Next event max | No event | Late start on old | Prep during recovery |",
