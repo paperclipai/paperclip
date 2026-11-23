@@ -1,3 +1,4 @@
+import { isTerminalProviderRefusal } from "../terminal-provider-refusal.js";
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -773,6 +774,10 @@ export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (isTerminalProviderRefusal(latestRun)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+
   if (errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
     return {
       kind: "deliberate_wait_without_target",
@@ -5273,6 +5278,20 @@ export function recoveryService(
         (await hasPersistedDurableWaitPath(issue, latestRun, pass))
       ) {
         result.skipped += 1;
+        continue;
+      }
+      // A terminal refusal is not a quota or infrastructure retry. Keep the
+      // existing locked escalation and its source, owner and handoff checks.
+      const refusalSource = issue.status === "in_review" ? participantLatestRunForRecovery : latestRun;
+      if (refusalSource?.agentId === agentId && isUnsuccessfulTerminalIssueRun(refusalSource)
+          && isTerminalProviderRefusal(refusalSource)) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue, previousStatus: issue.status as StrandedPreviousStatus,
+          latestRun: refusalSource, recoveryCause: "stranded_assigned_issue",
+          comment: "Terminal provider refusal. Automatic recovery is stopped; do not retry, rephrase or switch providers.",
+        });
+        if (updated) { result.escalated += 1; result.issueIds.push(issue.id); }
+        else result.skipped += 1;
         continue;
       }
       const recoveryNow = new Date();
