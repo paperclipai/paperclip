@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, realpath, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { AcpxPrivateSnapshot } from "./private-snapshot.js";
 
 export interface NativeAcpxDistributionEntry { path: string; sha256: string; size: number; executable: boolean }
@@ -23,21 +23,31 @@ export interface NativeAcpxDistributionSnapshot {
   snapshot: AcpxPrivateSnapshot;
   commandDirectory: FileHandle;
   bootstrap: Buffer;
+  /** Sealed, runner-owned verified copy of the admitted closure. */
+  distributionRoot: string;
 }
 
 const MAX_NATIVE_TREE_BYTES = 1024 * 1024 * 1024;
 // Antigravity's Linux ACP server is a ~722 MB launcher with its Python archive.
 const MAX_NATIVE_FILE_BYTES = 768 * 1024 * 1024;
 const MAX_NATIVE_MANIFEST_BYTES = 4 * 1024 * 1024;
-// Bound both file descriptors and buffers. A single larger admitted file runs
-// alone and remains subject to MAX_NATIVE_FILE_BYTES.
+const MAX_NATIVE_RECORD_BYTES = 16 * 1024 * 1024;
+// Bound file descriptors and buffers. Files stream through fixed-size chunks,
+// so even the largest admitted file holds at most one chunk in memory.
 const NATIVE_COPY_CONCURRENCY = 32;
 const NATIVE_DIRECTORY_CONCURRENCY = 32;
 const NATIVE_COPY_BUFFER_BYTES = 32 * 1024 * 1024;
+const NATIVE_COPY_CHUNK_BYTES = 4 * 1024 * 1024;
+const NATIVE_STAT_CONCURRENCY = 64;
 const BOOTSTRAP = ".paperclip-native-entry.cjs";
 const GUARD = ".paperclip-native-module-guard.cjs";
 const COPILOT_ENTRY = ".paperclip-copilot-entry";
+const STORE_RECORD = "verified.json";
+const STORE_SCHEMA = "paperclip.native-acpx-verified-store.v1";
+const SOURCE_SCHEMA = "paperclip.native-acpx-verified-source.v1";
 export const NATIVE_ACPX_BOOTSTRAP_NAME = BOOTSTRAP;
+/** Optional absolute directory for the runner-owned verified closure store. */
+export const NATIVE_ACPX_STORE_ROOT_ENV = "PAPERCLIP_ACPX_NATIVE_STORE_ROOT";
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const validPath = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4_096 && !isAbsolute(value) && !/[\u0000-\u001f\u007f\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..");
 
@@ -78,9 +88,34 @@ export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistrib
   } finally { await file.close(); }
 }
 
+type FileIdentity = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint };
+type IdentityRecord = [string, string, string, string, string];
+const identityRecord = (value: FileIdentity): IdentityRecord => [String(value.dev), String(value.ino), String(value.size), String(value.mtimeNs), String(value.ctimeNs)];
+const identityMatches = (value: FileIdentity, recorded: unknown): boolean => Array.isArray(recorded) && recorded.length === 5
+  && identityRecord(value).every((part, index) => part === recorded[index]);
+const runnerUid = () => BigInt(process.getuid!());
+const entryPath = (root: string, entry: { path: string }) => join(root, ...entry.path.split("/"));
+let processPrivateStoreRoot: Promise<string> | undefined;
+
 /**
- * Freeze only manifest-admitted bytes. Native trees deliberately have a separate
- * bound; the tighter JavaScript/npm snapshot limits remain unchanged.
+ * Admit a native closure for one launch.
+ *
+ * The admitted bytes are verified once per closure into a runner-owned, sealed
+ * store (`<store>/<closure>/distribution`, 0500 directories, 0400/0500 files,
+ * single-link, owned by the runner uid). Every launch then binds the store by
+ * the kernel identity (dev, inode, size, mtime, ctime) recorded right after its
+ * bytes were hashed. Content cannot change without a write, which requires a
+ * chmod of the sealed file and moves its ctime, so an unchanged identity proves
+ * unchanged bytes without re-reading them. A store that fails this check is
+ * retired and rebuilt from a fresh full verification.
+ *
+ * The installed source keeps its own recorded identity. A changed source is
+ * re-hashed in place before launch, so a later corrupt install is still refused
+ * even though launches execute the verified store.
+ *
+ * Each launch gets only a small private directory for its trusted bootstrap,
+ * Node module guard, Copilot shim and cache; the bootstrap rechecks the
+ * executable's descriptor identity before spawning it.
  */
 export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], signal?: AbortSignal): Promise<NativeAcpxDistributionSnapshot> {
   signal?.throwIfAborted();
@@ -88,157 +123,358 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
   entries = parseNativeAcpxDistributionEntries({ entries }, input.expectedClosureSha256);
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("Native ACPX snapshots require Linux or macOS");
   const source = await realpath(input.distributionRoot);
+  const storeRoot = await resolveNativeStoreRoot();
+  const storeDirectory = join(storeRoot, input.expectedClosureSha256);
+  let identities = await readVerifiedStore(storeDirectory, entries);
+  if (identities === "invalid") {
+    await retireVerifiedStore(storeRoot, storeDirectory);
+    identities = "missing";
+  }
+  let sourceVerified = false;
+  for (let attempt = 0; identities === "missing"; attempt++) {
+    if (attempt === 3) throw new Error("Native ACPX verified store could not be established");
+    const observed = await materializeVerifiedStore(source, storeRoot, storeDirectory, entries, signal);
+    if (observed !== null) {
+      await writeSourceRecord(storeRoot, input.expectedClosureSha256, source, observed);
+      sourceVerified = true;
+    }
+    identities = await readVerifiedStore(storeDirectory, entries);
+    if (identities === "invalid") throw new Error("Native ACPX verified store failed its identity check");
+  }
+  if (!sourceVerified && !await sourceUnchanged(storeRoot, input.expectedClosureSha256, source, entries)) {
+    await writeSourceRecord(storeRoot, input.expectedClosureSha256, source, await verifyNativeSource(source, entries, signal));
+  }
+  signal?.throwIfAborted();
+  return await createNativeLaunch(input, entries, join(storeDirectory, "distribution"), identities);
+}
+
+/** Runner-owned private store root; a foreign or unsafe location falls back to a process-private one. */
+async function resolveNativeStoreRoot(): Promise<string> {
+  const configured = process.env[NATIVE_ACPX_STORE_ROOT_ENV];
+  const root = configured ? configured : join(tmpdir(), `paperclip-verified-native-${process.getuid!()}`);
+  if (isAbsolute(root) && !root.includes("\0")) {
+    try {
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      if (await isPrivateDirectory(root)) return await realpath(root);
+    } catch { /* fall back below */ }
+  }
+  // A squatted shared path must not block launches or reuse foreign bytes.
+  return await (processPrivateStoreRoot ??= mkdtemp(join(tmpdir(), "paperclip-verified-native-")).then(path => realpath(path)));
+}
+
+async function isPrivateDirectory(path: string): Promise<boolean> {
+  const info = await lstat(path, { bigint: true });
+  return info.isDirectory() && !info.isSymbolicLink() && info.uid === runnerUid() && (info.mode & 0o077n) === 0n;
+}
+
+async function boundedEach<T>(items: readonly T[], concurrency: number, operation: (item: T, index: number) => Promise<void>): Promise<void> {
+  for (let start = 0; start < items.length; start += concurrency) {
+    const settled = await Promise.allSettled(items.slice(start, start + concurrency).map((item, offset) => operation(item, start + offset)));
+    const failed = settled.find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+  }
+}
+
+/** Identities recorded at verification time, "missing" when absent, "invalid" when anything differs. */
+async function readVerifiedStore(storeDirectory: string, entries: NativeAcpxDistributionEntry[]): Promise<IdentityRecord[] | "missing" | "invalid"> {
+  try { await lstat(storeDirectory); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+  try {
+    if (!await isPrivateDirectory(storeDirectory)) return "invalid";
+    const recordFile = await open(join(storeDirectory, STORE_RECORD), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let record: { schema?: unknown; entries?: unknown };
+    try {
+      const info = await recordFile.stat({ bigint: true });
+      if (!info.isFile() || info.uid !== runnerUid() || (info.mode & 0o222n) !== 0n || info.size > BigInt(MAX_NATIVE_RECORD_BYTES)) return "invalid";
+      record = JSON.parse((await recordFile.readFile()).toString("utf8"));
+    } finally { await recordFile.close(); }
+    const recorded = record.entries;
+    if (record.schema !== STORE_SCHEMA || !Array.isArray(recorded) || recorded.length !== entries.length) return "invalid";
+    const identities: IdentityRecord[] = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!; const value = recorded[index] as Record<string, unknown> | null;
+      if (value === null || typeof value !== "object" || value.path !== entry.path || value.sha256 !== entry.sha256 || value.size !== entry.size
+        || value.executable !== entry.executable || !Array.isArray(value.identity) || value.identity.length !== 5 || value.identity.some(part => typeof part !== "string")) return "invalid";
+      identities.push(value.identity as IdentityRecord);
+    }
+    const distribution = join(storeDirectory, "distribution");
+    let intact = true;
+    await boundedEach(entries, NATIVE_STAT_CONCURRENCY, async (entry, index) => {
+      const info = await lstat(entryPath(distribution, entry), { bigint: true });
+      if (!info.isFile() || info.nlink !== 1n || info.uid !== runnerUid() || (info.mode & 0o7777n) !== (entry.executable ? 0o500n : 0o400n)
+        || !identityMatches(info, identities[index])) intact = false;
+    });
+    return intact ? identities : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
+async function retireVerifiedStore(storeRoot: string, storeDirectory: string): Promise<void> {
+  const retired = join(storeRoot, `.retired-${randomUUID()}`);
+  try { await rename(storeDirectory, retired); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await removeSealedTree(retired).catch(() => undefined);
+}
+
+async function removeSealedTree(root: string): Promise<void> {
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    await chmod(directory, 0o700).catch(() => undefined);
+    for (const child of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      if (child.isDirectory()) pending.push(join(directory, child.name));
+    }
+  }
+  await rm(root, { recursive: true, force: true });
+}
+
+/**
+ * Hash one admitted file through a held descriptor and optionally stream the
+ * same chunks into the verified store. NONBLOCK prevents a raced-in FIFO from
+ * blocking open; only a bounded regular single-link file reaches the read.
+ */
+async function streamNativeEntry(path: string, entry: NativeAcpxDistributionEntry, target: string | null, signal?: AbortSignal): Promise<{ source: FileIdentity; target: FileIdentity | null }> {
+  signal?.throwIfAborted();
+  if (await realpath(path) !== path) throw new Error("Native ACPX closure contains a symbolic link");
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let output: FileHandle | undefined;
+  try {
+    const before = await file.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size !== BigInt(entry.size) || Boolean(before.mode & 0o111n) !== entry.executable) throw new Error("Native ACPX closure file identity is invalid");
+    const digest = createHash("sha256");
+    const buffer = Buffer.alloc(Math.min(entry.size, NATIVE_COPY_CHUNK_BYTES));
+    if (target !== null) output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, entry.executable ? 0o500 : 0o400);
+    let offset = 0;
+    while (offset < entry.size) {
+      signal?.throwIfAborted();
+      const read = await file.read(buffer, 0, Math.min(buffer.length, entry.size - offset), offset);
+      if (read.bytesRead === 0) throw new Error("Native ACPX closure file ended during snapshot");
+      const chunk = buffer.subarray(0, read.bytesRead);
+      digest.update(chunk);
+      for (let written = 0; output !== undefined && written < chunk.length;) {
+        written += (await output.write(chunk, written, chunk.length - written, offset + written)).bytesWritten;
+      }
+      offset += read.bytesRead;
+    }
+    if (!same(before, await file.stat({ bigint: true })) || !same(before, await lstat(path, { bigint: true })) || await realpath(path) !== path) throw new Error("Native ACPX closure file changed while read");
+    if (digest.digest("hex") !== entry.sha256) throw new Error(`Native ACPX closure file digest mismatch: ${entry.path}`);
+    if (output === undefined || target === null) return { source: before, target: null };
+    // The process umask must not change the sealed mode later checks require.
+    await output.chmod(entry.executable ? 0o500 : 0o400);
+    await output.close(); output = undefined;
+    return { source: before, target: await lstat(target, { bigint: true }) };
+  } finally {
+    await output?.close();
+    await file.close();
+  }
+}
+
+/**
+ * Keep bounded capacity occupied when one file is slower than its peers. Every
+ * task catches its rejection before releasing capacity; once failed (or
+ * aborted), no new task is admitted and all owned descriptors drain first.
+ */
+async function streamNativeEntries<T>(entries: NativeAcpxDistributionEntry[], operation: (entry: NativeAcpxDistributionEntry, index: number) => Promise<T>, signal?: AbortSignal): Promise<T[]> {
+  const results: T[] = new Array(entries.length);
+  const active = new Set<Promise<void>>();
+  let activeBytes = 0;
+  let failed = false;
+  let failure: unknown;
+  // Only the admission loop waits for capacity; notify it once per completion.
+  let capacityAvailable: (() => void) | undefined;
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    const bytes = Math.min(entry.size, NATIVE_COPY_CHUNK_BYTES);
+    if (signal?.aborted && !failed) { failed = true; failure = signal.reason; }
+    while (!failed && (active.size >= NATIVE_COPY_CONCURRENCY || (active.size > 0 && activeBytes + bytes > NATIVE_COPY_BUFFER_BYTES))) {
+      await new Promise<void>(resolve => { capacityAvailable = resolve; });
+      if (signal?.aborted && !failed) { failed = true; failure = signal.reason; }
+    }
+    if (failed) break;
+    activeBytes += bytes;
+    const running = operation(entry, index).then(result => { results[index] = result; }, error => {
+      if (!failed) { failed = true; failure = error; }
+    }).finally(() => {
+      activeBytes -= bytes;
+      active.delete(running);
+      const notify = capacityAvailable;
+      capacityAvailable = undefined;
+      notify?.();
+    });
+    active.add(running);
+  }
+  await Promise.all(active);
+  if (failed) throw failure;
+  signal?.throwIfAborted();
+  return results;
+}
+
+async function withHeldSourceRoot<T>(source: string, operation: () => Promise<T>): Promise<T> {
   const rootBefore = await lstat(source, { bigint: true });
   if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) throw new Error("Native ACPX distribution must be a directory");
   const heldRoot = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+  try {
+    if (!same(rootBefore, await heldRoot.stat({ bigint: true }))) throw new Error("Native ACPX distribution root changed before snapshot");
+    const result = await operation();
+    if (!same(rootBefore, await heldRoot.stat({ bigint: true })) || !same(rootBefore, await lstat(source, { bigint: true }))) throw new Error("Native ACPX distribution root changed during snapshot");
+    return result;
+  } finally { await heldRoot.close(); }
+}
+
+/** Re-hash a changed installed source in place; nothing is copied. */
+async function verifyNativeSource(source: string, entries: NativeAcpxDistributionEntry[], signal?: AbortSignal): Promise<FileIdentity[]> {
+  return await withHeldSourceRoot(source, async () => (await streamNativeEntries(entries,
+    async entry => (await streamNativeEntry(entryPath(source, entry), entry, null, signal)).source, signal)));
+}
+
+/**
+ * Build the sealed store in a private staging directory and publish it with one
+ * rename. Returns the observed source identities, or null when a concurrent
+ * launch published the same closure first.
+ */
+async function materializeVerifiedStore(source: string, storeRoot: string, storeDirectory: string, entries: NativeAcpxDistributionEntry[], signal?: AbortSignal): Promise<FileIdentity[] | null> {
+  const staging = await realpath(await mkdtemp(join(storeRoot, ".staging-")));
+  const packageRoot = join(staging, "distribution");
+  const directories = [packageRoot];
+  let published = false;
+  try {
+    const observed = await withHeldSourceRoot(source, async () => {
+      signal?.throwIfAborted();
+      await mkdir(packageRoot, { mode: 0o700 });
+      // Build each private parent once. Level ordering prevents child creation
+      // from racing its parent; batches bound work and drain before cleanup.
+      const parentLevels = new Map<number, Set<string>>();
+      let previousParts: string[] = [];
+      const parentPaths = [packageRoot];
+      for (const entry of entries) {
+        const parts = entry.path.split("/");
+        let shared = 0;
+        // Canonical sorted paths keep each parent prefix contiguous.
+        while (shared < parts.length - 1 && shared < previousParts.length - 1 && parts[shared] === previousParts[shared]) shared++;
+        parentPaths.length = shared + 1;
+        for (let depth = shared + 1; depth < parts.length; depth++) {
+          const path = join(parentPaths[depth - 1]!, parts[depth - 1]!);
+          parentPaths.push(path);
+          const level = parentLevels.get(depth) ?? new Set<string>();
+          level.add(path); parentLevels.set(depth, level); directories.push(path);
+        }
+        previousParts = parts;
+      }
+      for (const depth of [...parentLevels.keys()].sort((a, b) => a - b)) {
+        signal?.throwIfAborted();
+        await boundedEach([...parentLevels.get(depth)!].sort(), NATIVE_DIRECTORY_CONCURRENCY, path => mkdir(path, { mode: 0o700 }).then(() => undefined));
+      }
+      return await streamNativeEntries(entries, entry => streamNativeEntry(entryPath(source, entry), entry, entryPath(packageRoot, entry), signal), signal);
+    });
+    signal?.throwIfAborted();
+    await boundedEach(directories, NATIVE_DIRECTORY_CONCURRENCY, path => chmod(path, 0o500));
+    const record = Buffer.from(JSON.stringify({ schema: STORE_SCHEMA, entries: entries.map((entry, index) => ({ ...entry, identity: identityRecord(observed[index]!.target!) })) }));
+    await writeFile(join(staging, STORE_RECORD), record, { mode: 0o400, flag: "wx" });
+    await chmod(staging, 0o500);
+    try {
+      await rename(staging, storeDirectory);
+      published = true;
+    } catch (error) {
+      if (await lstat(storeDirectory).then(() => true, () => false)) return null;
+      throw error;
+    }
+    return observed.map(result => result.source);
+  } finally {
+    if (!published) await removeSealedTree(staging);
+  }
+}
+
+async function writeSourceRecord(storeRoot: string, closure: string, source: string, identities: FileIdentity[]): Promise<void> {
+  const temporary = join(storeRoot, `.source-${randomUUID()}`);
+  await writeFile(temporary, JSON.stringify({ schema: SOURCE_SCHEMA, closure, root: source, identities: identities.map(identityRecord) }), { mode: 0o600, flag: "wx" });
+  try { await rename(temporary, join(storeRoot, `${closure}.source.json`)); } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** True only when every installed file still has the identity it had when last hashed. */
+async function sourceUnchanged(storeRoot: string, closure: string, source: string, entries: NativeAcpxDistributionEntry[]): Promise<boolean> {
+  try {
+    const file = await open(join(storeRoot, `${closure}.source.json`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let record: { schema?: unknown; closure?: unknown; root?: unknown; identities?: unknown };
+    try {
+      const info = await file.stat({ bigint: true });
+      if (!info.isFile() || info.uid !== runnerUid() || info.size > BigInt(MAX_NATIVE_RECORD_BYTES)) return false;
+      record = JSON.parse((await file.readFile()).toString("utf8"));
+    } finally { await file.close(); }
+    if (record.schema !== SOURCE_SCHEMA || record.closure !== closure || record.root !== source || !Array.isArray(record.identities) || record.identities.length !== entries.length) return false;
+    const identities = record.identities;
+    let unchanged = true;
+    await boundedEach(entries, NATIVE_STAT_CONCURRENCY, async (entry, index) => {
+      const info = await lstat(entryPath(source, entry), { bigint: true });
+      if (!info.isFile() || info.nlink !== 1n || Boolean(info.mode & 0o111n) !== entry.executable || !identityMatches(info, identities[index])) unchanged = false;
+    });
+    return unchanged;
+  } catch {
+    return false;
+  }
+}
+
+/** Small private per-launch directory: bootstrap, module guard, Copilot shim, cache and handoff manifest. */
+async function createNativeLaunch(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], distributionRoot: string, identities: IdentityRecord[]): Promise<NativeAcpxDistributionSnapshot> {
   const privateRoot = await realpath(await mkdtemp(join(tmpdir(), "paperclip-acpx-native-")));
-  const packageRoot = join(privateRoot, "distribution");
+  const launchRoot = join(privateRoot, "launch");
   const cacheRoot = join(privateRoot, "state");
-  const directories = new Set([privateRoot, packageRoot]);
-  const digests: Record<string, string> = {};
+  const directories = [privateRoot, launchRoot];
   const close = async () => {
     for (const path of directories) await chmod(path, 0o700).catch(() => undefined);
     await rm(privateRoot, { recursive: true, force: true });
   };
   let commandDirectory: FileHandle | undefined;
   try {
-    signal?.throwIfAborted();
-    if (!same(rootBefore, await heldRoot.stat({ bigint: true }))) throw new Error("Native ACPX distribution root changed before snapshot");
-    await mkdir(packageRoot, { mode: 0o700 });
+    await mkdir(launchRoot, { mode: 0o700 });
     if (input.isolatedCacheEnvironmentName) await mkdir(cacheRoot, { mode: 0o700 });
-    // Build each private parent once. Level ordering prevents child creation
-    // from racing its parent; batches bound work and drain before any cleanup.
-    const parentLevels = new Map<number, Set<string>>();
-    let previousParts: string[] = [];
-    const parentPaths = [packageRoot];
-    for (const entry of entries) {
-      const parts = entry.path.split("/");
-      let shared = 0;
-      // Canonical sorted paths keep each parent prefix contiguous. Reuse the
-      // previous entry's joined parents instead of rebuilding every prefix.
-      while (shared < parts.length - 1 && shared < previousParts.length - 1 && parts[shared] === previousParts[shared]) shared++;
-      parentPaths.length = shared + 1;
-      for (let depth = shared + 1; depth < parts.length; depth++) {
-        const path = join(parentPaths[depth - 1]!, parts[depth - 1]!);
-        parentPaths.push(path);
-        const level = parentLevels.get(depth) ?? new Set<string>();
-        level.add(path); parentLevels.set(depth, level); directories.add(path);
-      }
-      previousParts = parts;
-    }
-    const directoryBatch = async (paths: string[], operation: (path: string) => Promise<unknown>): Promise<void> => {
-      for (let start = 0; start < paths.length; start += NATIVE_DIRECTORY_CONCURRENCY) {
-        signal?.throwIfAborted();
-        const settled = await Promise.allSettled(paths.slice(start, start + NATIVE_DIRECTORY_CONCURRENCY).map(operation));
-        const failed = settled.find(result => result.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
-        signal?.throwIfAborted();
-      }
-    };
-    for (const depth of [...parentLevels.keys()].sort((a, b) => a - b)) {
-      await directoryBatch([...parentLevels.get(depth)!].sort(), path => mkdir(path, { mode: 0o700 }));
-    }
-    const copyEntry = async (entry: NativeAcpxDistributionEntry): Promise<void> => {
-      signal?.throwIfAborted();
-      const path = join(source, ...entry.path.split("/"));
-      if (await realpath(path) !== path) throw new Error("Native ACPX closure contains a symbolic link");
-      // Bind metadata to the descriptor we will read, without a redundant
-      // pathname stat. NONBLOCK prevents a raced-in FIFO from blocking open;
-      // only a bounded regular single-link file may reach the read below.
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try {
-        const before = await file.stat({ bigint: true });
-        if (!before.isFile() || before.nlink !== 1n || before.size !== BigInt(entry.size) || Boolean(before.mode & 0o111n) !== entry.executable) throw new Error("Native ACPX closure file identity is invalid");
-        const bytes = Buffer.alloc(entry.size);
-        let offset = 0;
-        while (offset < bytes.length) {
-          signal?.throwIfAborted();
-          const read = await file.read(bytes, offset, bytes.length - offset, offset);
-          if (read.bytesRead === 0) throw new Error("Native ACPX closure file ended during snapshot");
-          offset += read.bytesRead;
-        }
-        if (!same(before, await file.stat({ bigint: true })) || !same(before, await lstat(path, { bigint: true })) || await realpath(path) !== path) throw new Error("Native ACPX closure file changed while read");
-        if (sha256(bytes) !== entry.sha256) throw new Error(`Native ACPX closure file digest mismatch: ${entry.path}`);
-        const target = join(packageRoot, ...entry.path.split("/"));
-        signal?.throwIfAborted();
-        await writeFile(target, bytes, { mode: entry.executable ? 0o500 : 0o400, flag: "wx" });
-      } finally { await file.close(); }
-    };
-    // Keep bounded capacity occupied when one file is slower than its peers.
-    // Every task catches its rejection before releasing capacity; once failed,
-    // no new copy is admitted and all owned descriptors drain before cleanup.
-    const active = new Set<Promise<void>>();
-    let activeBytes = 0;
-    let failed = false;
-    let failure: unknown;
-    // Only the admission loop waits for capacity. Notify that waiter once per
-    // completion instead of attaching Promise.race handlers to every active
-    // copy on each admission (including long-lived large-file reads).
-    let capacityAvailable: (() => void) | undefined;
-    for (const entry of entries) {
-      // An aborted acquisition must still drain its admitted reads before
-      // deleting the partial tree. Stop scheduling copies at the same bound
-      // used for any observed copy failure.
-      if (signal?.aborted && !failed) { failed = true; failure = signal.reason; }
-      while (!failed && (active.size >= NATIVE_COPY_CONCURRENCY
-        || (active.size > 0 && activeBytes + entry.size > NATIVE_COPY_BUFFER_BYTES))) {
-        await new Promise<void>(resolve => { capacityAvailable = resolve; });
-        if (signal?.aborted && !failed) { failed = true; failure = signal.reason; }
-      }
-      if (failed) break;
-      activeBytes += entry.size;
-      const copying = copyEntry(entry).catch(error => {
-        if (!failed) { failed = true; failure = error; }
-      }).finally(() => {
-        activeBytes -= entry.size;
-        active.delete(copying);
-        const notify = capacityAvailable;
-        capacityAvailable = undefined;
-        notify?.();
-      });
-      active.add(copying);
-    }
-    await Promise.all(active);
-    if (failed) throw failure;
-    signal?.throwIfAborted();
-    // Completion order must not change the module guard or manifest.
-    for (const entry of entries) digests[join(packageRoot, ...entry.path.split("/"))] = entry.sha256;
-    if (!same(rootBefore, await heldRoot.stat({ bigint: true })) || !same(rootBefore, await lstat(source, { bigint: true }))) throw new Error("Native ACPX distribution root changed during snapshot");
-    const executable = join(packageRoot, ...input.executable.split("/"));
-    const args = [...(input.entrypoint === undefined ? [] : ["--require", join(packageRoot, GUARD), join(packageRoot, ...input.entrypoint.split("/"))]), ...input.fixedArguments];
+    // Canonical manifest order keeps the module guard and handoff stable.
+    const digests: Record<string, string> = {};
+    for (const entry of entries) digests[entryPath(distributionRoot, entry)] = entry.sha256;
+    const executableIndex = entries.findIndex(entry => entry.path === input.executable && entry.executable);
+    if (executableIndex < 0) throw new Error("Native ACPX executable is absent from its closure");
+    const executable = entryPath(distributionRoot, entries[executableIndex]!);
+    const args = [...(input.entrypoint === undefined ? [] : ["--require", join(launchRoot, GUARD), join(distributionRoot, ...input.entrypoint.split("/"))]), ...input.fixedArguments];
     let copilotEntryDirectory: string | undefined;
     if (input.copilotDistributionDirectory !== undefined) {
-      copilotEntryDirectory = join(packageRoot, COPILOT_ENTRY);
-      await mkdir(copilotEntryDirectory, { mode: 0o700 }); directories.add(copilotEntryDirectory);
+      copilotEntryDirectory = join(launchRoot, COPILOT_ENTRY);
+      await mkdir(copilotEntryDirectory, { mode: 0o700 }); directories.push(copilotEntryDirectory);
       const shim = Buffer.from([
-        `require(${JSON.stringify(join(packageRoot, GUARD))});`,
-        `import(require("node:url").pathToFileURL(${JSON.stringify(join(packageRoot, input.copilotDistributionDirectory, "index.js"))}).href).catch(error=>{console.error(error);process.exitCode=1;});`,
+        `require(${JSON.stringify(join(launchRoot, GUARD))});`,
+        `import(require("node:url").pathToFileURL(${JSON.stringify(join(distributionRoot, input.copilotDistributionDirectory, "index.js"))}).href).catch(error=>{console.error(error);process.exitCode=1;});`,
       ].join("\n"));
       const shimPath = join(copilotEntryDirectory, "index.js");
       await writeFile(shimPath, shim, { mode: 0o400, flag: "wx" }); digests[shimPath] = sha256(shim);
     }
     if (input.entrypoint !== undefined || copilotEntryDirectory !== undefined) {
       const guard = Buffer.from(nativeModuleGuard(digests));
-      await writeFile(join(packageRoot, GUARD), guard, { mode: 0o400, flag: "wx" });
-      digests[join(packageRoot, GUARD)] = sha256(guard);
+      await writeFile(join(launchRoot, GUARD), guard, { mode: 0o400, flag: "wx" });
+      digests[join(launchRoot, GUARD)] = sha256(guard);
     }
-    const bootstrap = Buffer.from(nativeBootstrap(executable, digests[executable]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
-    await writeFile(join(packageRoot, BOOTSTRAP), bootstrap, { mode: 0o400, flag: "wx" });
-    digests[join(packageRoot, BOOTSTRAP)] = sha256(bootstrap);
+    const bootstrap = Buffer.from(nativeBootstrap(executable, identities[executableIndex]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
+    await writeFile(join(launchRoot, BOOTSTRAP), bootstrap, { mode: 0o400, flag: "wx" });
+    digests[join(launchRoot, BOOTSTRAP)] = sha256(bootstrap);
     // executable is null: commandLease's separately-qualified provider runtime
     // slot is unused; this distribution is spawned by the trusted bootstrap.
-    const manifest = Buffer.from(JSON.stringify({ roots: [packageRoot], executable: null, digests }));
+    const manifest = Buffer.from(JSON.stringify({ roots: [launchRoot], executable: null, digests }));
     const manifestPath = join(privateRoot, "manifest.json");
     await writeFile(manifestPath, manifest, { mode: 0o400, flag: "wx" });
-    await directoryBatch([...directories], path => chmod(path, 0o500));
-    commandDirectory = await open(packageRoot, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-    return { commandDirectory, bootstrap, snapshot: { roots: [packageRoot], executable: null, digests, handoff: { path: manifestPath, digest: sha256(manifest) }, close } };
+    await boundedEach(directories, NATIVE_DIRECTORY_CONCURRENCY, path => chmod(path, 0o500));
+    commandDirectory = await open(launchRoot, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    return { commandDirectory, bootstrap, distributionRoot, snapshot: { roots: [launchRoot], executable: null, digests, handoff: { path: manifestPath, digest: sha256(manifest) }, close } };
   } catch (error) {
     await commandDirectory?.close(); await close(); throw error;
-  } finally { await heldRoot.close(); }
+  }
 }
 
-function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
+function nativeBootstrap(executable: string, executableIdentity: IdentityRecord, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
   return [
     'const {spawn}=require("node:child_process");',
     'const fs=require("node:fs");',
@@ -256,7 +492,10 @@ function nativeBootstrap(executable: string, executableDigest: string, args: str
     ] : []),
     'if(guarded)for(const fd of [5,6,7,8])fs.fstatSync(fd);',
     `const executable=${JSON.stringify(executable)};const fd=fs.openSync(executable,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);`,
-    `if(require("node:crypto").createHash("sha256").update(fs.readFileSync(fd)).digest("hex")!==${JSON.stringify(executableDigest)})throw new Error("Native ACPX executable changed before spawn");`,
+    // Bind the descriptor that will be executed to the identity recorded when
+    // its bytes were hashed; no second full read is needed before spawn.
+    'const opened=fs.fstatSync(fd,{bigint:true});',
+    `if(!opened.isFile()||opened.nlink!==1n||[opened.dev,opened.ino,opened.size,opened.mtimeNs,opened.ctimeNs].map(String).join(":")!==${JSON.stringify(executableIdentity.join(":"))})throw new Error("Native ACPX executable changed before spawn");`,
     'const stdio=guarded?[0,1,2,5,6,7,8]:[0,1,2]; const childExecutable=process.platform==="linux"?"/proc/self/fd/"+stdio.length:executable;stdio.push(fd);',
     `const child=spawn(childExecutable,${JSON.stringify(args)},{env,cwd:process.cwd(),shell:false,detached:false,stdio});fs.closeSync(fd);`,
     // A guarded Node launcher has a pending filesystem read on its guardian
