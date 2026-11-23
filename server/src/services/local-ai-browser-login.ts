@@ -15,6 +15,7 @@ export type LocalBrowserLoginState = {
   error?: string;
   submitCode?: (code: string) => void;
   submitRedirect?: (rawRedirectUrl: string) => Promise<void>;
+  /** Resolves when the sign-in process has exited, so its credential store can be removed. */
   abort: () => void | Promise<void>;
 };
 
@@ -29,6 +30,8 @@ if pid == 0:
 def stop(_signal, _frame):
     try: os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError: pass
+    try: os.waitpid(pid, 0)
+    except ChildProcessError: pass
     sys.exit(1)
 signal.signal(signal.SIGTERM, stop)
 while True:
@@ -52,7 +55,10 @@ sys.exit(os.waitstatus_to_exitcode(status))
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
-  const state: LocalBrowserLoginState = { abort: () => controller.abort() };
+  // Set when the provider process starts. Cleanup deletes the credential the
+  // CLI may still be writing, so a caller of abort must be able to wait for it.
+  let exited: Promise<void> | undefined;
+  const state: LocalBrowserLoginState = { abort: () => { controller.abort(); child?.kill("SIGTERM"); return exited; } };
   const args = provider === "anthropic" ? ["auth", "login"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
@@ -85,6 +91,8 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
       };
       return new Promise((resolve, reject) => {
         child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+        const running = child;
+        exited = new Promise<void>((settled) => { running.once("close", () => settled()); running.once("error", () => settled()); });
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
         // Provider output may contain secrets. Never log or retain stderr.
         child.stderr.resume();

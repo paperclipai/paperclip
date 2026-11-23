@@ -246,6 +246,15 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5000 });
   });
 
+  it("resolves abort only after the Claude sign-in process has exited", async () => {
+    const home = await fakeCli("claude", 'echo $$ > "$CLAUDE_CONFIG_DIR/login.pid"\nexec sleep 60');
+    const login = startLocalBrowserLogin("anthropic", home);
+    let pid = 0;
+    await vi.waitFor(async () => { pid = Number(await readFile(path.join(home, "login.pid"), "utf8")); expect(pid).toBeGreaterThan(0); }, { timeout: 5000 });
+    await login.abort();
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
   it("cancels Claude while waiting for its browser code and terminates the provider", async () => {
     const home = await fakeCli("claude", [
       'echo $$ > "$CLAUDE_CONFIG_DIR/login.pid"',
