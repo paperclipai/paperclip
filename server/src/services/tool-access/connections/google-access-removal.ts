@@ -136,9 +136,10 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
   ): Promise<number> {
     let kept = 0;
     for (const entry of retrying) {
-      const [row] = await db.select({ tokenSha256: googlePendingRevocations.tokenSha256 }).from(googlePendingRevocations)
+      const [row] = await db.select({ tokenSha256: googlePendingRevocations.tokenSha256, reason: googlePendingRevocations.reason })
+        .from(googlePendingRevocations)
         .where(and(eq(googlePendingRevocations.id, entry.id), eq(googlePendingRevocations.companyId, connection.companyId)));
-      if (row && !(await tokenInLiveUse(db, connection.companyId, row.tokenSha256))) {
+      if (row && (row.reason === "instance_removed" || !(await tokenInLiveUse(db, connection.companyId, row.tokenSha256)))) {
         kept += 1;
         continue;
       }
