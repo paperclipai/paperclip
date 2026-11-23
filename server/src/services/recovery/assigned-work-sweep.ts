@@ -324,6 +324,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
       finishedAt: heartbeatRuns.finishedAt, retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      resultJson: heartbeatRuns.resultJson,
       executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));

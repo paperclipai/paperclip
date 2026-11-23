@@ -1,3 +1,4 @@
+import { isTerminalProviderRefusal } from "../terminal-provider-refusal.js";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
@@ -510,6 +511,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preserveWakeContext?: boolean;
     },
   ) {
+    if (isTerminalProviderRefusal(run)) {
+      return { outcome: "not_scheduled" as const,
+        reason: "Terminal provider refusal; no automatic retry, rephrasing or provider fallback.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
     const preparation = parseObject(run.resultJson?.executionRecovery);
     if (typeof preparation.preparationSettledAt === "string" && await isInterruptedNativePreparation(db, run)) {
       const children = await db.select().from(heartbeatRuns).where(and(

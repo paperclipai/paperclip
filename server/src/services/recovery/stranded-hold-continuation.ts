@@ -1,3 +1,4 @@
+import { isTerminalProviderRefusal } from "../terminal-provider-refusal.js";
 import { continuesAutomatically } from "../continuation-cause.js";
 
 export const STRANDED_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
@@ -9,6 +10,7 @@ export type StrandedHoldRun = {
   errorCode: string | null;
   error: string | null;
   finishedAt: Date | null;
+  resultJson?: unknown;
   executionRecovery: { kind?: unknown; providerWorkStarted?: unknown } | null;
   retryOfRunId?: string | null;
   scheduledRetryReason?: string | null;
@@ -30,8 +32,9 @@ export function strandedHoldContinuesAutomatically(
 
 export function strandedRunCauseIsTemporary(
   run: Pick<StrandedHoldRun, "status" | "errorCode" | "error" | "executionRecovery" | "retryOfRunId" | "scheduledRetryReason"
-    | "contextSnapshot" | "runnerProfileJson">,
+    | "contextSnapshot" | "runnerProfileJson" | "resultJson">,
 ): boolean {
+  if (isTerminalProviderRefusal(run)) return false;
   return continuesAutomatically({ status: run.status, errorCode: run.errorCode, error: run.error,
     retryOfRunId: run.retryOfRunId ?? null, scheduledRetryReason: run.scheduledRetryReason ?? null,
     contextSnapshot: run.contextSnapshot ?? null, runnerProfileJson: run.runnerProfileJson,
