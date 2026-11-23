@@ -12,6 +12,14 @@ import { listProjectsDescription, listProjectsInputSchema } from "../protocol-ac
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
+import { listRoutinesAction } from "../protocol-actions/list-routines.js";
+import { updateRoutineAction } from "../protocol-actions/update-routine.js";
+import { updateSkillDetailsAction } from "../protocol-actions/update-skill-details.js";
+import {
+  createAreaAction, createResponsibilityAction, deleteAreaAction, deleteResponsibilityAction, fileUnderResponsibilityAction,
+  findResponsibilitiesForAction, getResponsibilityAction, listResponsibilitiesAction, removeFromResponsibilityAction,
+  updateAreaAction, updateResponsibilityAction,
+} from "../protocol-actions/responsibilities.js";
 import type {
   PaperclipJsonSchema,
   PaperclipSemanticActionDescriptor,
@@ -513,6 +521,23 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     placement: "optional",
     inputSchema: object({}),
   }),
+  ...[
+    listResponsibilitiesAction, getResponsibilityAction, findResponsibilitiesForAction,
+    createAreaAction, updateAreaAction, deleteAreaAction,
+    createResponsibilityAction, updateResponsibilityAction, deleteResponsibilityAction,
+    fileUnderResponsibilityAction, removeFromResponsibilityAction,
+    listRoutinesAction, updateRoutineAction, updateSkillDetailsAction,
+  ].map((action) => descriptor({
+    operationId: action.id,
+    title: action.documentation.title,
+    description: action.documentation.description,
+    placement: "optional",
+    effect: action.canonical.sideEffectClass === "read" ? "read" : "write",
+    requiredClaims: action.live.descriptor.requiredClaims,
+    allowedModes: action.live.descriptor.allowedModes,
+    inputSchema: action.live.descriptor.inputSchema,
+    outputSchema: openObject,
+  })),
   descriptor({
     operationId: "create_project",
     title: "Create project",

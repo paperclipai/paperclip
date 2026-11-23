@@ -38,6 +38,11 @@ Example: A CEO agent's adapter config tells it to "review what your executives a
 
 Then you define who reports to the CEO: a CTO managing programmers, a CMO managing the marketing team, and so on. Every agent in the tree gets their own adapter configuration.
 
+When Areas & Responsibilities is enabled, each person has a private dashboard in each company.
+People can use the same area names independently. Dashboard conversations, saved versions and
+the way a person files shared work are visible only to that person and their authorized agent
+where the workflow requires it. Filing an existing task or project keeps its existing access rules.
+
 Each person also has a personal primary agent per company. Their first human-created
 agent becomes primary automatically; they can choose another from its profile.
 An existing primary is replaced only after confirmation. The crown appears on the
@@ -235,6 +240,8 @@ and read markers do not establish participation in automatic work. Direct board 
 human API comments, human assignment, and deliberate user mutations do establish
 participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
+Responsibility-repair audit entries do not establish personal participation,
+even when the repair is attributed to a human operator.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 
@@ -547,6 +554,12 @@ swipe-to-archive, grouping, and saved columns. Its existing preferences carry
 over. Unread, Recent, Blocked, and Everything are also task views. Organization
 views retain the task table and board. The table saves column selection and
 order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
+Archive is personal. Use it from Mine, Unread, or a task-table row to
+remove a task from your Mine and Unread views. All tasks and its status views
+still include archived tasks. Use Undo after archiving, or open **Archived**
+from the Views menu and restore a task. New replies from other people, mentions,
+and other inbox activity such as a new decision request can bring a task back.
 
 ### Combined Inbox + Task List
 

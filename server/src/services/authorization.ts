@@ -1,3 +1,4 @@
+import { dashboardConversationCondition, dashboardConversationReadable } from "./responsibility-privacy.js";
 import { readOncePerRequest } from "./authorization-read-scope.js";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -172,6 +173,7 @@ export type AuthorizationDecision = {
     | "deny_agent_interaction"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
+    | "deny_dashboard_conversation_private"
     | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
@@ -226,6 +228,7 @@ const PLAIN_DELEGATED_USER_DENIALS: Record<AuthorizationDenialReason, (subject: 
   deny_low_trust_boundary: (subject, action) => `This company's limits for this agent do not let ${lowerFirst(subject)} ${action}.`,
   deny_agent_interaction: (_subject, action) => `Agents are not allowed to ${action} in this company; a person who manages permissions can change this.`,
   deny_issue_private: (subject) => `${subject} cannot see this private task.`,
+  deny_dashboard_conversation_private: (subject) => `${subject} cannot see this personal dashboard conversation.`,
   deny_project_private: (subject) => `${subject} cannot see this private project.`,
   inbox_target_user_unresolved: () => "Paperclip could not tell whose inbox this is.",
   inbox_management_disabled: () => "This person has turned off agent management of their inbox.",
@@ -741,12 +744,13 @@ export async function readInstanceAdmin(db: Db | DbTransaction, userId: string):
 }
 
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return issuePrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  const personal = dashboardConversationCondition(actor);
+  if (actor.authorizingUserId) return sql<boolean>`(${personal} and ${issuePrivacyCondition(actor)})`;
+  if (issuePrivacyMode() !== "enforce") return personal;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return personal;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
-    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return sql<boolean>`true`;
-  return issuePrivacyCondition(actor);
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return personal;
+  return sql<boolean>`(${personal} and ${issuePrivacyCondition(actor)})`;
 }
 
 /** SQL equivalent used for project list/search pushdown. */
@@ -3017,9 +3021,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       || input.resource.type !== "issue"
       || !input.resource.issueId
       || !intersectedDecision.allowed
-      || intersectedDecision.reason === "allow_instance_admin"
-      || intersectedDecision.reason === "allow_local_board"
-      || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")
     ) return intersectedDecision;
 
     const resource = input.resource;
@@ -3029,6 +3030,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          originKind: issues.originKind, originId: issues.originId,
           visibility: issues.visibility,
           privacyRootIssueId: issues.privacyRootIssueId,
           responsibleUserId: issues.responsibleUserId,
@@ -3040,6 +3042,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .from(issues)
         .where(and(eq(issues.id, resource.issueId!), eq(issues.companyId, resource.companyId)))
         .then((rows) => rows[0] ?? null);
+      if (issue && !dashboardConversationReadable(input.actor, issue)) {
+        return deny({
+          action: input.action,
+          reason: "deny_dashboard_conversation_private",
+          explanation: "This personal dashboard conversation is private.",
+        });
+      }
+      if (intersectedDecision.reason === "allow_instance_admin" || intersectedDecision.reason === "allow_local_board"
+        || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")) return intersectedDecision;
       if (!issue || (retainedIssue?.companyId === resource.companyId
         ? retainedIssue.readable : await canActorReadIssuePrivacy(db, input.actor, issue))) return intersectedDecision;
 

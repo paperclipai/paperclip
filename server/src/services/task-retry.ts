@@ -1,3 +1,4 @@
+import { canActorRetryConversation } from "../lib/conversation-wake-policy.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -22,6 +23,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { deferredChatInputPredicate, resumeDeferredChatWake, unadmittedChatWakeupCondition } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { liveExecutionOwnerCondition, taskAttemptCondition } from "./task-retry-eligibility.js";
 import { undeliveredContinuation } from "./fresh-continuation-retry-fold.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
 import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
@@ -46,8 +48,7 @@ export function assertTaskRetryConversationAllowed(
   issue: { conversationAgentId?: string | null; conversationUserId?: string | null },
   actorId: string,
 ) {
-  if (!issue.conversationAgentId) return;
-  if (issue.conversationUserId !== actorId) throw forbidden("Only the conversation owner can retry a chat run");
+  if (!canActorRetryConversation(issue, actorId)) throw forbidden("Only the conversation owner can retry a chat run");
 }
 
 const taskRetryIntentSchema = z.object({
@@ -203,7 +204,7 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId),
     or(eq(heartbeatRuns.issueId, input.issueId), eq(heartbeatRuns.nativeIssueId, input.issueId),
-      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`), taskAttemptCondition(),
   )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   if (latest?.id === input.sourceRunId) return false;
   const [wake] = await db.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
@@ -311,8 +312,10 @@ function admitTaskRetry(input: TaskRetryRequest) {
     }
     const [latest] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, issue.companyId),
       or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`)))
-      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`), taskAttemptCondition()))
+      .orderBy(...(input.observedRunId ? [sql`case when ${heartbeatRuns.id}::text = ${input.observedRunId}
+        and ${liveExecutionOwnerCondition(issue.companyId, issue.id)} then 0 else 1 end`] : []),
+        desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
     if (["done", "cancelled"].includes(issue.status) || !issue.assigneeAgentId || !latest ||
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
       return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
@@ -559,7 +562,7 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
     const [latest] = await tx.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status,
       startedAt: heartbeatRuns.startedAt, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, wake.companyId), or(eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.nativeIssueId, issueId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`), taskAttemptCondition()))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
     if (latest?.id !== intent.sourceRunId || !latest.finishedAt) return false;
     if (intent.initiatedBy) {

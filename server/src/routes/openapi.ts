@@ -2112,6 +2112,7 @@ registry.registerPath({
     200: r.ok(),
     403: r.forbidden,
     404: r.notFound,
+    429: { description: "Paperclip Cloud is rate limiting portfolio reads (code cloud_portfolio_rate_limited). Retry-After, when present, gives whole seconds from 1 to 300. Not cached." },
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,
@@ -12750,6 +12751,17 @@ registerCurrentRoute({
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/aws-setup",
+  tags: ["tool-access"],
+  summary: "Read what to configure in AWS for an AWS role connection",
+  description: "Returns the issuer, audience, connection subject, trust policy and a CloudFormation template for this connection. No secret values. Optional query `accessLevel` (`read_only` or `full`) sets up for an access level not saved yet. 422 when the connection does not use an AWS role.",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
   method: "post",
   path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
   tags: ["tool-access"],
@@ -13028,6 +13040,15 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/profiles",
   tags: ["tool-access"],
   summary: "List tool access profiles with entries and bindings",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles/summary",
+  tags: ["tool-access"],
+  summary: "List tool access profile summaries",
 });
 
 registerCurrentRoute({
