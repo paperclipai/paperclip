@@ -481,7 +481,11 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   const vitestLanes = matrix.verify_paperclip_runner.filter((entry) => entry.command.startsWith("test:typescript:vitest"));
   for (const entry of vitestLanes) {
     assert.match(entry.command, /^test:typescript:vitest (--package-lane=\d+\/\d+|--native-server)$/, entry.lane_label);
-    assert.equal(entry.task, "ci:runner-vitest", entry.lane_label);
+    assert.equal(
+      entry.task,
+      entry.command.endsWith("--native-server") ? "ci:runner-vitest" : "ci:runner-package",
+      entry.lane_label,
+    );
   }
   const lanes = vitestLanes
     .map((entry) => /--package-lane=(\d+)\/(\d+)$/.exec(entry.command))
