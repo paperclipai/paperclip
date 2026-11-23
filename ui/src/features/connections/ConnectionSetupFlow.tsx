@@ -2823,6 +2823,7 @@ function StandardConnectionSetupFlow({
         <KeyStep
           settingsValid={additionalSettingsValid && instructionsValid && !dedicatedAgentMissing}
           entry={entry}
+          selfHostedGoogleApp={!cloudInstance && Boolean(getConnectableAppDefinition(entry.slug)?.methods.some(isCloudOnlyConnectionMethod))}
           error={connectMutation.error ? describeError(connectMutation.error).body : null}
           values={credentials}
           onChange={setCredentials}
@@ -3491,6 +3492,7 @@ function normalizeAppLink(value: string): string | null {
 function KeyStep({
   settingsValid = true,
   entry,
+  selfHostedGoogleApp = false,
   error,
   values,
   onChange,
@@ -3520,6 +3522,7 @@ function KeyStep({
 }: {
   settingsValid?: boolean;
   entry: AppDefinition;
+  selfHostedGoogleApp?: boolean;
   error?: string | null;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
@@ -3556,7 +3559,6 @@ function KeyStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
-  const cloudInstance = useCloudInstance();
   const methods = useMemo(
     () => connectionMethodsForCredentialSource(entry, credentialSource),
     [credentialSource, entry],
@@ -3820,9 +3822,7 @@ function KeyStep({
 
   const managedAsana = method?.connectorProfile === "asana.mcp";
   const requirementsUrl = managedAsana ? null : method?.consoleLinks?.docs ?? entry.docsUrl;
-  const selfHostedGoogleClient = !cloudInstance
-    && connectionMethodAcceptsCustomerOAuthClient(method)
-    && Boolean(getConnectableAppDefinition(entry.slug)?.methods.some(isCloudOnlyConnectionMethod));
+  const selfHostedGoogleClient = selfHostedGoogleApp && connectionMethodAcceptsCustomerOAuthClient(method);
   const selfHostedGoogleClientGuide = method?.consoleLinks?.docs ?? entry.docsUrl ?? null;
 
   return (

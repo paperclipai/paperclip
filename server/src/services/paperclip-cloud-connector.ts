@@ -1,7 +1,6 @@
 import { assertMcpClientMirrorEnvelope } from "./public-mcp/client-mirror-wire.js";
 import { providerRetryAt } from "./provider-retry-after.js";
 import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, appDefinitionForDeployment, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
-import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 import {
   createDecipheriv,
   createHash,
@@ -829,7 +828,7 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
 export function appWithPaperclipCloudConnectorAvailability(
   app: AppDefinition,
   profiles: readonly string[],
-  cloudHosted: boolean = paperclipGoogleSignInAvailable(),
+  cloudHosted: boolean,
 ): AppDefinition {
   const enabledProfiles = new Set(profiles);
   const methods = appDefinitionForDeployment(app, { cloudHosted }).methods.filter((method) =>

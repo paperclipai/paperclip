@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 
 import {
   appWithPaperclipCloudConnectorAvailability,
@@ -345,15 +346,12 @@ describe("Paperclip Cloud connector", () => {
   });
 
   it("decides Cloud or self-hosted from the instance's Cloud markers", () => {
-    const workspace = APP_DEFINITIONS.find((app) => app.slug === "google-workspace")!;
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "");
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     try {
-      expect(appWithPaperclipCloudConnectorAvailability(workspace, ["workspace.all"]).methods.map((method) => method.key))
-        .toEqual(["customer-workspace-oauth"]);
+      expect(paperclipGoogleSignInAvailable()).toBe(false);
       vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token-fixture");
-      expect(appWithPaperclipCloudConnectorAvailability(workspace, ["workspace.all"]).methods.map((method) => method.key))
-        .toEqual(["paperclip-workspace", "customer-workspace-oauth"]);
+      expect(paperclipGoogleSignInAvailable()).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }

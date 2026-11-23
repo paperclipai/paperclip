@@ -7,7 +7,10 @@ const googleApps = CONNECTABLE_APP_DEFINITIONS.filter((app) =>
 
 describe("Paperclip's Google sign-in by deployment", () => {
   it("finds every Google app that offers Paperclip's Google sign-in", () => {
-    expect(googleApps.map((app) => app.slug)).toEqual(expect.arrayContaining(["google-workspace", "gmail", "google-docs"]));
+    expect(googleApps.map((app) => app.slug).sort()).toEqual([
+      "gmail", "google-calendar", "google-chat", "google-docs", "google-drive", "google-people",
+      "google-sheets", "google-slides", "google-workspace", "google-workspace-search",
+    ]);
   });
 
   it("offers only the customer-owned Google client on a self-hosted instance", () => {

@@ -149,9 +149,12 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 throw new PaperclipCloudConnectorError("Google did not return verifiable permissions", "REAUTHORIZATION_REQUIRED");
               }
             } catch (error) {
+              const cloudOnly = error instanceof PaperclipCloudConnectorError
+                && profile.provider === "google"
+                && error.brokerReason === "PROVIDER_CLOUD_ONLY";
               if (
                 error instanceof PaperclipCloudConnectorError &&
-                error.code === "REAUTHORIZATION_REQUIRED"
+                (error.code === "REAUTHORIZATION_REQUIRED" || cloudOnly)
               ) {
                 await db
                   .update(connectionGrants)
@@ -162,7 +165,6 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                       eq(connectionGrants.companyId, grant.companyId),
                     ),
                   );
-                const cloudOnly = error.brokerReason === "PROVIDER_CLOUD_ONLY";
                 throw unprocessable(
                   cloudOnly ? `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}` : "Managed authorization must be reconnected",
                   {

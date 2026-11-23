@@ -155,6 +155,7 @@ import { googleWorkspaceCatalogToolTitle } from "./google-workspace-rest-dispatc
 
 import { createToolRuntimeSupervisor } from "./tool-runtime-supervisor.js";
 
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 import { appWithPaperclipCloudConnectorAvailability, paperclipCloudConnectorCapabilitiesFromEnv, createPaperclipCloudConnector, isPaperclipCloudConnectorStrategy, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { createVercelConnectClient, deriveVercelConnectSubject, vercelConnectIntegrationStatus, type VercelConnectClient } from "./vercel-connect.js";
 
@@ -781,7 +782,7 @@ export function toolAccessService(
     const profiles = connectorWasProvided
       ? (await currentCloudConnector()?.getCapabilities() ?? [])
       : await paperclipCloudConnectorCapabilitiesFromEnv();
-    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+    return appWithPaperclipCloudConnectorAvailability(app, profiles, paperclipGoogleSignInAvailable());
   }
   const vercelConnect =
     options.vercelConnectClient === undefined

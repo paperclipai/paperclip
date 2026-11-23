@@ -8219,17 +8219,20 @@ describeEmbeddedPostgres("tool access service", () => {
       }, actor)).rejects.toMatchObject({ status: 422 });
       expect(connector.startAuthorization).not.toHaveBeenCalled();
 
-      vi.mocked(connector.refresh).mockRejectedValueOnce(new PaperclipCloudConnectorError(
-        "Paperclip Cloud connector rejected the request (operation=refresh, status=409, reason=PROVIDER_CLOUD_ONLY)",
-        "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_CLOUD_ONLY",
-      ));
-      await expect(service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: connected.connectionId, grantId: grant.id, forceRefresh: true, actor }))
-        .rejects.toMatchObject({
-          status: 422,
-          message: `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}`,
-          details: { code: "oauth_reauthorization_required", reason: "google_sign_in_cloud_only" },
-        });
-      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))[0].status).toBe("needs_reauthorization");
+      for (const status of [409, 403]) {
+        await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, grant.id));
+        vi.mocked(connector.refresh).mockRejectedValueOnce(new PaperclipCloudConnectorError(
+          `Paperclip Cloud connector rejected the request (operation=refresh, status=${status}, reason=PROVIDER_CLOUD_ONLY)`,
+          status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED", status, undefined, "PROVIDER_CLOUD_ONLY",
+        ));
+        await expect(service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: connected.connectionId, grantId: grant.id, forceRefresh: true, actor }))
+          .rejects.toMatchObject({
+            status: 422,
+            message: `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}`,
+            details: { code: "oauth_reauthorization_required", reason: "google_sign_in_cloud_only" },
+          });
+        expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))[0].status).toBe("needs_reauthorization");
+      }
     } finally {
       googleSignIn.cloudHosted = true;
     }
@@ -8914,6 +8917,35 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(connected.body.details.retryAfterSeconds).toBeLessThanOrEqual(30);
       expect(JSON.stringify(connected.body)).not.toContain("RATE_LIMITED");
     } finally {
+      githubDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("never turns a cloud-only refusal for another provider into Google guidance", async () => {
+    const company = await createCompany(db);
+    const userId = `github-cloud-only-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGitHubConnector(company.id, userId);
+    connector.startAuthorization = vi.fn(async () => {
+      throw new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector rejected the request (operation=session, status=403, reason=PROVIDER_CLOUD_ONLY)",
+        "CONNECTOR_REQUEST_FAILED", 403, undefined, "PROVIDER_CLOUD_ONLY",
+      );
+    });
+    const githubDefinition = getConnectableAppDefinition("github")!;
+    const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
+    githubDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    googleSignIn.cloudHosted = false;
+    try {
+      const app = createRouteApp(db, boardSessionActor(company.id, "owner", userId), undefined, { paperclipCloudConnector: connector });
+      const connected = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ galleryKey: "github", connectionMethodKey: "managed", grantKind: "user", name: "GitHub" });
+      expect(connector.startAuthorization).toHaveBeenCalled();
+      expect(connected.body.code).not.toBe("google_sign_in_cloud_only");
+      expect(JSON.stringify(connected.body)).not.toContain(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE);
+    } finally {
+      googleSignIn.cloudHosted = true;
       githubDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
   });

@@ -41,9 +41,9 @@ function googleSignInCloudOnlyError() {
   return unprocessable(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, { code: "google_sign_in_cloud_only" });
 }
 
-function cloudConnectorStartHttpError(error: unknown, providerName: string, at: Date): unknown {
+function cloudConnectorStartHttpError(error: unknown, provider: string, providerName: string, at: Date): unknown {
   if (!(error instanceof PaperclipCloudConnectorError)) return error;
-  if (error.brokerReason === "PROVIDER_CLOUD_ONLY") return googleSignInCloudOnlyError();
+  if (provider === "google" && error.brokerReason === "PROVIDER_CLOUD_ONLY") return googleSignInCloudOnlyError();
   if (error.status !== 429 && error.brokerReason !== "RATE_LIMITED") return error;
   const retryAfterSeconds = error.retryAt === undefined
     ? undefined
@@ -427,7 +427,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
           returnState: state,
         });
       } catch (error) {
-        throw cloudConnectorStartHttpError(error, providerName, now());
+        throw cloudConnectorStartHttpError(error, managedProfile.provider, providerName, now());
       }
       const remoteExpiry = new Date(session.expiresAt);
       const expiresAt = Number.isFinite(remoteExpiry.getTime())
