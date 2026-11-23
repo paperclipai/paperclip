@@ -197,7 +197,8 @@ describe("agent setup progress", () => {
     const recent = await make(second);
     await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 48 * 3600_000) }).where(inArray(agentSetupProgress.id, [oldA, oldB]));
     await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 3600_000) }).where(eq(agentSetupProgress.id, recent));
-    expect(await agentSetupProgressService(db).sweepExpired()).toBeGreaterThanOrEqual(2);
+    // Batches of one: the sweep keeps going until no old checklist is left, not just one batch.
+    expect(await agentSetupProgressService(db).sweepExpired({ batchSize: 1 })).toBeGreaterThanOrEqual(2);
     const left = (await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress).where(inArray(agentSetupProgress.id, [oldA, oldB, recent]))).map((row) => row.id);
     expect(left).toEqual([recent]);
   });

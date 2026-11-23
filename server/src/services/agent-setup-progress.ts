@@ -150,20 +150,30 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       return { progress: toProgress(row!), token, urls: agentSetupProgressUrls(input.origin, row!.id) };
     },
 
-    /** The checklist and who started it (for the read check; not part of the API response). */
     /**
      * Removes checklists more than a day past expiry, across companies. Runs once at server start
      * (reconstructing cleanup from the rows, never as a recurring scan), so companies that stopped
      * using agent setup do not keep dead rows; creating a checklist also cleans its own company.
      */
-    async sweepExpired(limit = 1000): Promise<number> {
-      const stale = await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress)
-        .where(lt(agentSetupProgress.expiresAt, new Date(now().getTime() - 24 * 60 * 60 * 1000))).limit(limit);
-      if (stale.length === 0) return 0;
-      await db.delete(agentSetupProgress).where(inArray(agentSetupProgress.id, stale.map((row) => row.id)));
-      return stale.length;
+    async sweepExpired(options: { batchSize?: number; maxBatches?: number } = {}): Promise<number> {
+      // Batches keep each delete small; the cap keeps a very large backlog from holding up startup
+      // (whatever is left goes at the next start, or as each company creates a checklist).
+      const batchSize = options.batchSize ?? 1000;
+      const maxBatches = options.maxBatches ?? 50;
+      const cutoff = new Date(now().getTime() - 24 * 60 * 60 * 1000);
+      let removed = 0;
+      for (let batch = 0; batch < maxBatches; batch += 1) {
+        const stale = await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress)
+          .where(lt(agentSetupProgress.expiresAt, cutoff)).limit(batchSize);
+        if (stale.length === 0) break;
+        await db.delete(agentSetupProgress).where(inArray(agentSetupProgress.id, stale.map((row) => row.id)));
+        removed += stale.length;
+        if (stale.length < batchSize) break;
+      }
+      return removed;
     },
 
+    /** The checklist and who started it (for the read check; not part of the API response). */
     async get(id: string): Promise<(AgentSetupProgress & { createdByUserId: string | null }) | null> {
       const [row] = await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, id));
       return row ? { ...toProgress(row), createdByUserId: row.createdByUserId } : null;
