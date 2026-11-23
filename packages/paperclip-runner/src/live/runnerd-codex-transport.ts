@@ -2866,10 +2866,10 @@ function completedMaintenanceTerminalReplayMatches(
     after.runner.pendingTerminalDelivery == null &&
     after.runner.pendingProviderCleanup == null &&
     after.providerFingerprint === before.providerFingerprint &&
-    commandDigest(after.runner.processedCommands) ===
-      commandDigest(before.runner.processedCommands) &&
-    commandDigest(after.runner.processedCommandFingerprints) ===
-      commandDigest(before.runner.processedCommandFingerprints) &&
+    controllerCommandDigest(after.runner.processedCommands) ===
+      controllerCommandDigest(before.runner.processedCommands) &&
+    controllerCommandDigest(after.runner.processedCommandFingerprints) ===
+      controllerCommandDigest(before.runner.processedCommandFingerprints) &&
     after.runner.lastControllerCommandSeq ===
       before.runner.lastControllerCommandSeq &&
     controllerCommandDigest(after.control.commands) === controllerCommandDigest(expectedCommands)
@@ -3493,7 +3493,7 @@ async function settleRetainedRunnerdSessionOwned(
         commandDigest(settled.runner.pendingProviderCleanup) !==
           commandDigest(pendingTerminal) ||
         controllerCommandDigest(settled.control.commands) !==
-          commandDigest(before.control.commands) ||
+          controllerCommandDigest(before.control.commands) ||
         epochProviderPids.size !== 0 ||
         ![...pids].every(maintenanceProcessAbsent)
       )
@@ -5178,7 +5178,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
+      previous === undefined ? undefined : {contextReused:current === undefined || controllerCommandDigest(current) === controllerCommandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
   #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
@@ -7271,7 +7271,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? core.getCommand(warmRecovery.commandId)?.payload.provider
           : exactAuthority ? record(controlPlaneState!.runAttachTemplate).provider : undefined;
         if ((exactAuthority || warmRecovery !== null)
-          && (recordedProvider === undefined || commandDigest(recordedProvider) !== commandDigest(saved.prepared.provider))) {
+          && (recordedProvider === undefined || controllerCommandDigest(recordedProvider) !== controllerCommandDigest(saved.prepared.provider))) {
           throw new Error("runner_prepared_launch_recovery_changed");
         }
         template.provider = saved.prepared.provider;
@@ -7337,7 +7337,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
       if (sourceAttachmentTarget) {
         await this.options.onStagedRunAttachment?.(core, { sourceIdentity: desiredIdentity,
-          targetIdentity: sourceAttachmentTarget, templateDigest: commandDigest(runAttachTemplate) });
+          targetIdentity: sourceAttachmentTarget, templateDigest: controllerCommandDigest(runAttachTemplate) });
         core.stageRunAttachment(sourceAttachmentTarget, runAttachTemplate);
       } else {
         core.persistRunAttachTemplate(runAttachTemplate);

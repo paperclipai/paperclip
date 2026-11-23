@@ -5284,10 +5284,12 @@ describe("DurablePrpControlPlane", () => {
       core.persistPreparedLaunchConfiguration(identity, "prior-configuration");
       core.persistPreparedLaunchConfiguration(nextIdentity, "next-configuration");
       if (usesExternalPersistence) rmSync(resolve(root, "control-plane"), { recursive: true });
+      const transitionCatalog = authorizedToolSetForProvider("acpx", denseToolCatalog(100, 200));
       const command = core.queueCommand(
         "run.attach",
         {
           provider: { kind: "mock", run: "next" },
+          authorizedTools: transitionCatalog,
           paperclipNextAuthority: {
             identity: nextIdentity,
             connection: { mode: "connect", connectUrl: core.connectUrl },
@@ -5637,7 +5639,7 @@ describe("DurablePrpControlPlane", () => {
         core.persistPreparedLaunchConfiguration({ ...nextIdentity, runId: "third-run" }, "third-configuration");
         expect(core.preparedLaunchConfigurationId(identity)).toBeUndefined();
         expect(core.store.state.preparedLaunchConfigurations).toHaveLength(2);
-        expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" } });
+        expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" }, authorizedTools: transitionCatalog });
         expect(
           (successor!.welcome.payload as Record<string, unknown>)
             .pendingCommands,

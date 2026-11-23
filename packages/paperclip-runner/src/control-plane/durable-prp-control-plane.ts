@@ -1019,7 +1019,7 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
         ) &&
       (transition.phase === "activated" ||
         (state.ackedSourceSeq === expected.oldAckedSourceSeq &&
-          canonicalJson(
+          controllerJson(
             state.commands.find(
               (command) => command.commandId === expected.commandId,
             ),
@@ -2952,7 +2952,7 @@ export class DurablePrpControlPlane {
     if (!proof || proof.transition.receipt.transitionId !== input.transitionId || !this.#store.state.stagedRunAttachment) {
       throw new Error("Warm transition adoption snapshot proof is not authorized.");
     }
-    if (this.#store.state.warmTransition && canonicalJson(this.#store.state.warmTransition) === canonicalJson(proof.transition)) return;
+    if (this.#store.state.warmTransition && controllerJson(this.#store.state.warmTransition) === controllerJson(proof.transition)) return;
     const candidate = structuredClone(this.#store.state);
     candidate.schema = stagedCoreStateSchema;
     candidate.warmTransition = structuredClone(proof.transition);
