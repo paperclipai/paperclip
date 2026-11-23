@@ -9,12 +9,12 @@ const wrapper = fileURLToPath(new URL("../../test/support/private-host-control.p
 // macOS opened a "Python quit unexpectedly" dialog for every test run.
 it.skipIf(process.platform === "win32")("exits cleanly while its stdin is still open", async () => {
   const child = spawn("python3", [wrapper, "/bin/sh", "-c", "sleep 0.3"], {
-    detached: true, stdio: ["pipe", "pipe", "pipe"],
+    detached: true, stdio: ["pipe", "pipe", "ignore"],
   });
   let stdout = "";
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
   const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.on("exit", (code, signal) => resolve({ code, signal }));
+    child.on("close", (code, signal) => resolve({ code, signal }));
   });
   child.stdin.destroy();
 
