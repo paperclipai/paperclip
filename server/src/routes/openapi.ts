@@ -9797,7 +9797,7 @@ const agentSetupAgentErrors = {
 registry.registerPath({
   method: "post", path: "/api/companies/{companyId}/agent-setup-progress", tags: ["agent-setup-progress"],
   summary: "Create a setup checklist for a person's own agent",
-  description: "Board only. Creates an empty checklist and returns it with a bearer token (shown once; only its hash is kept) and the URLs the agent uses to set the checklist, update items and finish. The token works for six hours and can only write to this checklist.",
+  description: "Board only. For aws_connection, subjectId must be a connection of this company that the caller may configure. Creates an empty checklist and returns it with a bearer token (shown once; only its hash is kept) and the URLs the agent uses to set the checklist, update items and finish. The token works for six hours and can only write to this checklist.",
   request: { params: z.object({ companyId: z.string().uuid() }), body: { content: { "application/json": { schema: createAgentSetupProgressSchema } } } },
   responses: {
     201: r.ok(z.object({ progress: agentSetupProgressDoc, token: z.string(), urls: z.object({ checklist: z.string().url(), item: z.string(), finish: z.string().url() }).strict() }).strict()),
@@ -9808,7 +9808,7 @@ registry.registerPath({
 registry.registerPath({
   method: "get", path: "/api/agent-setup-progress/{id}", tags: ["agent-setup-progress"],
   summary: "Read a setup checklist",
-  description: "Board only, for members of the checklist's company. Updates also arrive as agent_setup_progress.updated live events.",
+  description: "Board only, for the person who started the setup; anyone else gets 404. Updates also arrive as agent_setup_progress.updated live events.",
   request: { params: agentSetupProgressId },
   responses: { 200: r.ok(agentSetupProgressDoc), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

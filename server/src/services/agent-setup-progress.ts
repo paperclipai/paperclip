@@ -141,9 +141,10 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       return { progress: toProgress(row!), token, urls: agentSetupProgressUrls(input.origin, row!.id) };
     },
 
-    async get(id: string): Promise<AgentSetupProgress | null> {
+    /** The checklist and who started it (for the read check; not part of the API response). */
+    async get(id: string): Promise<(AgentSetupProgress & { createdByUserId: string | null }) | null> {
       const [row] = await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, id));
-      return row ? toProgress(row) : null;
+      return row ? { ...toProgress(row), createdByUserId: row.createdByUserId } : null;
     },
 
     async setChecklist(id: string, authorization: string | undefined, input: SetAgentSetupChecklist) {

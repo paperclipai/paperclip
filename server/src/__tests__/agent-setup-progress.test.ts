@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { activityLog, agentSetupProgress, companies, companyMemberships, createDb } from "@paperclipai/db";
+import { activityLog, agentSetupProgress, companies, companyMemberships, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { AGENT_SETUP_PROGRESS_LIMITS, type AgentSetupProgressHandoff, type LiveEvent } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentSetupProgressAgentRoutes, agentSetupProgressBoardRoutes } from "../routes/agent-setup-progress.js";
@@ -29,17 +29,21 @@ describe("agent setup progress", () => {
   async function company() {
     const [row] = await db.insert(companies).values({ name: `Setup ${randomUUID()}`, issuePrefix: `S${randomUUID().slice(0, 5)}` }).returning();
     await db.insert(companyMemberships).values({ companyId: row!.id, principalType: "user", principalId: userId, status: "active", membershipRole: "admin" });
-    return row!;
+    const [application] = await db.insert(toolApplications).values({ companyId: row!.id, name: "AWS", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: row!.id, applicationId: application!.id, name: "AWS", uid: `aws-${randomUUID()}`, transport: "mcp_remote", createdByUserId: userId,
+    }).returning();
+    return { ...row!, connectionId: connection!.id, applicationId: application!.id };
   }
 
   /** The real app splits these: the agent's routes need no sign-in, the board's do. */
-  function app(boardCompanyIds: string[]) {
+  function app(boardCompanyIds: string[], actorUserId = userId) {
     const server = express();
     server.use(express.json());
     server.use(agentSetupProgressAgentRoutes(db));
     const api = express.Router();
     api.use((req, _res, next) => {
-      req.actor = { type: "board", userId, source: "session", companyIds: boardCompanyIds, isInstanceAdmin: false } as Express.Request["actor"];
+      req.actor = { type: "board", userId: actorUserId, source: "session", companyIds: boardCompanyIds, isInstanceAdmin: false } as Express.Request["actor"];
       next();
     });
     api.use(agentSetupProgressBoardRoutes(db));
@@ -54,9 +58,9 @@ describe("agent setup progress", () => {
     const org = await company();
     const server = app([org.id]);
     const created = await request(server).post(`/api/companies/${org.id}/agent-setup-progress`)
-      .send({ purpose: "aws_connection", subjectId: "conn-1" }).expect(201);
+      .send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201);
     const handoff = created.body as AgentSetupProgressHandoff;
-    expect(handoff.progress).toMatchObject({ status: "waiting", items: [], purpose: "aws_connection", subjectId: "conn-1" });
+    expect(handoff.progress).toMatchObject({ status: "waiting", items: [], purpose: "aws_connection", subjectId: org.connectionId });
     expect(handoff.urls.checklist).toBe(`https://acme.paperclip.app/api/agent-setup-progress/${handoff.progress.id}/checklist`);
     expect(handoff.urls.item).toContain("/items/{key}");
     expect(handoff.token).toMatch(/^pcsp_/);
@@ -107,13 +111,13 @@ describe("agent setup progress", () => {
   it("refuses a missing or wrong token, an unknown item, an expired checklist and too many updates", async () => {
     const org = await company();
     const server = app([org.id]);
-    const handoff = (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
+    const handoff = (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201)).body as AgentSetupProgressHandoff;
     const checklist = path(handoff.urls.checklist);
     const items = { items: [{ key: "step-1", title: "Step one" }] };
     await request(server).put(checklist).send(items).expect(401);
     await request(server).put(checklist).set({ Authorization: "Bearer pcsp_wrong" }).send(items).expect(401);
     // A real token for another checklist opens nothing else.
-    const other = (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
+    const other = (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201)).body as AgentSetupProgressHandoff;
     await request(server).put(checklist).set({ Authorization: `Bearer ${other.token}` }).send(items).expect(401);
 
     const auth = { Authorization: `Bearer ${handoff.token}` };
@@ -130,7 +134,7 @@ describe("agent setup progress", () => {
   it("finishes as failed, keeps finished final, never loses a concurrent update, and cleans up old checklists", async () => {
     const org = await company();
     const server = app([org.id]);
-    const create = async () => (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
+    const create = async () => (await request(server).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201)).body as AgentSetupProgressHandoff;
     const handoff = await create();
     const auth = { Authorization: `Bearer ${handoff.token}` };
     const item = (key: string) => path(handoff.urls.item.replace("{key}", key));
@@ -172,7 +176,7 @@ describe("agent setup progress", () => {
 
   it("does not let a cache keep the agent's token", async () => {
     const org = await company();
-    const res = await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201);
+    const res = await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201);
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.headers.pragma).toBe("no-cache");
   });
@@ -180,11 +184,24 @@ describe("agent setup progress", () => {
   it("keeps checklists inside their company", async () => {
     const org = await company();
     const outsider = await company();
-    const handoff = (await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(201)).body as AgentSetupProgressHandoff;
+    const handoff = (await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201)).body as AgentSetupProgressHandoff;
     // Another company's checklist answers exactly like a missing one.
     const hidden = await request(app([outsider.id])).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(404);
     const missing = await request(app([outsider.id])).get(`/api/agent-setup-progress/${randomUUID()}`).expect(404);
     expect(hidden.body).toEqual(missing.body);
-    await request(app([outsider.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(403);
+    await request(app([outsider.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(403);
+
+    // Inside the company: only someone who may configure the connection starts its setup,
+    // and only the person who started it reads the checklist back.
+    const viewerId = `viewer-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId: org.id, principalType: "user", principalId: viewerId, status: "active", membershipRole: "viewer" });
+    await request(app([org.id], viewerId)).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(403);
+    const otherMember = await request(app([org.id], viewerId)).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(404);
+    expect(otherMember.body).toEqual(missing.body);
+    const own = await request(app([org.id])).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(200);
+    expect(own.body.createdByUserId).toBeUndefined();
+    // A checklist always names a real connection of this company.
+    await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection" }).expect(422);
+    await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: outsider.connectionId }).expect(404);
   });
 });

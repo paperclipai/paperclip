@@ -14,7 +14,7 @@ POST /api/companies/{companyId}/agent-setup-progress
 { "purpose": "aws_connection", "subjectId": "<connection id>" }
 ```
 
-Board only, for members of the company. The `201` response returns the checklist, the token (shown only here) and the agent's URLs:
+Board only. For `aws_connection`, `subjectId` must name a connection of this company, and the caller must be allowed to configure it (its creator or a connection manager); otherwise `422`, `404` or `403`. The `201` response returns the checklist, the token (shown only here) and the agent's URLs:
 
 ```json
 {
@@ -28,7 +28,7 @@ Board only, for members of the company. The `201` response returns the checklist
 }
 ```
 
-`GET /api/agent-setup-progress/{id}` reads it (board only, same company; another company's checklist answers 404, like a missing one). Each agent update is also sent as an `agent_setup_progress.updated` live event carrying only the checklist ID.
+`GET /api/agent-setup-progress/{id}` reads it. Only the person who started the setup can read it; anyone else, including another company, gets the same `404` as for a missing checklist. Each agent update is also sent as an `agent_setup_progress.updated` live event carrying only the checklist ID.
 
 ## Agent Requests
 
