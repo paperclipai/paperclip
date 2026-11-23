@@ -1897,7 +1897,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
-  it.each(["unregistered", "backlink", "pointer", "symlink-backlink"])("refuses a nested Git wrapper with an unproven linked %s", async mode => {
+  it.each([["unregistered", "git_link_unregistered"], ["backlink", "git_links_unreadable"], ["pointer", "git_links_unreadable"],
+    ["symlink-backlink", "git_links_unreadable"], ["stale", "git_link_stale"]])("refuses a nested Git wrapper with an unproven linked %s and names it", async (mode, code) => {
     const { f, nested } = await nestedGitWrapperFixture(), issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Linked wrapper" });
     const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, issueId), alias = path.join(cwd, "nested");
@@ -1908,7 +1909,9 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     if (mode === "backlink") await fs.writeFile(backlink, path.join(alias, "wrong-marker") + "\n");
     if (mode === "pointer") await fs.writeFile(path.join(alias, ".git"), `gitdir: ${path.join(admin, "wrong")}\n`);
     if (mode === "symlink-backlink") { await fs.rename(backlink, backlink + ".real"); await fs.symlink(backlink + ".real", backlink); }
-    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"] });
+    if (mode === "stale") await fs.rm(alias, { recursive: true, force: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"],
+      sourceScopeUnproven: code });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(await db.select().from(workspaceOperations)).toHaveLength(0);
     expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
