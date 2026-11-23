@@ -151,6 +151,24 @@ export function localAiLoginService(db: Db) {
     if (provider === "xai" || browserLogins.has(id)) return;
     browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
   }
+  /**
+   * Stop a sign-in process while the caller holds the row lock of its attempt.
+   * `start` launches the process after its transaction commits, so a reopened
+   * attempt can gain a process after `retireOwnedAttempt` stopped the previous
+   * one. The caller removes the login home next; no process may outlive that.
+   */
+  async function stopBrowserLoginUnderLock(id: string) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const retirement = stopBrowserLogin(id);
+    try {
+      await Promise.race([retirement, new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(RETIREMENT_PENDING)), BROWSER_STOP_WAIT_MS);
+      })]);
+    } catch {
+      retainRetirement(id, retirement);
+      throw unprocessable("The previous sign-in is still stopping. Retry shortly.", { code: "ai_connection_busy" });
+    } finally { clearTimeout(timeout); }
+  }
   async function reapExpired() {
     // Waiting native owners have a completion wake, not a retry deadline. The
     // durable expiry remains unchanged and reconstructs cleanup after restart.
@@ -233,6 +251,7 @@ export function localAiLoginService(db: Db) {
         if (!restart || existing.connectionMethod !== LOCAL_LOGIN_METHOD)
           throw unprocessable("Another sign-in is still open. Finish it, or choose Start sign-in again to replace a local attempt.");
         if (existing.id !== retiredAttemptId) throw unprocessable("The sign-in attempt changed. Retry Start sign-in again.");
+        await stopBrowserLoginUnderLock(existing.id);
         await rm(loginHome(existing.id), { recursive: true, force: true });
         await tx.update(adapterAuthSessions).set({ status: "cancelled", expiresAt: null, failureReason: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(adapterAuthSessions.id, existing.id));
@@ -285,6 +304,17 @@ export function localAiLoginService(db: Db) {
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
     ensureBrowserLogin(attempt.sessionId, intent.provider);
+    // A cancel or a replacement may have retired this attempt between the
+    // transaction above and the launch. Read the row under its lock: a
+    // retirement that still holds the lock stops the process itself, and one
+    // that has committed is visible here.
+    const waiting = await db.transaction(async tx => (await tx.select({ status: adapterAuthSessions.status }).from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update"))[0]?.status === "waiting_for_user");
+    if (!waiting) {
+      await stopBrowserLogin(attempt.sessionId);
+      await rm(loginHome(attempt.sessionId), { recursive: true, force: true });
+      throw unprocessable("This sign-in was cancelled. Start sign-in again.");
+    }
     return attempt;
   }
 
@@ -450,6 +480,7 @@ export function localAiLoginService(db: Db) {
         eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
       )).for("update");
       if (!session) throw notFound("Local sign-in attempt not found.");
+      await stopBrowserLoginUnderLock(id);
       await rm(loginHome(id), { recursive: true, force: true });
       if (!session.connectionId && session.status !== "cancelled") {
         await tx.update(adapterAuthSessions).set({

@@ -2600,6 +2600,44 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
+  it("stops a sign-in process that a reopen launched while the attempt was being cancelled", async () => {
+    const owner = "reopen-during-cancel";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] } as const;
+    const running = new Set<number>();
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
+    const login = localAiLoginService(db);
+    let id: string | undefined;
+    try {
+      id = (await login.start(companyId, owner, intent)).sessionId;
+      expect([...running]).toEqual([1]);
+      // The other tab reopens the attempt after cancel stopped the first
+      // process and before cancel's transaction takes the row lock.
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened && running.size === 0) {
+          reopened = true;
+          expect((await login.start(companyId, owner, intent)).sessionId).toBe(id);
+          expect([...running]).toEqual([2]);
+        }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await login.cancel(companyId, owner, id); } finally { spy.mockRestore(); }
+      expect(reopened).toBe(true);
+      expect(launched).toBe(2);
+      expect([...running]).toEqual([]);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+      // A reopen that arrives after the cancel has committed starts a new attempt, not a process for the cancelled one.
+      const next = await login.start(companyId, owner, intent);
+      expect(next.sessionId).not.toBe(id);
+      await login.cancel(companyId, owner, next.sessionId);
+      expect([...running]).toEqual([]);
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();
