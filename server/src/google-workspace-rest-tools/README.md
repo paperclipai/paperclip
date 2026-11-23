@@ -72,6 +72,10 @@ so they can be deleted cleanly when that happens.
 - **One tool, one file.** Each tool in `gmail/`, `calendar/`, `drive/`, `docs/`, `slides/` and `sheets/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
+- **Every tool has a `title`.** It is a short action name in sentence case,
+  such as "Read a message". The gateway shows it to people as
+  "Gmail: Read a message" for both transports. `allowlist.test.ts` fails if a
+  tool has no title.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
 - **The allowlist stays where it is.** `toolScopes` in
   `packages/shared/src/google-workspace-connectors.ts` is the single list of

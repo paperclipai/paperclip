@@ -55,6 +55,7 @@ export function listRecentFilesResult(list: RestFileList): CallToolResult {
 export const listRecentFiles = defineTool({
   definition: {
     name: "list_recent_files",
+    title: "List recent files",
     description: "Lists the user's Drive files, most recent first, leaving out trashed files. orderBy recency (default) sorts by the latest of the file's times; lastModified by the last change by anyone; lastModifiedByMe by the user's last change. Another value falls back to recency. Default page size 10, at most 100. Pass nextPageToken as pageToken for more. Returns no content snippets.",
     inputSchema: {
       type: "object",

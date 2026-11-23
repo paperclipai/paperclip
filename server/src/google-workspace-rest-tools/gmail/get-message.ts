@@ -53,6 +53,7 @@ async function readExternalBodies(message: GmailRestMessage, input: GetMessageAr
 export const getMessage = defineTool({
   definition: {
     name: "get_message",
+    title: "Read a message",
     description: "Gets one email message from the signed-in user's Gmail by message ID.",
     inputSchema: {
       type: "object",
