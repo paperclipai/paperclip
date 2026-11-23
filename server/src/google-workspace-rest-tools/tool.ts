@@ -29,6 +29,10 @@ export function defineTool<Args>(spec: RestToolSpec<Args>): RestTool {
   if (readOnly !== (spec.whenTooLarge !== undefined)) {
     throw new Error(`${spec.definition.name}: a read tool must say how to ask for less, and a write tool must not`);
   }
+  const unmodeled = unmodeledSchemaParts(spec.definition.inputSchema, "inputSchema");
+  if (unmodeled.length > 0) {
+    throw new Error(`${spec.definition.name}: the unknown-argument check cannot follow ${unmodeled.join(", ")}`);
+  }
   const definition: Tool = { ...spec.definition, inputSchema: closedObjectSchema(spec.definition.inputSchema) as Tool["inputSchema"] };
   return {
     definition,
@@ -62,6 +66,21 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function isClosedObjectSchema(schema: JsonSchemaNode): schema is JsonSchemaNode & { properties: Record<string, JsonSchemaNode> } {
   return isRecord(schema.properties) && (schema.additionalProperties === undefined || schema.additionalProperties === false);
+}
+
+const UNMODELED_KEYWORDS = ["anyOf", "oneOf", "allOf", "not", "$ref", "prefixItems", "patternProperties", "if", "dependentSchemas", "unevaluatedProperties"];
+
+export function unmodeledSchemaParts(schema: unknown, path: string): string[] {
+  if (!isRecord(schema)) return [];
+  const found = UNMODELED_KEYWORDS.filter((keyword) => keyword in schema).map((keyword) => `${path}.${keyword}`);
+  if (Array.isArray(schema.items)) found.push(`${path}.items (tuple)`);
+  if (isRecord(schema.properties) && isRecord(schema.additionalProperties)) found.push(`${path}.additionalProperties (schema beside properties)`);
+  const properties = isRecord(schema.properties) ? Object.entries(schema.properties) : [];
+  return [
+    ...found,
+    ...properties.flatMap(([name, item]) => unmodeledSchemaParts(item, `${path}.properties.${name}`)),
+    ...unmodeledSchemaParts(schema.items, `${path}.items`),
+  ];
 }
 
 export function closedObjectSchema(schema: unknown): unknown {

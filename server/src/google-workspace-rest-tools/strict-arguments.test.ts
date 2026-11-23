@@ -7,6 +7,7 @@ import { DOCS_TOOLS } from "./docs/index.js";
 import { DRIVE_TOOLS } from "./drive/index.js";
 import { SHEETS_TOOLS } from "./sheets/index.js";
 import { SLIDES_TOOLS } from "./slides/index.js";
+import { defineTool, unmodeledSchemaParts } from "./tool.js";
 import { callGoogleWorkspaceRestTool, GOOGLE_WORKSPACE_REST_SERVICES, listGoogleWorkspaceRestTools } from "./tools.js";
 
 type Schema = Record<string, unknown>;
@@ -43,16 +44,26 @@ describe("unknown arguments", () => {
     expect(open.sort()).toEqual([...PASS_THROUGH].sort());
   });
 
-  it("validates exactly the arguments each tool advertises", () => {
+  it("validates exactly the arguments each tool advertises, with the same object structure", () => {
     for (const tool of REST_TOOLS) {
       const parsed = z.toJSONSchema(tool.args, { io: "input", unrepresentable: "any" });
-      const keys = (schema: unknown) => new Map(objectNodes(schema)
+      const keys = (schema: unknown) => Object.fromEntries(objectNodes(schema)
         .filter(({ node }) => isRecord(node.properties))
-        .map(({ path, node }) => [path, Object.keys(node.properties as Schema).sort()]));
-      const advertised = keys(tool.definition.inputSchema);
-      const validated = keys(parsed);
-      for (const [path, names] of advertised) expect(validated.get(path), `${tool.definition.name} ${path || "(top level)"}`).toEqual(names);
+        .map(({ path, node }) => [path || "(top level)", Object.keys(node.properties as Schema).sort()]));
+      expect(keys(parsed), tool.definition.name).toEqual(keys(tool.definition.inputSchema));
     }
+  });
+
+  it("refuses at definition time a schema whose parts the check cannot follow", () => {
+    const base = { name: "probe", annotations: { readOnlyHint: false } };
+    const run = async () => ({ content: [] });
+    expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { anyOf: [{ type: "object", properties: { b: { type: "string" } } }] } } } }, args: z.object({}), run }))
+      .toThrow("probe: the unknown-argument check cannot follow inputSchema.properties.a.anyOf");
+    expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { type: "array", items: [{ type: "object" }] } } } }, args: z.object({}), run }))
+      .toThrow("inputSchema.properties.a.items (tuple)");
+    expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { type: "string" } }, additionalProperties: { type: "string" } } }, args: z.object({}), run }))
+      .toThrow("inputSchema.additionalProperties (schema beside properties)");
+    for (const { tool } of ALL_TOOLS) expect(unmodeledSchemaParts(tool.inputSchema, tool.name)).toEqual([]);
   });
 
   it.each(ALL_TOOLS.map(({ service, tool }) => [`${service}__${tool.name}`, service, tool] as const))(
