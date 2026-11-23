@@ -6561,4 +6561,69 @@ mod tests {
         assert!(stale_candidate.validate().is_err());
         assert!(next_authority_config(&injected, &stale_candidate).is_err());
     }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        let directory =
+            std::env::temp_dir().join(format!("antigravity-grant-handoff-{}", std::process::id()));
+        let mut current = config(directory);
+        let grant = crate::acpx_candidate_admission::test_admission(
+            "run_1",
+            &current.normalized_session_id,
+        );
+        let ordinary = crate::durable::AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/fixture/node"),
+            args: vec!["/fixture/sidecar.cjs".to_owned()],
+            artifacts: vec![crate::durable::QualifiedLaunchArtifact {
+                path: PathBuf::from("/fixture/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        };
+        let mut candidate = current.clone();
+        candidate.acpx_launch_profile = Some(crate::durable::AcpxLaunchProfile {
+            candidate_admission: Some(grant.clone()),
+            ..ordinary.clone()
+        });
+        // Pending: the grant admits this run's startup.
+        candidate.validate().unwrap();
+
+        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
+        current.acpx_launch_profile = Some(ordinary);
+        current.validate().unwrap();
+        let mut next_grant = grant.clone();
+        next_grant.run_id = "run_2".to_owned();
+        let mut attach = command("run.attach");
+        attach.payload = json!({"paperclipNextAuthority":{
+            "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                "runId":"run_2","normalizedSessionId":current.normalized_session_id,"turnId":"turn_2","itemId":"item_2"},
+            "connection":{"mode":"external"}
+        }});
+        let next = next_authority_config(&attach, &current).unwrap().unwrap();
+        assert!(next
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        assert_eq!(next.acpx_launch_profile, current.acpx_launch_profile);
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.turn_id, "turn_2");
+        assert_eq!(next.item_id, "item_2");
+        let mut injected = attach.clone();
+        injected.payload["paperclipNextAuthority"]["candidateAdmission"] = json!(next_grant);
+        assert!(next_authority_config(&injected, &current).is_err());
+        // Released: a stale grant no longer admits startup or a handoff.
+        assert!(candidate.validate().is_err());
+        assert!(next_authority_config(&attach, &candidate).is_err());
+        assert!(next_authority_config(&injected, &candidate).is_err());
+    }
 }

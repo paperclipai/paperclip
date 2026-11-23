@@ -1661,6 +1661,99 @@ pnpm test:e2e:runner -- --list --suite kimi-qualification
 pnpm test:e2e:runner -- --id kimi-qualification.runner-acpx-kimi.local.message-marker --max-automatic-retries 0
 ```
 
+### Google Antigravity qualification
+
+`antigravity-qualification` is the explicit-only, unattended suite for the
+native Runner Antigravity harness with a Gemini API key. It follows the Kimi
+template: twelve journeys on local and on Daytona (24 cells), one attempt each,
+profile `runner-acpx-antigravity`, credential `GEMINI_API_KEY`, acceptance model
+`gemini-3.8-flash-low`. It is not part of `--all`, `extended-harnesses` or the
+attended [Antigravity journey](ANTIGRAVITY-AGENT-JOURNEY.md), which stays a
+separate saved-subscription cell refused by CI matrix jobs.
+
+While the Antigravity release declaration is `pending`, the supervisor stages a
+company-bound candidate grant (company, exact model, profile digest, closure
+digest, platform, architecture, one-hour expiry) when each cell's disposable
+company is created, exactly as Kimi did. Ambient grants are discarded. When the
+declaration is flipped to qualified, `antigravityCandidateAdmissionForExecution`
+returns nothing and the same cells prove ordinary admission without a grant;
+the suite definition does not change. Daytona lifecycle cases use per-turn
+leases; the other Daytona cases use the warm environment.
+
+Each case maps to one row of the
+[playbook section 13 acceptance matrix](../../doc/RUNNER-INTEGRATION-PLAYBOOK.md#13-run-the-product-acceptance-matrix):
+
+| Case | Fixture reused | Acceptance row |
+| --- | --- | --- |
+| `message-marker` | core runner task | Task completion |
+| `plan-revise-accept` | core runner task | Plans |
+| `ask-question`, `structured-question-resume` | core runner tasks | Questions (semantic forms) |
+| `structured-question-restart-resume` | local-integrity task | Pending input + controller restart |
+| `file-edit-validate` | extended-harness file task | File/edit/validate/deliver |
+| `warm-three-turn` | warm workspace continuity (workspace-file variant) | Warm follow-ups |
+| `stop-new-resume` | chat hardening | Stop (active real work) |
+| `continuity-restart` | chat hardening | Continuity after controller restart |
+| `pending-permission-stop` | shared `native_active_stop` (Cursor/Copilot) | Stop (pending native permission) |
+| `permission-deny-stop` | shared `native_active_stop` with a browser Deny first | Permission denial |
+| `pending-permission-provider-loss` | shared `native_provider_loss` (Cursor) | Provider death |
+
+Antigravity emits no provider tool-evidence notice, so the shared Stop and loss
+oracles read the canonical stream for it: one `runtime_request.created`
+permission card with the native ACPX origin, its tool execution (an edit or
+write on the exact target, never completed), only completed read/search
+operations before it, then a cancelled (Stop) or expired (loss) closure and one
+turn terminal. A stale Allow must return 409 in both cases.
+
+`permission-deny-stop` follows the same pending boundary, then the operator
+clicks Deny in the browser and stops the task. It passes only when the browser's
+POST declines that exact run, turn and request; the canonical stream records a
+`runtime_request.resolved` `decline` for it before the one turn terminal; the
+mutation never completes and nothing runs after the terminal; the target stays
+absent through cleanup; and there is one run. When Stop wins (the expected
+branch) the run is cancelled with the caller's acknowledged Stop; when the
+provider ended its turn after the denial first, the task must not be done.
+
+Instructions and assigned skills use the shared `native-completion` cells; the
+Antigravity profile there is opt-in (`--profile runner-acpx-antigravity`).
+Normal setup through the picker is covered by the attended journey. Native
+questions, plans, steering, agent files and accounting are not claimed.
+
+```sh
+pnpm test:e2e:runner -- --list --suite antigravity-qualification
+pnpm test:e2e:runner -- --id antigravity-qualification.runner-acpx-antigravity.local.message-marker --max-automatic-retries 0
+pnpm test:e2e:runner -- --suite antigravity-qualification --environment daytona --max-automatic-retries 0
+```
+
+### Google Antigravity model lineups
+
+`antigravity-model-lineup` (14 cells) and `antigravity-model-lineup-gemini4`
+(14 cells) are local, explicit-only suites with one cell per exact model ID,
+case `model-receipt`, generated from the pinned server's catalog. Model IDs
+are `<family>-<level>`. The API-key lineup is Flash 3.5 to 3.8 at `low`,
+`medium` and `high`, plus 3.1 Pro at `low` and `high`. The Gemini 4 lineup is
+each family at the levels it offers: Neon and Hydrogen at `low` to
+`extra_high`, Carbon and Argon at `low` to `high`. Both lineups bind
+`GEMINI_API_KEY`. The 1.5.2 server's own catalog lists Gemini 4 only for Agent
+Platform, but patch `1.5.2-paperclip.2` admits an exact requested model ID
+under an API key, so the Gemini 4 lineup runs on the same API-key route. It
+needs a paid Gemini key: a free-tier key has no Gemini 4 quota, so its cells
+reach the exact-model receipt but no reply. Each
+cell admits its own model, sends the ordinary one-reply prompt, and grades the
+run's native input model plus the Runner's requested and effective model
+receipt against the requested ID; a reply alone does not pass. Profile IDs
+replace dots, for example
+`antigravity-model-lineup.runner-acpx-antigravity-gemini-3-8-flash-low.local.model-receipt`.
+`buildAntigravityModelLineupSuite` takes any other list.
+
+### Antigravity in shared eval suites
+
+`chat-features` and `native-completion` include an Antigravity profile that is
+selected only when named, so existing suite selections are unchanged:
+
+```sh
+pnpm test:e2e:runner -- --list --suite chat-features --profile runner-acpx-antigravity
+```
+
 ### Grok branch qualification on EC2
 
 The trusted default-branch workflow can run the explicit `grok-qualification`

@@ -677,8 +677,9 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).not.toHaveBeenCalled();
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity" && !call[2]?.agentId)).toBe(true);
-    if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
-    else expect(api.adapterModels).toHaveBeenCalled();
+    // A Gemini API key gets the pinned runtime's catalog too, never a type-the-id dead end.
+    expect(api.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      acpxAgent: "antigravity", aiConnection: expect.objectContaining({ provider: "google", method }) }));
     await click("Back to agents");
     expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
   });
@@ -701,8 +702,7 @@ describe("New agent setup", () => {
       await click(method === "subscription" ? "Use saved subscription" : "Use saved API key");
       expect(api.testEnvironment).not.toHaveBeenCalled();
       expect(container.textContent).toContain("Configure your agent");
-      if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
-      else await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
         provider: "acpx", acpxAgent: "antigravity", aiConnection: expect.objectContaining({ provider: "google", method }), environmentId: "local-1",
       })));
       await click("Finish setup");

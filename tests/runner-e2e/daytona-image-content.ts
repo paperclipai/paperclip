@@ -106,7 +106,7 @@ export interface DaytonaImageContentOptions {
 
 export function normalizedDaytonaCandidateProviders(values: readonly string[]): string[] {
   const selected = [...values].sort();
-  if (selected.some(value => !["cursor", "copilot", "pi", "kimi"].includes(value))
+  if (selected.some(value => !["cursor", "copilot", "pi", "kimi", "antigravity"].includes(value))
     || new Set(selected).size !== selected.length) {
     throw new Error("Daytona candidate providers must be distinct known ACP profiles");
   }
