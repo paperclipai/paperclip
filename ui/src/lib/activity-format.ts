@@ -251,7 +251,8 @@ function formatToolLabel(details: ActivityDetails): string {
 }
 
 export function formatActivityEntityLabel(entityType: string, details?: Record<string, unknown> | null): string {
-  if (entityType === "tool_application" && readText(details?.name)) return readText(details?.name)!;
+  const name = readText(details?.name);
+  if (entityType === "tool_application" && name) return name;
   if (entityType === "tool_connection" && googleProviderAccessResult(details)) return "the Google Workspace connection";
   return ENTITY_LABELS[entityType] ?? entityType.replace(/[._]+/g, " ");
 }
