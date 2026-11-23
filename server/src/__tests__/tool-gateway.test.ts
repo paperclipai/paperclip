@@ -2242,24 +2242,26 @@ rl.on("line", (line) => {
       provider: "local_encrypted",
     });
     const personal = await createRemoteMcpTool(db, company.id, { toolName: "read_mail" });
-    await db.update(toolConnections).set({
-      credentialPolicy: "per_user",
-      credentialRefs: [{ name: "credentials.authorization", placement: "header", key: "Authorization", prefix: "Bearer " }],
-    }).where(eq(toolConnections.id, personal.connection.id));
     await secrets.syncUserSecretDeclarationsForTarget(company.id,
       { targetType: "tool_connection", targetId: personal.connection.id },
       [{ definitionKey: definition.key, configPath: "credentials.authorization", envKey: "Authorization", versionSelector: "latest", required: true }],
       { replaceAll: true });
+    const personalSecrets = new Map<string, string>();
     for (const userId of ["alice", "bob"]) {
       const secret = await secrets.createCurrentUserSecretValue(company.id, userId, {
         definitionId: definition.id, value: `${userId}-personal-token`,
       });
+      personalSecrets.set(userId, secret.id);
       await db.insert(connectionGrants).values({
         companyId: company.id, connectionId: personal.connection.id, kind: "user", subjectUserId: userId,
         credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }],
         status: "active", isDefault: false,
       });
     }
+    await db.update(toolConnections).set({
+      credentialPolicy: "per_user",
+      credentialRefs: [{ name: "credentials.authorization", secretId: personalSecrets.get("alice")!, placement: "header", key: "Authorization", prefix: "Bearer " }],
+    }).where(eq(toolConnections.id, personal.connection.id));
     const shared = await createRemoteMcpTool(db, company.id, { toolName: "shared_lookup" });
     await allowAllToolsForAgent(db, company.id, agent.id);
     const authorizations: string[] = [];
