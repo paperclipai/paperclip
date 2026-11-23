@@ -13,8 +13,8 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/api/agentSetupProgress", () => ({ agentSetupProgressApi: {} }));
-const account = vi.hoisted(() => ({ userId: "user-1" as string | null, settled: true, failed: false }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: account.settled, failed: account.failed }) }));
+const account = vi.hoisted(() => ({ userId: "user-1" as string | null, settled: true, current: true, failed: false }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: account.settled, current: account.settled && account.current, failed: account.failed }) }));
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const BASE = `https://acme.paperclip.app/api/agent-setup-progress/${ID}`;
@@ -39,6 +39,7 @@ describe("agent setup progress", () => {
     window.sessionStorage.clear();
     account.userId = "user-1";
     account.settled = true;
+    account.current = true;
     account.failed = false;
   });
   afterEach(async () => {
@@ -236,6 +237,27 @@ describe("agent setup progress", () => {
     await flush();
     expect(create).toHaveBeenCalledTimes(2);
     await vi.waitFor(() => expect(token()).toBe("pcsp_other_account"));
+  });
+
+  it("does not read the previous account's checklist while a sign-in's session refresh is in flight", async () => {
+    // The previous account left a checklist in this tab; the session still names it, but was just invalidated.
+    window.sessionStorage.setItem("paperclip:agent-setup-progress:user-1:company-1:aws_connection:conn-1", JSON.stringify(HANDOFF));
+    const fresh: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_new_account", progress: { ...WAITING, id: "77777777-7777-4777-8777-777777777777" } };
+    const create = vi.fn().mockResolvedValueOnce(fresh);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async () => fresh.progress) };
+    account.current = false;
+    const tree = () => <QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>;
+    await act(async () => { root.render(tree()); });
+    await flush();
+    expect(token()).not.toBe("pcsp_token");
+    expect(client.get).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    // The refresh lands with the new account: it gets its own checklist.
+    account.userId = "user-2";
+    account.current = true;
+    await act(async () => { root.render(tree()); });
+    await vi.waitFor(() => expect(token()).toBe("pcsp_new_account"));
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it("replaces a finished checklist from an earlier visit even when the session arrives late", async () => {

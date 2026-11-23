@@ -9,7 +9,7 @@ import { AwsRoleSetup, awsAgentSetupPrompt, awsCliCommands, awsSetupErrorMessage
 import { ApiError } from "@/api/client";
 
 vi.mock("@/api/tools", () => ({ toolsApi: {} }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "user-1", settled: true }) }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "user-1", settled: true, current: true }) }));
 
 const READY: AwsConnectionSetup = {
   available: true,

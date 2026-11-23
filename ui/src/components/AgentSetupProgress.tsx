@@ -67,7 +67,9 @@ export function useAgentSetupProgress({
   // The checklist belongs to the person setting up: keyed by account so another account never reuses it.
   const account = useAccountIdentity();
   const accountId = accountOverride ?? account.userId ?? "anonymous";
-  const accountKnown = Boolean(accountOverride) || account.settled;
+  // Current, not merely settled: right after an in-place sign-in the cached session still names the
+  // previous account, and this tab may hold that account's checklist token.
+  const accountKnown = Boolean(accountOverride) || account.current;
   const accountFailed = !accountOverride && account.failed;
   const handoffKey = ["agent-setup-progress-handoff", accountId, companyId ?? null, purpose, subjectId ?? null] as const;
   const storageKey = agentSetupHandoffStorageKey(accountId, companyId, purpose, subjectId);
