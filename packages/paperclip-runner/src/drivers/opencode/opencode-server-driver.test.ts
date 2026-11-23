@@ -490,6 +490,15 @@ describe("OpenCodeServerDriver", () => {
       expect(bodies).toHaveLength(2);
       const roots = bodies.map(body => body.resourceSpans[0].scopeSpans[0].spans[0]);
       expect(roots.map(span => span.attributes.find((a: any) => a.key === "paperclip.run.id").value.stringValue)).toEqual(["first", "second"]);
+      for (const body of bodies) {
+        const spans = body.resourceSpans[0].scopeSpans[0].spans;
+        const usage = spans.filter((span: any) => span.name === "opencode.model.usage");
+        if (body === bodies[0]) {
+          expect(usage).toHaveLength(1);
+          expect(usage[0].attributes).toContainEqual({ key: "braintrust.metrics.estimated_cost", value: { doubleValue: 0.001 } });
+        }
+        expect(spans[0].attributes.some((attribute: any) => attribute.key === "braintrust.metrics.estimated_cost")).toBe(false);
+      }
       expect(JSON.stringify(bodies)).not.toContain("ingestion-canary");
     } finally {
       await session?.close({ reason: "test" });

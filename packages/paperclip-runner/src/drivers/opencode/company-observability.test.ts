@@ -47,6 +47,46 @@ it("exports turn and tool content without raw payloads, reasoning, credentials o
   expect(spans[1].status.code).toBe(2);
   expect(spanAttributes(spans[2])).toMatchObject({ "gen_ai.usage.input_tokens": 12, "gen_ai.usage.cache_read.input_tokens": 4, "paperclip.cost.usd": 0.2 });
 });
+it("exports reported model costs once per message as standard cost with content capture disabled", async () => {
+  const { observer, bodies } = setup({ ...environment, OTEL_LOG_USER_PROMPTS: "0", OTEL_LOG_ASSISTANT_RESPONSES: "0", OTEL_LOG_TOOL_DETAILS: "0", OTEL_LOG_TOOL_CONTENT: "0" });
+  observer.observe(event("turn.submitted", { text: "private" }));
+  for (const [usageMessageId, costUsd] of [["glm", 0.01], ["glm", 0.03650488], ["deepseek", 0.00014054052], ["kimi", 0.0208086]] as const) {
+    observer.observe(event("item.completed", { kind: "usage", usageMessageId, usage: { input: 114, output: 84, cache: { read: 138368, write: 0 }, costUsd } }));
+  }
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const resource = bodies[0].resourceSpans[0];
+  expect(spanAttributes(resource.resource)).toEqual({ "service.name": "paperclip-opencode", "paperclip.company.id": "company", "paperclip.agent.id": "agent" });
+  const spans = resource.scopeSpans[0].spans;
+  expect(spans).toHaveLength(4);
+  expect(spanAttributes(spans[0])).not.toHaveProperty("braintrust.metrics.estimated_cost");
+  const costs = spans.slice(1).map((span: Parameters<typeof spanAttributes>[0]) => {
+    const attrs = spanAttributes(span);
+    expect(attrs).toMatchObject({ "gen_ai.usage.input_tokens": 114, "gen_ai.usage.output_tokens": 84, "gen_ai.usage.cache_read.input_tokens": 138368, "gen_ai.usage.cache_creation.input_tokens": 0, "paperclip.company.id": "company", "paperclip.run.id": "run-one" });
+    expect(attrs["braintrust.metrics.estimated_cost"]).toBe(attrs["paperclip.cost.usd"]);
+    expect(span.attributes.find(a => a.key === "braintrust.metrics.estimated_cost")?.value).toEqual({ doubleValue: attrs["paperclip.cost.usd"] });
+    return attrs["braintrust.metrics.estimated_cost"];
+  });
+  expect(costs).toEqual([0.03650488, 0.00014054052, 0.0208086]);
+  expect(JSON.stringify(bodies)).not.toContain("private");
+});
+it.each([0, null, undefined, -1, NaN, Infinity, "0.12"])("preserves zero and omits unknown or invalid standard cost %s", async costUsd => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("item.completed", { kind: "usage", usageMessageId: "message", usage: { input: 1, costUsd: 0.1 } }));
+  observer.observe(event("item.completed", { kind: "usage", usageMessageId: "message", usage: { input: 2, costUsd } }));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  expect(spans).toHaveLength(2);
+  const attrs = spanAttributes(spans[1]);
+  expect(attrs["gen_ai.usage.input_tokens"]).toBe(2);
+  if (costUsd === 0) expect(attrs).toMatchObject({ "braintrust.metrics.estimated_cost": 0, "paperclip.cost.usd": 0 });
+  else {
+    expect(attrs).not.toHaveProperty("braintrust.metrics.estimated_cost");
+    expect(attrs).not.toHaveProperty("paperclip.cost.usd");
+  }
+});
 it("honors all capture switches while retaining usage and the correct warm-run identity", async () => {
   const { observer, bodies } = setup({ ...environment, OTEL_LOG_USER_PROMPTS: "0", OTEL_LOG_ASSISTANT_RESPONSES: "0", OTEL_LOG_TOOL_CONTENT: "0" });
   for (const runId of ["first", "second"]) {
