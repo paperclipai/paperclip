@@ -46,6 +46,7 @@ import {
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -973,7 +974,7 @@ function PrettyPreview({ value }: { value: unknown }) {
 function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: number }) {
   const titleKey = ["title", "name", "label"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
-  const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
+  const url = safeExternalHttpUrl(row.url);
   const details = Object.entries(row)
     .filter(([key]) => key !== titleKey && key !== summaryKey && (key !== "url" || !url))
     .sort(([left], [right]) => {

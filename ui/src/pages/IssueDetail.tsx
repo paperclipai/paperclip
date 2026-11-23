@@ -426,6 +426,7 @@ import {
 import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { openSafeUrl } from "@/lib/safe-url";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -6371,7 +6372,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const handleChatImageClick = useCallback(
     (src: string) => {
-      if (!openIssueGallery(src)) window.open(src, "_blank");
+      if (!openIssueGallery(src)) openSafeUrl(src);
     },
     [openIssueGallery],
   );
