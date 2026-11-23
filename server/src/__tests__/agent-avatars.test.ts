@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createReadStream } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
 import { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import path from "node:path";
@@ -114,6 +116,15 @@ describe("on-demand agent avatars", () => {
     const png = await pool.render(request);
     expect(await sharp(png).metadata()).toMatchObject({ width: 48, height: 48, format: "png", hasAlpha: true });
   }, 20_000);
+  it("deep-imports PAPERCLIP_DARK_AVATAR_BACKGROUND in the avatar worker instead of the root shared barrel", async () => {
+    const maxSourceBytes = 16 * 1024;
+    const workerUrl = new URL("../services/agent-avatar-worker.ts", import.meta.url);
+    const bytes = await buffer(createReadStream(workerUrl, { end: maxSourceBytes }));
+    expect(bytes.length).toBeLessThanOrEqual(maxSourceBytes);
+    const source = bytes.toString("utf8");
+    expect(source).not.toMatch(/["']@paperclipai\/shared["']/);
+    expect(source).toMatch(/import\s*\{[^}]*\bPAPERCLIP_DARK_AVATAR_BACKGROUND\b[^}]*\}\s*from\s*["']@paperclipai\/shared\/agent-appearance["']/);
+  });
   it("serves angled portraits separately while keeping the default front cache intact", async () => {
     const service = createAgentAvatarService(await storage()); cleanups.push(() => service.close());
     const url = await serve(service);

@@ -1,7 +1,7 @@
 import { parentPort } from "node:worker_threads";
 import sharp from "sharp";
 import { renderAgentSvg } from "@paperclipai/shared/cliplab/static";
-import { PAPERCLIP_DARK_AVATAR_BACKGROUND } from "@paperclipai/shared";
+import { PAPERCLIP_DARK_AVATAR_BACKGROUND } from "@paperclipai/shared/agent-appearance";
 import type { AgentAvatarRequest } from "./agent-avatars.js";
 
 parentPort!.on("message", async (request: AgentAvatarRequest) => {
