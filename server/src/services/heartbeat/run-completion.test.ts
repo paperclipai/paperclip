@@ -26,7 +26,7 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
@@ -1140,6 +1140,24 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const failed = await read(f.run.id);
     expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
     expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it.each([
+    ["the save", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)],
+    ["the save and its read-only fallback", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL, { cause: new Error(
+      "remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=unknown") })],
+  ])("names a full sandbox disk that stopped %s of the workspace during setup", async (_name, failure) => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(failure()));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full", error: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps another failed workspace save as a setup failure", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(new Error("remote_workspace_archive_changed")));
+    expect((await read(f.run.id))?.errorCode).toBe("setup_failed");
   });
 
   it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {

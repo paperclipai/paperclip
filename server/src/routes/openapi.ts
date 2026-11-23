@@ -2112,6 +2112,7 @@ registry.registerPath({
     200: r.ok(),
     403: r.forbidden,
     404: r.notFound,
+    429: { description: "Paperclip Cloud is rate limiting portfolio reads (code cloud_portfolio_rate_limited). Retry-After, when present, gives whole seconds from 1 to 300. Not cached." },
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,

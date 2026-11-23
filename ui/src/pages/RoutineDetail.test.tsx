@@ -48,6 +48,9 @@ vi.mock("../api/routines", () => ({
   },
 }));
 vi.mock("../api/issues", () => ({ issuesApi: { list: vi.fn() } }));
+vi.mock("../api/auth", () => ({
+  authApi: { getSession: vi.fn(async () => ({ user: { id: "user-1" } })) },
+}));
 vi.mock("../api/agents", () => ({
   agentsApi: { list: vi.fn(async () => [{ id: "agent-1", name: "Digest Bot", status: "active", role: "engineer", title: null }]) },
 }));

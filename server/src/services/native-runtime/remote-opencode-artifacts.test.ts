@@ -110,6 +110,32 @@ async function fixture() {
     },
   };
 }
+it("stages verified Mach-O launch files for an Apple Silicon SSH account", async () => {
+  const f = await fixture();
+  const binary = Buffer.alloc(64); binary.writeUInt32LE(0xfeedfacf, 0); binary.writeUInt32LE(0x0100000c, 4);
+  f.manifest.payload.target = { platform: "darwin", architecture: "arm64" };
+  for (const name of ["nodeCommand", "opencodeExecutable"] as const) {
+    const entry = f.manifest.payload.artifacts[name];
+    await chmod(join(f.sourceRoot, entry.path), 0o700);
+    await writeFile(join(f.sourceRoot, entry.path), binary);
+    await chmod(join(f.sourceRoot, entry.path), 0o500);
+    entry.sha256 = `sha256:${createHash("sha256").update(binary).digest("hex")}`;
+  }
+  f.manifest.digest = `sha256:${createHash("sha256").update(canonicalProviderPackJson(f.manifest.payload)).digest("hex")}`;
+  const first = await prepareRemoteOpenCodeArtifacts({ ...f, bootstrapNode: process.execPath, nonce: randomUUID() });
+  expect(await readFile(first.paths.nodeCommand)).toEqual(binary);
+  expect(await readFile(first.paths.opencodeExecutable)).toEqual(binary);
+  const cached = await prepareRemoteOpenCodeArtifacts({ ...f, bootstrapNode: process.execPath, nonce: randomUUID() });
+  expect(cached).toEqual(first);
+});
+
+it("rejects Linux launch files when the admitted pack targets macOS", async () => {
+  const f = await fixture();
+  f.manifest.payload.target = { platform: "darwin", architecture: "arm64" };
+  f.manifest.digest = `sha256:${createHash("sha256").update(canonicalProviderPackJson(f.manifest.payload)).digest("hex")}`;
+  await expect(prepareRemoteOpenCodeArtifacts({ ...f, bootstrapNode: process.execPath, nonce: randomUUID() })).rejects.toThrow("remote_unavailable");
+});
+
 it("restores exact launch paths independently of a replacement lease cwd and upgraded image", async () => {
   const f = await fixture();
   const first = await prepareRemoteOpenCodeArtifacts({

@@ -256,9 +256,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
     companyId: string,
     profileId: string,
     entries: CreateToolProfileEntryForProfile[],
-    dbClient: ToolAccessMutationDb = db,
+    dbClient: ToolAccessMutationDb,
   ) {
-    await assertProfileEntryInputs(dbClient, companyId, entries);
     if (entries.length === 0) return;
     await dbClient.insert(toolProfileEntries).values(
       entries.map((entry) => ({
@@ -274,6 +273,27 @@ export function createToolProfileService(db: Db, now: () => Date) {
         conditions: entry.conditions ?? null,
       })),
     );
+  }
+
+  async function createProfileRow(companyId: string, input: CreateToolProfileWithEntries) {
+    const entries = input.entries ?? [];
+    return db.transaction(async (tx) => {
+      await assertProfileEntryInputs(tx, companyId, entries);
+      const [row] = await tx
+        .insert(toolProfiles)
+        .values({
+          companyId,
+          profileKey: input.profileKey,
+          name: input.name,
+          description: input.description ?? null,
+          status: input.status ?? "active",
+          defaultAction: input.defaultAction ?? "deny",
+          metadata: input.metadata ?? {},
+        })
+        .returning();
+      await createProfileEntries(companyId, row.id, entries, tx);
+      return row;
+    });
   }
 
   async function replaceProfileEntries(
@@ -517,22 +537,11 @@ export function createToolProfileService(db: Db, now: () => Date) {
       input: CreateToolProfileWithEntries, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileWithDetails> => {
       await managementContext?.reauthorize();
-      await assertProfileEntryInputs(db, companyId, input.entries ?? []);
-      const [row] = await db
-        .insert(toolProfiles)
-        .values({
-          companyId,
-          profileKey: input.profileKey,
-          name: input.name,
-          description: input.description ?? null,
-          status: input.status ?? "active",
-          defaultAction: input.defaultAction ?? "deny",
-          metadata: input.metadata ?? {},
-        })
-        .returning();
-      await createProfileEntries(companyId, row.id, input.entries ?? []);
+      const row = await createProfileRow(companyId, input);
       return profileDetails(row.id, companyId);
     },
+
+    createProfileRow,
 
     getProfile: profileDetails,
 

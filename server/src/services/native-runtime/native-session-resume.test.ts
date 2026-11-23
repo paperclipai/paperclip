@@ -368,6 +368,44 @@ describe("a session saved by the previous Claude or Codex ACPX runtime", () => {
   });
 });
 
+describe("a Google Antigravity session saved by the pending candidate", () => {
+  // The candidate's saved provider binds its pending profile. After the flip,
+  // the next run carries the task into a fresh provider session in the same
+  // workspace (the automatic replacement), never a Retry of the old session.
+  const antigravityExecution = (runId: string) => buildNativeExecutionInput({
+    companyId, runId,
+    issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn", agentId,
+    workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId, provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low",
+    acpxPermissionMode: "approve-all", completionContract: execution(runId).completionContract,
+    runtimeContext: nativeRuntimeContextFixture(),
+  });
+
+  it("starts the next run on the qualified release in a fresh provider session in the same workspace", () => {
+    const saved = antigravityExecution(previousRunId);
+    const source = { ...previousRun(), runnerProfileJson: { ...previousRun().runnerProfileJson, nativeExecutionInput: saved } };
+    // The flip bumps the profile version (the snapshot carries no qualification status).
+    const released = (runId: string) => {
+      const built = antigravityExecution(runId);
+      (built.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion += 1;
+      return built;
+    };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: antigravityExecution(currentRunId) })).not.toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: released(currentRunId) })).toBeNull();
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => {
+        const built = released(currentRunId);
+        built.session.normalizedSessionId = sessionId;
+        built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+        return built;
+      } });
+    expect(result.checkpoint).toBeNull();
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.workspace).toEqual(released(currentRunId).workspace);
+  });
+});
+
 describe("a source whose provider state was not saved after its result was accepted", () => {
   const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
     reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };

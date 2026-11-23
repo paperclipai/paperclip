@@ -97,7 +97,7 @@ export function responsibilityAgentChangeService(db: Db) {
       agentId: string;
       interactionId: string | undefined;
       key: string;
-      ownerUserId?: string;
+      ownerUserId: string;
     }) {
       const refuse = () => forbidden(
         "A permanent delete needs the person's confirmation: post a confirmation card, then delete with its id after they accept it",
@@ -129,8 +129,7 @@ export function responsibilityAgentChangeService(db: Db) {
         eq(companyMemberships.principalId, resolverUserId),
         eq(companyMemberships.status, "active"),
       ));
-      const allowed = membership && (!input.ownerUserId || resolverUserId === input.ownerUserId
-        || membership.role === "owner" || membership.role === "admin");
+      const allowed = membership && resolverUserId === input.ownerUserId;
       if (!allowed) throw refuse();
       return card;
     },

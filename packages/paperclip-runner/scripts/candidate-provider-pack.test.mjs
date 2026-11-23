@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, materializeAntigravityProviderPack, providerPackProviders, providerPackManifestFields, providerPackQualification } from "./candidate-provider-pack.mjs";
+import profiles from "../acpx-profiles.json" with { type: "json" };
 import { createHash } from "node:crypto";
 
 async function withCopilotTestPlatform(run) {
@@ -114,4 +115,75 @@ test("Pi pack selection reaches its pinned builder and rejects unsafe output bef
   });
   await assert.rejects(materializeCandidateProviderPack({ provider: "pi", outputRoot: "relative-pi-output" }), /Pi distribution output must be absolute/);
   assert.equal(requests, 0);
+});
+
+test("pending Antigravity is an explicit linux-x64 candidate and never an ordinary provider", () => {
+  const antigravity = { version: "1.5.2", qualification: "pending", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+  assert.equal(profiles.profiles.antigravity.qualificationStatus, "pending");
+  assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=antigravity"]), { output: "/pack", candidates: ["antigravity"] });
+  assert.equal(providerPackProviders("linux", "x64", []).includes("antigravity"), false);
+  assert.equal(providerPackProviders("linux", "x64", ["antigravity"]).filter(provider => provider === "antigravity").length, 1);
+  for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "arm64"], ["win32", "x64"]]) {
+    assert.equal(providerPackProviders(platform, architecture, []).includes("antigravity"), false);
+    assert.throws(() => providerPackProviders(platform, architecture, ["antigravity"]), /only for linux-x64/);
+  }
+  assert.equal(providerPackQualification("antigravity"), "pending");
+  const fields = providerPackManifestFields({ antigravity }, ["antigravity"]);
+  assert.deepEqual(fields.candidateProviders, { antigravity });
+  assert.equal(fields.providers?.antigravity, undefined);
+  assert.equal(providerPackManifestFields({ antigravity }, []).candidateProviders?.antigravity, undefined);
+  assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+});
+
+test("released Antigravity flips to ordinary linux-x64 inventory with its profile status alone", () => {
+  const antigravity = { version: "1.5.2", qualification: "qualified", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+  const original = profiles.profiles.antigravity.qualificationStatus;
+  try {
+    delete profiles.profiles.antigravity.qualificationStatus;
+    assert.equal(providerPackProviders("linux", "x64", []).filter(provider => provider === "antigravity").length, 1);
+    assert.equal(providerPackProviders("linux", "x64", ["antigravity"]).filter(provider => provider === "antigravity").length, 1);
+    for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "arm64"]]) {
+      assert.equal(providerPackProviders(platform, architecture, []).includes("antigravity"), false);
+    }
+    assert.equal(providerPackQualification("antigravity"), "qualified");
+    for (const candidates of [[], ["antigravity"]]) {
+      const fields = providerPackManifestFields({ antigravity }, candidates);
+      assert.equal(fields.providers.antigravity, antigravity);
+      assert.equal(fields.candidateProviders?.antigravity, undefined);
+    }
+  } finally { profiles.profiles.antigravity.qualificationStatus = original; }
+});
+
+test("Antigravity pack builder keeps only this release's patched closure", async () => {
+  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.2" };
+  const calls = [];
+  const build = result => async options => { calls.push(options); return result; };
+  const accepted = await materializeAntigravityProviderPack({ outputRoot: "/pack/provider-assets/antigravity/linux-x64", platform: "linux", architecture: "x64", materialize: build(distribution) });
+  assert.deepEqual(accepted, { version: "1.5.2", profileDigest: profiles.profiles.antigravity.commandDigest, closureDigest: `sha256:${"a".repeat(64)}` });
+  assert.deepEqual(calls[0], { destination: "/pack/provider-assets/antigravity/linux-x64", platform: "linux", architecture: "x64" });
+  for (const wrong of [{ closureSha256: "b".repeat(64) }, { patchVersion: undefined }, { version: "1.4.3" }, { closureSha256: "short" }]) {
+    await assert.rejects(materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "linux", architecture: "x64", materialize: build({ ...distribution, ...wrong }) }),
+      /patched runtime closure/);
+  }
+  calls.length = 0;
+  await assert.rejects(materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "darwin", architecture: "arm64", materialize: build(distribution) }), /only for linux-x64/);
+  assert.equal(calls.length, 0);
+});
+
+test("Antigravity pack builder repeats only a failed download", async t => {
+  t.mock.method(process.stderr, "write", () => true);
+  const distribution = { version: "1.5.2", closureSha256: "a".repeat(64), vendorClosureSha256: "b".repeat(64), patchVersion: "1.5.2-paperclip.2" };
+  let attempts = 0;
+  const flaky = async () => { if (++attempts < 3) throw new Error("Antigravity archive download failed: 503"); return distribution; };
+  const result = await materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "linux", architecture: "x64", materialize: flaky, retryDelayMs: 1 });
+  assert.equal(result.closureDigest, `sha256:${"a".repeat(64)}`);
+  assert.equal(attempts, 3);
+  attempts = 0;
+  const tampered = async () => { attempts++; throw new Error("Antigravity archive digest mismatch"); };
+  await assert.rejects(materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "linux", architecture: "x64", materialize: tampered, retryDelayMs: 1 }), /digest mismatch/);
+  assert.equal(attempts, 1);
+  attempts = 0;
+  const down = async () => { attempts++; throw new TypeError("fetch failed"); };
+  await assert.rejects(materializeAntigravityProviderPack({ outputRoot: "/pack", platform: "linux", architecture: "x64", materialize: down, retryDelayMs: 1 }), /fetch failed/);
+  assert.equal(attempts, 3);
 });
