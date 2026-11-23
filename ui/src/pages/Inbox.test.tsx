@@ -32,6 +32,8 @@ const externalObjectMocks = vi.hoisted(() => ({
 
 const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
   joinRequestsList: vi.fn(),
   userDirectoryList: vi.fn(),
   authSession: vi.fn(),
@@ -52,7 +54,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../api/approvals", () => ({
-  approvalsApi: { list: apiMocks.approvalsList },
+  approvalsApi: { list: apiMocks.approvalsList, approve: apiMocks.approve, reject: apiMocks.reject },
 }));
 
 vi.mock("../api/access", async () => {
@@ -540,6 +542,65 @@ describe("Inbox toolbar", () => {
     expect(issueLink?.parentElement?.textContent).toContain("PAP-1904");
 
     act(() => root.unmount());
+  });
+
+  it.each([true, false].flatMap((streamlined) =>
+    (["pending", "revision_requested"] as const).map((status) => ({ streamlined, status })),
+  ))("requires bundle review for $status instruction approvals (streamlined=$streamlined)", async ({ streamlined, status }) => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+    const instruction = createApproval({
+      id: "instruction-approval",
+      type: "instruction_generation",
+      status,
+      payload: { title: "Review generated instructions", bundle: { files: [{ path: "AGENTS.md", content: "Managed instructions" }] } },
+    });
+    const hire = createApproval({ id: "hire-approval", status });
+    const budget = createApproval({ id: "budget-approval", type: "budget_override_required", status });
+    const otherInlineApprovals = (["approve_ceo_strategy", "request_board_approval"] as const)
+      .map((type) => createApproval({ id: type, type, status }));
+    apiMocks.approvalsList.mockResolvedValue([instruction, hire, budget, ...otherInlineApprovals]);
+    apiMocks.approve.mockResolvedValue({ ...hire, status: "approved" });
+    apiMocks.reject.mockResolvedValue({ ...hire, status: "rejected" });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+      });
+      const rowFor = (id: string) => container.querySelector(`a[href="/approvals/${id}"]`)?.closest("[data-inbox-item]");
+      await vi.waitFor(() => {
+        for (const approval of [instruction, hire, budget, ...otherInlineApprovals]) expect(rowFor(approval.id)).toBeTruthy();
+      });
+      const decisionButtons = (id: string) => [...(rowFor(id)?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+        .filter((button) => button.textContent === "Approve" || button.textContent === "Reject");
+      // Both responsive control groups must be absent; CSS-hidden buttons are
+      // still dangerous because the other viewport exposes them.
+      expect(decisionButtons(instruction.id)).toHaveLength(0);
+      expect(decisionButtons(budget.id)).toHaveLength(0);
+      expect(decisionButtons(hire.id).map((button) => button.textContent)).toEqual(["Approve", "Reject", "Approve", "Reject"]);
+      for (const approval of otherInlineApprovals) {
+        expect(decisionButtons(approval.id).map((button) => button.textContent)).toEqual(["Approve", "Reject", "Approve", "Reject"]);
+      }
+      expect(rowFor(instruction.id)?.querySelector("a")?.getAttribute("href")).toBe(`/approvals/${instruction.id}`);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(apiMocks.reject).not.toHaveBeenCalled();
+      // Ordinary approvals retain working desktop and mobile decisions.
+      for (const button of decisionButtons(hire.id)) {
+        await vi.waitFor(() => expect(button.disabled).toBe(false));
+        await act(async () => button.click());
+        const api = button.textContent === "Approve" ? apiMocks.approve : apiMocks.reject;
+        await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith(hire.id));
+      }
+      expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+      expect(apiMocks.reject).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
   });
 
   it("does not render external-object summaries in inbox rows", async () => {
