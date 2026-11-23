@@ -43,14 +43,18 @@ if (SKIP_UI_BUILD && !fs.existsSync(UI_DIST_INDEX)) {
 }
 
 // Specs that mutate instance-wide state on the shared throwaway server
-// (server-read experimental flags or server-persisted workspace preferences).
-// Keep in sync with `SERIAL_SPECS` in `scripts/e2e-shard.mjs` —
-// `scripts/__tests__/e2e-shard.test.mjs` fails if the two ever drift.
+// (server-read experimental flags or server-persisted workspace preferences)
+// or assert strict real-time latency / focus restoration sensitive to
+// multi-worker Chromium CPU contention. Keep in sync with `SERIAL_SPECS` in
+// `scripts/e2e-shard.mjs` — `scripts/__tests__/e2e-shard.test.mjs` fails if
+// the two ever drift.
 export const SERIAL_SPECS = [
   "agent-configuration.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
+  "composer-stop.spec.ts",
   "connection-intents.spec.ts",
+  "document-image-gallery.spec.ts",
   "onboarding.spec.ts",
   "smoke-lab-p1-p4.spec.ts",
   "smoke-lab-p5-p7.spec.ts",
@@ -97,9 +101,11 @@ function resolveExecutionMode(): { workers: number; fullyParallel: boolean } {
     workers = explicitWorkers;
     fullyParallel = workers > 1 && !includesSerial;
   } else if (strictlyParallelSafe) {
+    // 2 Chromium workers + Node server + embedded Postgres fits cleanly on
+    // 4-vCPU CI runners without CPU over-subscription thrashing.
     workers = process.env.CI
-      ? 3
-      : Math.min(3, Math.max(2, Math.floor(os.cpus().length / 2)));
+      ? 2
+      : Math.min(2, Math.max(1, Math.floor(os.cpus().length / 2)));
     fullyParallel = true;
   } else {
     workers = 1;

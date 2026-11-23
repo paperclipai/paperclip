@@ -283,7 +283,10 @@ test.describe("native chat adapter UI", () => {
     });
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
     await expect(page.getByText("Managed Slack setup is unavailable. Try again later.")).toBeVisible();
-    available = true; await page.getByRole("button", { name: "Retry", exact: true }).click();
+    const retryButton = page.getByRole("button", { name: "Retry", exact: true });
+    await expect(retryButton).toBeEnabled();
+    available = true;
+    await retryButton.click();
     await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
   });
   test("Slack: own-app selection persists before provisioning", async ({ page }) => {
