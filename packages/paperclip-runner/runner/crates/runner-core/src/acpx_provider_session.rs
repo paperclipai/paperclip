@@ -1,4 +1,3 @@
-use crate::generated_acpx_profiles::acpx_release_profile;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -125,9 +124,10 @@ pub struct AcpxProviderSessionConfig {
 impl AcpxProviderSessionConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         self.transport.validate()?;
-        let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
-            LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
-        })?;
+        let profile =
+            crate::acpx_candidate_admission::release_profile(&self.agent).ok_or_else(|| {
+                LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
+            })?;
         if let Some(admission) = &self.candidate_admission {
             admission.validate_binding(
                 &self.agent,
@@ -2041,7 +2041,8 @@ fn with_cleanup_error(
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         ))
-        .with_provider_failure(error.provider_failure()),
+        .with_provider_failure(error.provider_failure())
+        .with_command_rejection(error.command_rejection()),
     }
 }
 
