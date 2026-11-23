@@ -186,11 +186,11 @@ function createSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+function createApp(actor: Express.Request["actor"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as typeof req & { actor: Record<string, unknown> }).actor = actor;
+    req.actor = actor;
     next();
   });
   app.use("/api", environmentRoutes({} as never));
@@ -202,7 +202,7 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-function boardActor(overrides: Record<string, unknown> = {}) {
+function boardActor(overrides: Partial<Express.Request["actor"]> = {}): Express.Request["actor"] {
   return {
     type: "board",
     userId: "user-1",
@@ -213,7 +213,7 @@ function boardActor(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function agentActor() {
+function agentActor(): Express.Request["actor"] {
   return {
     type: "agent",
     agentId: "agent-1",

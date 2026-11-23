@@ -1,3 +1,4 @@
+import { aiConnectionCatalogSlug } from "@paperclipai/shared";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
   type AiConnectionRequirement,
   type AiConnectionSummary,
 } from "./model";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export interface AiConnectionPickerProps {
   requirement: AiConnectionRequirement;
@@ -75,7 +77,7 @@ export function AiConnectionPicker({
       <div className="flex items-center gap-3">
         <AppLogo
           name={AI_PROVIDERS[requirement.provider].name}
-          brandKey={requirement.provider}
+          brandKey={aiConnectionCatalogSlug(requirement.provider)}
           logoUrl={AI_PROVIDERS[requirement.provider].logo}
           darkLogoUrl={requirement.provider === "xai" ? "/brands/adapters/grok-dark.svg" : undefined}
           size={32}
@@ -110,13 +112,13 @@ export function AiConnectionPicker({
             selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
             choices={[
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
-                <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
+                <span className="block">For you: <span className={ANALYTICS_MASK_CLASS}>{personalDefault?.name ?? "Not connected"}</span></span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
-                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? <span className={ANALYTICS_MASK_CLASS}>{` · ${connection.accountLabel}`}</span> : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
               })),
             ]}
             onSelect={(id) => {

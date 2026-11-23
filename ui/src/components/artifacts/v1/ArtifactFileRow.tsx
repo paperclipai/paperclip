@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { Download, ExternalLink } from "lucide-react";
 import { useContext, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -54,14 +55,14 @@ export function ArtifactFileRow({
     queryKey: ["artifact-csv", id, contentPath, updatedAtLabel],
     queryFn: ({ signal }) => loadArtifactCsv(contentPath, signal),
     enabled: localCsv && !tooLarge && csvRequested,
-    retry: false,
     staleTime: Infinity,
   });
+  const dataView = useQueryView(data);
 
   const trailing = (
     <>
       {statusBadge}
-      {localCsv && !tooLarge && !data.data && !data.isError ? (
+      {localCsv && !tooLarge && !data.data && !(dataView.kind === "error") ? (
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={data.isFetching} onClick={() => setCsvRequested(true)}>
           {data.isFetching ? "Loading preview…" : "Preview data"}
         </Button>
@@ -96,10 +97,10 @@ export function ArtifactFileRow({
       {localCsv && data.data ? (
         <DataCard title={filename} summary="" author="" updatedAt={updatedAtLabel} filename={filename} {...data.data} downloadUrl={downloadPath} />
       ) : null}
-      {csv && (tooLarge || data.isError) ? (
+      {csv && (tooLarge || (dataView.kind === "error")) ? (
         <div className="px-2 text-xs text-muted-foreground" role="status">
           {tooLarge ? "CSV is too large to preview. Download the file to view it." : data.error?.message}
-          {data.isError ? (
+          {(dataView.kind === "error") ? (
             <Button variant="ghost" size="sm" onClick={() => void data.refetch()}>
               Retry preview
             </Button>

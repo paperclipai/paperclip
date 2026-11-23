@@ -31,7 +31,7 @@ function regularFile(path, maximumSize) {
   return readFileSync(path);
 }
 
-async function metadataContract() {
+export async function metadataContract() {
   const { PAPERCLIP_RUNNER_BUILD_METADATA } = await import("../dist/evals/build-metadata.js");
   const { parsePaperclipRunnerdBuildMetadata } = await import("../dist/evals/runnerd-artifact.js");
   return metadata => verifyReleaseRunnerMetadata(parsePaperclipRunnerdBuildMetadata(metadata), PAPERCLIP_RUNNER_BUILD_METADATA);

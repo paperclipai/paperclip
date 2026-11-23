@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Loader2 } from "lucide-react";
@@ -6,8 +7,9 @@ import { agentsApi, type AdapterModel } from "@/api/agents";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { agentConnection, agentDefaultModel, bulkAgentHarness, bulkConnectionName, mapBulkAgents, resolveBulkConnection, sameBinding } from "@/lib/bulk-agent-settings";
+import { nativeTaskModelCatalogOptions } from "@/lib/native-model-catalog";
 import { queryKeys } from "@/lib/queryKeys";
-import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentIdentityChipContent, agentIdentityChipClass } from "./AgentIdentityChip";
 import { ModelDropdown } from "@/components/AgentConfigForm";
 import { AiConnectionField, aiProviderForAdapter } from "@/components/ai-connections/AiConnectionField";
 import { bindingProblem } from "@/components/ai-connections/model";
@@ -36,8 +38,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
   const [failures, setFailures] = useState<Failure[] | null>(null);
   const targets = failures ? failures.map(f => f.agent) : agents;
   const catalogs = useQuery({
-    queryKey: ["bulk-agent-models", companyId, targets.map(a => a.id), changeConnection ? binding : null],
-    retry: false,
+    queryKey: ["bulk-agent-models", companyId, targets.map(a => [a.id, a.defaultEnvironmentId ?? null, nativeTaskModelCatalogOptions(a) ?? null]), changeConnection ? binding : null],
     queryFn: async () => {
       const modelRequests = new Map<string, Promise<AdapterModel[]>>();
       const results = await mapBulkAgents(targets, async agent => {
@@ -47,15 +48,19 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
         const connection = resolveBulkConnection(effective, accounts);
         const routing = connection?.routing;
         const openRouter = routing?.kind === "openrouter" || (!routing && effective?.provider === "openrouter");
-        const restricted = Boolean(routing?.models.length || openRouter || harness === "copilot_runtime");
+        const nativeCatalog = nativeTaskModelCatalogOptions(agent);
         let models: AdapterModel[];
         if (routing?.models.length) {
           models = routing.models.map(m => ({ id: aiRoutingModel(routing, harness, m.id), label: m.label ?? m.id }));
+        } else if (nativeCatalog?.acpxAgent === "antigravity" && (connection?.method ?? effective?.method) === "api_key") {
+          // Native discovery uses a saved subscription. API-key users retain
+          // the existing unrestricted manual-model configuration path.
+          models = [];
         } else {
-          const copilot = harness === "copilot_runtime";
-          const type = openRouter ? "opencode_local" : copilot ? "paperclip_runner" : harness;
-          const options = openRouter ? { provider: "openrouter" } : copilot
-            ? { provider: "acpx", acpxAgent: "copilot", agentId: agent.id, aiConnection: effective, environmentId: agent.defaultEnvironmentId }
+          const type = nativeCatalog ? "paperclip_runner" : openRouter ? "opencode_local" : harness;
+          const options = nativeCatalog
+            ? { provider: "acpx", ...nativeCatalog, aiConnection: effective, environmentId: agent.defaultEnvironmentId }
+            : openRouter ? { provider: "openrouter" }
             : { environmentId: agent.defaultEnvironmentId };
           const key = JSON.stringify([type, options]);
           let request = modelRequests.get(key);
@@ -63,6 +68,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
           models = await request;
           if (openRouter && !["opencode_local", "pi_local"].includes(harness)) models = models.map(m => ({ ...m, id: m.id.replace(/^openrouter\//, "") }));
         }
+        const restricted = Boolean(routing?.models.length || openRouter || harness === "copilot_runtime");
         return { agent, accounts, binding: effective, models, restricted } satisfies Catalog;
       });
       return results.map((result, index) => result.status === "fulfilled" ? result.value : { agent: targets[index], error: result.reason instanceof Error ? result.reason.message : "Couldn’t load connections or models" });
@@ -128,7 +134,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
   return <Sheet open onOpenChange={open => { if (!open) close(); }}><SheetContent className="w-full sm:max-w-lg" showCloseButton={!saving} onEscapeKeyDown={event => { if (savingRef.current) event.preventDefault(); }} onInteractOutside={event => { if (savingRef.current) event.preventDefault(); }}>
     <SheetHeader className="px-6 pt-6 pb-0"><SheetTitle>Update {agents.length} {label} {agents.length === 1 ? "agent" : "agents"}</SheetTitle><SheetDescription>{totalSelected > agents.length ? `${otherSelected} other selected ${otherSelected === 1 ? "agent" : "agents"} won’t change.` : "Change their connection, default model, or both."}</SheetDescription></SheetHeader>
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-2">
-      <div className="flex flex-wrap gap-2" aria-label="Agents to update">{agents.map(a => <span key={a.id} className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs"><AgentAvatar agent={a} size={20} />{a.name}</span>)}</div>
+      <div className="flex flex-wrap gap-2" aria-label="Agents to update">{agents.map(a => <span key={a.id} className={agentIdentityChipClass}><AgentIdentityChipContent agent={a} /></span>)}</div>
       {failures && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p className="font-medium">{updatedIds.length} updated · {failures.length} couldn’t be saved</p>{failures.map(f => <p key={f.agent.id} className="text-muted-foreground">{f.agent.name}: {f.message}</p>)}<p className="text-xs text-muted-foreground">Retry updates only the remaining agents. Close and reopen to review changed settings.</p></div>}
       <fieldset disabled={saving || failures !== null} className="flex flex-col gap-6 disabled:opacity-60">
         <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeConnection} disabled={!aiProviderForAdapter(harness)} onCheckedChange={value => setChangeConnection(value === true)} aria-label="Change connection" className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">Change connection</span><span className="block text-xs text-muted-foreground">{currentConnections.length === 1 ? currentConnections[0] : `${currentConnections.length} different connections`}{!changeConnection && " · Keep current"}</span></span></label>
@@ -142,7 +148,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
         </section>
       </fieldset>
       {catalogs.isFetching && <p role="status" className="text-xs text-muted-foreground">Checking connections and models…</p>}
-      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error?.message}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? r.error : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>Retry loading options</Button></div>}
+      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error ? describeError(catalogs.error).body : undefined}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? r.error : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>Retry loading options</Button></div>}
       {selectionError && <p role="alert" className="text-sm text-destructive">{selectionError}</p>}
       {problems.length > 0 && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm">{problems.map(p => <p key={p.agent.id}><span className="font-medium">{p.agent.name}: </span>{p.message}</p>)}{!changeModel && !failures && <Button size="sm" variant="outline" onClick={() => setChangeModel(true)}>Change default model</Button>}</div>}
       {!missing && changed.length > 0 && <section className="space-y-3" aria-label="Changes to apply"><h3 className="text-xs font-medium text-muted-foreground">CHANGES TO APPLY</h3><div className="divide-y divide-border">{changed.map(agent => <div key={agent.id} className="space-y-1.5 py-3 text-xs"><p className="text-sm font-medium">{agent.name}</p>{changeConnection && !sameBinding(binding, agentConnection(agent)) && <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><span>{bulkConnectionName(agentConnection(agent), rows.find(r => r.agent.id === agent.id)?.accounts)}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{bulkConnectionName(binding, rows.find(r => r.agent.id === agent.id)?.accounts)}</span></p>}{changeModel && model !== agentDefaultModel(agent) && <p className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground"><span>{agentDefaultModel(agent) ?? "Harness default"}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{model}</span></p>}</div>)}</div>{targets.length > changed.length && <p className="text-xs text-muted-foreground">{targets.length - changed.length} already have these settings.</p>}</section>}

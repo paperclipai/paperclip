@@ -26,6 +26,7 @@ vi.mock("ws", async (importOriginal) => {
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
   send = vi.fn();
+  ping = vi.fn();
   terminate = vi.fn(() => {
     this.readyState = WebSocket.CLOSED;
     this.emit("close", 1006, Buffer.alloc(0));
@@ -365,6 +366,67 @@ describe("runner provider-ingress WebSocket wire", () => {
     }
   });
 
+  it.each(["readiness", "authenticated observer"])("does not start liveness when quiesce wins %s", async mode => {
+    vi.useFakeTimers();
+    const create = sockets.create, socket = new FakeSocket();
+    sockets.create = () => openingSocket(socket);
+    const endpoint = { kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://fixture.example.test/connect", secretHeaders: [], generation: "fixture",
+      refresh: vi.fn(async () => endpoint), close: vi.fn(async () => {}) };
+    const handle = connectRunnerPrpIngress({ authority: {
+      attachWireConnection: () => ({ isAuthenticated: () => {
+        if (mode === "readiness") handle.quiesce();
+        return true;
+      } }),
+    } as unknown as DurablePrpControlPlane, endpoint,
+    onStateChange: state => { if (state === "authenticated" && mode === "authenticated observer") handle.quiesce(); } });
+    try {
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(socket.ping).not.toHaveBeenCalled();
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(endpoint.refresh).not.toHaveBeenCalled();
+    } finally { await handle.close(); sockets.create = create; vi.useRealTimers(); }
+  });
+
+  it("quiets liveness and reconnect while preserving the final receive/ACK path", async () => {
+    vi.useFakeTimers();
+    const create = sockets.create;
+    const socket = new FakeSocket();
+    let opens = 0;
+    sockets.create = () => { opens += 1; return openingSocket(socket); };
+    const endpoint = { kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://fixture.example.test/connect", secretHeaders: [], generation: "fixture",
+      refresh: vi.fn(async () => endpoint), close: vi.fn(async () => {}) };
+    const received = vi.fn();
+    const attach = vi.fn((wire: WsJsonWireConnection) => {
+      wire.onJson(value => { received(value); wire.sendJson({ kind: "ack" }); });
+      return { isAuthenticated: () => true };
+    });
+    const handle = connectRunnerPrpIngress({ authority: { attachWireConnection: attach } as unknown as DurablePrpControlPlane,
+      endpoint, livenessIntervalMs: 10, livenessTimeoutMs: 30 });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      handle.quiesce();
+      socket.ping.mockClear();
+      socket.emit("message", Buffer.from(JSON.stringify({ kind: "last_event" })), false);
+      expect(received).toHaveBeenCalledWith({ kind: "last_event" });
+      expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ kind: "ack" }));
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(socket.ping).not.toHaveBeenCalled();
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.close).not.toHaveBeenCalled();
+      socket.close();
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(opens).toBe(1);
+      expect(endpoint.refresh).not.toHaveBeenCalled();
+      expect(failure).not.toHaveBeenCalled();
+    } finally { await handle.close(); sockets.create = create; vi.useRealTimers(); }
+  });
+
   it("does not report intentional close as an active-run ingress failure", async () => {
     const endpoint = {
       kind: "authenticated_websocket" as const,
@@ -392,5 +454,210 @@ describe("runner provider-ingress WebSocket wire", () => {
 
     expect(failureObserver).not.toHaveBeenCalled();
     expect(endpoint.close).toHaveBeenCalledOnce();
+  });
+  it("detects a half-open authenticated ingress and fails the run within a bounded window", async () => {
+    vi.useFakeTimers();
+    const halfOpen = new FakeSocket();
+    const create = sockets.create;
+    let opens = 0;
+    // The first socket authenticates and then goes silent without a FIN, as a
+    // preview proxy that drops the connection does. Reconnects cannot reach a
+    // runner whose process already exited.
+    sockets.create = () => {
+      opens += 1;
+      if (opens === 1) return openingSocket(halfOpen);
+      const refused = new FakeSocket();
+      refused.readyState = WebSocket.CONNECTING;
+      queueMicrotask(() => {
+        refused.readyState = WebSocket.CLOSED;
+        refused.emit("error", new Error("fixture runner gone"));
+      });
+      return refused;
+    };
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-half-open",
+      secretHeaders: [],
+      generation: "generation-half-open",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const states: string[] = [];
+    const handle = connectRunnerPrpIngress({
+      authority: {
+        attachWireConnection: vi.fn(() => ({ isAuthenticated: () => true })),
+        activeRunnerConnectionCount: () => 0,
+      } as unknown as DurablePrpControlPlane,
+      endpoint,
+      recoveryGraceMs: 60_000,
+      livenessIntervalMs: 10_000,
+      livenessTimeoutMs: 30_000,
+      onStateChange: (state) => states.push(state),
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(halfOpen.terminate).not.toHaveBeenCalled();
+      expect(halfOpen.ping).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(halfOpen.terminate).toHaveBeenCalledOnce();
+      expect(states).toContain("reconnecting");
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(failure).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "runner_ingress_unavailable" }),
+      );
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["refused", "unauthenticated"] as const)("names an expired runner connection lease in the run log and terminal error when reconnect is %s", async reconnect => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    const create = sockets.create;
+    let opens = 0;
+    sockets.create = () => {
+      opens += 1;
+      if (opens === 1) return openingSocket(first);
+      // An open socket whose PRP authentication never completes, as when the
+      // controller refuses the runner's lapsed credential.
+      if (reconnect === "unauthenticated") return openingSocket();
+      const refused = new FakeSocket();
+      refused.readyState = WebSocket.CONNECTING;
+      queueMicrotask(() => {
+        refused.readyState = WebSocket.CLOSED;
+        refused.emit("error", new Error("fixture runner exited"));
+      });
+      return refused;
+    };
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-lease-expired",
+      secretHeaders: [],
+      generation: "generation-lease-expired",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    let leaseFailure: { code: string } | null = null;
+    const states: Array<[string, string | undefined]> = [];
+    const handle = connectRunnerPrpIngress({
+      authority: {
+        attachWireConnection: vi.fn(() => {
+          const authenticated = opens === 1;
+          return { isAuthenticated: () => authenticated };
+        }),
+        activeRunnerConnectionCount: () => 0,
+        get connectionLeaseFailure() { return leaseFailure; },
+      } as unknown as DurablePrpControlPlane,
+      endpoint,
+      recoveryGraceMs: 10_000,
+      onStateChange: (state, code) => states.push([state, code]),
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      // The runner's lease lapsed; it exits and the socket closes.
+      leaseFailure = { code: "connection_lease_expired" };
+      first.close(1006);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(states).toContainEqual(["reconnecting", "runner_connection_lease_expired"]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(failure).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "runner_connection_lease_expired" }),
+      );
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a quiet but live runner attached through a long silent tool call", async () => {
+    vi.useFakeTimers();
+    const live = new FakeSocket();
+    // A live runnerd answers protocol pings even while its provider is
+    // blocked on a minutes-long foreground command that prints nothing.
+    live.ping = vi.fn(() => {
+      queueMicrotask(() => live.emit("pong", Buffer.alloc(0)));
+    });
+    const create = sockets.create;
+    sockets.create = () => openingSocket(live);
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-quiet",
+      secretHeaders: [],
+      generation: "generation-quiet",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const attachWireConnection = vi.fn(() => ({ isAuthenticated: () => true }));
+    const handle = connectRunnerPrpIngress({
+      authority: { attachWireConnection, activeRunnerConnectionCount: () => 1 } as unknown as DurablePrpControlPlane,
+      endpoint,
+      livenessIntervalMs: 10_000,
+      livenessTimeoutMs: 30_000,
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(live.terminate).not.toHaveBeenCalled();
+      expect(attachWireConnection).toHaveBeenCalledOnce();
+      expect(failure).not.toHaveBeenCalled();
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
+  });
+  it("does not blame the runner for a server event-loop stall", () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const wire = new WsJsonWireConnection(socket as unknown as WebSocket);
+      const stop = wire.monitorLiveness({ intervalMs: 10_000, timeoutMs: 30_000 });
+      expect(socket.ping).toHaveBeenCalledOnce();
+      // The server's own loop is blocked for 5 minutes: no timers fire and
+      // the runner's pongs sit unread. The next tick must restart the window.
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      vi.advanceTimersByTime(10_000);
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.ping).toHaveBeenCalledTimes(2);
+      // Genuine silence after the stall is still detected.
+      vi.advanceTimersByTime(30_000);
+      expect(socket.terminate).toHaveBeenCalledOnce();
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pings a healthy peer before any deadline, even with an interval longer than the timeout", () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      socket.ping = vi.fn(() => { queueMicrotask(() => socket.emit("pong", Buffer.alloc(0))); });
+      const wire = new WsJsonWireConnection(socket as unknown as WebSocket);
+      const stop = wire.monitorLiveness({ intervalMs: 60_000, timeoutMs: 30_000 });
+      expect(socket.ping).toHaveBeenCalledOnce();
+      for (let i = 0; i < 20; i++) {
+        vi.advanceTimersByTime(15_000);
+        // Deliver the queued pong before the next tick, as a live peer would.
+        socket.emit("pong", Buffer.alloc(0));
+      }
+      expect(socket.terminate).not.toHaveBeenCalled();
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

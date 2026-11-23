@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrimaryAgentProvider } from "./PrimaryAgentProvider";
 import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { queryKeys } from "@/lib/queryKeys";
+import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
+import { ApiError } from "@/api/client";
 
 const state = vi.hoisted(() => ({
   companyId: "company-a", get: vi.fn(), set: vi.fn(), session: vi.fn(), toast: vi.fn(),
@@ -20,6 +22,7 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: async (companyId: string) =>
 ] } }));
 
 let root: Root, container: HTMLDivElement, client: QueryClient;
+let cache: ReturnType<typeof startPersistedQueryCache> | undefined;
 const preference = (companyId = "company-a", userId = "user-a", primaryAgentId: string | null = "maia") => ({
   companyId, userId, primaryAgentId, initialized: true,
 });
@@ -45,6 +48,7 @@ async function waitForOutput(text: string) {
   });
 }
 beforeEach(() => {
+  localStorage.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.companyId = "company-a";
   state.get.mockReset().mockResolvedValue(preference());
@@ -54,10 +58,53 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => {
-  await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals();
+  await act(async () => root.unmount()); cache?.dispose(); cache = undefined; client.clear(); container.remove(); localStorage.clear(); vi.unstubAllGlobals();
 });
 
+function restorePreference() {
+  const source = new QueryClient();
+  source.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
+  source.setQueryData(queryKeys.companies.list("user-a"), { companies: [{ id: "company-a", name: "Example" }], unauthorized: false });
+  source.setQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"), preference());
+  const saved = startPersistedQueryCache(source, { storage: localStorage, buildId: "test", eventTarget: null });
+  saved.flush(); saved.dispose(); source.clear();
+  cache = startPersistedQueryCache(client, { storage: localStorage, buildId: "test", eventTarget: null });
+  expect(client.getQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"))).toEqual(preference());
+}
+
 describe("primary agent persistence provider", () => {
+  it.each(["user-a", "user-b", null])("waits for fresh identity before changing a restored primary agent (verified=%s)", async verified => {
+    let finish!: (value: { user: { id: string } } | null) => void;
+    state.session.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    state.set.mockResolvedValue(preference("company-a", "user-a", "alex"));
+    restorePreference();
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelector("button")!.click());
+    try {
+      expect(state.set).not.toHaveBeenCalled();
+      expect(client.getQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"))).toEqual(preference());
+    } finally {
+      state.get.mockResolvedValue(preference("company-a", verified ?? "local-board", verified === "user-a" ? "alex" : null));
+      await act(async () => finish(verified ? { user: { id: verified } } : null));
+    }
+    await vi.waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(state.set).toHaveBeenCalledTimes(verified === "user-a" ? 1 : 0);
+    if (verified === "user-a") await waitForOutput("alex");
+    else expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it("does not change a restored primary agent when fresh session verification is denied", async () => {
+    let deny!: (error: Error) => void;
+    state.session.mockReturnValue(new Promise((_resolve, reject) => { deny = reject; }));
+    restorePreference();
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => deny(new ApiError("Sign in again", 401, {})));
+    await vi.waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(state.set).not.toHaveBeenCalled();
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
   it("optimistically switches, restores the previous crown on failure, and offers a working retry", async () => {
     let reject!: (error: Error) => void;
     state.set.mockImplementationOnce(() => new Promise((_resolve, onReject) => { reject = onReject; }));
@@ -115,6 +162,25 @@ describe("primary agent persistence provider", () => {
     await waitForOutput("none");
     expect(client.getQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"))).toEqual(preference());
     expect(client.getQueryData(queryKeys.primaryAgent.mine("company-b", "user-b"))).toEqual(preference("company-b", "user-b", null));
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "failure"] as const)("preserves a newer crown read when an old account's save finishes with %s", async outcome => {
+    let finish!: (value: ReturnType<typeof preference>) => void, reject!: (error: Error) => void;
+    state.set.mockReturnValue(new Promise((resolve, fail) => { finish = resolve; reject = fail; }));
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelector("button")!.click());
+    await waitForOutput("alex");
+    const key = queryKeys.primaryAgent.mine("company-a", "user-a");
+    await act(async () => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-b" } });
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
+      client.setQueryData(key, preference("company-a", "user-a", "alex"));
+      if (outcome === "success") finish(preference("company-a", "user-a", "alex"));
+      else reject(new Error("Old request failed"));
+    });
+    await vi.waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(client.getQueryData(key)).toEqual(preference("company-a", "user-a", "alex"));
     expect(state.toast).not.toHaveBeenCalled();
   });
 

@@ -1,0 +1,612 @@
+[
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "user-prompt-submit:2:/home/agent/.codex/config.toml",
+    "eventName": "userPromptSubmit",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 2,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893486,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "user-prompt-submit:2:/home/agent/.codex/config.toml",
+    "eventName": "userPromptSubmit",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 2,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893486,
+    "completedAt": 1793893486,
+    "durationMs": 40,
+    "entries": [
+     {
+      "kind": "context",
+      "text": "On-call note: staging is frozen until 17:00 UTC."
+     }
+    ]
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-654df95d-29bb-4fb5-9438-9ab566d83268",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893492,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-654df95d-29bb-4fb5-9438-9ab566d83268",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "blocked",
+    "statusMessage": null,
+    "startedAt": 1793893492,
+    "completedAt": 1793893492,
+    "durationMs": 272,
+    "entries": [
+     {
+      "kind": "feedback",
+      "text": "Migrations are append-only. Add a new migration instead of editing 0001_init.sql."
+     }
+    ]
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-b3c0b043-acd6-4b44-aa79-fcefc67fac6d",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893495,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-b3c0b043-acd6-4b44-aa79-fcefc67fac6d",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893495,
+    "completedAt": 1793893495,
+    "durationMs": 16,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-b3c0b043-acd6-4b44-aa79-fcefc67fac6d",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893495,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-b3c0b043-acd6-4b44-aa79-fcefc67fac6d",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893495,
+    "completedAt": 1793893495,
+    "durationMs": 234,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893497,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893497,
+    "completedAt": 1793893497,
+    "durationMs": 20,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "item/autoApprovalReview/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "startedAtMs": 1793893497291,
+   "reviewId": "28e0e2da-8288-4f01-8e15-658f32e85f6e",
+   "targetItemId": "exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+   "review": {
+    "status": "inProgress",
+    "riskLevel": null,
+    "userAuthorization": null,
+    "rationale": null
+   },
+   "action": {
+    "type": "command",
+    "source": "unifiedExec",
+    "command": "/bin/zsh -lc 'rm -rf build'",
+    "cwd": "/work"
+   }
+  }
+ },
+ {
+  "method": "item/autoApprovalReview/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "startedAtMs": 1793893497291,
+   "completedAtMs": 1793893502671,
+   "reviewId": "28e0e2da-8288-4f01-8e15-658f32e85f6e",
+   "targetItemId": "exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+   "decisionSource": "agent",
+   "review": {
+    "status": "approved",
+    "riskLevel": "low",
+    "userAuthorization": "high",
+    "rationale": "The user explicitly authorized deleting the local build path, and read-only checks show it is absent."
+   },
+   "action": {
+    "type": "command",
+    "source": "unifiedExec",
+    "command": "/bin/zsh -lc 'rm -rf build'",
+    "cwd": "/work"
+   }
+  }
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "item": {
+    "type": "commandExecution",
+    "id": "exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+    "command": "/bin/zsh -lc 'rm -rf build'",
+    "cwd": "/work",
+    "status": "completed",
+    "exitCode": 0
+   },
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "completedAtMs": 1793893502726
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893502,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-6abd6ef8-e1b1-4fcf-9349-809b11e84fdd",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893502,
+    "completedAt": 1793893502,
+    "durationMs": 16,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-28691eb8-fd75-49aa-ab84-b047da2e9173",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893507,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-28691eb8-fd75-49aa-ab84-b047da2e9173",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893507,
+    "completedAt": 1793893507,
+    "durationMs": 16,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "item": {
+    "type": "commandExecution",
+    "id": "exec-28691eb8-fd75-49aa-ab84-b047da2e9173",
+    "command": "/bin/zsh -lc 'curl -sS https://example.com | head -c 100'",
+    "cwd": "/work",
+    "status": "completed",
+    "exitCode": 0
+   },
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "completedAtMs": 1793893507401
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-28691eb8-fd75-49aa-ab84-b047da2e9173",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893507,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-28691eb8-fd75-49aa-ab84-b047da2e9173",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893507,
+    "completedAt": 1793893507,
+    "durationMs": 17,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893509,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "pre-tool-use:0:/home/agent/.codex/config.toml:exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 0,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893509,
+    "completedAt": 1793893509,
+    "durationMs": 14,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "item/autoApprovalReview/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "startedAtMs": 1793893509947,
+   "reviewId": "0713753d-0191-4823-9a79-ac81915a31ff",
+   "targetItemId": "exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+   "review": {
+    "status": "inProgress",
+    "riskLevel": null,
+    "userAuthorization": null,
+    "rationale": null
+   },
+   "action": {
+    "type": "command",
+    "source": "unifiedExec",
+    "command": "/bin/zsh -lc 'curl -sS https://example.com | head -c 100'",
+    "cwd": "/work"
+   }
+  }
+ },
+ {
+  "method": "item/autoApprovalReview/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "startedAtMs": 1793893509947,
+   "completedAtMs": 1793893512625,
+   "reviewId": "0713753d-0191-4823-9a79-ac81915a31ff",
+   "targetItemId": "exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+   "decisionSource": "agent",
+   "review": {
+    "status": "approved",
+    "riskLevel": "low",
+    "userAuthorization": "high",
+    "rationale": "The user explicitly requested fetching example.com and printing its first 100 bytes; this is a bounded public read with no sensitive data egress."
+   },
+   "action": {
+    "type": "command",
+    "source": "unifiedExec",
+    "command": "/bin/zsh -lc 'curl -sS https://example.com | head -c 100'",
+    "cwd": "/work"
+   }
+  }
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "item": {
+    "type": "commandExecution",
+    "id": "exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+    "command": "/bin/zsh -lc 'curl -sS https://example.com | head -c 100'",
+    "cwd": "/work",
+    "status": "completed",
+    "exitCode": 0
+   },
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "completedAtMs": 1793893512798
+  }
+ },
+ {
+  "method": "hook/started",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "running",
+    "statusMessage": null,
+    "startedAt": 1793893512,
+    "completedAt": null,
+    "durationMs": null,
+    "entries": []
+   }
+  }
+ },
+ {
+  "method": "hook/completed",
+  "params": {
+   "threadId": "01a1ac62-4a98-7b51-80a8-eaaf002a3254",
+   "turnId": "01a1ac62-4b9a-73d3-8c47-2e55af1154a5",
+   "run": {
+    "id": "post-tool-use:1:/home/agent/.codex/config.toml:exec-23fd674e-454e-45d6-b997-653ce8a9220c",
+    "eventName": "postToolUse",
+    "handlerType": "command",
+    "executionMode": "sync",
+    "scope": "turn",
+    "sourcePath": "/home/agent/.codex/config.toml",
+    "source": "user",
+    "displayOrder": 1,
+    "status": "completed",
+    "statusMessage": null,
+    "startedAt": 1793893512,
+    "completedAt": 1793893512,
+    "durationMs": 10,
+    "entries": []
+   }
+  }
+ }
+]

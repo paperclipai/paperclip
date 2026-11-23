@@ -1,5 +1,16 @@
+import { mcpCompanyDeletion } from "./public-mcp/company-deletion.js";
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyChatCompanyConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { chatCompanyDeletion } from "./chat-channels/company-deletion.js";
+import { createTailscaleCompanyDeletion } from "./connectors/tailscale/deletion.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
@@ -11,6 +22,7 @@ import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
+import { executionAdmissionCompanyDeletion } from "../modules/execution-admission/company-deletion.js";
 import {
   companies,
   agents,
@@ -52,22 +64,30 @@ import {
 } from "@paperclipai/db";
 
 export async function deleteCompany(db: Db, id: string) {
+  const tailscaleDeletion = createTailscaleCompanyDeletion();
   const lifecycle = createAgentLifecycle(db);
   const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
   for (const agent of companyAgents) {
     await lifecycle.terminateAgent(agent.id);
     await processAgentLifecycle(db, agent.id);
   }
-  return withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
+  const deleted = await withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
         // remain compatible: native writers can already hold a child row while
         // saving a company-scoped result. FOR UPDATE would deadlock that save.
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await mcpCompanyDeletion.deleteCompanyData(tx, id);
+        await notifyExternalObjectRefresh(tx, id);
+        await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);
         await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardEvaluation(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
         await notifyToolReviewChange(tx, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);
@@ -96,6 +116,13 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
+        await notifyScheduledRetryCancellation(tx, { companyId: id });
+        await notifyInstructionCommit(tx, { companyId: id });
+        await notifyDirectoryCleanup(tx, { companyId: id });
+        await notifyInstructionCollection(tx, { companyId: id });
+        await notifyCancelledWorkspacePreservation(tx, { companyId: id });
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: id });
+        await executionAdmissionCompanyDeletion.deleteCompanyData(tx, id);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
@@ -107,6 +134,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await notifyCompanyRetentionWork(tx, id);
         await tx.delete(approvals).where(eq(approvals.companyId, id));
+        await tailscaleDeletion.deleteCompanyData(tx, id);
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
@@ -134,4 +162,6 @@ export async function deleteCompany(db: Db, id: string) {
           .returning();
         return rows[0] ?? null;
       }));
+  await tailscaleDeletion.stopNetworks();
+  return deleted;
 }

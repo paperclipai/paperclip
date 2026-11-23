@@ -36,6 +36,7 @@ export function CollectionToolbar({
   return (
     <div
       data-slot="collection-toolbar"
+      data-canonical-toolbar="collection"
       className={cn("flex flex-col gap-2", className)}
       role="toolbar"
       aria-label={ariaLabel}

@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -340,6 +341,7 @@ export function pluginManagedAgentService(
       // and its canonical history. Transfer only its proven stable-key marker to
       // the replacement installation, atomically with the new scoped bindings.
       await upsertBinding(companyId, declaration, agentId, {}, adapterType, tx);
+      await notifyAttentionRetentionWork(tx, { companyId, sourceKind: "agent_error_alert" });
       await tx.update(agents).set({
         metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, agent.metadata),
         updatedAt: new Date(),
