@@ -381,3 +381,17 @@ describe("an accepted finish followed by a provider refusal", () => {
     expect(outlives({ category: "overloaded", retryability: "transient" }, { ...done, runTerminalState: "cancelled", turnTerminalState: "cancelled" })).toBe(false);
   });
 });
+
+describe("warm session after an accepted finish and a provider refusal", () => {
+  it("keeps the warm session open so the next message does not cold-start", async () => {
+    const { nativeRetainsWarmSession } = await import("./native-session-executor.js");
+    const { deriveNativeAcceptedOutcome } = await import("./native-accepted-outcome.js");
+    const failed: PrpTerminalState = { ...terminal, reportedWorkDisposition: "done" };
+    const acceptedOutcome = deriveNativeAcceptedOutcome({ terminal: failed, providerFailure: null, providerExplanation: {
+      schema: "paperclip.provider-failure.v1", provider: "codex", phase: "turn", category: "overloaded", message: "busy", retryability: "transient" } });
+    expect(acceptedOutcome).not.toBeNull();
+    expect(nativeRetainsWarmSession({ terminal: failed, acceptedOutcome })).toBe(true);
+    expect(nativeRetainsWarmSession({ terminal: failed, acceptedOutcome: null })).toBe(false);
+    expect(nativeRetainsWarmSession({ terminal: failed, acceptedOutcome, continuationKind: "case_handoff" })).toBe(false);
+  });
+});

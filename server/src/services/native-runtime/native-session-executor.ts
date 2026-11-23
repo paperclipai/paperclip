@@ -1,4 +1,5 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { applyNativeAcceptedOutcome, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -122,7 +123,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
-import { nativeAcceptedResultOutlivesProviderFailure, nativeAcceptedResultTerminal, createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
@@ -9268,6 +9269,33 @@ function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   return runnerClosedTurnStartSession(value.cause, depth + 1);
 }
 
+/**
+ * Whether a warm provider session stays open for the next message on the task.
+ * A run that succeeded keeps it, including one whose accepted finish outlived a
+ * transient provider refusal: that refusal came from the remote model service
+ * and ended the turn with a clean protocol terminal, so the local provider
+ * process is healthy and closing it would only cold-start the next message.
+ * Process and protocol faults throw before this decision and close the session.
+ */
+export function nativeRetainsWarmSession(input: {
+  terminal: { runTerminalState: string };
+  acceptedOutcome: NativeAcceptedOutcome | null;
+  continuationKind?: string;
+}) {
+  return (input.terminal.runTerminalState === "succeeded" || input.acceptedOutcome !== null)
+    && input.continuationKind !== "case_handoff";
+}
+
+/** The accepted outcome saved with this run's result (see native-accepted-outcome). */
+async function readSavedNativeAcceptedOutcome(db: Db, binding: { runId: string; companyId: string; issueId: string }, turnId: string | null) {
+  const [row] = await db.select({ resultJson: nativeRunResults.resultJson }).from(nativeRunResults).where(and(
+    eq(nativeRunResults.runId, binding.runId), eq(nativeRunResults.companyId, binding.companyId),
+    eq(nativeRunResults.issueId, binding.issueId), eq(nativeRunResults.schemaStatus, "accepted"),
+    turnId ? eq(nativeRunResults.turnId, turnId) : isNull(nativeRunResults.turnId),
+  )).limit(1);
+  return readNativeAcceptedOutcome(row?.resultJson);
+}
+
 export function nativeSessionFailureSourceCode(error: unknown, runnerSandboxDiskFull = false) {
   return nativeSandboxDiskFullSourceCode(classifyNativeSessionFailure(error), error, runnerSandboxDiskFull);
 }
@@ -12229,6 +12257,8 @@ async function executePaperclipNativeSessionAttempt(
     },
   );
   let native: Awaited<ReturnType<typeof executeNativeSession>>;
+  /** The outcome Paperclip saved when it accepted this run's result, if any. */
+  let acceptedOutcome: NativeAcceptedOutcome | null = null;
   let releaseGoalController: (() => void) | null = null;
   const releaseRegisteredGoalController = () => {
     // The controller is assigned from the asynchronous onSession callback.
@@ -13193,11 +13223,8 @@ async function executePaperclipNativeSessionAttempt(
       }
       await input.onLog?.("stderr", "[paperclip-runner] managed credential refresh failed; provider session retired.\n");
     }
-    if (native.terminal.runTerminalState === "succeeded" || nativeAcceptedResultOutlivesProviderFailure({
-      terminal: native.terminal,
-      providerFailure: providerFailureObservation.forTerminal(native.turnId, native.terminal),
-      providerExplanation: providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal),
-    })) {
+    acceptedOutcome = await readSavedNativeAcceptedOutcome(input.db, input.execution.binding, native.turnId);
+    if (native.terminal.runTerminalState === "succeeded" || acceptedOutcome) {
       // A truncated, verified external-chat wake cannot settle from the
       // provider's partial inline prompt. The run-scoped reader records a
       // durable complete-page receipt; this fence revalidates that exact
@@ -14031,7 +14058,7 @@ async function executePaperclipNativeSessionAttempt(
   let postExecutionCleanupFailed = false;
   try {
     if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
-      const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
+      const retainSession = nativeRetainsWarmSession({ terminal: native.terminal, acceptedOutcome, continuationKind: native.result.continuation?.kind });
       const instructionCopy = input.instructionWorkingCopy;
       const ownedSession = warmNativeSessions.get(warmSessionId);
       let collectInstructions: boolean;
@@ -14231,14 +14258,9 @@ async function executePaperclipNativeSessionAttempt(
       logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
-  const classifiedProviderFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
-  const typedProviderFailure = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
-  // The agent's finish was accepted before the provider refused a later
-  // request in the same turn: the run succeeded with that result.
-  const acceptedDespiteProviderFailure = nativeAcceptedResultOutlivesProviderFailure({
-    terminal: native.terminal, providerFailure: classifiedProviderFailure, providerExplanation: typedProviderFailure,
-  });
-  const terminal = acceptedDespiteProviderFailure ? nativeAcceptedResultTerminal(native.terminal) : native.terminal;
+  // When the agent's finish was accepted before the provider refused a later
+  // request in the same turn, the saved outcome settles the run as succeeded.
+  const terminal = applyNativeAcceptedOutcome(acceptedOutcome, native.terminal);
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
     runtimeMode: "native",
@@ -14257,8 +14279,8 @@ async function executePaperclipNativeSessionAttempt(
     highestContiguousSourceSeq: native.highestContiguousSourceSeq,
     workspaceFinalizeStatus: "pending",
   };
-  const providerFailure = acceptedDespiteProviderFailure ? null : classifiedProviderFailure;
-  const providerExplanation = acceptedDespiteProviderFailure ? null : typedProviderFailure;
+  const providerFailure = acceptedOutcome ? null : providerFailureObservation.forTerminal(native.turnId, native.terminal);
+  const providerExplanation = acceptedOutcome ? null : providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
   // Keep the generic failure behavior, but record why the turn failed.
   const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, terminal);
   const adapterResult: AdapterExecutionResult = {
@@ -14280,9 +14302,8 @@ async function executePaperclipNativeSessionAttempt(
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
       ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
       // Closed fields only: why a failed provider turn still ended the run as succeeded.
-      ...(acceptedDespiteProviderFailure ? { providerFailureAfterAcceptedResult: typedProviderFailure
-        ? { provider: typedProviderFailure.provider, category: typedProviderFailure.category }
-        : { ...classifiedProviderFailure?.diagnostic } } : {}),
+      ...(acceptedOutcome ? { providerFailureAfterAcceptedResult: {
+        provider: acceptedOutcome.providerFailure.provider, category: acceptedOutcome.providerFailure.category } } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },

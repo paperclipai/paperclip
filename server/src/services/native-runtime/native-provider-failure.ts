@@ -263,11 +263,6 @@ export function nativeAcceptedResultOutlivesProviderFailure(input: {
   return failure !== null && failure.retryability === "transient" && TRANSIENT_PROVIDER_REFUSALS.has(failure.category);
 }
 
-/** The terminal an accepted result keeps after a transient provider refusal. */
-export function nativeAcceptedResultTerminal<T extends PrpTerminalState>(terminal: T): T {
-  return { ...terminal, turnTerminalState: "completed", runTerminalState: "succeeded" };
-}
-
 /** Observe only events accepted by the bound control-plane persistence port. */
 export function createNativeProviderFailureObservation(
   provider: { kind: string; model?: string | null; agent?: string },

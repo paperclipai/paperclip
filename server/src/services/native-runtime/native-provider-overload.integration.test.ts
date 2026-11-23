@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, completionContracts, nativeRunResults, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -18,6 +18,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { projectCommittedRun } from "./native-run-projection.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
 import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -193,7 +194,7 @@ describe("durable native provider capacity retry", () => {
    * in the same turn (Antigravity streams its final reply after the finish).
    */
   async function acceptResultThenProviderFailure(runId: string, issueId: string, failure: {
-    provider: NativeExecutionInputV1["provider"]; error: Record<string, unknown>;
+    provider: NativeExecutionInputV1["provider"]; error: Record<string, unknown>; savedByOlderRelease?: boolean;
   }) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId)).returning();
@@ -224,11 +225,22 @@ describe("durable native provider capacity retry", () => {
       await options.controlPlane.openRun({ identity: { companyId, issueId, runId, agentId, sessionId: native.normalizedSessionId }, backendKind: "mock", sourceInstanceId: native.runnerInstanceId });
       await options.controlPlane.appendEvent(event);
       await options.controlPlane.completeRun({ result, terminal, turnId: native.turnId });
+      if (failure.savedByOlderRelease) {
+        // A result row saved before this release has no accepted outcome.
+        const [saved] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
+        const { acceptedOutcome: _dropped, ...older } = saved.resultJson as Record<string, unknown>;
+        await db.update(nativeRunResults).set({ resultJson: older }).where(eq(nativeRunResults.id, saved.id));
+      }
       return { result, terminal, turnId: native.turnId, normalizedSessionId: native.normalizedSessionId, providerSessionId: "fixture-session", driverKind: "codex_app_server", driverVersion: "fixture", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
     });
     const unexpected = async () => { throw new Error("Unexpected provider call"); };
     const adapter = await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    // The durable projection pass re-derives the run status from the saved
+    // result after a restart or deploy; it must reach the same outcome.
+    const [projectedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await projectCommittedRun({ db, run: projectedRun, coordinator });
     return adapter;
   }
 
@@ -253,9 +265,20 @@ describe("durable native provider capacity retry", () => {
     expect(adapter).toMatchObject({ exitCode: 0, errorMessage: null, nativeFinalization: { terminal: { runTerminalState: "succeeded" } } });
     expect(adapter.errorCode).toBeUndefined();
     expect(adapter.resultJson).not.toHaveProperty("providerFailure");
+    expect(Object.keys(adapter.resultJson?.providerFailureAfterAcceptedResult as object).sort()).toEqual(["category", "provider"]);
     expect(adapter.resultJson?.providerFailureAfterAcceptedResult).toMatchObject({ category: expect.stringMatching(/^(overloaded|rate_limit|server_overloaded)$/) });
     const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(finished).toMatchObject({ status: "succeeded", error: null, errorCode: null });
+    // Recovery paths that settle from the saved run read this state.
+    expect(finished.resultJson).toMatchObject({ prpRunTerminalState: "succeeded" });
+    // A restart after the live finalizer committed but before heartbeat saved
+    // the run status leaves it running; the projection pass settles it.
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+    const [restarted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await projectCommittedRun({ db, run: restarted, coordinator });
+    await waitForPendingRunFailureReports();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "succeeded", errorCode: null });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     expect(sentry.captureRunFailure).not.toHaveBeenCalled();
@@ -276,6 +299,18 @@ describe("durable native provider capacity retry", () => {
     expect(adapter).toMatchObject({ exitCode: 1, nativeFinalization: { terminal: { runTerminalState: "failed" } } });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("failed");
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).not.toBe("done");
+    for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
+  });
+
+  it("keeps a result saved by an older release on its recorded outcome through projection", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Saved before the accepted outcome", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
+    await acceptResultThenProviderFailure(runId, issueId, { provider: typedProvider, savedByOlderRelease: true,
+      error: { code: "provider_turn_failed", message: capacityRefusal.message, providerFailure: capacityRefusal } });
+    // The finalizer and the projection agree on the saved failed terminal.
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("failed");
     for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
       await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
   });
