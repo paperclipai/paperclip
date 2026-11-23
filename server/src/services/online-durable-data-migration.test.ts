@@ -373,6 +373,18 @@ describe("online durable-data migration pass", () => {
       expect(result.deferred).toMatchObject({ "workspaces:pending_inspection": 1 });
     });
 
+    it("names why a workspace source scope is unproven", async () => {
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1), workspace(2)],
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => input.workspaceId === "w1"
+          ? { reasons: ["online_workspace_source_scope_unproven"], sourceScopeUnproven: "git_link_stale" }
+          : { reasons: ["online_workspace_source_scope_unproven"], sourceScopeUnproven: "/private path" },
+      });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:online_workspace_source_scope_unproven": 2, "workspaces:source_scope_git_link_stale": 1 });
+      expect(JSON.stringify(result)).not.toContain("private");
+    });
+
     it("migrates an idle workspace through the online owner with a bounded source-lock wait, never the offline mode", async () => {
       const migrateWorkspace = vi.fn(async () => ({ alreadyMigrated: true, reasons: [] }));
       const fixture = owners({ localWorkspaces: async () => [workspace(1)], migrateWorkspace });

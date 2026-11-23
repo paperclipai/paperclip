@@ -43,7 +43,7 @@ type Owners = {
   workspaceCompanies: typeof listLocalWorkspaceCompanies;
   workspaceOperations: (db: Db, input: { companyId: string; signal: AbortSignal }) => Promise<{ reconciled: number; held: Array<{ reason: string }> }>;
   localWorkspaces: typeof listLocalWorkspaces;
-  inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[] }>;
+  inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[]; sourceScopeUnproven?: string }>;
   migrateWorkspace: (input: { db: Db; storage: StorageService; companyId: string; workspaceId: string; apply: true;
     signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
@@ -255,7 +255,9 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           for (const { companyId, workspaceId } of rows) {
             let reasons: string[];
             try {
-              reasons = (await owners.inventoryWorkspace(db, { companyId, workspaceId })).reasons;
+              const inventory = await owners.inventoryWorkspace(db, { companyId, workspaceId });
+              reasons = inventory.sourceScopeUnproven && /^[a-z_]{1,60}$/.test(inventory.sourceScopeUnproven)
+                ? [...inventory.reasons, `source_scope_${inventory.sourceScopeUnproven}`] : inventory.reasons;
               if (!reasons.length) {
                 const work = owners.migrateWorkspace({ db, storage, companyId, workspaceId, apply: true, signal,
                   sourceLockWaitMs: WORKSPACE_SOURCE_LOCK_WAIT_MS });
