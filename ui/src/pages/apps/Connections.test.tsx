@@ -200,6 +200,35 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await flushReact();
   }
 
+  it("checks an unreachable Cloud again until it answers", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "unreachable",
+        brokerBaseUrl: "https://my.paperclip.app",
+        instanceId: "instance-test",
+        environment: "production",
+        origins: [],
+      });
+      await renderApps();
+      expect(container.textContent).toContain("Paperclip couldn’t reach Paperclip Cloud.");
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: true,
+        status: "active",
+        brokerBaseUrl: "https://my.paperclip.app",
+        instanceId: "instance-test",
+        environment: "production",
+        origins: [],
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_100); });
+      await flushReact();
+      expect(container.textContent).toContain("Paperclip-managed sign-in is ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["unreachable", "Paperclip couldn’t reach Paperclip Cloud."],
     ["misconfigured", "Paperclip Cloud settings on this instance are incomplete."],

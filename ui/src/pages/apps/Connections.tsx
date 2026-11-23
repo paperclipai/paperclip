@@ -166,6 +166,9 @@ export function Connections() {
   const connectorEnrollmentQuery = useQuery({
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
+    // An unanswered Cloud check is a successful response, so query retries do
+    // not run; check again on a timer until Cloud answers.
+    refetchInterval: (query) => query.state.data?.status === "unreachable" ? CLOUD_RECHECK_INTERVAL_MS : false,
   });
   const authorization = useAuthorizationWindow();
   const galleryView = useQueryView(galleryQuery);
@@ -582,6 +585,8 @@ export function Connections() {
     </div>
   );
 }
+
+const CLOUD_RECHECK_INTERVAL_MS = 15_000;
 
 function CloudConnectorEnrollmentBanner({
   status,

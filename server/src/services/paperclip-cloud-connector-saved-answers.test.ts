@@ -125,6 +125,26 @@ describe("Paperclip Cloud connector saved answers", () => {
     await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
   });
 
+  it("does not let a gallery read in flight restore sign-ins after Cloud confirms removal", async () => {
+    const keys = config();
+    const env = managedEnv(keys);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(active());
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["github.code"]);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 61_000 });
+    let answerLate!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { answerLate = resolve; }));
+    const inFlight = paperclipCloudConnectorCapabilitiesFromEnv(env);
+    const connector = createPaperclipCloudConnector({
+      config: keys,
+      request: vi.fn(async () => new Response("removed", { status: 401 })) as typeof fetch,
+    });
+    await expect(connector.getInstanceStatus()).resolves.toBe("removed");
+    answerLate(active());
+    await inFlight;
+    fetchMock.mockResolvedValue(Response.json({ active: false, status: "removed" }));
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+  });
+
   it("does not let an answer that started before an invalidation replace a newer one", async () => {
     let answerLate!: (response: Response) => void;
     const responses: Array<Response | Promise<Response>> = [

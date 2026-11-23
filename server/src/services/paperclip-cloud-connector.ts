@@ -567,7 +567,12 @@ export function createPaperclipCloudConnector(input: {
         // the list the gallery cached from before.
         if (status !== "active") {
           remember(lastKnownCapabilities, [], generation);
-          if (capabilityCache?.key === configKey) capabilityCache = null;
+          if (capabilityCache?.key === configKey) {
+            // Advance the generation too, so a gallery read already in flight
+            // cannot write its pre-removal list back.
+            capabilityCacheGeneration += 1;
+            capabilityCache = null;
+          }
         }
         return remember(lastKnownInstanceStatus, status, generation);
       };
