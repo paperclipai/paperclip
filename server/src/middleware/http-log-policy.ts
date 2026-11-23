@@ -78,6 +78,9 @@ const TOOL_CALL_HTTP_PATHS = [
   /^\/api\/tool-gateway\/tools\/call\/?$/i,
   /^\/api\/tool-gateway\/gateways\/[^/]+\/mcp\/?$/i,
   /^\/mcp\/gateways\/[^/]+\/?$/i,
+  /^\/mcp\/native-runs\/[^/]+\/?$/i,
+  /^\/mcp\/runtime-tools\/?$/i,
+  /^\/api\/mcp\/project-tools\/?$/i,
   /^\/api\/issues\/[^/]+\/mcp-app-views\/[^/]+\/tool-calls\/?$/i,
   /^\/api\/tool-connections\/[^/]+\/test-calls\/?$/i,
 ];
