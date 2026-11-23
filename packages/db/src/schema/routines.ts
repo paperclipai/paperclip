@@ -166,6 +166,7 @@ export const routineRuns = pgTable(
   },
   (table) => ({
     companyRoutineIdx: index("routine_runs_company_routine_idx").on(table.companyId, table.routineId, table.createdAt),
+    routineHistoryIdx: index("routine_runs_routine_history_idx").on(table.routineId, table.createdAt, table.id),
     routineRevisionIdx: index("routine_runs_revision_idx").on(table.routineRevisionId),
     companyResponsibleUserIdx: index("routine_runs_company_responsible_user_idx").on(
       table.companyId,
