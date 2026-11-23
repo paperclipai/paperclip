@@ -5,6 +5,7 @@ import { AlertCircle, Repeat } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { documentAnnotationsApi } from "@/api/document-annotations";
 import { describeError } from "@/api/errors";
+import { isExternalRoutineItem } from "@/lib/routineSource";
 import { issuesApi } from "@/api/issues";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { routinesApi, type RestoreRoutineRevisionResponse } from "@/api/routines";
@@ -429,12 +430,14 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   };
   const hasRoutine = Boolean(routine);
   const runPending = runRoutine.isPending;
+  const readOnlyExternal = isExternalRoutineItem(routine ?? {});
   const actions = useMemo(
     () =>
       hasRoutine && view === "routine" ? (
         <RoutinePageActions
           archived={archived}
           runPending={runPending}
+          readOnlyExternal={readOnlyExternal}
           onEdit={() => handlers.current.edit()}
           onRunNow={() => handlers.current.run()}
           onOpenVersionHistory={() => handlers.current.versions()}

@@ -447,6 +447,9 @@ export function RoutinePage({
   historyLinkState,
 }: RoutinePageProps) {
   const state = routineAutomationState(routine);
+  // External (observed) routines mirror schedulers outside Paperclip: no
+  // triggers, no automation toggle, never dispatched from here.
+  const external = isExternalRoutineItem(routine);
   const schedules = routine.triggers.filter((trigger) => trigger.kind === "schedule");
   const webhooks = routine.triggers.filter((trigger) => trigger.kind === "webhook");
   const standingCheck = routine.triggers.find((trigger) => trigger.kind === "heartbeat");
@@ -475,6 +478,20 @@ export function RoutinePage({
         </div>
 
         <Field label="Status">
+          {external ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <span
+                className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] font-medium leading-none text-muted-foreground"
+                title="Observed from an external scheduler; Paperclip does not dispatch it."
+              >
+                {routineSourceLabel(routine)}
+              </span>
+              <span className="text-sm text-muted-foreground">Observed</span>
+              <span className="text-sm text-muted-foreground" role="note">
+                Scheduled outside Paperclip; observations are recorded per run.
+              </span>
+            </div>
+          ) : (
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <ToggleSwitch
               checked={state === "active"}
@@ -487,6 +504,7 @@ export function RoutinePage({
             </span>
             {statusDetail ? <span className="text-sm text-muted-foreground">{statusDetail}</span> : null}
           </div>
+          )}
           {pausedNotice ? <p className="text-sm text-muted-foreground" role="note">{pausedNotice}</p> : null}
           {state === "draft" ? (
             <p className="text-sm text-muted-foreground">
@@ -499,6 +517,11 @@ export function RoutinePage({
         </Field>
 
         <Field label="Repeats">
+          {external ? (
+            <p className="text-sm text-muted-foreground" role="note">
+              Runs are scheduled and observed outside Paperclip.
+            </p>
+          ) : (
           <div className="flex min-w-0 flex-col">
             {schedules.map((trigger) => (
               <ScheduleRow
@@ -546,9 +569,10 @@ export function RoutinePage({
               </p>
             ))}
             {routine.triggers.length === 0 && removedTriggers.length === 0 ? (
-              <p className="py-1.5 text-sm text-muted-foreground">Doesn’t repeat. Runs only when you start it.</p>
+              <p className="py-1.5 text-sm text-muted-foreground">Doesn't repeat. Runs only when you start it.</p>
             ) : null}
           </div>
+          )}
         </Field>
 
         <Field label="Default agent">
@@ -736,6 +760,8 @@ export type RoutinePageActionsProps = {
   runPending?: boolean;
   /** Start with the menu open, for review. */
   defaultMenuOpen?: boolean;
+  /** External routines are observed, never dispatched or edited here. */
+  readOnlyExternal?: boolean;
   onEdit: () => void;
   onRunNow: () => void;
   onOpenVersionHistory: () => void;
@@ -749,6 +775,7 @@ export function RoutinePageActions({
   archived = false,
   runPending = false,
   defaultMenuOpen = false,
+  readOnlyExternal = false,
   onEdit,
   onRunNow,
   onOpenVersionHistory,
@@ -758,7 +785,7 @@ export function RoutinePageActions({
 }: RoutinePageActionsProps) {
   return (
     <div className="flex items-center gap-1">
-      {archived ? null : (
+      {archived || readOnlyExternal ? null : (
         <Button variant="ghost" size="icon-sm" aria-label="Edit routine" onClick={onEdit}>
           <Pencil />
         </Button>
@@ -789,7 +816,7 @@ export function RoutinePageActions({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      {archived ? null : <RunButton onClick={onRunNow} disabled={runPending} />}
+      {archived || readOnlyExternal ? null : <RunButton onClick={onRunNow} disabled={runPending} />}
     </div>
   );
 }

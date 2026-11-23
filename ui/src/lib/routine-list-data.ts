@@ -1,5 +1,15 @@
 import type { FolderListResult, RoutineListItem } from "@paperclipai/shared";
+import { isExternalRoutineOriginKind, parseExternalRoutineOriginKind } from "@paperclipai/shared";
+import { ROUTINE_SOURCE_LABELS } from "@/lib/routineSource";
 import { filterRoutines, matchesRoutineStatus, type RoutineViewState, type RoutineSortField, type RoutineSortDir } from "./routine-list-view";
+
+export function routineOriginOptionLabel(originKind: string) {
+  if (originKind === "manual") return "Custom";
+  if (originKind === "built_in_agent_bundle") return "Built-in";
+  const source = parseExternalRoutineOriginKind(originKind);
+  if (source) return `${ROUTINE_SOURCE_LABELS[source]} (observed)`;
+  return isExternalRoutineOriginKind(originKind) ? "External (observed)" : originKind.replaceAll("_", " ");
+}
 
 function timestampValue(value: Date | string | null | undefined) {
   if (!value) return Number.NEGATIVE_INFINITY;
@@ -48,7 +58,7 @@ export function buildRoutineFilterOptions({ projects, agents, userById, routines
     agents: [{ id: "__none", name: "No default agent" }, ...agents.map(agent => ({ id: agent.id, name: agent.name }))],
     responsibleUsers: [{ id: "__none", name: "No responsible user" }, ...Array.from(userById, ([id, profile]) => ({ id, name: profile.label }))],
     statuses: [{ id: "active", name: "Enabled" }, { id: "paused", name: "Paused" }, { id: "archived", name: "Archived" }],
-    origins: [...new Set(["manual", "built_in_agent_bundle", ...routines.map(routine => routine.originKind ?? "manual")])].map(id => ({ id, name: id === "manual" ? "Custom" : id === "built_in_agent_bundle" ? "Built-in" : id.replaceAll("_", " ") })),
+    origins: [...new Set(["manual", "built_in_agent_bundle", ...routines.map(routine => routine.originKind ?? "manual")])].map(id => ({ id, name: routineOriginOptionLabel(id) })),
   };
 }
 

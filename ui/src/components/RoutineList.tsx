@@ -13,6 +13,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Identity } from "./Identity";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import {
+  isExternalRoutineItem,
+  routineHealth,
+  routineHealthClasses,
+  routineHealthLabel,
+  routineSourceLabel,
+} from "@/lib/routineSource";
 import { routineColumnGrid, type RoutineColumn } from "./RoutineTable";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
@@ -35,9 +42,11 @@ export type RoutineListRowItem = {
   projectId: string | null;
   assigneeAgentId: string | null;
   responsibleUserId?: string | null;
+  originKind?: string | null;
   lastRun?: {
     triggeredAt?: Date | string | null;
     status?: string | null;
+    triggerPayload?: Record<string, unknown> | null;
   } | null;
 };
 
@@ -117,18 +126,30 @@ function routineRowParts<TRoutine extends RoutineListRowItem>({
   const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
   const isDraft = !isArchived && !routine.assigneeAgentId;
   const runDisabled = runningRoutineId === routine.id || isArchived || disableRunNow;
+  const external = isExternalRoutineItem(routine);
+  const health = routineHealth(routine);
 
   const user = routine.responsibleUserId ? userById?.get(routine.responsibleUserId) : null;
   const projectCell = <span className="flex min-w-0 items-center gap-2"><span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: project?.color ?? "var(--project-none)" }} /><span className="truncate">{routine.projectId ? project?.name ?? "Unknown project" : "No project"}</span></span>;
   const agentCell = <span className="flex min-w-0 items-center gap-2">{routine.assigneeAgentId ? <AgentAvatar agent={{ ...agent, id: routine.assigneeAgentId }} size={16} className="h-3.5 w-3.5 shrink-0" /> : null}<span className="truncate">{routine.assigneeAgentId ? agent?.name ?? "Unknown agent" : "No default agent"}</span></span>;
   const userCell = user ? <Identity name={user.label} avatarUrl={user.image} size="sm" /> : <span>{routine.responsibleUserId ? "Unavailable user" : "No responsible user"}</span>;
-  const lastRunCell = <span>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}{routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}</span>;
-  const enabledCell = <div className="flex items-center gap-2" onClick={event => { event.preventDefault(); event.stopPropagation(); }}><ToggleSwitch size="lg" checked={enabled} onCheckedChange={() => onToggleEnabled(routine, enabled)} disabled={isStatusPending || isArchived || disableToggle} aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`} /><span className="text-xs text-muted-foreground">{isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}</span></div>;
+  const lastRunCell = <span>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}{routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}{routine.lastRun ? <span aria-hidden="true"> · </span> : null}{routine.lastRun ? <span className={routineHealthClasses(health)} title="Health from the latest run and expected cadence">{routineHealthLabel(health)}</span> : null}</span>;
+  const enabledCell = external
+    ? <span title="Scheduled outside Paperclip; observations are recorded per run.">Observed</span>
+    : <div className="flex items-center gap-2" onClick={event => { event.preventDefault(); event.stopPropagation(); }}><ToggleSwitch size="lg" checked={enabled} onCheckedChange={() => onToggleEnabled(routine, enabled)} disabled={isStatusPending || isArchived || disableToggle} aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`} /><span className="text-xs text-muted-foreground">{isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}</span></div>;
   const cellByColumn = { project: projectCell, assignee: agentCell, responsibleUser: userCell, lastRun: lastRunCell, enabled: enabledCell };
   const title = (
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Link data-routine-link to={href} className="truncate text-sm font-medium no-underline text-inherit">{routine.title}</Link>
+          {external ? (
+            <span
+              className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] font-medium leading-none text-muted-foreground"
+              title="Observed from an external scheduler; Paperclip does not dispatch it."
+            >
+              {routineSourceLabel(routine)}
+            </span>
+          ) : null}
           {(isArchived || routine.status === "paused" || isDraft) ? (
             <span className="text-xs text-muted-foreground">
               {isArchived ? "archived" : isDraft ? "draft" : "paused"}
@@ -161,7 +182,7 @@ function routineRowParts<TRoutine extends RoutineListRowItem>({
   );
   const actions = (
       <div className="flex items-center justify-end gap-3" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-        {runNowButton ? (
+        {runNowButton && !external ? (
           <Button
             variant="outline"
             size="icon-sm"
@@ -187,7 +208,7 @@ function routineRowParts<TRoutine extends RoutineListRowItem>({
               <Link to={href}>{configureLabel}</Link>
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={runDisabled}
+              disabled={runDisabled || external}
               onClick={() => onRunNow(routine)}
             >
               {runningRoutineId === routine.id ? "Running..." : "Run now"}
@@ -201,7 +222,7 @@ function routineRowParts<TRoutine extends RoutineListRowItem>({
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onToggleEnabled(routine, enabled)}
-              disabled={isStatusPending || isArchived || disableToggle}
+              disabled={isStatusPending || isArchived || disableToggle || external}
             >
               {enabled ? "Pause" : "Enable"}
             </DropdownMenuItem>
