@@ -50,6 +50,12 @@ export interface PrepareAgyRemoteRunInput {
   agentHome: string;
   /** Conversation ids this run resumes; only their brain/ state is staged. */
   resumeConversationIds?: string[];
+  /**
+   * Reads the conversation id(s) this run created, at teardown time. The
+   * restore callback calls it when the copy-back runs, so the allowed set
+   * covers both the resumed conversations and the one the CLI created.
+   */
+  getRunConversationIds?: () => string[];
 }
 
 export interface PreparedAgyRemoteRun {
@@ -131,6 +137,14 @@ export interface CopyBackAgyConversationStateInput {
   /** Reads a single file back from the remote target. */
   readFile: (remotePath: string) => Promise<Buffer>;
   log: (line: string) => void | Promise<void>;
+  /**
+   * Conversation ids this run owns (resumed + created). When set, only
+   * brain/ entries under those ids are copied back: the sandbox chooses
+   * the manifest, so an unscoped copy would let it overwrite another
+   * agent's conversation state on the shared host home. When unset, every
+   * confined entry is copied (the previous behavior).
+   */
+  allowedConversationIds?: string[];
   limits?: Partial<typeof COPY_BACK_AGY_CONVERSATION_LIMITS>;
 }
 
@@ -184,10 +198,21 @@ export async function copyBackAgyConversationState(
     }
     const hostBrainDir = path.join(hostCliHomeDir, "brain");
     let totalBytes = 0;
+    let skippedForeignEntries = 0;
     for (const { size, entry } of records.slice(0, limits.maxFiles)) {
       // Confine every entry to brain/: no absolute paths, no `..` segments,
       // and the resolved host path must stay under the host brain dir.
       if (path.posix.isAbsolute(entry) || entry.split("/").includes("..")) continue;
+      // Only the run's own conversations come back: the first path segment
+      // is the conversation id, and anything outside the allowed set is
+      // another agent's state on the shared host home.
+      if (input.allowedConversationIds) {
+        const conversationId = entry.split("/")[0];
+        if (!input.allowedConversationIds.includes(conversationId)) {
+          skippedForeignEntries++;
+          continue;
+        }
+      }
       const remotePath = path.posix.join(brainRemote, entry);
       const hostPath = path.join(hostBrainDir, ...entry.split("/"));
       if (!hostPath.startsWith(hostBrainDir + path.sep)) continue;
@@ -218,6 +243,11 @@ export async function copyBackAgyConversationState(
       } catch {
         continue;
       }
+    }
+    if (skippedForeignEntries > 0) {
+      await log(
+        `[paperclip] Antigravity conversation copy-back: skipped ${skippedForeignEntries} brain file(s) outside this run's conversations.`,
+      );
     }
   } catch (error) {
     await log(
@@ -358,9 +388,16 @@ export async function prepareAgyRemoteRun(
             // The staged home also holds the run's conversation state
             // (brain/); copy it back to the host CLI home so the next run
             // can resume the same conversation instead of starting fresh.
+            // The sandbox chooses the manifest, so the copy is scoped to
+            // this run's own conversations (resumed + created): anything
+            // else is another agent's state on the shared host home.
             await copyBackAgyConversationState({
               assetDir,
               hostCliHomeDir,
+              allowedConversationIds: [
+                ...(input.resumeConversationIds ?? []),
+                ...(input.getRunConversationIds?.() ?? []),
+              ],
               runRemoteCommand: (command) =>
                 runAdapterExecutionTargetShellCommand(runId, executionTarget, command, {
                   cwd: assetDir,

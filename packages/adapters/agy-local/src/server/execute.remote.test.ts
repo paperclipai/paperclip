@@ -509,6 +509,89 @@ describe("agy-local execute (remote execution)", () => {
     }
   });
 
+  it("copies back only the run's own conversations, never a planted unrelated one", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    const hostHome = path.join(rootDir, "home");
+    const hostBrainDir = path.join(hostHome, ".gemini", "antigravity-cli", "brain");
+
+    const captured: { restore: ((ctx: any) => Promise<void>) | null } = { restore: null };
+    const baseImpl = vi
+      .mocked(prepareAdapterExecutionTargetRuntime)
+      .getMockImplementation() as ((input: any) => Promise<any>) | undefined;
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockImplementation(async (input: any) => {
+      const agyHome = input.assets?.find((a: any) => a.key === "agy-home");
+      if (agyHome?.restore) captured.restore = agyHome.restore;
+      return baseImpl!(input);
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "conv-resumed",
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        env: {
+          HOME: hostHome,
+          GEMINI_API_KEY: "test-api-key",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(captured.restore).toBeTypeOf("function");
+
+    const tokenBuffer = Buffer.from(
+      JSON.stringify({
+        access_token: "remote-token",
+        refresh_token: "remote-refresh-token",
+        expiry: new Date(Date.now() + 86400000).toISOString(),
+      }),
+    );
+    const readFile = async (p: string): Promise<Buffer> => {
+      if (p.endsWith(".paperclip-brain-manifest")) {
+        return Buffer.from(
+          "11\t./conv-resumed/session.json\0" +
+            "11\t./conv-remote-1/session.json\0" +
+            "11\t./other-agent-conv/session.json\0",
+        );
+      }
+      if (p.endsWith("antigravity-oauth-token")) return tokenBuffer;
+      if (p.includes("brain/")) return Buffer.from("brain-bytes");
+      const err = new Error("File not found") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    await captured.restore!({ assetDir: "/remote/runtime/assets/agy-home", readFile });
+
+    // The resumed conversation and the conversation this run created come
+    // back; a planted entry for another conversation must not overwrite
+    // that conversation's state on the shared host CLI home.
+    expect(existsSync(path.join(hostBrainDir, "conv-resumed", "session.json"))).toBe(true);
+    expect(existsSync(path.join(hostBrainDir, "conv-remote-1", "session.json"))).toBe(true);
+    expect(existsSync(path.join(hostBrainDir, "other-agent-conv", "session.json"))).toBe(false);
+  });
+
   it("starts Paperclip bridge and injects bridge environment into the process", async () => {
     const rootDir = await makeTmpDir();
     const workspaceDir = path.join(rootDir, "workspace");

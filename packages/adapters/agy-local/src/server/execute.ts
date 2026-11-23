@@ -363,6 +363,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(runtimeSessionParams.conversationId, "") ||
     asString(runtime.sessionId, "");
 
+  // The conversation this run actually produced, once the CLI reports it.
+  // Populated by toResult; the remote restore callback reads it at teardown
+  // so the conversation copy-back is scoped to this run's own conversations
+  // (resumed + created), not anything the sandbox planted.
+  let resolvedRunSessionId: string | null = null;
+
   // A local API-key run must not write the provider override into the
   // shared home's settings.json: that would permanently flip the
   // operator's home to the API-key provider for every later OAuth-only
@@ -449,6 +455,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       workspaceHints,
       agentHome,
       resumeConversationIds: runtimeSessionId ? [runtimeSessionId] : [],
+      getRunConversationIds: () => (resolvedRunSessionId ? [resolvedRunSessionId] : []),
     });
     restoreRemoteWorkspace = preparedRemoteRun.restoreRemoteWorkspace;
     remoteRuntimeRootDir = preparedRemoteRun.remoteRuntimeRootDir;
@@ -839,6 +846,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // workspace and target, and the next run would then resume the
       // conversation that was just rejected.
       (clearSessionOnMissingSession ? null : sessionId);
+    resolvedRunSessionId = resolvedSessionId;
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
