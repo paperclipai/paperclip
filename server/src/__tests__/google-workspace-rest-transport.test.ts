@@ -18,6 +18,8 @@ import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => true }));
+
 const gmailCatalog = (write: boolean) => ["docs__read_doc", ...googleWorkspaceServiceToolNames("gmail")
   .filter((name) => write || name !== "create_draft").map((name) => `gmail__${name}`)].sort();
 
