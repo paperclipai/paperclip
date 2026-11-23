@@ -162,7 +162,8 @@ metadata in the encrypted credential secret. On macOS, it reads only that home's
 namespaced Keychain item, with the credential file as fallback when the item is
 absent. It never imports the operator's ambient login. When the sign-in attempt
 completes, is cancelled, is replaced or expires, Paperclip deletes that Keychain
-item together with the home.
+item together with the home. It stops the sign-in process first, also a process
+that another browser tab started for the same attempt in the meantime.
 
 When a run or account probe uses a credential with less than two hours left,
 the server renews it under the existing company credential mutation lock. The
