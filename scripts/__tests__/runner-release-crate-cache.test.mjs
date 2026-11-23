@@ -419,7 +419,9 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
 
   // The dependency cache's own writer gate is the same expression.
   assert.match(body, new RegExp(`save-if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`));
-  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
+  assert.equal((body.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
+  // The only other cache save in release-verify.yml is the master-guarded E2E UI dist writer in `build`.
+  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 3, "release-verify.yml has guarded writers for release crate, debug crate, and E2E UI dist");
 });
 
 test("the scope names the platform, the compiler and the checkout root, and survives a missing rustc", () => {

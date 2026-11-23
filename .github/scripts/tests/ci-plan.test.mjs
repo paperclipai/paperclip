@@ -34,10 +34,80 @@ test("a UI component retains browser and build coverage without unrelated server
   assert.equal(selected(result, "build"), true);
   assert.equal(selected(result, "e2e_shards"), true);
   assert.equal(selected(result, "verify_serialized_server"), false);
-  // The Runner support suite imports UI modules and checks that catalog-listed
-  // UI files stay tracked, so UI source changes are its inputs too.
-  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), ["ci:runner-e2e-support"]);
+  assert.equal(selected(result, "canary_dry_run"), false);
+  assert.equal(selected(result, "verify_runner_e2e_support"), false);
+  assert.equal(selected(result, "docker_context_integrity"), false);
+  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), []);
   assert.equal(result.jobs.general_tests.selected, 2);
+});
+
+test("ordinary app PRs skip canary dry run, runner support, docker context, chat and runner package lanes", () => {
+  const serverRoute = plan(["server/src/routes/issues.ts"]);
+  const tasks = selectedTasks(serverRoute);
+  for (const required of ["ci:server", "ci:serialized", "ci:build", "ci:typecheck", "ci:e2e", "ci:workspaces-b", "ci:runner-static", "ci:runner-vitest"]) {
+    assert.ok(tasks.has(required), `expected ${required}`);
+  }
+  for (const skipped of ["ci:canary", "ci:runner-e2e-support", "ci:docker", "ci:chat", "ci:workspaces-a", "ci:db", "ci:runner-package", "ci:runner-rust", "ci:sandbox-providers"]) {
+    assert.ok(!tasks.has(skipped), `unexpected ${skipped}`);
+  }
+  // Feature PR adding a table, route, and UI page still skips non-PR release/runner bloat.
+  const featurePr = plan(["packages/db/src/schema/issues.ts", "server/src/routes/issues.ts", "ui/src/pages/Issues.tsx"]);
+  assert.equal(selected(featurePr, "canary_dry_run"), false);
+  assert.equal(selected(featurePr, "verify_runner_e2e_support"), false);
+  assert.equal(selected(featurePr, "docker_context_integrity"), false);
+  assert.equal(selectedTasks(featurePr).has("ci:chat"), false);
+  assert.equal(selectedTasks(featurePr).has("ci:runner-package"), false);
+  assert.equal(selectedTasks(featurePr).has("ci:db"), true);
+  assert.equal(selectedTasks(featurePr).has("ci:workspaces-a"), true);
+});
+
+test("canary dry run, runner support, chat, docker and test-only edits select their exact owners", () => {
+  for (const file of ["scripts/release.sh", "package.json", "server/package.json", "cli/esbuild.config.mjs",
+    "server/scripts/bundle-runtime.mjs", "packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs",
+    "packages/paperclip-runner/release-runner-targets.json"]) {
+    assert.equal(selected(plan([file]), "canary_dry_run"), true, `canary: ${file}`);
+  }
+  for (const file of ["tests/runner-e2e/catalog.test.ts", "packages/paperclip-runner/src/index.ts",
+    "packages/plugins/sdk/src/index.ts", "packages/adapters/codex-local/src/index.ts",
+    "server/src/services/native-runtime/canonical.ts", ".github/workflows/pr-trusted.yml"]) {
+    assert.equal(selected(plan([file]), "verify_runner_e2e_support"), true, `runner-e2e-support: ${file}`);
+  }
+  for (const file of ["server/src/services/chat-channels/github/retry.ts", "packages/db/src/schema/chat_channels.ts",
+    "server/src/routes/board-chat.ts", "server/src/services/heartbeat.ts"]) {
+    assert.equal(selectedTasks(plan([file])).has("ci:chat"), true, `chat: ${file}`);
+  }
+  for (const file of ["Dockerfile", ".dockerignore", "packages/paperclip-runner/src/index.ts"]) {
+    assert.equal(selected(plan([file]), "docker_context_integrity"), true, `docker: ${file}`);
+  }
+  assert.deepEqual([...selectedTasks(plan(["tests/e2e/smoke.spec.ts"]))].sort(), ["ci:e2e", "ci:typecheck"]);
+  assert.deepEqual([...selectedTasks(plan(["tests/runner-e2e/catalog.test.ts"]))].sort(), ["ci:runner-e2e-support", "ci:typecheck"]);
+  assert.equal(selectedTasks(plan(["packages/paperclip-runner/src/index.ts"])).has("ci:runner-package"), true);
+});
+
+test("PR workflow keeps Build fast and passes PR-mode context to typecheck and Vitest lanes", () => {
+  const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
+  const build = workflow.split("\n  build:\n")[1].split("\n  verify_serialized_server:\n")[0];
+  assert.ok(!build.includes("node scripts/verify-grok-npm-install.mjs"), "PR Build must not run the 4-min public npm install verifier");
+  assert.ok(!build.includes("warm-public-install-npm-cache.mjs"), "PR Build must not warm the unused public npm install cache");
+  assert.ok(build.includes("pnpm --filter @paperclipai/server build:runtime"), "PR Build still verifies production runtime bundle");
+  assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+scripts\/server-boot-smoke\.sh/);
+  const typecheck = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
+  assert.match(typecheck, /fetch-depth: 2/);
+  assert.match(typecheck, /CI_PLAN: \$\{\{ needs\.gate\.outputs\.plan \}\}/);
+  assert.match(typecheck, /PAPERCLIP_CI_BASE_SHA:/);
+  for (const job of ["typecheck_release_registry", "general_tests", "verify_paperclip_runner", "build", "verify_serialized_server"]) {
+    const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
+    assert.match(block, /PAPERCLIP_CI_FULL:/, `${job} must forward PAPERCLIP_CI_FULL`);
+  }
+  const e2e = workflow.split("\n  e2e_shards:\n")[1].split("\n  e2e:\n")[0];
+  const releaseVerify = readFileSync(new URL(".github/workflows/release-verify.yml", root), "utf8");
+  const releaseBuild = releaseVerify.split("\n  build:\n")[1].split("\n  runner_binary_targets:\n")[0];
+  const prKey = e2e.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
+  const releaseKey = releaseBuild.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
+  assert.ok(prKey && releaseKey, "both pr-trusted.yml and release-verify.yml must define the E2E UI dist cache key");
+  assert.equal(prKey, releaseKey, "E2E UI dist reader and writer keys must match exactly");
+  assert.doesNotMatch(e2e.split("Restore prebuilt UI assets")[1].split("Run e2e tests")[0], /restore-keys:/);
+  assert.match(e2e, /PAPERCLIP_E2E_SKIP_UI_BUILD: \$\{\{ steps\.e2e_ui_dist\.outputs\.cache-hit == 'true' && '1' \|\| '' \}\}/);
 });
 
 test("source inspected across package boundaries selects its consumers", () => {
