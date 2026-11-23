@@ -90,6 +90,20 @@ let running: Promise<OnlineDurableDataMigrationResult> | null = null;
 let workspaceOwner: Promise<void> | null = null;
 type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
 let progress: Progress = { phase: 0 };
+let carried: Record<string, number> = {};
+const PHASE_PREFIXES: Partial<Record<Phase, string[]>> = { skill_installations: ["skill_installations", "skills"],
+  native_harness_backups: ["native_harness_backups", "native_harness"] };
+const BLOCKER_PREFIXES: Record<string, string[]> = {
+  agent_files_require_migration: ["agent_files"],
+  skills_require_migration: ["skill_objects", "skill_snapshots", "skill_versions", "skill_installations", "skills"],
+  runtime_skill_assets_require_migration: ["runtime_skill_assets"],
+  run_logs_require_migration: ["run_logs"],
+  provider_traces_require_migration: ["provider_traces"],
+  workspaces_require_migration: ["workspace_operations", "workspaces"],
+  native_harness_backups_require_migration: ["native_harness_backups", "native_harness"],
+  native_controllers_require_migration: ["native_controllers"],
+};
+const prefixOf = (key: string) => key.slice(0, key.indexOf(":"));
 const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 50, skill_snapshots: 50, skill_versions: 50,
   skill_installations: 50, runtime_skill_assets: 50, workspace_operations: 10, workspaces: 4 };
 const WORKSPACE_SOURCE_LOCK_WAIT_MS = 1_000;
@@ -106,6 +120,7 @@ function workspaceDeferrals(error: unknown): string[] {
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
   progress = { phase: 0 };
+  carried = {};
   workspaceOwner = null;
 }
 
@@ -133,9 +148,20 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
   const signal = budget.signal;
   const counts: Record<string, number> = {};
   const deferred: Record<string, number> = {};
-  const add = (bucket: Record<string, number>, key: string, by = 1) => { if (by) bucket[key] = (bucket[key] ?? 0) + by; };
+  const add = (bucket: Record<string, number>, key: string, by = 1) => {
+    if (!by) return;
+    bucket[key] = (bucket[key] ?? 0) + by;
+    if (bucket === deferred) carried[key] = (carried[key] ?? 0) + by;
+  };
   const finish = async (state: OnlineDurableDataMigrationResult["state"], reason?: string): Promise<OnlineDurableDataMigrationResult> => {
     const { eligible, blockers } = await owners.eligibility(db);
+    for (const blocker of blockers) {
+      const prefixes = BLOCKER_PREFIXES[blocker];
+      if (!prefixes || Object.keys(deferred).some(key => prefixes.includes(prefixOf(key)))) continue;
+      const earlier = Object.entries(carried).filter(([key]) => prefixes.includes(prefixOf(key)));
+      for (const [key, count] of earlier) deferred[key] = count;
+      if (!earlier.length) deferred[`${prefixes.at(-1)}:pending_inspection`] = 1;
+    }
     const result: OnlineDurableDataMigrationResult = { state, ...(reason ? { reason } : {}),
       ...(state === "budget_exhausted" ? { resumePhase: PHASES[progress.phase] } : {}), counts, deferred, eligible, blockers };
     await owners.record(db, result);
@@ -261,6 +287,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
     while (progress.phase < PHASES.length) {
       if (spent()) return await finish("budget_exhausted");
       const phase = PHASES[progress.phase]!;
+      if (progress.after === undefined) {
+        const prefixes = PHASE_PREFIXES[phase] ?? [phase];
+        for (const key of Object.keys(carried)) if (prefixes.includes(prefixOf(key))) delete carried[key];
+      }
       let next: string | null;
       try {
         next = await page(phase, progress.after, progress.limit ?? DEFAULT_LIMITS[phase] ?? 1);
