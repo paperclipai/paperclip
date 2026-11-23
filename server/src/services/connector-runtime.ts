@@ -22,6 +22,7 @@ import {
 } from "./connectors/agentmail.js";
 import { materializeAsset } from "./native-runtime/runtime-context.js";
 import { BROWSER_USE_CLOUD_SKILL } from "./connectors/browser-use-cloud/skill.js";
+import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 
 type AgentBinding = { companyId: string; agentId: string; runId?: string; issueId?: string };
 type ToolBinding = AgentBinding & {
@@ -43,6 +44,7 @@ type Tool = {
 };
 interface ConnectorDefinition {
   key: string;
+  resolvePhase: Extract<ExecutionPhase, `connectors.${string}.resolve`>;
   label: string;
   skillName: string;
   /** Trusted connector-owned content; never discovered through global skills/. */
@@ -62,7 +64,7 @@ interface ConnectorDefinition {
 // Trusted connector packages declare their contributions here. Assignments and
 // current access, not credential availability or agent-authored config, select them.
 const connectors: ConnectorDefinition[] = [
-  { key: "browser-use-cloud", label: "Browser Use Cloud", skillName: "browser-use-cloud", skillMarkdown: BROWSER_USE_CLOUD_SKILL, tools: [],
+  { key: "browser-use-cloud", resolvePhase: "connectors.browser_use.resolve", label: "Browser Use Cloud", skillName: "browser-use-cloud", skillMarkdown: BROWSER_USE_CLOUD_SKILL, tools: [],
     legacySkillKeys: ["paperclipai/paperclip/browser-use"],
     async resolve(db, binding) {
       const { getAssignedMcpGateway } = await import("./native-runtime/assigned-mcp-tools.js");
@@ -70,18 +72,19 @@ const connectors: ConnectorDefinition[] = [
     },
     async execute() { throw forbidden("Use Browser Use Cloud through the connection tool gateway."); },
   },
-  { key: "speko", label: "Speko", skillName: "speko", skillMarkdown: SPEKO_SKILL,
+  { key: "speko", resolvePhase: "connectors.speko.resolve", label: "Speko", skillName: "speko", skillMarkdown: SPEKO_SKILL,
     tools: [], // Native phone tools keep their existing governed gateway transport.
     resolve: spekoAssignedResources,
     async execute() { throw forbidden("Use Speko through the connection tool gateway."); },
   },
-  { key: "slack", label: "Slack", skillName: "slack",
+  { key: "slack", resolvePhase: "connectors.slack.resolve", label: "Slack", skillName: "slack",
     tools: SLACK_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
     resolve: slackAssignedResource,
     execute: executeGovernedSlackTool,
   },
   {
     key: "agentmail",
+    resolvePhase: "connectors.agentmail.resolve",
     label: "AgentMail",
     skillName: "agentmail",
     tools: AGENTMAIL_TOOLS.map(
@@ -125,19 +128,25 @@ export async function resolveConnectorAssignments(
   db: Db,
   binding: AgentBinding,
 ): Promise<ConnectorAssignment[]> {
-  const assignments: ConnectorAssignment[] = [];
-  for (const connector of connectors) {
-    const resources = await connector.resolve(db, binding);
-    if (resources.length)
-      assignments.push({
-        key: connector.key,
-        label: connector.label,
-        skillKey: skillKey(connector),
-        resources,
-        tools: connector.tools,
-      });
-  }
-  return assignments;
+  const results = await Promise.allSettled(connectors.map(async (connector) => {
+    const resources = await measureRunPhase(connector.resolvePhase, () => connector.resolve(db, binding));
+    return resources.length ? [{
+      key: connector.key,
+      label: connector.label,
+      skillKey: skillKey(connector),
+      resources,
+      tools: connector.tools,
+    }] : [];
+  }));
+  return results.flatMap(result => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+}
+
+export function connectorToolDefinitionsForSkills(skillKeys: ReadonlySet<string>): Pick<ConnectorAssignment, "tools">[] {
+  return connectors.filter(connector => skillKeys.has(skillKey(connector)) && connector.tools.length > 0)
+    .map(connector => ({ tools: connector.tools }));
 }
 
 export function isConnectorSkill(key: string) {

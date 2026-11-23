@@ -1,3 +1,5 @@
+import type { PluginWorkspaceParams, PluginWorkspacePrepareParams, PluginWorkspacePrepareResult, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -51,10 +53,12 @@ import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paper
  * ```
  */
 
-import type { PluginContext } from "./types.js";
+import type { PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
@@ -90,6 +94,8 @@ import type {
   PluginLoginPtyOpenParams,
   PluginLoginPtyOpenResult,
   PluginLoginPtyInputParams,
+  PluginLoginPtyReadCredentialParams,
+  PluginLoginPtyReadCredentialResult,
   PluginLoginPtyStopParams,
   PluginLoginPtyCloseParams,
   PluginLoginPtyCloseResult,
@@ -178,6 +184,8 @@ export interface PluginApiRequestInput {
 }
 
 export interface PluginApiResponse {
+  /** Server-only upstream for a declared WebSocket route. Never returned as JSON. */
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -360,6 +368,14 @@ export interface PluginDefinition {
    */
   onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
 
+  /**
+   * Reconcile a committed resource event. Requires manifest resourceLifecycle and events.subscribe.
+   * The host acknowledges successful results and replays interrupted/unfinished work.
+   * Calls are at least once, in order per resource. Re-read current state and use
+   * idempotent external operations; deletion events remain available after the row is gone.
+   */
+  onResourceLifecycle?(event: ResourceLifecycleEvent): Promise<ResourceLifecycleResult>;
+
   /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
   onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
 
@@ -390,6 +406,13 @@ export interface PluginDefinition {
   onEnvironmentValidateConfig?(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Required with manifest.workspaceProvider, together with project resource lifecycle. */
+  onWorkspacePrepare?(params: PluginWorkspacePrepareParams): Promise<PluginWorkspacePrepareResult>;
+  onWorkspaceOperation?(params: PluginWorkspaceParams): Promise<PluginWorkspaceResult>;
+
+  /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
+  onEnvironmentTask?(params: PluginEnvironmentTaskParams): Promise<PluginEnvironmentTaskResult>;
 
   /** Called to test reachability or readiness of a plugin-hosted environment. */
   onEnvironmentProbe?(
@@ -422,6 +445,11 @@ export interface PluginDefinition {
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Read provider state only. This must not start or reconnect a sandbox. */
+  onEnvironmentInspectLease?(
+    params: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation>;
 
   /** Called to materialize the run workspace inside the provider lease. */
   onEnvironmentRealizeWorkspace?(
@@ -497,6 +525,9 @@ export interface PluginDefinition {
 
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
   onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
+
+  /** Optional fixed credential read, advertised through supported-method discovery. */
+  onLoginPtyReadCredential?(params: PluginLoginPtyReadCredentialParams): Promise<PluginLoginPtyReadCredentialResult>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
   onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;

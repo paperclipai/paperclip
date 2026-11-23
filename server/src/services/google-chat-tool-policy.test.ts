@@ -8,6 +8,14 @@ import {
 const chat = { config: { sourceTemplateKey: "google-chat" } };
 
 describe("Google Chat search without read-state permission", () => {
+  it("applies the same unread restriction to the combined connector without affecting Gmail", () => {
+    const workspace = { config: { sourceTemplateKey: "google-workspace" } };
+    expect(() => assertGoogleChatToolArgumentsSupported(workspace, "chat__search_messages", { isUnread: false }))
+      .toThrow("read/unread filtering is not supported");
+    expect(() => assertGoogleChatToolArgumentsSupported(workspace, "gmail__search_messages", { isUnread: false })).not.toThrow();
+    expect(googleChatToolInputSchema(workspace, "chat__search_messages", { type: "object", properties: { isUnread: { type: "boolean" } } }))
+      .toEqual({ type: "object", properties: {} });
+  });
   it.each([true, false, null, "true"])("rejects explicit unread filters (%s)", (isUnread) => {
     for (const tool of ["search_messages", "chat.searchMessages", "google/chat/search-messages"]) {
       for (const args of [
