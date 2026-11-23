@@ -12,7 +12,7 @@ import {
   SERIAL_BUILD_GAPS,
   shouldRunReleaseRegistryTests,
 } from "../ci-typecheck-lane.mjs";
-import { PROJECTS } from "../typecheck-test-projects.mjs";
+import { PROJECTS, selectTestProjects } from "../typecheck-test-projects.mjs";
 
 const plan = () =>
   planLane({
@@ -133,7 +133,7 @@ test("PR mode for a server-only change skips release registry, UI, runner, sandb
       "@paperclipai/plugin-authoring-smoke-example",
     ],
     testLayers: ["tests", "test-tree-0"],
-    changedFiles: ["server/src/services/issues.ts", "server/src/__tests__/issues-service.test.ts"],
+    changedFiles: ["server/src/services/isolated-unreferenced-feature.ts", "server/src/__tests__/isolated-unreferenced-feature.test.ts"],
   });
   const prepareNames = prepare.map((task) => task.name);
   const taskNames = tasks.map((task) => task.name);
@@ -145,16 +145,38 @@ test("PR mode for a server-only change skips release registry, UI, runner, sandb
 
   assert.ok(taskNames.includes("server declarations"));
   assert.ok(taskNames.includes("server layer tests"));
-  assert.ok(taskNames.includes("test project server/src/__tests__/helpers/maintenance"));
   assert.ok(taskNames.includes("typecheck paperclipai"));
   assert.ok(!taskNames.includes("release registry tests"));
   assert.ok(!taskNames.includes("typecheck test programs"));
   assert.ok(!taskNames.includes("typecheck @paperclipai/ui"));
   assert.ok(!taskNames.includes("typecheck @paperclipai/plugin-llm-wiki"));
   assert.ok(!taskNames.includes("typecheck @paperclipai/plugin-authoring-smoke-example"));
-  for (const skipped of ["tests/restart-chaos", "tests/lifecycle-baseline", "tests/speko-native", "tests/runner-e2e", "tests/e2e"]) {
+  for (const skipped of PROJECTS) {
     assert.ok(!taskNames.includes(`test project ${skipped}`), skipped);
   }
+});
+
+test("selectTestProjects follows the import graph so imported UI and server helpers trigger their callers", () => {
+  for (const helper of [
+    "ui/src/lib/company-routes.ts",
+    "ui/src/lib/issue-reference.ts",
+    "ui/src/lib/markdown-reply-content.ts",
+  ]) {
+    assert.deepEqual(selectTestProjects([helper]), ["tests/runner-e2e"], helper);
+  }
+  assert.deepEqual(selectTestProjects(["ui/src/components/Sidebar.tsx"]), []);
+  assert.ok(selectTestProjects(["server/src/services/issues.ts"]).includes("tests/runner-e2e"));
+  assert.ok(selectTestProjects(["server/src/services/issues.ts"]).includes("server/src/__tests__/helpers/maintenance"));
+  assert.ok(selectTestProjects(["tests/unknown-new-project/a.ts"], [...PROJECTS, "tests/unknown-new-project"]).includes("tests/unknown-new-project"));
+
+  const uiHelperPlan = planLane({
+    buildGapPackages: ["paperclipai", "@paperclipai/paperclip-runner", "@paperclipai/ui"],
+    testLayers: ["tests"],
+    changedFiles: ["ui/src/lib/company-routes.ts"],
+  });
+  assert.ok(uiHelperPlan.tasks.some((t) => t.name === "server declarations"));
+  assert.ok(uiHelperPlan.tasks.some((t) => t.name === "test project tests/runner-e2e"));
+  assert.ok(uiHelperPlan.tasks.some((t) => t.name === "typecheck @paperclipai/ui"));
 });
 
 test("PR mode for a pure UI component change skips server build/declarations, release registry, and sandbox providers", () => {

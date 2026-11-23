@@ -102,7 +102,10 @@
         "packages/shared/**",
         "packages/adapter-utils/**",
         "packages/adapters/**",
-        "packages/plugins/sdk/**"
+        "packages/paperclip-runner/**",
+        "packages/plugins/**",
+        "server/src/services/agent-conversations.ts",
+        "announcements/examples/animated/**"
       ],
       "outputs": [],
       "cache": true
@@ -266,8 +269,11 @@
         "server/src/routes/native-run-mcp.ts",
         "server/src/adapters/**",
         "ui/src/lib/company-routes.ts",
+        "ui/src/lib/company-skill-routes.ts",
+        "ui/src/lib/grok-bot-setup-prompt.ts",
         "ui/src/lib/issue-reference.ts",
-        "ui/src/lib/markdown-reply-content.ts"
+        "ui/src/lib/markdown-reply-content.ts",
+        "ui/src/lib/onboarding-route.ts"
       ],
       "outputs": [],
       "cache": false

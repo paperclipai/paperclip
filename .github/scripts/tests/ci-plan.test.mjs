@@ -86,6 +86,10 @@ test("canary dry run, runner support, chat, docker and test-only edits select th
   assert.equal(selectedTasks(plan(["cli/src/commands/onboard.ts"])).has("ci:workspaces-a"), true);
   assert.equal(selected(plan(["cli/src/commands/onboard.ts"]), "verify_paperclip_runner"), false);
   assert.equal(selectedTasks(plan(["packages/db/src/schema/issues.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selectedTasks(plan(["packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selectedTasks(plan(["server/src/services/agent-conversations.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selectedTasks(plan(["packages/plugins/create-paperclip-plugin/src/index.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selectedTasks(plan(["announcements/examples/animated/assets/demo.html"])).has("ci:workspaces-a"), true);
 });
 
 test("PR workflow keeps Build fast and passes PR-mode context to typecheck and Vitest lanes", () => {
