@@ -186,7 +186,17 @@ catalog and health work may use a single active grant for that connection and
 company. An agent caller must use its own grant. Missing, revoked, or ambiguous
 agent authorizations fail before provider requests; they never fall back to a
 personal, organization, or connection-owned credential. Renaming or pausing the
-connection must preserve the grant and its secret bindings. A later successful
+connection must preserve the grant and its secret bindings. OAuth methods
+create the agent grant in the callback. Methods without sign-in (`none` or
+`api_key`) create it when connect names `subjectAgentId`, with the API key on
+that grant; one connection serves exactly one agent, so connecting it for a
+second agent is a conflict. Finish never creates agent grants: the grant still
+gives no tools until finish or the installs API adds that agent's install.
+For a plugin-served connection (`transport: "plugin"`) the tool access policy
+denies an agent with no install for it (or for the company) with
+`deny_connection_not_installed`, before any profile, grant, trust rule or allow
+policy. A general `tools:use` grant does not replace the install.
+A later successful
 catalog refresh clears an earlier connection-health error without new consent.
 An agent caller denied for lacking its own grant must not change shared health
 or the catalog, including when that agent has permission to manage the connection.
@@ -1683,7 +1693,7 @@ Suggested PR verification block:
 | `oauthStrategy` | Managed broker strategy. New definitions use `paperclip_cloud_connector`; `paperclip_id_connector` is recognized only to require migration when an old grant expires. The protocols and provider clients are not interchangeable. Only valid for OAuth. |
 | `connectorProfile` | Managed connector capability/scope profile, required with `oauthStrategy`. |
 | `capabilityProfile` | User-facing read/write/mode grouping used for method selection. |
-| `grantKinds` | Restricts identity to `organization` and/or `user`; omit for flexible methods. |
+| `grantKinds` | Restricts identity to `organization`, `user` and/or `agent`; omit for flexible methods. An `agent` method connects for exactly one chosen agent. |
 | `whenToUse` | One sentence distinguishing this method from alternatives. |
 | `defaults.serverUrl` | Exact fixed endpoint. For discovery-capable OAuth, omit fixed auth endpoints. |
 | `defaults.serverUrlTemplate` | HTTPS endpoint with placeholders supplied by declared tenant/extension fields. Mutually exclusive with `serverUrl`. |

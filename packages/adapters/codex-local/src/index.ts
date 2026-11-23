@@ -42,6 +42,8 @@ export function resolveCodexLocalCliPolicy(config: unknown, options: { networkAc
 }
 
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
+  "gpt-6.2-sol",
+  "gpt-6.2-astra",
   "gpt-6-astra",
   "gpt-6.1-sol",
   "gpt-6-sol",
@@ -100,6 +102,8 @@ export function codexLocalReasoningEffortsForModel(
 ): readonly CodexLocalReasoningEffort[] {
   const normalizedModel = normalizeCodexModel(model);
   switch (normalizedModel) {
+    case "gpt-6.2-sol":
+    case "gpt-6.2-astra":
     case "gpt-6-astra":
     case "gpt-6.1-sol":
     case "gpt-6-sol":
@@ -119,9 +123,14 @@ export function codexLocalReasoningEffortsForModel(
 // "The '<model>' model is not supported when using Codex with a ChatGPT account.", which reads
 // like an account problem when it is really a stale install, typically a sandbox image baked
 // before the catalog gained the model. Record the oldest stable release verified to work so the
-// Test and the remote runner can name the actual gap. Omit models with no verified floor; the
-// install pin in the runner and images is always at or above every floor listed here.
+// Test and the remote runner can name the actual gap. Omit models with no verified floor. A floor
+// above the runner's install pin keeps the model usable only where a newer CLI is installed.
 const CODEX_LOCAL_MODEL_MINIMUM_CLI_VERSIONS: Readonly<Record<string, string>> = {
+  // 0.169.1 is the first release whose bundled catalog lists GPT-6.2 (0.169.0 does not), though
+  // the catalog entry declares minimal_client_version 0.166.0. The runner pin is still older, so
+  // remote runs fall back to gpt-6.1-sol / gpt-6-astra with a visible message until it moves.
+  "gpt-6.2-sol": "0.169.1",
+  "gpt-6.2-astra": "0.169.1",
   // 0.156.1 and older are rejected (openai/codex#49396); 0.159.0 and 0.159.2 are accepted
   // (openai/codex#49464). No stable release between those was verified either way.
   "gpt-6.1-sol": "0.159.0",
@@ -220,6 +229,8 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 // then by decreasing capability inside each version, older models at the end. The server
 // returns this list as written and the model dropdown keeps its order.
 export const models = [
+  { id: "gpt-6.2-sol", label: "gpt-6.2-sol" },
+  { id: "gpt-6.2-astra", label: "gpt-6.2-astra" },
   { id: "gpt-6.1-sol", label: "gpt-6.1-sol" },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },

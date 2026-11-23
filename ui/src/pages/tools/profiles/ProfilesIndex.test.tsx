@@ -52,7 +52,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSeparator: () => createElement("hr"),
 }));
 
-vi.mock("./useProfilesData", () => ({ useProfilesData: () => profilesData.current }));
+vi.mock("./useProfilesData", () => ({ useProfileIndexData: () => profilesData.current }));
 
 import { ApiError } from "@/api/client";
 import { ProfilesIndex } from "./ProfilesIndex";

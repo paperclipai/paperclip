@@ -140,6 +140,7 @@ describe("instance settings service", () => {
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
       enableGoogleWorkspaceConnector: false,
+      enableAwsConnector: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableLegacyComposerSubmit: false,

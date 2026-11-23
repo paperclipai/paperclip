@@ -27,6 +27,7 @@ import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-r
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import * as runner from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
@@ -769,6 +770,41 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.config.runtimeSkillEntries = [];
     await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("Project skill access changed");
     expect((await read(run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
+  });
+
+  it.each(["missing", "available"] as const)("distinguishes an unprepared permitted skill from revoked access on resume (%s)", async sourceStatus => {
+    const { input, run } = await fixture();
+    const key = "company/test/project-skill", versionId = randomUUID();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { skillVersions: { [key]: versionId } } }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    vi.mocked(buildNativeRuntimeContext).mockImplementationOnce(async () => {
+      const context = nativeRuntimeContextFixture();
+      context.instructions.bundle.rootPath = instructionRoot;
+      context.skills = [{ key, runtimeName: "project-skill", versionId, bundle: { ...context.instructions.bundle } }];
+      return { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) };
+    });
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(run.id);
+    input.run = saved;
+    input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    const detail = "Failed to materialize the selected skill version: synthetic storage read timed out";
+    input.config.runtimeSkillEntries = [{ key, runtimeName: "project-skill", versionId, source: "/unavailable/project-skill", sourceStatus,
+      missingDetail: sourceStatus === "missing" ? detail : null }];
+    const resuming = selectHeartbeatRuntime(db, input);
+    if (sourceStatus === "missing") {
+      const error = await resuming.then(() => null, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ConfigurationIncompleteFailure);
+      expect((error as Error).message).not.toContain("access changed");
+      expect((error as Error).message).toContain(key);
+      expect((error as Error).message).toContain(detail);
+      expect((await read(run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    } else {
+      expect(await resuming).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution });
+    }
     expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
   });
 

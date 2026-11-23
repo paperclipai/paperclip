@@ -1,3 +1,4 @@
+import { issues } from "@paperclipai/db";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
@@ -172,11 +173,16 @@ describe("workProductService", () => {
     const insertValues = vi.fn(() => ({ returning: insertReturning }));
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
+    const ownerWhere = vi.fn(async () => [{ createdByUserId: "user-1", responsibleUserId: null }]);
+    const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: ownerWhere })) }));
+
     let transactionOpen = false;
     const tx = {
       execute: retentionReads(() => transactionOpen),
       update: txUpdate,
       insert: txInsert,
+      select: txSelect,
+      transaction: async (read: (input: unknown) => Promise<unknown>) => read(tx),
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
       transactionOpen = true;
@@ -196,14 +202,41 @@ describe("workProductService", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(1);
     expect(txInsert).toHaveBeenCalledTimes(1);
+    expect(ownerWhere).toHaveBeenCalledTimes(1);
+    expect(result?.id).toBe("work-product-1");
+  });
+
+  it("keeps the new work product when the telemetry owner read fails", async () => {
+    const insertedRow = createWorkProductRow();
+    const txInsert = vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(async () => [insertedRow]) })) }));
+    let transactionOpen = false;
+    const tx = {
+      execute: retentionReads(() => transactionOpen),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: txInsert,
+      transaction: vi.fn(async () => { throw new Error("owner read failed"); }),
+    };
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
+
+    const result = await workProductService({ transaction } as any).createForIssue("issue-1", "company-1", {
+      type: "pull_request", provider: "github", title: "PR 1", status: "open", reviewState: "draft", isPrimary: false,
+    });
+
+    expect(tx.transaction).toHaveBeenCalledTimes(1);
     expect(result?.id).toBe("work-product-1");
   });
 
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
-    const selectFrom = vi.fn(() => ({ where: selectWhere }));
+    const selectFrom = vi.fn((table: unknown) => {
+      const rows = table === issues ? [{ id: "issue-1" }] : [existingRow];
+      const query = Promise.resolve(rows);
+      return Object.assign(query, { where: vi.fn(() => query), orderBy: vi.fn(() => query), for: vi.fn(() => query) });
+    });
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
     const updateReturning = vi
@@ -231,7 +264,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txSelect).toHaveBeenCalledTimes(1);
+    expect(txSelect).toHaveBeenCalled();
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });

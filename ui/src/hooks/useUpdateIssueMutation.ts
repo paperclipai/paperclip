@@ -6,6 +6,7 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { useAccountBoundMutation } from "./useAccountBoundMutation";
+import { SubtaskCancellationError, TaskCancellationDismissedError, useTaskCancellation } from "./useTaskCancellation";
 import type { Issue } from "@paperclipai/shared";
 import { describeError, isTransientError } from "@/api/errors";
 import { issuesApi, type IssueUpdateResponse } from "@/api/issues";
@@ -173,6 +174,7 @@ export interface UpdateIssueMutation {
   ) => Promise<IssueUpdateResponse>;
   isPending: boolean;
   variables: UpdateIssueVariables | undefined;
+  error: Error | null;
 }
 
 /**
@@ -185,11 +187,14 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const connectivity = useConnectivityStore();
+  const cancelTask = useTaskCancellation();
   const { companyId, invalidateKeys, onSuccess, onSettled, action = "update the task" } = options;
 
   const mutationOptions = {
     waitForTurn: (variables: UpdateIssueVariables) => issueWriteTurns.get(variables)?.ready,
-    mutationFn: (variables: UpdateIssueVariables) => issuesApi.update(variables.id, variables.data),
+    mutationFn: (variables: UpdateIssueVariables) => variables.data.status === "cancelled"
+      ? cancelTask(variables.id, variables.data)
+      : issuesApi.update(variables.id, variables.data),
     onMutate: async ({ id, data }: UpdateIssueVariables): Promise<UpdateIssueContext> => {
       const refs = new Set([id]);
       const cached = queryClient.getQueryData<Issue>(queryKeys.issues.detail(id));
@@ -201,13 +206,18 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
         ...[...refs].map((ref) => queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) })),
         ...(companyId ? [queryClient.cancelQueries({ queryKey: queryKeys.issues.list(companyId) })] : []),
       ]);
-      return { refs, rollback: applyOptimisticIssueUpdate(queryClient, companyId, refs, data) };
+      return { refs, rollback: data.status === "cancelled" ? [] : applyOptimisticIssueUpdate(queryClient, companyId, refs, data) };
     },
     onSuccess: (result: IssueUpdateResponse, variables: UpdateIssueVariables) => {
       onSuccess?.(result, variables);
     },
     onError: (error: Error, _variables: UpdateIssueVariables, context: UpdateIssueContext | undefined) => {
       if (context) rollbackOptimisticIssueUpdate(queryClient, context.refs, context.rollback);
+      if (error instanceof TaskCancellationDismissedError) return;
+      if (error instanceof SubtaskCancellationError) {
+        pushToast({ title: "Some subtasks could not be canceled", body: error.message, tone: "error" });
+        return;
+      }
       // While the connection banner is up it already explains an outage.
       if (isTransientError(error) && connectivity.getSnapshot().status !== "online") return;
       const { title, body } = describeError(error, { action });
@@ -239,7 +249,7 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
     const queued = { ...variables };
     const cached = queryClient.getQueryData<Issue>(queryKeys.issues.detail(variables.id));
     issueWriteTurns.set(queued, takeIssueWriteTurn(`${companyIdRef.current ?? "none"}:${cached?.id ?? variables.id}`));
-    const mutation = isReplayableIssueUpdate(queued.data) ? replayableRef.current : directRef.current;
+    const mutation = queued.data.status !== "cancelled" && isReplayableIssueUpdate(queued.data) ? replayableRef.current : directRef.current;
     return { mutation, queued };
   };
   const mutate = useCallback<UpdateIssueMutation["mutate"]>((variables, mutateOptions) => {
@@ -258,7 +268,8 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
       mutateAsync,
       isPending: replayable.isPending || direct.isPending,
       variables: latest.variables,
+      error: latest.error instanceof TaskCancellationDismissedError ? null : latest.error,
     }),
-    [direct.isPending, latest.variables, mutate, mutateAsync, replayable.isPending],
+    [direct.isPending, latest.error, latest.variables, mutate, mutateAsync, replayable.isPending],
   );
 }

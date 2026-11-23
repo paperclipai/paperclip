@@ -568,6 +568,18 @@ describe("native status authority", () => {
     );
   });
 
+  it.each(["task_wide", "current_track"] as const)("keeps a resolved human owner for a %s block without waking the worker again", scope => {
+    const blocked = assessment({ reportedDisposition: "blocked", blocker: {
+      boardOwned: true, ownerKind: "user", ownerUserId: "named-member", scope, unblockAction: "Decide the dependency exception",
+    } });
+    const decision = arbitrate({ assessment: blocked });
+    expect(decision.unblockDescriptor?.owner).toEqual({ userId: "named-member" });
+    expect(decision.effects).toEqual([{ kind: "bind_blocker", owner: { userId: "named-member" }, action: "Decide the dependency exception" }]);
+    expect(arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true })).toMatchObject({
+      reasonCode: "durable_dependency_blocker_bound", unblockDescriptor: { owner: { userId: "named-member" } }, effects: [],
+    });
+  });
+
   it("blocks only for a task-wide blocker with a named owner and action", () => {
     expect(
       arbitrate({
@@ -766,6 +778,31 @@ describe("native status authority", () => {
       reasonCode: "native_environment_blocker_exhausted", unblockDescriptor: { owner: "board" } });
     for (const held of [{ hasActivePauseHold: true }, { isConversation: true }, { environmentBlocker: false }]) {
       expect(arbitrate({ assessment: blocked, environmentBlocker: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
+
+  it("hands the next turn to a queued chat request instead of continuing a blocker in a fresh session", () => {
+    // A GitHub push that arrives during a review waits as a chat wake. A
+    // self-continuation would keep the older request's head and never publish.
+    const blocked = (ownerKind: "system" | "agent") => assessment({ reportedDisposition: "blocked", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, blocker: { unblockAction: "Publish the review.", boardOwned: false, ownerKind, scope: "task_wide" } });
+    const superseded = { statusAction: "preserve", toStatus: "in_progress",
+      reasonCode: "native_blocker_superseded_by_queued_request", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
+    // Spent automatic continuations bind the blocker to the board, as without a queued request.
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, failureRetryCount: 2 }))
+      .toMatchObject({ reasonCode: "native_environment_blocker_exhausted", toStatus: "blocked", unblockDescriptor: { owner: "board" } });
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true, failureRetryCount: 1 }))
+      .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, hasActivePauseHold: true }))
+      .toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    // A blocker for a person or an external owner is bound now, as without a queued request.
+    for (const ownerKind of ["user", "external"] as const) {
+      const owned = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+        blocker: { unblockAction: "Add the deploy key.", boardOwned: false, ownerKind, scope: "task_wide" } });
+      expect(arbitrate({ assessment: owned, agentBlockerRecoverable: true, hasQueuedChatRequest: true }))
+        .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
     }
   });
 

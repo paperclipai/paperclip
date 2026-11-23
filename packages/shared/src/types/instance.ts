@@ -89,6 +89,8 @@ export interface InstanceExperimentalSettings {
   enablePaperclipNotebook: boolean;
   /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
   enableGoogleWorkspaceConnector: boolean;
+  /** Show and allow the AWS connector (minted per-connection AWS credentials). */
+  enableAwsConnector: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
