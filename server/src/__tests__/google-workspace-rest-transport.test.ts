@@ -634,7 +634,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(listed.parametersSchema).toEqual(current);
       expect(listed.parametersSchema).toMatchObject({ additionalProperties: false, properties: { query: { type: "string" } } });
       for (const tool of (await f.gateway.listToolsForSession(f.session.token)).filter((item) => item.connectionId === f.connectionId)) {
-        expect(tool.parametersSchema, tool.upstreamToolName).toMatchObject({ additionalProperties: false });
+        expect(tool.parametersSchema, String(tool.upstreamToolName)).toMatchObject({ additionalProperties: false });
       }
       expect(f.restRequests).toHaveLength(requestsBefore);
 
