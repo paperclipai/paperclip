@@ -14,15 +14,18 @@ const DURATIONS_MANIFEST = path.join(HERE, "e2e-shard-durations.json");
 // test in scripts/__tests__/e2e-shard.test.mjs fails if the two ever drift.
 export const IGNORED_SPECS = ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"];
 
-// Specs that mutate instance-wide state on the shared throwaway server and
-// therefore must run with `workers: 1`. Keep in sync with `SERIAL_SPECS` in
-// tests/e2e/playwright.config.ts — `scripts/__tests__/e2e-shard.test.mjs`
-// fails if the two ever drift.
+// Specs that mutate instance-wide state on the shared throwaway server or
+// assert strict real-time latency / focus restoration sensitive to concurrent
+// Chromium contention, and therefore must run with `workers: 1`. Keep in sync
+// with `SERIAL_SPECS` in tests/e2e/playwright.config.ts —
+// `scripts/__tests__/e2e-shard.test.mjs` fails if the two ever drift.
 export const SERIAL_SPECS = [
   "agent-configuration.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
+  "composer-stop.spec.ts",
   "connection-intents.spec.ts",
+  "document-image-gallery.spec.ts",
   "onboarding.spec.ts",
   "smoke-lab-p1-p4.spec.ts",
   "smoke-lab-p5-p7.spec.ts",
@@ -30,7 +33,7 @@ export const SERIAL_SPECS = [
 
 // Matches the CI worker count in tests/e2e/playwright.config.ts for shards
 // that contain only parallel-safe specs.
-export const DEFAULT_PARALLEL_WORKERS = 3;
+export const DEFAULT_PARALLEL_WORKERS = 2;
 
 export function isSerialE2eSpec(file) {
   return SERIAL_SPECS.includes(path.posix.basename(file.split(path.sep).join("/")));
