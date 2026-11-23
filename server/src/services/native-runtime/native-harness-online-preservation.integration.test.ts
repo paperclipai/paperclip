@@ -195,13 +195,14 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
   it.each([
     ["active", "selected_source_absent"],
     ["retiring", "selected_source_retiring"],
+    ["previous", "selected_source_unsettled"],
   ])("keeps a gone backup source blocked while the session is %s", async (kind, outcome) => {
     const f = await fixture(), signal = AbortSignal.timeout(15_000);
     const baseline = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
     await f.db.delete(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
     await rm(join(f.base, f.scopeDigest), { recursive: true });
     if (kind === "active") await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
-    else await mkdir(join(f.base, f.scopeDigest, "failover-backups", `.retiring-${randomUUID()}`), { recursive: true });
+    else await mkdir(join(f.base, f.scopeDigest, "failover-backups", kind === "previous" ? "previous" : `.retiring-${randomUUID()}`), { recursive: true });
     const result = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
     expect(result.deferred[outcome]).toBe((baseline.deferred[outcome] ?? 0) + 1);
     expect(result.sourceGone).toBeUndefined();

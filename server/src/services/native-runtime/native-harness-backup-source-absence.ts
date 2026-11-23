@@ -11,17 +11,18 @@ export const NATIVE_HARNESS_BACKUP_SOURCE_ABSENT_KEY = "nativeHarnessBackupSourc
 const SCHEMA = "paperclip.native-harness-backup-source-absent.v1";
 const terminal = ["succeeded", "failed", "cancelled", "interrupted", "timed_out"];
 type Scopes = Record<string, { manifestSha256s: string[]; recordedAt: string }>;
-export type NativeHarnessBackupSourceAbsence = "source_gone_recorded" | "selected_source_absent" | "selected_source_retiring" | "selected_source_busy";
+export type NativeHarnessBackupSourceAbsence = "source_gone_recorded" | "selected_source_absent" | "selected_source_retiring" | "selected_source_unsettled" | "selected_source_busy";
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-async function localSourceState(scopeDigest: string): Promise<"gone" | "present" | "retiring"> {
+async function localSourceState(scopeDigest: string): Promise<"gone" | "present" | "retiring" | "unsettled"> {
   const backups = join(nativeHarnessStateBase(), scopeDigest, "failover-backups");
   const missing = (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT" || error.code === "ENOTDIR") return null; throw error; };
   if (await lstat(join(backups, "current")).catch(missing)) return "present";
-  const names = await readdir(backups).catch(missing) ?? [];
-  return names.some(name => name.startsWith(".retiring-")) ? "retiring" : "gone";
+  const names = (await readdir(backups).catch(missing) ?? []).filter(name => !name.startsWith(".expired-"));
+  if (names.some(name => name.startsWith(".retiring-"))) return "retiring";
+  return names.length ? "unsettled" : "gone";
 }
 
 export async function recordNativeHarnessBackupSourceAbsence(db: Db, input: {
@@ -67,6 +68,7 @@ export async function recordNativeHarnessBackupSourceAbsence(db: Db, input: {
     input.signal.throwIfAborted();
     const local = await localSourceState(input.scopeDigest);
     if (local === "retiring") return "selected_source_retiring" as const;
+    if (local === "unsettled") return "selected_source_unsettled" as const;
     if (local === "present") return "selected_source_absent" as const;
     const profile = object(run.runnerProfileJson), recorded = object(profile[NATIVE_HARNESS_BACKUP_SOURCE_ABSENT_KEY]);
     const scopes: Scopes = recorded.schema === SCHEMA ? { ...object(recorded.scopes) } as Scopes : {};
