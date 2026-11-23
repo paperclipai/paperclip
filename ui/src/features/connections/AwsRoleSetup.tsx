@@ -109,6 +109,8 @@ export function AwsRoleSetup({
   const [setup, setSetup] = useState<AwsConnectionSetup | null>(null);
   const agentProgress = useAgentSetupProgress({
     companyId, purpose: "aws_connection", subjectId: connectionId,
+    // Only when the role method is available: otherwise there is no prompt to carry the checklist.
+    enabled: setup?.available === true,
     ...(progressClient ? { client: progressClient } : {}),
     ...(progressAccountId ? { accountId: progressAccountId } : {}),
   });

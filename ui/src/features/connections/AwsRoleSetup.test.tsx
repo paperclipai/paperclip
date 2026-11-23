@@ -199,8 +199,12 @@ describe("AwsRoleSetup", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Paste the prompt into your agent."));
   });
 
-  it("points to the access-key method when AWS cannot reach this instance", async () => {
-    await render({ available: false, reason: "loopback" });
+  it("points to the access-key method when AWS cannot reach this instance, without starting a checklist", async () => {
+    const progressClient: AgentSetupProgressClient = { create: vi.fn(), get: vi.fn() };
+    await render({ available: false, reason: "loopback" }, { companyId: "company-1", progressClient });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // No prompt can carry a checklist here, so none is created.
+    expect(progressClient.create).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Use an access key instead");
     expect(container.textContent).toContain("runs on this computer only");
     expect(button("Test connection")?.disabled).toBe(true);
