@@ -1708,7 +1708,7 @@ class CodexAcpxSession implements HarnessSession {
         summary: completed ? "Context compaction ended" : "Context compaction stopped",
         phase: completed ? "completed" : "failed",
         details: [],
-      })) this.#activeCompaction = null;
+      }, 1)) this.#activeCompaction = null;
     }
     if (!this.#emit(terminal.eventType, terminal.payload, { turnId })) {
       // The persisted terminal index is the driver's settlement authority.
@@ -1739,7 +1739,12 @@ class CodexAcpxSession implements HarnessSession {
     return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
   }
 
-  #emitClaudeStatus(turnId: string, noticeId: string, banner: ClaudeStatusBanner): boolean {
+  #emitClaudeStatus(
+    turnId: string,
+    noticeId: string,
+    banner: ClaudeStatusBanner,
+    reservedAfter?: number,
+  ): boolean {
     return this.#emit(
       "provider.notice.recorded",
       {
@@ -1756,6 +1761,7 @@ class CodexAcpxSession implements HarnessSession {
           : {}),
       },
       { turnId, itemId: noticeId },
+      reservedAfter,
     );
   }
 
