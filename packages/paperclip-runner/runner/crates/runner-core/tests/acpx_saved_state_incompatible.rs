@@ -230,6 +230,30 @@ fn a_refused_reload_of_a_lost_turn_names_the_saved_state_incompatible() {
     );
 }
 
+/// Antigravity never restarts its provider at the end of a turn (the
+/// turn-end generation restart is Claude-only), so a provider lost between
+/// turns is reopened by the next `turn.start`. A refusal to reload the saved
+/// conversation there is named the same way, never a generic closed session.
+#[test]
+fn a_refused_reload_at_the_next_turn_start_names_the_saved_state_incompatible() {
+    let fixture = Fixture::new("incompatible-next-turn");
+    fixture.suspended();
+    fixture.reject_open("recovering", INCOMPATIBLE);
+    let mut restored = fixture.executor();
+    let error = restored
+        .execute(&command(
+            4,
+            "turn.start",
+            json!({"turnId": "provider-turn-2", "text": "Continue the work."}),
+        ))
+        .expect_err("the provider refused to reload the saved conversation");
+    assert_eq!(
+        error.classification(),
+        Some(PROVIDER_STATE_INCOMPATIBLE),
+        "{error}"
+    );
+}
+
 #[test]
 fn another_reload_refusal_keeps_its_ordinary_failure() {
     let fixture = Fixture::new("incompatible-other-code");
