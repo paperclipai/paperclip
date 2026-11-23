@@ -125,6 +125,19 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(1);
     await expectFilesUnavailable(f);
   });
+  it("moves an archived project task workspace whose repository cache is gone too", async () => {
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const f = await seed(), [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Gone project" }).returning();
+    const managed = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId: project!.id, repoName: "repo" });
+    const cwd = path.join(managed, ".paperclip", "worktrees", "task-branch");
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), providerType: "git_worktree", strategyType: "git_worktree",
+      projectId: project!.id, repoUrl: "https://example.test/acme/repo.git", branchName: "task-branch", cwd, providerRef: cwd,
+      metadata: { retainedNote: "keep", gitBranchOwnershipVersion: 1, createdByRuntime: true } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await fs.rm(f.cwd, { recursive: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, filesUnavailable: true, reasons: [] });
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, filesUnavailable: true });
+    await expectFilesUnavailable({ ...f, cwd });
+  });
   it("keeps an archived workspace blocked when it still has a saved file reference", async () => {
     const f = await archivedGitWorkspaceWithoutFiles(); await fs.rm(f.repository, { recursive: true });
     for (const metadata of [{ gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2", broken: true } },

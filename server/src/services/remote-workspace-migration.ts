@@ -186,7 +186,6 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   let retainedDirectory = null as ReturnType<typeof readTaskDirectoryRetention>;
   let archivedGitSource: ArchivedGitMigrationSource | null = null;
   let filesGone = false;
-  let archivedGitFailure: string | null = null;
   if (!cwd || !path.isAbsolute(cwd)) reasons.push("local_source_missing");
   else {
     const entry = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
@@ -206,14 +205,12 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     if (!entry && !retainedDirectory && (workspace.status === "archived" || input.writersStopped)) {
       try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace, { allowActiveRetainedBranch: input.writersStopped, operationId: allowedOperation }); }
       catch (error) {
-        archivedGitFailure = error instanceof Error ? error.message : "unknown";
         reasons.push(error instanceof Error && error.message === "remote_workspace_migration_restore_point_expired"
           ? "restore_point_expired" : "archived_git_source_unavailable");
       }
     }
     if (!retainedDirectory && !archivedGitSource && (!entry?.isDirectory() || entry.isSymbolicLink())) reasons.push("local_source_unsafe_or_missing");
     filesGone = !entry && !retainedDirectory && !archivedGitSource && workspace.status === "archived"
-      && (archivedGitFailure === null || archivedGitFailure === "remote_workspace_migration_archived_git_source_unavailable")
       && !reasons.includes("restore_point_expired") && !reasons.includes("restore_point_invalid")
       && await workspaceFilesProvenGone(db, workspace);
     if (entry?.isDirectory() && !entry.isSymbolicLink()) reasons.push(...await workspaceMigrationLayoutBlockers(db, workspace, input.writersStopped, input.onlineSource));
