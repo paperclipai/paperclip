@@ -57,6 +57,8 @@ import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runt
 import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/error-handler.js";
 import { toolAccessService } from "../services/tool-access.js";
 import {
   canonicalToolArguments,
@@ -5736,6 +5738,83 @@ rl.on("line", (line) => {
     for (const res of [approve, decline]) {
       expect(res.status).toBe(403);
       expect(res.body.error).toContain("Viewer access is read-only");
+    }
+  });
+
+  it("applies the same resolution policy to the direct tool review routes and the issue thread path", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "alice");
+    await createActiveMember(db, company.id, "bob");
+    await db.update(issues).set({ conversationAgentId: agent.id, conversationUserId: "alice", conversationState: "active" })
+      .where(eq(issues.id, issue.id));
+    const remote = await createRemoteMcpTool(db, company.id, { toolName: "send_note", riskLevel: "write" });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { connectionId: remote.connection.id },
+      priority: 10,
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { id: string };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "sent" }] } }),
+        { headers: { "content-type": "application/json" } });
+    } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.connectionId === remote.connection.id)!;
+    const requestReview = async () => {
+      await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { key: "note", value: randomUUID() } })
+        .then(() => { throw new Error("Expected the call to need review"); }, (error) => expectGatewayError(error, 409, "approval_required"));
+      const [pending] = await db.select().from(toolActionRequests)
+        .where(and(eq(toolActionRequests.companyId, company.id), eq(toolActionRequests.status, "pending")));
+      return pending!;
+    };
+    const boardActor = (userId: string): Express.Request["actor"] => ({
+      type: "board",
+      userId,
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "member", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const issueApp = (userId: string) => {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = boardActor(userId);
+        next();
+      });
+      app.use("/api", issueRoutes(db, {} as never, {
+        approveToolActionRequest: (input) => gateway.approveActionRequest(input),
+        declineToolActionRequest: (input) => gateway.declineActionRequest(input),
+      }));
+      app.use(errorHandler);
+      return app;
+    };
+    const outcomes = async (userId: string, decision: "approve" | "decline") => {
+      const viaIssue = await requestReview();
+      const issueStatus = (await request(issueApp(userId))
+        .post(`/api/issues/${issue.id}/interactions/${viaIssue.interactionId}/${decision === "approve" ? "accept" : "reject"}`)
+        .send({})).status;
+      const direct = await requestReview();
+      const directStatus = (await request(createGatewayRouteApp(db, gateway, boardActor(userId)))
+        .post(`/api/tool-gateway/action-requests/${direct.id}/${decision}`)
+        .send({ companyId: company.id })).status;
+      const [after] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
+        .where(eq(toolActionRequests.id, direct.id));
+      await db.update(toolActionRequests).set({ status: "expired" })
+        .where(and(eq(toolActionRequests.companyId, company.id), eq(toolActionRequests.status, "pending")));
+      return { issueAllowed: issueStatus < 300, directAllowed: directStatus < 300, directStatus, directRequestStatus: after!.status };
+    };
+
+    for (const decision of ["approve", "decline"] as const) {
+      const outsider = await outcomes("bob", decision);
+      expect(outsider).toMatchObject({ issueAllowed: false, directAllowed: false, directStatus: 403, directRequestStatus: "pending" });
+      const owner = await outcomes("alice", decision);
+      expect(owner).toMatchObject({ issueAllowed: true, directAllowed: true });
     }
   });
 
