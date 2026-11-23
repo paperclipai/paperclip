@@ -125,6 +125,20 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(1);
     await expectFilesUnavailable(f);
   });
+  it("keeps an archived workspace blocked when it still has a saved file reference", async () => {
+    const f = await archivedGitWorkspaceWithoutFiles(); await fs.rm(f.repository, { recursive: true });
+    for (const metadata of [{ gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2", broken: true } },
+      { isolatedTaskDirectoryRetention: { schema: "unknown" } }]) {
+      await db.update(executionWorkspaces).set({ metadata: { retainedNote: "keep", gitBranchOwnershipVersion: 1, ...metadata } })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+      expect(inventory).toMatchObject({ eligible: false });
+      expect(inventory).not.toHaveProperty("filesUnavailable");
+      expect(inventory.reasons).toContain("local_source_unsafe_or_missing");
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("local_source_unsafe_or_missing");
+    }
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
   it("keeps workspaces blocked when their files may still exist", async () => {
     const f = await seed(), elsewhere = path.join(root, "elsewhere");
     await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, f.workspaceId));

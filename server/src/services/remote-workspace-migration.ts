@@ -29,7 +29,8 @@ import { explainOnlineWorkspaceSource, inspectOnlineWorkspaceSource, requiresOnl
 import { withWorkspaceSourceLocks, withIndependentWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, isTaskDispositionRecovery, lockOnlineLegacyWorkspaceRecoverySources, ONLINE_LEGACY_WORKSPACE_PRESERVATION, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
-import { readGitCacheExpiration, GIT_CACHE_EXPIRATION_REASON, managedSourcePaths } from "./git-workspace-restoration.js";
+import { readGitCacheExpiration, GIT_CACHE_EXPIRATION_REASON, GIT_CACHE_RESTORATION_KEY, managedSourcePaths } from "./git-workspace-restoration.js";
+import { TASK_DIRECTORY_RETENTION_KEY } from "./isolated-task-directory-snapshot.js";
 import { recordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 import { localRepositoryPath } from "./local-repository-path.js";
 import { workspaceFilesUnavailableRecord, WORKSPACE_FILES_UNAVAILABLE_KEY } from "./workspace-files-unavailable.js";
@@ -128,7 +129,10 @@ async function pathAbsent(candidate: string) {
   });
 }
 
+const SAVED_FILE_REFERENCE_KEYS = [GIT_CACHE_RESTORATION_KEY, TASK_DIRECTORY_RETENTION_KEY];
+
 async function workspaceFilesProvenGone(db: ReadDb, workspace: Workspace) {
+  if (SAVED_FILE_REFERENCE_KEYS.some(key => workspace.metadata?.[key] != null)) return false;
   const candidates = [workspace.cwd, workspace.providerRef].filter((value): value is string => typeof value === "string");
   if (workspace.repoUrl) {
     try {
@@ -182,6 +186,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   let retainedDirectory = null as ReturnType<typeof readTaskDirectoryRetention>;
   let archivedGitSource: ArchivedGitMigrationSource | null = null;
   let filesGone = false;
+  let archivedGitFailure: string | null = null;
   if (!cwd || !path.isAbsolute(cwd)) reasons.push("local_source_missing");
   else {
     const entry = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
@@ -200,11 +205,15 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     }
     if (!entry && !retainedDirectory && (workspace.status === "archived" || input.writersStopped)) {
       try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace, { allowActiveRetainedBranch: input.writersStopped, operationId: allowedOperation }); }
-      catch (error) { reasons.push(error instanceof Error && error.message === "remote_workspace_migration_restore_point_expired"
-        ? "restore_point_expired" : "archived_git_source_unavailable"); }
+      catch (error) {
+        archivedGitFailure = error instanceof Error ? error.message : "unknown";
+        reasons.push(error instanceof Error && error.message === "remote_workspace_migration_restore_point_expired"
+          ? "restore_point_expired" : "archived_git_source_unavailable");
+      }
     }
     if (!retainedDirectory && !archivedGitSource && (!entry?.isDirectory() || entry.isSymbolicLink())) reasons.push("local_source_unsafe_or_missing");
     filesGone = !entry && !retainedDirectory && !archivedGitSource && workspace.status === "archived"
+      && (archivedGitFailure === null || archivedGitFailure === "remote_workspace_migration_archived_git_source_unavailable")
       && !reasons.includes("restore_point_expired") && !reasons.includes("restore_point_invalid")
       && await workspaceFilesProvenGone(db, workspace);
     if (entry?.isDirectory() && !entry.isSymbolicLink()) reasons.push(...await workspaceMigrationLayoutBlockers(db, workspace, input.writersStopped, input.onlineSource));
