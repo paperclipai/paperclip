@@ -16,7 +16,7 @@ import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
-import { aiConnectionDisplayLabel } from "./model";
+import { aiConnectionDisplayLabel, isAiConnectionCompatibleForSelection } from "./model";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -60,6 +60,7 @@ export function AiConnectionField({
   readOnly = false,
   preferAdvanced = false,
   routerAdapterType,
+  onUseHarnessAuth,
 }: {
   companyId: string;
   agentId?: string;
@@ -73,8 +74,12 @@ export function AiConnectionField({
   readOnly?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
+  onUseHarnessAuth?: () => void;
 }) {
-  const provider = aiProviderForAdapter(adapterType);
+  const piProvider = adapterType === "pi_local" ? model?.split("/")[0] : undefined;
+  const provider = adapterType === "pi_local" && ["anthropic", "openai", "google", "openrouter"].includes(piProvider ?? "")
+    ? piProvider as AiProvider
+    : adapterType === "pi_local" && value && value.mode !== "router" ? value.provider : aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -137,7 +142,7 @@ export function AiConnectionField({
     );
   return (
     <div className="space-y-4">
-      {value && value.mode !== "router" && (!["opencode_local", "pi_local"].includes(adapterType) || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
+      {value && value.mode !== "router" && !isAiConnectionCompatibleForSelection(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
           This connection does not support the current harness and model. Choose
           a compatible connection before saving.
@@ -157,7 +162,8 @@ export function AiConnectionField({
       </label>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
-          model={model}
+        model={model}
+        onUseHarnessAuth={onUseHarnessAuth}
         requirement={{ companyId, provider }}
         connections={accounts.data?.connections ?? []}
         value={value}

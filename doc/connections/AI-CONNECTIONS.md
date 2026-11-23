@@ -114,8 +114,17 @@ authorization, and old delegation records do not override the human audience.
 
 A connection choice never changes the harness or model. For a routed connection,
 the selected connection owns its provider routing.
-Changing those separately may make a binding incompatible; saving then requires
-a compatible choice. Agent configuration cannot grant access to another account.
+Changing the harness removes an incompatible binding from the unsaved form.
+Compatible API accounts stay available for multi-provider harnesses before a model
+is chosen. Once a model is selected, account choices use that model and the saved
+connection's routing and sign-in method. An incompatible saved choice is disabled
+with a reason. Changing only the model may require a compatible account choice.
+Agent configuration cannot grant access to another account.
+
+New OpenCode and Pi agents use harness sign-in by default. Managed connections
+are optional; **Use harness sign-in** clears the selection during setup. OpenCode
+model discovery and manual model entry support providers outside OpenRouter.
+The missing-default message includes **Connect an account** beside the error.
 
 Agent account choices and legacy-adoption confirmations show the sign-in method,
 personal or company-shared scope, and available account or owner identity beside

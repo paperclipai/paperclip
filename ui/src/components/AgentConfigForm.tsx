@@ -7,7 +7,9 @@ import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { isAiConnectionCompatibleForSelection, personalAiDefault } from "./ai-connections/model";
+import { aiConnectionsApi } from "@/api/ai-connections";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
@@ -639,6 +641,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
+  const runtimeOverlay = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
+  const currentAiConnection = (runtimeOverlay ?? runtimeConfig).aiConnection;
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
   displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection });
@@ -1045,15 +1049,46 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Sandbox"
       : "Local";
 
-  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
-    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
-  ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
+  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(currentAiConnection).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const cloud = Boolean(useCloudInstance());
   const harnessPolicy = useCloudHarnessPolicy();
   const cloudHarnessAllowed = !cloud || harnessPolicy.isCloudHarnessAllowed(adapterType, { provider: runnerProvider, acpxAgent: runnerAcpxAgent });
-  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse(currentAiConnection).data;
+  const aiAccounts = useQuery({
+    queryKey: ["ai-connections", selectedCompanyId, isCreate ? undefined : props.agent.id],
+    queryFn: () => aiConnectionsApi.list(selectedCompanyId!, isCreate ? undefined : props.agent.id),
+    enabled: !isCreate && Boolean(selectedCompanyId && currentAiConnection),
+  });
+  const selectedHarness = aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent);
+  const selectedConnectionModel = isCreate ? undefined : String(eff("adapterConfig", "model", config.model) ?? "");
+  useEffect(() => {
+    if (isCreate || agentHarnessType(props.agent.adapterType, props.agent.adapterConfig)
+      === agentHarnessType(adapterType, { provider: runnerProvider, acpxAgent: runnerAcpxAgent })) return;
+    const binding = aiRuntimeConnectionBindingSchema.safeParse(currentAiConnection).data;
+    if (!binding) return;
+    let compatible: boolean;
+    if (binding.mode === "router") {
+      const pool = aiAccounts.data?.pools?.find(pool => pool.id === binding.connectionId);
+      if (!pool) return;
+      compatible = pool.members.some(member => isAiConnectionCompatible(member.binding, adapterType,
+        member.profile.model, member.profile.provider, member.profile.acpxAgent));
+    } else {
+      const accounts = aiAccounts.data;
+      const account = binding.mode === "responsible_user"
+        ? personalAiDefault(accounts?.connections ?? [], { companyId: selectedCompanyId!, provider: binding.provider }, accounts?.currentUserId ?? "")
+        : accounts?.connections.find(account => account.id === binding.connectionId && account.grantId === binding.grantId);
+      // Fixed API bindings carry no routing metadata. Wait for the account
+      // before deciding whether its endpoint supports the new harness.
+      if (!account && binding.mode !== "responsible_user" && binding.method === "api_key" && !accounts) return;
+      compatible = isAiConnectionCompatibleForSelection(account ?? binding, selectedHarness, selectedConnectionModel);
+    }
+    if (!compatible) setOverlay(prev => {
+      const { aiConnection: _removed, ...nextRuntime } = (prev.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig;
+      return { ...prev, runtime: { ...prev.runtime, runtimeConfig: nextRuntime } };
+    });
+  }, [isCreate, adapterType, runnerProvider, runnerAcpxAgent, props, selectedHarness, selectedConnectionModel, currentAiConnection, aiAccounts.data, selectedCompanyId, runtimeConfig]);
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const antigravityPickerGroup = useMemo(() => antigravityModelGroup(modelAiBinding?.method), [modelAiBinding?.method]);
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
@@ -1252,7 +1287,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
       const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
-        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+        currentAiConnection,
       ).data;
       const testRunnerSelection = isCursorCloudRunner
         ? { runner: "paperclip" as const }
@@ -1348,7 +1383,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const providerSupportsLoginPty = environmentSupportsLoginPty(effectiveLoginEnvironment, environmentCapabilities, isRunnerHarness ? harnessType : adapterType);
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
-    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
+    (isCreate || !currentAiConnection) &&
     adapterSupportsSandboxLogin &&
     (effectiveLoginEnvironment?.driver === "sandbox" || (effectiveLoginEnvironment?.driver === "plugin" && !isCreate)) &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1919,10 +1954,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onRetry={runnerDiscoveryView.retry} />
           )}
           {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
-            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse(currentAiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
-              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              mark("runtime", "runtimeConfig", { ...(runtimeOverlay ?? runtimeConfig), aiConnection: binding });
               if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 

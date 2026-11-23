@@ -1480,6 +1480,58 @@ describe("New agent setup", () => {
     if (runner === "auto") expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
   });
 
+  it("sets up OpenCode with a discovered host-auth model without attaching OpenRouter", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "zai/glm-5", label: "GLM 5" }]);
+    await render("opencode_local");
+    expect(container.textContent).not.toContain("You have no default account");
+    const chooseConnection = async (label: string) => {
+      const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+      await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await settle();
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label));
+      expect(option).toBeDefined();
+      await act(async () => option!.click());
+      await settle();
+    };
+    await chooseConnection("Responsible user’s default");
+    expect(container.textContent).toContain("You have no default account");
+    await chooseConnection("Use harness sign-in");
+    expect(container.textContent).not.toContain("You have no default account");
+    await fill("Model", "zai/glm-5");
+    await click("Run test");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "opencode_local", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "zai/glm-5" }),
+    }));
+    expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    expect(api.hire.mock.calls.at(-1)![1].runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it.each(["Run test", "Save & exit"])("clears a resumed OpenCode draft's managed connection before %s", async action => {
+    const id = "00000000-0000-4000-8000-000000000092";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "opencode_local",
+      adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6" },
+      runtimeConfig: { heartbeat: { enabled: false }, aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } },
+      pauseReason: "setup", status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "opencode_local", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    await renderCurrentParams();
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Use harness sign-in")!;
+    await act(async () => option.click());
+    await settle();
+    await fill("Model", "zai/glm-5");
+    await click(action);
+    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({ runtimeConfig: { heartbeat: { enabled: false } } }), "company-1");
+    if (action === "Run test") {
+      expect(api.update.mock.invocationCallOrder.at(-1)).toBeLessThan(api.testEnvironment.mock.invocationCallOrder.at(-1)!);
+      expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    }
+  });
+
   it("retains automatic OpenCode selection while the first draft request is in flight", async () => {
     let release!: () => void;
     const originalCreate = api.create.getMockImplementation()!;

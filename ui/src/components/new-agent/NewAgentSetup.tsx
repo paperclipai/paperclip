@@ -189,8 +189,6 @@ function Setup({
   const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
     brandType === "copilot_runtime"
       ? { provider: "github", method: "api_key", mode: "responsible_user" }
-      : brandType === "opencode_local"
-      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
       : undefined,
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
@@ -665,6 +663,7 @@ function Setup({
     if (pendingAntigravity) return;
     if (!created || completed) return;
     const binding = runtimeAiBinding ?? nextConnection?.aiConnection;
+    const { aiConnection: _previousBinding, ...runtimeConfig } = created.runtimeConfig;
     const config = testedConfig ?? buildConfig(nextConnection);
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
     let submitted = false;
@@ -684,7 +683,7 @@ function Setup({
       const agent = await agentsApi.update(created.id, {
         adapterType: requestAdapterType, runner, adapterConfig: config,
         defaultEnvironmentId: nativeCursorCloud ? null : selectedEnvironment || (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
+        runtimeConfig: { ...runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
         ...(antigravityCandidate ? { metadata: { ...created.metadata, setupAdapterPending: false, setupAdapterChoice: undefined } } : {}),
         ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
       }, companyId);
@@ -747,6 +746,12 @@ function Setup({
         cache.setQueryData(queryKeys.adapters.availability(companyId, environmentId), qualified.adapters);
       }
       const config = preparedConfig(nextConnection, qualified?.runner);
+      // A saved setup draft would otherwise supply its old managed binding to
+      // the probe when this request intentionally uses harness authentication.
+      if (created?.runtimeConfig.aiConnection && !runtimeAiBinding && !nextConnection?.aiConnection) {
+        await saveDraft(nextConnection, false, config);
+        if (run !== generation.current || setupEnvironmentRef.current !== setupEnvironment) return null;
+      }
       const tested = await testAgentSetup({
         companyId,
         agentId: created?.id,
@@ -1204,6 +1209,7 @@ function Setup({
                         </>}
                         {!connectionAdapter && aiProviderForAdapter(brandType) && (
                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                            onUseHarnessAuth={multiProvider ? () => { setRuntimeAiBinding(undefined); setConnection(null); resetTest(); } : undefined}
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest();
                               if (accountCatalogAvailable && hashKey([aiBinding ?? null]) === hashKey([binding ?? null])) void refreshAccountModels();
                             }} />

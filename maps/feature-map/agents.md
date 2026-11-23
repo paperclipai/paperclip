@@ -37,6 +37,12 @@ Save & exit keeps its configuration; Finish setup on the agent returns to the
 same record. Final submission requests approval when required, then follows the
 existing preparation and verification lifecycle.
 
+OpenCode and Pi setup starts with **Use harness sign-in**. Choose a discovered
+model or enter a provider/model ID; an OpenRouter connection is optional.
+Verify that testing and hiring preserve the selected model without attaching a
+managed connection. Selecting **Use harness sign-in** again clears an optional
+managed account during setup.
+
 For **Cursor Cloud**, choose its card in Cloud when native Runner is enabled and
 the qualified controller is available. Its held setup draft uses the API
 controller without a Computer, before model or credential selection. Local
@@ -88,6 +94,14 @@ and save. The save checks current access and compatibility without starting a
 computer or provider hello test. **Test** still verifies the runtime. Unverified
 legacy accounts, task connection adoption and Copilot model checks retain live
 validation. Verify saved configuration separately from runtime readiness.
+
+Change a Claude agent with a subscription account to OpenCode or Codex. Confirm
+the incompatible account clears from the form and save payload. Switch an API
+account to Pi before choosing a model and confirm it remains selected. Account
+pickers use the selected model and saved routing metadata; incompatible saved
+choices are disabled with a reason. A missing personal default offers **Connect
+an account** inline. Component tests cover these states; live runtime acceptance
+remains separate.
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 The agent nav has two sections: **Agent** (Overview, Identity at

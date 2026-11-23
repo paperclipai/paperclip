@@ -60,6 +60,13 @@ explicit native assets and saved execution. Saved runner/model/provider override
 and approval activation. This selection does not grant connection access or
 bypass hiring authorization. Source: [runner resolver](../../server/src/services/agent-runner-selection.ts).
 
+The board's New Agent UI leaves OpenCode and Pi authentication with the harness
+unless the operator selects a managed connection. Harness changes clear
+incompatible account selections in the form. These presentation defaults do not
+grant credential access: ordinary create/update authorization and managed-account
+compatibility validation still apply. Component tests verify the UI state and
+request payloads; they do not establish live agent execution.
+
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
