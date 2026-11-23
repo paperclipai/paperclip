@@ -892,8 +892,8 @@ function StandardConnectionSetupFlow({
     return true;
   }, []);
   const firstSignInDraftRef = useRef<string | null>(null);
-  const trackFirstSignInDraft = useCallback((connection: Pick<ToolConnection, "id" | "status">) => {
-    firstSignInDraftRef.current = connection.status === "draft" && !resumeConnectionId && !reconnectConnectionId && !connectionIntentId
+  const trackFirstSignInDraft = useCallback((connection: Pick<ToolConnection, "id" | "status"> | undefined) => {
+    firstSignInDraftRef.current = connection?.status === "draft" && !resumeConnectionId && !reconnectConnectionId && !connectionIntentId
       ? connection.id
       : null;
   }, [connectionIntentId, reconnectConnectionId, resumeConnectionId]);
