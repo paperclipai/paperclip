@@ -253,6 +253,7 @@ describe("durable native provider capacity retry", () => {
     expect(adapter).toMatchObject({ exitCode: 0, errorMessage: null, nativeFinalization: { terminal: { runTerminalState: "succeeded" } } });
     expect(adapter.errorCode).toBeUndefined();
     expect(adapter.resultJson).not.toHaveProperty("providerFailure");
+    expect(adapter.resultJson?.providerFailureAfterAcceptedResult).toMatchObject({ category: expect.stringMatching(/^(overloaded|rate_limit|server_overloaded)$/) });
     const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(finished).toMatchObject({ status: "succeeded", error: null, errorCode: null });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done" });

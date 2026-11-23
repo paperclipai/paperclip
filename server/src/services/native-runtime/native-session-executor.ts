@@ -14279,8 +14279,10 @@ async function executePaperclipNativeSessionAttempt(
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
       ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
-      ...(acceptedDespiteProviderFailure && typedProviderFailure
-        ? { providerFailureAfterAcceptedResult: { provider: typedProviderFailure.provider, category: typedProviderFailure.category } } : {}),
+      // Closed fields only: why a failed provider turn still ended the run as succeeded.
+      ...(acceptedDespiteProviderFailure ? { providerFailureAfterAcceptedResult: typedProviderFailure
+        ? { provider: typedProviderFailure.provider, category: typedProviderFailure.category }
+        : { ...classifiedProviderFailure?.diagnostic } } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
