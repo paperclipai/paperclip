@@ -440,8 +440,28 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
     expect(job!.status).toBe("completed");
     const [activity] = await db.execute(sql`select details from activity_log
-      where company_id = ${base.company.id} and action = 'issue.connection_content_deleted'`) as unknown as Array<{ details: Record<string, number> }>;
+      where company_id = ${base.company.id} and action = 'issue.connection_content_deletion_incomplete'`) as unknown as Array<{ details: Record<string, number> }>;
     expect(activity!.details.runsInProgress + activity!.details.itemsInProgress).toBeGreaterThan(0);
+  });
+
+  it("finishes without an activity entry when the deleted task's open run never calls a connection", async () => {
+    const logs = stores(path.join(baseDir, "task-open-quiet"));
+    const base = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: base.company.id, agentId: base.agent.id, issueId: base.issue.id, status: "running" });
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+    const [waiting] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(waiting!.status).toBe("pending");
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.id, waiting!.id));
+    await drainPending(service);
+    const [finished] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, waiting!.id));
+    expect(finished!.status).toBe("completed");
+    expect(await db.execute(sql`select 1 from activity_log where company_id = ${base.company.id}
+      and action like 'issue.connection_content_%'`)).toHaveLength(0);
   });
 
   it("queues nothing when the deleted task never used a connection", async () => {

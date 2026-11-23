@@ -7,7 +7,6 @@ import {
   issueConnectionContentDeletions,
   issueThreadInteractions,
   runnerApiResponseReservations,
-  storedObjectDeletions,
   toolAccessAuditEvents,
   toolActionRequests,
   toolCallEvents,
@@ -23,9 +22,10 @@ import type {
 } from "@paperclipai/shared";
 import { isRunLogStoreType, type RunLogHandle, type RunLogStore } from "../../run-log-store.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
-import { logActivity } from "../../activity-log.js";
+import { logActivity, type LogActivityInput } from "../../activity-log.js";
 import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
+import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 
 const BATCH_SIZE = 200;
 const EVENT_BATCH_SIZE = 1000;
@@ -54,10 +54,8 @@ type Phase = "invocations" | "events" | "auditEvents" | "appViews" | "deliveredR
 const PHASES: Phase[] = ["invocations", "events", "auditEvents", "appViews", "deliveredResults", "runs", "done"];
 const RUN_BATCH_SIZE = 50;
 const DELIVERY_BATCH_SIZE = 50;
-const OBJECT_BATCH_SIZE = 50;
-const OBJECT_RETRY_MS = 30_000;
 const ISSUE_WAIT_MS = 60_000;
-const ISSUE_WAIT_MAX_MS = 60 * 60_000;
+const ISSUE_WAIT_MAX_MS = 5 * 60_000;
 const ISSUE_WAIT_LIMIT_MS = 24 * 60 * 60_000;
 
 type RunInProgress = { id: string; eventAfterId: number; changed: boolean; stage?: "events" | "log" };
@@ -73,9 +71,18 @@ type Progress = {
 
 type DeletionRow = typeof toolConnectionContentDeletions.$inferSelect;
 type IssueDeletionRow = typeof issueConnectionContentDeletions.$inferSelect;
-type JobKind = "connection" | "issue";
-type JobRow = DeletionRow | IssueDeletionRow;
-type JobTable = typeof toolConnectionContentDeletions;
+type JobRow = Pick<DeletionRow, "id" | "companyId" | "status" | "progress" | "updatedAt" | "requestedAt" | "requestedByActorType" | "requestedByActorId">;
+type JobActivity = Pick<LogActivityInput, "action" | "entityType" | "entityId" | "details">;
+
+type JobStore<Row extends JobRow> = {
+  load(id: string): Promise<Row | undefined>;
+  scope(row: Row): Scope;
+  waitMs(row: Row, progress: Progress): number | null;
+  save(tx: Db, row: Row, progress: Progress, waitMs: number | null): Promise<Row | undefined>;
+  finish(tx: Db, row: Row, now: Date): Promise<Row | undefined>;
+  activity(row: Row, counts: ToolConnectionContentDeletionCounts): JobActivity | null;
+  fail(row: Row, message: string): Promise<void>;
+};
 
 type Scope = {
   companyId: string;
@@ -87,25 +94,11 @@ type Scope = {
   eventIds: string[];
 };
 
-function jobTable(kind: JobKind): JobTable {
-  return (kind === "connection" ? toolConnectionContentDeletions : issueConnectionContentDeletions) as unknown as JobTable;
-}
-
-function scopeOf(kind: JobKind, row: JobRow): Scope {
-  if (kind === "connection") {
-    const job = row as DeletionRow;
-    return { companyId: job.companyId, cutoff: job.requestedAt, connectionId: job.connectionId, issueId: null, runIds: [], invocationIds: [], eventIds: [] };
-  }
-  const job = row as IssueDeletionRow;
-  return { companyId: job.companyId, cutoff: null, connectionId: null, issueId: job.issueId,
-    runIds: job.scope.runIds ?? [], invocationIds: job.scope.invocationIds ?? [], eventIds: job.scope.eventIds ?? [] };
-}
-
 function connectionScope(connection: { id: string; companyId: string }, cutoff: Date): Scope {
   return { companyId: connection.companyId, cutoff, connectionId: connection.id, issueId: null, runIds: [], invocationIds: [], eventIds: [] };
 }
 
-function uuidList(values: string[]): SQL {
+export function uuidList(values: string[]): SQL {
   return values.length > 0 ? sql`array[${sql.join(values.map((value) => sql`${value}::uuid`), sql`, `)}]` : sql`array[]::uuid[]`;
 }
 
@@ -179,7 +172,7 @@ function runsCallingConnectionSql(scope: Scope & { connectionId: string; cutoff:
             join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId} where ${calls})))`;
 }
 
-function runUsedToolsSql(companyId: string): SQL {
+export function runUsedToolsSql(companyId: string): SQL {
   return sql`(exists (select 1 from ${toolInvocations} where ${toolInvocations.companyId} = ${companyId} and ${toolInvocations.runId} = ${heartbeatRuns.id})
     or exists (select 1 from ${toolCallEvents} where ${toolCallEvents.companyId} = ${companyId} and ${toolCallEvents.runId} = ${heartbeatRuns.id})
     or coalesce(${heartbeatRuns.contextSnapshot} ? 'toolActionRequestIds', false))`;
@@ -264,77 +257,8 @@ function toDeletion(row: DeletionRow): ToolConnectionContentDeletion {
   };
 }
 
-function initialProgress(): Progress {
+export function initialContentDeletionProgress(): Progress {
   return { phase: "invocations", cursor: null, runCursor: null, currentRun: null, pendingRuns: [], counts: emptyContentDeletionCounts() };
-}
-
-export async function requestIssueConnectionContentDeletion(
-  tx: Db,
-  input: { companyId: string; issueId: string; actorAgentId?: string | null },
-) {
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolConnectionContentDeletion);
-  await tx.execute(sql`insert into ${storedObjectDeletions} (company_id, kind, object_key)
-    select asset.company_id, 'asset', asset.object_key from ${assets} asset
-      join issue_attachments link on link.asset_id = asset.id
-      where link.company_id = ${input.companyId} and link.issue_id = ${input.issueId} and asset.company_id = ${input.companyId}`);
-  const runs = await tx
-    .select({ id: heartbeatRuns.id })
-    .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.companyId, input.companyId),
-      sql`(${heartbeatRuns.issueId} = ${input.issueId} or ${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}::text)`,
-      sql`(${runUsedToolsSql(input.companyId)} or not ${settledRunSql(sql`${heartbeatRuns.id}`)})`,
-    ));
-  const runIds = runs.map((row) => row.id);
-  const calls = await tx
-    .select({ id: toolInvocations.id })
-    .from(toolInvocations)
-    .where(and(
-      eq(toolInvocations.companyId, input.companyId),
-      eq(toolInvocations.issueId, input.issueId),
-      sql`(${toolInvocations.runId} is null or not (${toolInvocations.runId} = any(${uuidList(runIds)})))`,
-    ));
-  const invocationIds = calls.map((row) => row.id);
-  const events = await tx
-    .select({ id: toolCallEvents.id })
-    .from(toolCallEvents)
-    .where(and(
-      eq(toolCallEvents.companyId, input.companyId),
-      eq(toolCallEvents.issueId, input.issueId),
-      sql`(${toolCallEvents.runId} is null or not (${toolCallEvents.runId} = any(${uuidList(runIds)})))`,
-      sql`(${toolCallEvents.invocationId} is null or not (${toolCallEvents.invocationId} = any(${uuidList(invocationIds)})))`,
-    ));
-  const eventIds = events.map((row) => row.id);
-  if (runIds.length === 0 && invocationIds.length === 0 && eventIds.length === 0) return null;
-  const now = new Date();
-  const [created] = await tx
-    .insert(issueConnectionContentDeletions)
-    .values({
-      requestedAt: now,
-      notBefore: now,
-      createdAt: now,
-      updatedAt: now,
-      companyId: input.companyId,
-      issueId: input.issueId,
-      scope: { runIds, invocationIds, eventIds },
-      requestedByActorType: input.actorAgentId ? "agent" : "system",
-      requestedByActorId: input.actorAgentId ?? null,
-      progress: initialProgress() as unknown as Record<string, unknown>,
-    })
-    .returning({ id: issueConnectionContentDeletions.id });
-  return created!.id;
-}
-
-export async function requestCompanyStoredObjectDeletion(tx: Db, companyId: string) {
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolConnectionContentDeletion);
-  await tx.execute(sql`insert into ${storedObjectDeletions} (company_id, kind, log_store, object_key)
-    select company_id, 'run_log', log_store, log_ref from ${heartbeatRuns}
-      where company_id = ${companyId} and log_ref is not null and log_store is not null
-    union all
-    select company_id, 'asset', null, object_key from ${assets} where company_id = ${companyId}
-    union all
-    select company_id, 'asset', null, pending_delete_object_key from ${runnerApiResponseReservations}
-      where company_id = ${companyId} and pending_delete_object_key is not null`);
 }
 
 export function createConnectionContentDeletion(db: Db, deps: {
@@ -342,8 +266,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
   storage?: () => StorageService;
   objectRetryMs?: number;
 }) {
-  const storage = deps.storage ?? getStorageService;
-  const objectRetryMs = deps.objectRetryMs ?? OBJECT_RETRY_MS;
+  const storage = deps.storage ?? (() => getStorageService());
+  const storedObjects = createStoredObjectDeletion(db, { runLogStore: deps.runLogStore, storage, retryMs: deps.objectRetryMs });
 
   async function latestDeletion(connection: { id: string; companyId: string }) {
     const [latest] = await db
@@ -425,7 +349,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
           connectionId: connection.id,
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          progress: initialProgress() as unknown as Record<string, unknown>,
+          progress: initialContentDeletionProgress() as unknown as Record<string, unknown>,
         })
         .onConflictDoNothing()
         .returning();
@@ -830,9 +754,101 @@ export function createConnectionContentDeletion(db: Db, deps: {
     return false;
   }
 
-  async function step(kind: JobKind, job: JobRow, signal: AbortSignal) {
-    const table = jobTable(kind);
-    const scope = scopeOf(kind, job);
+  const connectionJobs: JobStore<DeletionRow> = {
+    load: async (id) => (await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, id)))[0],
+    scope: (row) => connectionScope({ id: row.connectionId, companyId: row.companyId }, row.requestedAt),
+    waitMs: () => null,
+    save: async (tx, row, progress) => (await tx
+      .update(toolConnectionContentDeletions)
+      .set({ progress: progress as unknown as Record<string, unknown>, updatedAt: new Date() })
+      .where(and(
+        eq(toolConnectionContentDeletions.id, row.id),
+        eq(toolConnectionContentDeletions.status, "pending"),
+        eq(toolConnectionContentDeletions.updatedAt, row.updatedAt),
+      ))
+      .returning())[0],
+    finish: async (tx, row, now) => (await tx
+      .update(toolConnectionContentDeletions)
+      .set({ status: "completed", completedAt: now, updatedAt: now, lastError: null })
+      .where(and(
+        eq(toolConnectionContentDeletions.id, row.id),
+        eq(toolConnectionContentDeletions.status, "pending"),
+        eq(toolConnectionContentDeletions.updatedAt, row.updatedAt),
+        sql`${toolConnectionContentDeletions.progress}->>'phase' = 'done'`,
+      ))
+      .returning())[0],
+    activity: (row, counts) => ({ action: "tool_connection.content_deleted", entityType: "tool_connection", entityId: row.connectionId, details: { ...counts } }),
+    fail: async (row, message) => {
+      await db
+        .update(toolConnectionContentDeletions)
+        .set({ attempts: sql`${toolConnectionContentDeletions.attempts} + 1`, lastError: message, updatedAt: new Date() })
+        .where(and(eq(toolConnectionContentDeletions.id, row.id), eq(toolConnectionContentDeletions.status, "pending")));
+    },
+  };
+
+  const issueJobs: JobStore<IssueDeletionRow> = {
+    load: async (id) => (await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.id, id)))[0],
+    scope: (row) => ({ companyId: row.companyId, cutoff: null, connectionId: null, issueId: row.issueId,
+      runIds: row.scope.runIds ?? [], invocationIds: row.scope.invocationIds ?? [], eventIds: row.scope.eventIds ?? [] }),
+    waitMs: (row, progress) => {
+      const waitedMs = Date.now() - row.requestedAt.getTime();
+      if (waitedMs >= ISSUE_WAIT_LIMIT_MS || progress.counts.itemsInProgress + progress.counts.runsInProgress === 0) return null;
+      return Math.min(Math.max(ISSUE_WAIT_MS, waitedMs / 10), ISSUE_WAIT_MAX_MS);
+    },
+    save: async (tx, row, progress, waitMs) => (await tx
+      .update(issueConnectionContentDeletions)
+      .set({
+        progress: progress as unknown as Record<string, unknown>,
+        updatedAt: new Date(),
+        ...(waitMs === null ? {} : { notBefore: new Date(Date.now() + waitMs) }),
+      })
+      .where(and(
+        eq(issueConnectionContentDeletions.id, row.id),
+        eq(issueConnectionContentDeletions.status, "pending"),
+        eq(issueConnectionContentDeletions.updatedAt, row.updatedAt),
+      ))
+      .returning())[0],
+    finish: async (tx, row, now) => (await tx
+      .update(issueConnectionContentDeletions)
+      .set({ status: "completed", completedAt: now, updatedAt: now, lastError: null })
+      .where(and(
+        eq(issueConnectionContentDeletions.id, row.id),
+        eq(issueConnectionContentDeletions.status, "pending"),
+        eq(issueConnectionContentDeletions.updatedAt, row.updatedAt),
+        sql`${issueConnectionContentDeletions.progress}->>'phase' = 'done'`,
+      ))
+      .returning())[0],
+    activity: (row, counts) => {
+      const deleted = counts.toolCalls + counts.approvals + counts.auditEvents + counts.appViews + counts.runs;
+      const open = counts.itemsInProgress + counts.runsInProgress;
+      if (deleted === 0 && open === 0) return null;
+      return { action: open > 0 ? "issue.connection_content_deletion_incomplete" : "issue.connection_content_deleted",
+        entityType: "issue", entityId: row.issueId, details: { ...counts } };
+    },
+    fail: async (row, message) => {
+      await db
+        .update(issueConnectionContentDeletions)
+        .set({ attempts: sql`${issueConnectionContentDeletions.attempts} + 1`, lastError: message, updatedAt: new Date() })
+        .where(and(eq(issueConnectionContentDeletions.id, row.id), eq(issueConnectionContentDeletions.status, "pending")));
+    },
+  };
+
+  async function countOpenRunsWithoutTools(tx: Db, scope: Scope) {
+    if (scope.runIds.length === 0) return 0;
+    const [open] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, scope.companyId),
+        sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)})`,
+        sql`not ${runUsedToolsSql(scope.companyId)}`,
+        sql`not ${settledRunSql(sql`${heartbeatRuns.id}`)}`,
+      ));
+    return open?.count ?? 0;
+  }
+
+  async function step<Row extends JobRow>(store: JobStore<Row>, job: Row, signal: AbortSignal) {
+    const scope = store.scope(job);
     const progress = readProgress(job);
     const deletedAt = job.requestedAt.toISOString();
     if (progress.currentRun?.stage === "log") {
@@ -854,165 +870,88 @@ export function createConnectionContentDeletion(db: Db, deps: {
         progress.runCursor = null;
         progress.currentRun = null;
         progress.pendingRuns = [];
+        if (progress.phase === "done" && scope.issueId) progress.counts.runsInProgress += await countOpenRunsWithoutTools(tx, scope);
       }
-      if (kind === "issue" && done && progress.phase === "done" && scope.runIds.length > 0) {
-        const [open] = await tx
-          .select({ count: sql<number>`count(*)::int` })
-          .from(heartbeatRuns)
-          .where(and(
-            eq(heartbeatRuns.companyId, scope.companyId),
-            sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)})`,
-            sql`not ${runUsedToolsSql(scope.companyId)}`,
-            sql`not ${settledRunSql(sql`${heartbeatRuns.id}`)}`,
-          ));
-        progress.counts.runsInProgress += open?.count ?? 0;
+      const waitMs = progress.phase === "done" ? store.waitMs(job, progress) : null;
+      if (waitMs !== null) {
+        Object.assign(progress, { ...initialContentDeletionProgress(), counts: { ...progress.counts, itemsInProgress: 0, runsInProgress: 0 } });
       }
-      const waitedMs = Date.now() - job.requestedAt.getTime();
-      const waiting = kind === "issue" && progress.phase === "done" && waitedMs < ISSUE_WAIT_LIMIT_MS
-        && progress.counts.itemsInProgress + progress.counts.runsInProgress > 0;
-      if (waiting) {
-        Object.assign(progress, { ...initialProgress(), counts: { ...progress.counts, itemsInProgress: 0, runsInProgress: 0 } });
-      }
-      const [saved] = await tx
-        .update(table)
-        .set({
-          progress: progress as unknown as Record<string, unknown>,
-          updatedAt: new Date(),
-          ...(waiting ? { notBefore: new Date(Date.now() + Math.min(Math.max(ISSUE_WAIT_MS, waitedMs / 10), ISSUE_WAIT_MAX_MS)) } : {}),
-        })
-        .where(and(
-          eq(table.id, job.id),
-          eq(table.status, "pending"),
-          eq(table.updatedAt, job.updatedAt),
-        ))
-        .returning();
+      const saved = await store.save(tx, job, progress, waitMs);
       if (!saved) throw new ProgressConflict();
-      return { row: saved as JobRow, waiting };
+      return { row: saved, waiting: waitMs !== null };
     });
   }
 
-  async function complete(kind: JobKind, job: JobRow) {
-    const table = jobTable(kind);
-    const progress = readProgress(job);
-    const now = new Date();
-    return db.transaction(async (tx) => {
-      const [done] = await tx
-        .update(table)
-        .set({ status: "completed", completedAt: now, updatedAt: now, lastError: null })
-        .where(and(
-          eq(table.id, job.id),
-          eq(table.status, "pending"),
-          eq(table.updatedAt, job.updatedAt),
-          sql`${table.progress}->>'phase' = 'done'`,
-        ))
-        .returning();
+  async function complete<Row extends JobRow>(store: JobStore<Row>, job: Row) {
+    const counts = readProgress(job).counts;
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      const done = await store.finish(tx, job, new Date());
       if (!done) return null;
-      const actor = {
-        actorType: job.requestedByActorType === "agent" ? "agent" as const : job.requestedByActorType === "user" ? "user" as const : "system" as const,
-        actorId: job.requestedByActorId ?? "tool-connection-content-deletion",
-      };
-      await logActivity(tx as unknown as Db, kind === "connection"
-        ? { companyId: job.companyId, ...actor, action: "tool_connection.content_deleted", entityType: "tool_connection",
-          entityId: (job as DeletionRow).connectionId, details: { ...progress.counts } }
-        : { companyId: job.companyId, ...actor, action: "issue.connection_content_deleted", entityType: "issue",
-          entityId: (job as IssueDeletionRow).issueId, details: { ...progress.counts } });
-      return done as JobRow;
+      const activity = store.activity(job, counts);
+      if (activity) {
+        await logActivity(tx, {
+          companyId: job.companyId,
+          actorType: job.requestedByActorType === "agent" ? "agent" : job.requestedByActorType === "user" ? "user" : "system",
+          actorId: job.requestedByActorId ?? "tool-connection-content-deletion",
+          ...activity,
+        });
+      }
+      return done;
     });
   }
 
-  async function runJob(kind: JobKind, jobId: string, signal: AbortSignal, budgetMs = STEP_BUDGET_MS) {
-    const table = jobTable(kind);
+  async function runJob<Row extends JobRow>(store: JobStore<Row>, jobId: string, signal: AbortSignal, budgetMs = STEP_BUDGET_MS) {
     const startedAt = Date.now();
-    let [job] = await db.select().from(table).where(eq(table.id, jobId)) as JobRow[];
-    if (!job || job.status !== "pending") return job ?? null;
+    const loaded = await store.load(jobId);
+    if (!loaded || loaded.status !== "pending") return loaded ?? null;
+    let job: Row = loaded;
     try {
       while (!signal.aborted) {
-        if (readProgress(job).phase === "done") return await complete(kind, job);
-        const next = await step(kind, job, signal);
+        if (readProgress(job).phase === "done") return await complete(store, job);
+        const next: { row: Row; waiting: boolean } = await step(store, job, signal);
         job = next.row;
         if (next.waiting || Date.now() - startedAt >= budgetMs) return job;
       }
       return job;
     } catch (error) {
       if (error instanceof ProgressConflict) return null;
-      await db
-        .update(table)
-        .set({
-          attempts: sql`${table.attempts} + 1`,
-          lastError: error instanceof Error ? error.message.slice(0, 500) : "content deletion failed",
-          updatedAt: new Date(),
-        })
-        .where(and(eq(table.id, job.id), eq(table.status, "pending")));
+      await store.fail(job, error instanceof Error ? error.message.slice(0, 500) : "content deletion failed");
       throw error;
     }
   }
 
   async function process(jobId: string, signal: AbortSignal, budgetMs = STEP_BUDGET_MS) {
-    return await runJob("connection", jobId, signal, budgetMs) as DeletionRow | null;
+    return runJob(connectionJobs, jobId, signal, budgetMs);
   }
 
   async function processIssueDeletion(jobId: string, signal: AbortSignal, budgetMs = STEP_BUDGET_MS) {
-    return await runJob("issue", jobId, signal, budgetMs) as IssueDeletionRow | null;
-  }
-
-  async function removeStoredObjects(signal: AbortSignal) {
-    const rows = await db
-      .select()
-      .from(storedObjectDeletions)
-      .where(lte(storedObjectDeletions.notBefore, new Date()))
-      .orderBy(asc(storedObjectDeletions.notBefore), asc(storedObjectDeletions.id))
-      .limit(OBJECT_BATCH_SIZE);
-    let failure: unknown = null;
-    for (const row of rows) {
-      if (signal.aborted) break;
-      try {
-        if (row.kind === "run_log") {
-          if (!isRunLogStoreType(row.logStore)) throw new Error("run_log_store_unrecognised");
-          const store = deps.runLogStore();
-          if (!store.remove) throw new Error("run_log_removal_unavailable");
-          await store.remove({ store: row.logStore, logRef: row.objectKey }, signal);
-        } else {
-          await storage().deleteObject(row.companyId, row.objectKey, { signal, allVersions: true });
-        }
-        await db.delete(storedObjectDeletions).where(eq(storedObjectDeletions.id, row.id));
-      } catch (error) {
-        failure ??= error;
-        await db
-          .update(storedObjectDeletions)
-          .set({
-            attempts: sql`${storedObjectDeletions.attempts} + 1`,
-            lastError: error instanceof Error ? error.message.slice(0, 500) : "object deletion failed",
-            notBefore: new Date(Date.now() + objectRetryMs * 2 ** Math.min(row.attempts, 6)),
-          })
-          .where(eq(storedObjectDeletions.id, row.id));
-      }
-    }
-    if (failure) throw failure;
+    return runJob(issueJobs, jobId, signal, budgetMs);
   }
 
   async function processPending(signal: AbortSignal) {
     let failure: unknown = null;
-    const connectionJobs = await db
+    const connectionPending = await db
       .select({ id: toolConnectionContentDeletions.id })
       .from(toolConnectionContentDeletions)
       .where(eq(toolConnectionContentDeletions.status, "pending"))
       .orderBy(asc(toolConnectionContentDeletions.updatedAt))
       .limit(10);
-    for (const { id } of connectionJobs) {
+    for (const { id } of connectionPending) {
       if (signal.aborted) break;
       await process(id, signal).catch((error: unknown) => { failure ??= error; });
     }
-    const issueJobs = await db
+    const issuePending = await db
       .select({ id: issueConnectionContentDeletions.id })
       .from(issueConnectionContentDeletions)
       .where(and(eq(issueConnectionContentDeletions.status, "pending"), lte(issueConnectionContentDeletions.notBefore, new Date())))
       .orderBy(asc(issueConnectionContentDeletions.notBefore))
       .limit(10);
-    for (const { id } of issueJobs) {
+    for (const { id } of issuePending) {
       if (signal.aborted) break;
       await processIssueDeletion(id, signal).catch((error: unknown) => { failure ??= error; });
     }
-    if (!signal.aborted) await removeStoredObjects(signal).catch((error: unknown) => { failure ??= error; });
+    if (!signal.aborted) await storedObjects.drain(signal).catch((error: unknown) => { failure ??= error; });
     if (failure) throw failure;
   }
 
@@ -1027,10 +966,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .select({ at: sql<Date | null>`min(${issueConnectionContentDeletions.notBefore})`.mapWith(issueConnectionContentDeletions.notBefore) })
       .from(issueConnectionContentDeletions)
       .where(eq(issueConnectionContentDeletions.status, "pending"));
-    const [object] = await db
-      .select({ at: sql<Date | null>`min(${storedObjectDeletions.notBefore})`.mapWith(storedObjectDeletions.notBefore) })
-      .from(storedObjectDeletions);
-    const due = [issueJob?.at, object?.at].flatMap((at) => at ? [at.getTime()] : []);
+    const due = [issueJob?.at?.getTime() ?? null, await storedObjects.nextDeadline()].flatMap((at) => at === null ? [] : [at]);
     return due.length > 0 ? Math.max(Date.now(), Math.min(...due)) : null;
   }
 

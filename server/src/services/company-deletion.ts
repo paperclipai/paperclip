@@ -21,7 +21,7 @@ import type { Db } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
-import { requestCompanyStoredObjectDeletion } from "./tool-access/connections/content-deletion.js";
+import { requestCompanyStoredObjectDeletion } from "./tool-access/connections/stored-object-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { executionAdmissionCompanyDeletion } from "../modules/execution-admission/company-deletion.js";
 import {
