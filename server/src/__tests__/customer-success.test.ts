@@ -478,56 +478,75 @@ describe("customer-success read authority", () => {
       .values({ name: "Bulky", issuePrefix: "BLK" })
       .returning();
     await db.insert(schema.issues).values(
-      Array.from({ length: 25 }, (_, index) => ({
+      Array.from({ length: 40 }, (_, index) => ({
         companyId: bulky.id,
         title: `Large task ${index}`,
         description: "x".repeat(200 * 1024),
       })),
     );
-    const query: InspectionQuery = {
-      operation: "list",
-      resource: "tasks",
-      companyId: bulky.id,
-      limit: 25,
-      offset: 5,
-    };
-    const now = Math.floor(Date.now() / 1000);
-    const claims: InspectionPermit = {
-      v: 1,
-      iss: "paperclip-cloud",
-      aud: INSPECTION_AUDIENCE,
-      sub: "fixture-stack",
-      iat: now,
-      exp: now + 60,
-      jti: randomUUID(),
-      bindingVersion: 1,
-      grantId: randomUUID(),
-      requestId: randomUUID(),
-      agentId,
-      keyId: "sha256:fixture",
-      runId,
-      query,
-    };
-    const header = Buffer.from(
-      JSON.stringify({ alg: "EdDSA", typ: INSPECTION_PERMIT_TYPE, kid: "cloud" }),
-    ).toString("base64url");
-    const input = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
-    const permit = `${input}.${sign(null, Buffer.from(input), keys.privateKey).toString("base64url")}`;
+    function permitFor(query: InspectionQuery) {
+      const now = Math.floor(Date.now() / 1000);
+      const claims: InspectionPermit = {
+        v: 1,
+        iss: "paperclip-cloud",
+        aud: INSPECTION_AUDIENCE,
+        sub: "fixture-stack",
+        iat: now,
+        exp: now + 60,
+        jti: randomUUID(),
+        bindingVersion: 1,
+        grantId: randomUUID(),
+        requestId: randomUUID(),
+        agentId,
+        keyId: "sha256:fixture",
+        runId,
+        query,
+      };
+      const header = Buffer.from(
+        JSON.stringify({ alg: "EdDSA", typ: INSPECTION_PERMIT_TYPE, kid: "cloud" }),
+      ).toString("base64url");
+      const input = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
+      return `${input}.${sign(null, Buffer.from(input), keys.privateKey).toString("base64url")}`;
+    }
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ consumed: true })));
     const app = express();
     app.use(express.json());
     app.use("/api/customer-success/v1", customerSuccessRoutes(db, storage));
     app.use(errorHandler);
-    const response = await request(app)
-      .post("/api/customer-success/v1/read")
-      .set(INSPECTION_HEADER, permit)
-      .send(query);
-    expect(response.status).toEqual(200);
-    expect(Buffer.byteLength(response.text)).toBeLessThanOrEqual(2 * 1024 * 1024);
-    const count = response.body.items.length;
+    async function page(offset: number) {
+      const query: InspectionQuery = {
+        operation: "list",
+        resource: "tasks",
+        companyId: bulky.id,
+        limit: 25,
+        offset,
+      };
+      return request(app)
+        .post("/api/customer-success/v1/read")
+        .set(INSPECTION_HEADER, permitFor(query))
+        .send(query);
+    }
+    const ordered = (
+      await db
+        .select({ id: schema.issues.id })
+        .from(schema.issues)
+        .where(eq(schema.issues.companyId, bulky.id))
+        .orderBy(schema.issues.id)
+    ).map((row) => row.id);
+
+    const first = await page(5);
+    expect(first.status).toEqual(200);
+    expect(Buffer.byteLength(first.text)).toBeLessThanOrEqual(2 * 1024 * 1024);
+    const count = first.body.items.length;
     expect(count).toBeGreaterThan(0);
     expect(count).toBeLessThan(20);
-    expect(response.body.nextOffset).toEqual(5 + count);
+    expect(first.body.nextOffset).toEqual(5 + count);
+    expect(first.body.items.map((item: { id: string }) => item.id)).toEqual(ordered.slice(5, 5 + count));
+
+    const second = await page(first.body.nextOffset);
+    expect(second.status).toEqual(200);
+    const next = second.body.items.map((item: { id: string }) => item.id);
+    expect(next).toEqual(ordered.slice(5 + count, 5 + count + next.length));
     vi.unstubAllGlobals();
   });
 
