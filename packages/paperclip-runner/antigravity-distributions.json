@@ -5,14 +5,14 @@
     "darwin-arm64": {
       "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-arm64.zip",
       "archiveSha256": "123a16d5c40a8ac99e20f01a62b68dd860fd96b1c528dfb8eaa37ca8733d4845",
-      "closureSha256": "3c14a2fc1e23cd2ed9d6eefc1f3acdb206613a8c30c6cf4e3187548be84c917a",
+      "closureSha256": "ab9df40a64806a8e1812234ce5331e04d1c6b5f8c7e5bdbb456cd645e58c5aad",
       "provisioning": "verified-closure",
       "executable": "agy_acp_server.par",
       "args": [],
       "entries": [
         {
           "path": "agy_acp_server.par",
-          "sha256": "c56938ffd87fba0e626956af5cabf83ef1c9f82f9c3637a444d09416d99fdf81",
+          "sha256": "c716c4a665f3cdc1f2be40f3545be9e95b7433cd07cc536485a14a85d6570a59",
           "size": 178875248,
           "executable": true
         },
@@ -38,8 +38,8 @@
         }
       ],
       "vendorClosureSha256": "d03a6f593b6400c4b41d33a1732f842b6ff887a50727fadecb38ee67eac7336b",
-      "patchVersion": "1.5.2-paperclip.1",
-      "admissionSourceSha256": "4d7d6b4ea40efc9fb241a22fc2d3ee18ee3f2e60a85048083f29be41eaf109bd"
+      "patchVersion": "1.5.2-paperclip.2",
+      "admissionSourceSha256": "358998c3a120b92beb7a7332c60616e8a550bddc6ee3485dfbf636dbbb0ca3a8"
     },
     "darwin-x64": {
       "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-x86_64.zip",
@@ -51,7 +51,7 @@
     "linux-x64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-x86_64.zip",
       "archiveSha256": "99dd8612450805011619d7b8447ce374c289e00549d8557f36790e1dd6256852",
-      "closureSha256": "3ab3318509a33ea3cd6c7a92b8f7a8c40acc536f7a0dc1ecbddecdae7fe43ad9",
+      "closureSha256": "be35d65a32667550b5474588d705e6987a813e2fa619cf5db7d82d141c3c05fb",
       "provisioning": "verified-closure",
       "executable": "agy_acp_server.par",
       "args": [
@@ -60,7 +60,7 @@
       "entries": [
         {
           "path": "agy_acp_server.par",
-          "sha256": "bc3096e9e17aa1b780f0b1654cf87b7440c408f7e3cc6f1236b29f202f857e56",
+          "sha256": "69dc28c074628da7fdb3f26160850b7e7567458abdab0c81ca0e3c3ad5bac1dd",
           "size": 714384320,
           "executable": true
         },
@@ -86,13 +86,13 @@
         }
       ],
       "vendorClosureSha256": "f1572eb45e2c3617527b0b31622fee555bc78ebfc1293614f02ae74aac770f7f",
-      "patchVersion": "1.5.2-paperclip.1",
-      "admissionSourceSha256": "4d7d6b4ea40efc9fb241a22fc2d3ee18ee3f2e60a85048083f29be41eaf109bd"
+      "patchVersion": "1.5.2-paperclip.2",
+      "admissionSourceSha256": "358998c3a120b92beb7a7332c60616e8a550bddc6ee3485dfbf636dbbb0ca3a8"
     },
     "linux-arm64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-arm64.zip",
       "archiveSha256": "e729e05ef54ef0763e48900032466b47fa7c9939cde257f93ba49410ab577acb",
-      "closureSha256": "cc2ff28ebf9ef9527de9efe683bd49d73ab8af8fe4184677d89cadb8884d67f2",
+      "closureSha256": "46c36293779283c1f933eb438a143d116421a331f614601c754f1b94d9dc171a",
       "provisioning": "verified-closure",
       "executable": "agy_acp_server.par",
       "args": [
@@ -101,7 +101,7 @@
       "entries": [
         {
           "path": "agy_acp_server.par",
-          "sha256": "092de32bdd37a5fa512f90ad4feaa4b46fcbbed83725be138916df287c7e731d",
+          "sha256": "93b1280744a8ce256574a1be1e02898530c7ea9aab48cbbbb429130be3030d8b",
           "size": 721649155,
           "executable": true
         },
@@ -127,8 +127,8 @@
         }
       ],
       "vendorClosureSha256": "99486e12ff9cb7f8ce2c3a582051bb1f5fa101173881a515c6c7b29a4bfd4730",
-      "patchVersion": "1.5.2-paperclip.1",
-      "admissionSourceSha256": "4d7d6b4ea40efc9fb241a22fc2d3ee18ee3f2e60a85048083f29be41eaf109bd"
+      "patchVersion": "1.5.2-paperclip.2",
+      "admissionSourceSha256": "358998c3a120b92beb7a7332c60616e8a550bddc6ee3485dfbf636dbbb0ca3a8"
     }
   }
 }

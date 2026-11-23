@@ -14,7 +14,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1.5.2",
     "agentRuntimePackage": "native:antigravity-localharness",
     "agentRuntimeVersion": "1.5.2",
-    "commandDigest": "sha256:643da8767aba46df0802aa87056371bdab9bcc1cfe90edb5f38ec4e39371c7b8",
+    "commandDigest": "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
     "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   },
@@ -133,19 +133,19 @@ export const ANTIGRAVITY_RUNTIME_VERSION = "1.5.2" as const;
 
 export const ANTIGRAVITY_DISTRIBUTION_PINS = {
   "darwin-arm64": {
-    "closureSha256": "3c14a2fc1e23cd2ed9d6eefc1f3acdb206613a8c30c6cf4e3187548be84c917a",
+    "closureSha256": "ab9df40a64806a8e1812234ce5331e04d1c6b5f8c7e5bdbb456cd645e58c5aad",
     "executable": "agy_acp_server.par",
     "args": []
   },
   "linux-x64": {
-    "closureSha256": "3ab3318509a33ea3cd6c7a92b8f7a8c40acc536f7a0dc1ecbddecdae7fe43ad9",
+    "closureSha256": "be35d65a32667550b5474588d705e6987a813e2fa619cf5db7d82d141c3c05fb",
     "executable": "agy_acp_server.par",
     "args": [
       "--uid="
     ]
   },
   "linux-arm64": {
-    "closureSha256": "cc2ff28ebf9ef9527de9efe683bd49d73ab8af8fe4184677d89cadb8884d67f2",
+    "closureSha256": "46c36293779283c1f933eb438a143d116421a331f614601c754f1b94d9dc171a",
     "executable": "agy_acp_server.par",
     "args": [
       "--uid="
