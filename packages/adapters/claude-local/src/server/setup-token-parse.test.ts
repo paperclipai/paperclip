@@ -366,6 +366,38 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it("skips the 2.1.306 login-method line after the copy hint", () => {
+    const rows = hardWrap(CLAUDE_COM_URL, 78)
+      .split("\n")
+      .map((row) => osc8Hyperlink(CLAUDE_COM_URL, row));
+    const hint = chaSpaced("Hold Shift while selecting to use your terminal's native copy".split(" "));
+    const method = chaSpaced("Login method pre-selected: Subscription Plan (Claude Pro/Max)".split(" "));
+    const text = [PREAMBLE_LINE, ...rows, hint, method, PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("skips the login-method line when no copy hint precedes it", () => {
+    const text = [
+      PREAMBLE_LINE,
+      CLAUDE_COM_URL,
+      "Login method pre-selected: Claude account with subscription",
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)?.url).toBe(CLAUDE_COM_URL);
+  });
+
+  it.each([
+    "Login method pre-selected: https://claude.com.example/x",
+    "Login method pre-selected: ABCD-EFGHJ:code",
+    "Login method pre-selected:",
+    "Login method selected: Subscription Plan",
+  ])("returns null for a malformed login-method line: %s", (line) => {
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, line, PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("returns null when a copy hint names an unknown key", () => {
     const hint = "Hold Ctrl while selecting to use your terminal's native copy";
     const text = [PREAMBLE_LINE, CLAUDE_COM_URL, hint, PROMPT_LINE].join("\n");
