@@ -15,6 +15,7 @@ import { StatusIcon } from "@/components/StatusIcon";
 import { timeAgo } from "@/lib/timeAgo";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { agentSetupHandoffStorageKey, storeAgentSetupHandoff, storedAgentSetupHandoff } from "@/lib/agent-setup-handoff-storage";
 
 /**
@@ -67,6 +68,7 @@ export function useAgentSetupProgress({
   const account = useAccountIdentity();
   const accountId = accountOverride ?? account.userId ?? "anonymous";
   const accountKnown = Boolean(accountOverride) || account.settled;
+  const accountFailed = !accountOverride && account.failed;
   const handoffKey = ["agent-setup-progress-handoff", accountId, companyId ?? null, purpose, subjectId ?? null] as const;
   const storageKey = agentSetupHandoffStorageKey(accountId, companyId, purpose, subjectId);
   const handoffQuery = useQuery({
@@ -105,6 +107,11 @@ export function useAgentSetupProgress({
   const finished = progress?.status === "done" || progress?.status === "failed";
   const expired = Boolean(progress && !finished && Date.parse(progress.expiresAt) <= Date.now());
   const renew = () => {
+    // A failed sign-in lookup is retried first; the checklist follows once it answers.
+    if (accountFailed) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      return;
+    }
     storeAgentSetupHandoff(storageKey, null);
     void handoffQuery.refetch();
   };
@@ -131,7 +138,9 @@ export function useAgentSetupProgress({
     handoff,
     progress,
     expired,
-    error: handoffQuery.error ? describeError(handoffQuery.error).body : null,
+    error: handoffQuery.error
+      ? describeError(handoffQuery.error).body
+      : accountFailed ? "Paperclip couldn’t confirm who is signed in." : null,
     /** A refresh of the checklist failed; the last one stays on screen. */
     refreshError: query.error && progress ? describeError(query.error).body : null,
     retryRefresh: () => { void query.refetch(); },
@@ -218,7 +227,7 @@ export function AgentSetupProgressPanel({
         <h3 id={headingId} className="text-sm font-medium text-foreground">
           {expired ? "This setup prompt expired" : heading}
         </h3>
-        <p className="text-sm text-muted-foreground">
+        <p className={cn("text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)}>
           {expired
             ? "Its progress link stopped working before your agent finished. Start again for a new prompt, then give it to your agent."
             : status === "waiting"
@@ -228,7 +237,8 @@ export function AgentSetupProgressPanel({
       </div>
 
       {items.length > 0 ? (
-        <ol className="divide-y divide-border rounded-md border border-border">
+        // Agent-written text (titles, details, the summary) can name accounts and roles: never in session recordings.
+        <ol className={cn("divide-y divide-border rounded-md border border-border", ANALYTICS_MASK_CLASS)}>
           {items.map((item) => (
             <li key={item.key} className="flex items-start gap-3 px-3 py-2.5" data-status={item.status}>
               <span className="mt-0.5" aria-hidden="true"><StatusIcon status={ITEM_GLYPH[item.status]} size="sm" /></span>

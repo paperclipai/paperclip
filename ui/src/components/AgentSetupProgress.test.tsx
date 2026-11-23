@@ -13,8 +13,8 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/api/agentSetupProgress", () => ({ agentSetupProgressApi: {} }));
-const account = vi.hoisted(() => ({ userId: "user-1" as string | null, settled: true }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: account.settled }) }));
+const account = vi.hoisted(() => ({ userId: "user-1" as string | null, settled: true, failed: false }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: account.settled, failed: account.failed }) }));
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const BASE = `https://acme.paperclip.app/api/agent-setup-progress/${ID}`;
@@ -39,6 +39,7 @@ describe("agent setup progress", () => {
     window.sessionStorage.clear();
     account.userId = "user-1";
     account.settled = true;
+    account.failed = false;
   });
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -254,5 +255,33 @@ describe("agent setup progress", () => {
     await act(async () => { root.render(tree()); });
     await vi.waitFor(() => expect(token()).toBe("pcsp_fresh_visit"));
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the agent's text out of session recordings", async () => {
+    const done: AgentSetupProgress = { ...WAITING, status: "done", summary: "Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1",
+      items: [{ key: "check-account", title: "Check the AWS account", status: "done", detail: "Account 123456789012" }] };
+    await act(async () => { root.render(<AgentSetupProgressPanel progress={done} subject="AWS" />); });
+    const summary = [...container.querySelectorAll("p")].find((p) => p.textContent?.startsWith("Role ARN"))!;
+    expect(summary.closest(".ph-mask")).not.toBeNull();
+    expect(container.querySelector("ol")?.classList.contains("ph-mask")).toBe(true);
+  });
+
+  it("says when the sign-in lookup failed instead of waiting forever, and retries it", async () => {
+    account.userId = null;
+    account.settled = false;
+    account.failed = true;
+    const client: AgentSetupProgressClient = { create: vi.fn(async () => HANDOFF), get: vi.fn(async () => WAITING) };
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    let state: ReturnType<typeof useAgentSetupProgress> | null = null;
+    function Probe() {
+      state = useAgentSetupProgress({ companyId: "company-1", purpose: "aws_connection", subjectId: "conn-1", client });
+      return null;
+    }
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Probe /></QueryClientProvider>); });
+    await flush();
+    expect(client.create).not.toHaveBeenCalled();
+    expect(state!.error).toBe("Paperclip couldn’t confirm who is signed in.");
+    await act(async () => { state!.renew(); });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["auth", "session"] });
   });
 });
