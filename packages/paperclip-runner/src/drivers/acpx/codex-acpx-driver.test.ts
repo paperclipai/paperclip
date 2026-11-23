@@ -566,6 +566,55 @@ describe("Codex ACPX harness driver", () => {
     ]);
   });
 
+  it.each([true, false])("preserves required terminal events when a Claude compaction and proposal fill the queue (earlier loss: %s)", async earlierLoss => {
+    const progressEventCount = 505;
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" }, {
+      maxBufferedEvents: 512,
+      terminalEventReserve: 3,
+      runtimeEvents: [
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "Compacting..." },
+        ...Array.from({ length: progressEventCount + Number(earlierLoss) }, (_, index): AcpRuntimeEvent => ({
+          type: "text_delta",
+          stream: "output",
+          tag: "agent_message_chunk",
+          text: `**Notice:** Progress ${index}`,
+        })),
+      ],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-claude-proposal-pressure", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+    await vi.waitFor(async () => {
+      const transcript = await session.transcript!();
+      expect(transcript.events).toHaveLength(509);
+      expect(transcript.eventCount).toBe(509 + Number(earlierLoss));
+      expect(transcript.complete).toBe(!earlierLoss);
+    });
+    await expect(fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-compaction-bounded",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ accepted: true });
+    expect((await session.transcript!()).events).toHaveLength(510);
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await vi.waitFor(async () => {
+      await expect(session.snapshot()).resolves.toMatchObject({
+        activeTurnId: null,
+        terminalTurns: [expect.objectContaining({ turnId })],
+      });
+    });
+    const events = await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "proposal and compaction queue pressure verified" });
+    expect(events).toHaveLength(512);
+    expect(events.slice(-3)).toMatchObject([
+      { eventType: "run.result.proposed" },
+      earlierLoss
+        ? { eventType: "harness.diagnostic", payload: { code: "event_stream_retention_limit" } }
+        : { eventType: "provider.notice.recorded", payload: { category: "context_compaction", details: [{ name: "Phase", value: "completed" }] } },
+      { eventType: "turn.completed", turnId },
+    ]);
+  });
+
   it("opens the qualified Claude profile through the shared driver", async () => {
     const fixture = driverFixture({
       agent: "claude",

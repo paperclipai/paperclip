@@ -1702,13 +1702,14 @@ class CodexAcpxSession implements HarnessSession {
     this.#pendingTerminal = terminal;
     if (this.#activeCompaction?.turnId === turnId) {
       const completed = eventType === "turn.completed";
+      const reservedAfter = this.#eventStreamOmitted ? 2 : 1;
       if (this.#emitClaudeStatus(turnId, this.#activeCompaction.noticeId, {
         category: "context_compaction",
         severity: completed ? "info" : "warning",
         summary: completed ? "Context compaction ended" : "Context compaction stopped",
         phase: completed ? "completed" : "failed",
         details: [],
-      }, 1)) this.#activeCompaction = null;
+      }, reservedAfter)) this.#activeCompaction = null;
     }
     if (!this.#emit(terminal.eventType, terminal.payload, { turnId })) {
       // The persisted terminal index is the driver's settlement authority.
