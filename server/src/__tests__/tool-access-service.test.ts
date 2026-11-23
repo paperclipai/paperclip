@@ -1,4 +1,6 @@
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+const googleSignIn = vi.hoisted(() => ({ cloudHosted: true }));
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => googleSignIn.cloudHosted }));
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -69,6 +71,7 @@ import {
   googleWorkspaceSelectedScopes,
   googleWorkspaceGrantedScopes,
   googleWorkspaceSelectionForScopes,
+  GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE,
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
@@ -8183,6 +8186,73 @@ describeEmbeddedPostgres("tool access service", () => {
       redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
     })).rejects.toMatchObject({ status: 422, details: { code: "paperclip_cloud_connector_scope_not_offered" } });
     expect(connector.startAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("keeps a saved Paperclip Google connection working on a self-hosted instance and guides a reconnect with its own client", async () => {
+    const company = await createCompany(db);
+    const userId = `google-self-hosted-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "gmail.draft");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const redirectUri = "https://paperclip.example/api/tools/oauth/cloud-connector/callback";
+    mockToolsList([]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Saved Gmail",
+    }, actor);
+    const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor });
+    await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "saved-claim", actor,
+    });
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    vi.mocked(connector.startAuthorization).mockClear();
+    googleSignIn.cloudHosted = false;
+    try {
+      await service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: connected.connectionId, grantId: grant.id, forceRefresh: true, actor });
+      expect(connector.refresh).toHaveBeenCalledWith(expect.objectContaining({ profile: "gmail.draft" }));
+
+      await expect(service.startOAuth(company.id, connected.connectionId, { redirectUri, actor })).rejects.toMatchObject({
+        status: 422, message: GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, details: { code: "google_sign_in_cloud_only" },
+      });
+      await expect(service.connectGalleryApp(company.id, {
+        galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "New Gmail",
+      }, actor)).rejects.toMatchObject({ status: 422 });
+      expect(connector.startAuthorization).not.toHaveBeenCalled();
+
+      vi.mocked(connector.refresh).mockRejectedValueOnce(new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector rejected the request (operation=refresh, status=409, reason=PROVIDER_CLOUD_ONLY)",
+        "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_CLOUD_ONLY",
+      ));
+      await expect(service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: connected.connectionId, grantId: grant.id, forceRefresh: true, actor }))
+        .rejects.toMatchObject({
+          status: 422,
+          message: `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}`,
+          details: { code: "oauth_reauthorization_required", reason: "google_sign_in_cloud_only" },
+        });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))[0].status).toBe("needs_reauthorization");
+    } finally {
+      googleSignIn.cloudHosted = true;
+    }
+  });
+
+  it("turns the broker's cloud-only refusal into the same guidance on a Cloud instance", async () => {
+    const company = await createCompany(db);
+    const userId = `google-cloud-refused-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "gmail.draft");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    mockToolsList([]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Refused Gmail",
+    }, actor);
+    vi.mocked(connector.startAuthorization).mockRejectedValueOnce(new PaperclipCloudConnectorError(
+      "Paperclip Cloud connector rejected the request (operation=session, status=403, reason=PROVIDER_CLOUD_ONLY)",
+      "CONNECTOR_REQUEST_FAILED", 403, undefined, "PROVIDER_CLOUD_ONLY",
+    ));
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    })).rejects.toMatchObject({ status: 422, message: GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, details: { code: "google_sign_in_cloud_only" } });
   });
 
   it("completes brokered Gmail OAuth with a single database connection", async () => {

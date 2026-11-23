@@ -4,7 +4,7 @@ import type { ActorInfo, DbTransaction } from "../types.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
-import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -162,10 +162,12 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                       eq(connectionGrants.companyId, grant.companyId),
                     ),
                   );
+                const cloudOnly = error.brokerReason === "PROVIDER_CLOUD_ONLY";
                 throw unprocessable(
-                  "Managed authorization must be reconnected",
+                  cloudOnly ? `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}` : "Managed authorization must be reconnected",
                   {
                     code: "oauth_reauthorization_required",
+                    ...(cloudOnly ? { reason: "google_sign_in_cloud_only" } : {}),
                     setupUrl: connectionSetupUrl(connection),
                     reconnectUrl: connectionReconnectUrl(connection),
                   },
