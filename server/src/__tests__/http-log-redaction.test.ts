@@ -661,7 +661,7 @@ describe("HTTP logger redaction", () => {
     const paths = [
       "/api/tool-gateway/tools/call",
       "/api/tool-gateway/gateways/gateway-1/mcp",
-      "/api/mcp/gateways/public-gateway-1",
+      "/mcp/gateways/public-gateway-1",
       "/api/issues/issue-1/mcp-app-views/view-1/tool-calls",
       "/api/tool-connections/connection-1/test-calls",
       "/API/Tool-Gateway/Tools/Call/",

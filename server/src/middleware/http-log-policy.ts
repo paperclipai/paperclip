@@ -77,7 +77,7 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
 const TOOL_CALL_HTTP_PATHS = [
   /^\/api\/tool-gateway\/tools\/call\/?$/i,
   /^\/api\/tool-gateway\/gateways\/[^/]+\/mcp\/?$/i,
-  /^\/api\/mcp\/gateways\/[^/]+\/?$/i,
+  /^\/mcp\/gateways\/[^/]+\/?$/i,
   /^\/api\/issues\/[^/]+\/mcp-app-views\/[^/]+\/tool-calls\/?$/i,
   /^\/api\/tool-connections\/[^/]+\/test-calls\/?$/i,
 ];
