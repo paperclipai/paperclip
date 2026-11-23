@@ -18,7 +18,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { cn, relativeTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatActivityVerb } from "@/lib/activity-format";
+import { formatActivityEntityLabel, formatActivityOutcome, formatActivityVerb } from "@/lib/activity-format";
 import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api/audit";
 import { agentsApi } from "@/api/agents";
@@ -200,12 +200,12 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   if (connectionId) {
     return (
       <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
-        the connection
+        {formatActivityEntityLabel("tool_connection", record.details)}
       </Link>
     );
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
-  return <span className="text-muted-foreground">{record.entityType}</span>;
+  return <span className="text-muted-foreground">{formatActivityEntityLabel(record.entityType, record.details)}</span>;
 }
 
 function AuditRow({
@@ -220,6 +220,7 @@ function AuditRow({
   casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
+  const outcome = formatActivityOutcome(record.action, record.details);
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
   const showOnBehalf = Boolean(
@@ -242,6 +243,7 @@ function AuditRow({
             <span className="text-muted-foreground">{verb}</span>
             <AuditEntityNode record={record} />
           </div>
+          {outcome ? <p className="text-muted-foreground">{outcome}</p> : null}
           {excerpt ? (
             <p className="line-clamp-2 border-l-2 border-border pl-2 text-muted-foreground">
               “{excerpt}”
