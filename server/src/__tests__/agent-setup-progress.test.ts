@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { eq, inArray } from "drizzle-orm";
-import { activityLog, agentSetupProgress, companies, companyMemberships, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { activityLog, agentSetupProgress, companies, companyMemberships, createDb, principalPermissionGrants, toolApplications, toolConnections } from "@paperclipai/db";
 import { AGENT_SETUP_PROGRESS_LIMITS, type AgentSetupProgressHandoff, type LiveEvent } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentSetupProgressAgentRoutes, agentSetupProgressBoardRoutes } from "../routes/agent-setup-progress.js";
@@ -225,6 +225,19 @@ describe("agent setup progress", () => {
     const viewerId = `viewer-${randomUUID()}`;
     await db.insert(companyMemberships).values({ companyId: org.id, principalType: "user", principalId: viewerId, status: "active", membershipRole: "viewer" });
     await request(app([org.id], viewerId)).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(403);
+    // A manager whose permission covers just this connection may set it up; one scoped to another connection may not.
+    const scopedId = `scoped-${randomUUID()}`;
+    const elsewhereId = `elsewhere-${randomUUID()}`;
+    const [otherConnection] = await db.insert(toolConnections).values({
+      companyId: org.id, applicationId: org.applicationId, name: "Other", uid: `other-${randomUUID()}`, transport: "mcp_remote", createdByUserId: userId,
+    }).returning();
+    await db.insert(companyMemberships).values([scopedId, elsewhereId].map((principalId) => ({ companyId: org.id, principalType: "user", principalId, status: "active", membershipRole: "member" })));
+    await db.insert(principalPermissionGrants).values([
+      { companyId: org.id, principalType: "user", principalId: scopedId, permissionKey: "tools:manage_connections", scope: { connectionIds: [org.connectionId] } },
+      { companyId: org.id, principalType: "user", principalId: elsewhereId, permissionKey: "tools:manage_connections", scope: { connectionIds: [otherConnection!.id] } },
+    ]);
+    await request(app([org.id], scopedId)).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201);
+    await request(app([org.id], elsewhereId)).post(`/api/companies/${org.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(403);
     const otherMember = await request(app([org.id], viewerId)).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(404);
     expect(otherMember.body).toEqual(missing.body);
     const own = await request(app([org.id])).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(200);

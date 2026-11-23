@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { and, eq } from "drizzle-orm";
 import { toolConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
@@ -11,9 +11,8 @@ import {
   updateAgentSetupItemSchema,
   type CreateAgentSetupProgress,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
-import { accessService } from "../services/index.js";
-import { connectionRequestUserId } from "./connection-management-authz.js";
+import { notFound, unprocessable } from "../errors.js";
+import { connectionManagementGuard } from "./connection-management-authz.js";
 import { validate } from "../middleware/validate.js";
 import { agentSetupProgressService } from "../services/agent-setup-progress.js";
 import { workloadIdentityPublicOrigin } from "../services/workload-identity.js";
@@ -65,29 +64,30 @@ function agentOrigin(req: Request) {
 export function agentSetupProgressBoardRoutes(db: Db) {
   const router = Router();
   const service = agentSetupProgressService(db);
-  const access = accessService(db);
 
-  /** Same rule as configuring the connection: its creator, a connection manager, the local board or an instance admin. */
-  async function assertCanSetUpSubject(req: Request, companyId: string, body: CreateAgentSetupProgress) {
+  // Same rule as the AWS setup screen: the connection-management check for configuring this
+  // connection, which honours permissions granted for just this connection.
+  const configureConnection = connectionManagementGuard(db, "tool")("connections:configure", "POST /companies/:companyId/agent-setup-progress");
+
+  async function assertCanSetUpSubject(req: Request, res: Response, companyId: string, body: CreateAgentSetupProgress) {
     if (body.purpose !== "aws_connection") return;
     if (!body.subjectId) throw unprocessable("Name the connection being set up.", { code: "agent_setup_progress_subject_required" });
     // A connection id is a UUID; anything else is simply not a connection (and must not reach the uuid column).
     if (!idSchema.safeParse(body.subjectId).success) throw notFound("Tool connection not found");
-    const [connection] = await db.select({ createdByUserId: toolConnections.createdByUserId }).from(toolConnections)
+    const [connection] = await db.select({ id: toolConnections.id }).from(toolConnections)
       .where(and(eq(toolConnections.id, body.subjectId), eq(toolConnections.companyId, companyId)));
     if (!connection) throw notFound("Tool connection not found");
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const userId = connectionRequestUserId(req);
-    if (userId && connection.createdByUserId === userId) return;
-    if (userId && await access.hasPermission(companyId, "user", userId, "tools:manage_connections")) return;
-    throw forbidden("Only the connection creator or a connection manager can set up this connection");
+    req.params.connectionId = connection.id;
+    await new Promise<void>((resolve, reject) => {
+      void configureConnection(req, res, (error?: unknown) => (error ? reject(error) : resolve()));
+    });
   }
   router.post("/companies/:companyId/agent-setup-progress", validate(createAgentSetupProgressSchema), async (req, res) => {
     assertBoard(req);
     const companyId = idSchema.parse(req.params.companyId);
     assertCompanyAccess(req, companyId);
     const body = req.body as CreateAgentSetupProgress;
-    await assertCanSetUpSubject(req, companyId, body);
+    await assertCanSetUpSubject(req, res, companyId, body);
     const { actorId } = getActorInfo(req);
     // The response carries the agent's token: never cache it.
     res.setHeader("Cache-Control", "no-store");
