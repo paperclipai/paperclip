@@ -79,7 +79,7 @@ import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-bus
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
-import { coldAdmissionTimeoutMs } from "../../vendor/paperclip-runner/index.js";
+import { coldAdmissionTimeoutMs, nativeRunAttachReservedBytes } from "../../vendor/paperclip-runner/index.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { nativeCaseHandoffResult } from "./native-case-handoff.js";
@@ -16794,6 +16794,7 @@ async function createRunnerdBackendWithinSessionClaim(
   input.executionContext?.signal.throwIfAborted();
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     apiUrl: resolveLocalRuntimeApiUrl(),
+    runAttachReservedBytes: nativeRunAttachReservedBytes(input.execution),
     casesEnabled: input.casesEnabled === true,
     responsibilitiesEnabled: input.responsibilitiesEnabled === true,
     ...(nativeReview ? { nativeReview } : {}),
