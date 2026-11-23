@@ -153,8 +153,8 @@ model to answer is therefore NOT RUN, not failed and not passed.
 ### Excluded or unsupported for this release
 
 - Orchestrator model: excluded. 1.5.2 does not list it over ACP.
-- `/swarm` and the other App/CLI-only commands, such as `/teamwork`: not
-  available. 1.5.2 does not advertise them, and the agent gets no swarm tools.
+- `/swarm`: not available. The live 1.5.2 `available_commands_update` lists
+  only `plan`, `logout` and `usage`, and the agent gets no swarm tools.
 - Google sign-in in a cloud sandbox: refused at save and Test.
 - Warm (session-reusing) runs: per-turn only.
 - darwin-x64: no native host; inventory only.
