@@ -113,9 +113,10 @@ deployment is ever needed; the gateway does not use it.
 One setting per service, `GOOGLE_WORKSPACE_TOOL_TRANSPORT` in
 `packages/shared/src/google-workspace-connectors.ts`:
 
-- `google_mcp` (every service today): calls go to Google's hosted MCP server
-  for that service, exactly as before this folder existed.
-- `paperclip_rest`: calls go to this folder.
+- `paperclip_rest`: calls go to this folder. Gmail, Drive, Docs, Sheets,
+  Slides and Calendar use it since 2026-11-23.
+- `google_mcp`: calls go to Google's hosted MCP server for that service.
+  Chat, People and Search use it; they are not offered for new setup.
 
 `googleWorkspaceToolTarget(name)` returns the setting as `transport`. It is a
 plain constant: no environment variable, instance setting or database row.
@@ -241,6 +242,60 @@ result and 0.24 ms for a 700 KB one.
 `googleWorkspaceRestTransportGaps()` in the adapter, run by
 `google-workspace-rest-dispatch.test.ts`, fails while any service set to
 `paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
+
+### Connections saved before a switch
+
+A connection keeps the tool definitions its last catalog refresh saved. After
+a service switches to `paperclip_rest`, the saved definitions of an existing
+connection are still Google's MCP definitions. Two things keep such a
+connection working with no user action:
+
+- **Agents see this folder's definitions at once.** When the gateway lists a
+  connection's tools for an agent, it takes the input schema, output schema,
+  description and annotations of a `paperclip_rest` tool from this folder, not
+  from the saved row. It asks `paperclipDefinedTool` in
+  `server/src/services/connectors/paperclip-defined-tools.ts`, which calls
+  `googleWorkspaceRestToolDefinition` in the adapter.
+  Routing and the advertised definition read the same transport setting in
+  the same process, so an agent never gets Google's MCP schema for a call that
+  goes to REST. This is an in-memory lookup: no request and no refresh before
+  the turn starts.
+- **The next catalog refresh saves this folder's definitions.** Catalog
+  publication asks the same `paperclipDefinedTool`. It never holds such an
+  action for review, and it clears the review hold (`quarantined`,
+  `pending_review`) of an action held only because a remote definition
+  changed. Clearing the hold does not count the action as new, so it does not
+  add the action to the connection's profile: an action a person turned Off
+  (left out of the profile) stays Off, also when it was held, and an Ask first
+  policy stays in force. Only actions the connection never had (Gmail
+  `list_threads` and `search_messages`) get the connection's default for new
+  actions.
+
+The saved risk level of an action changes only on that refresh. Until then,
+`docs__update_doc`, `slides__update_presentation`, `sheets__update_spreadsheet`
+and `calendar__update_event` keep the level saved from Google's MCP
+definition (`write`); after it they are `destructive`. Write actions are
+Allowed by default at either level.
+
+### Input differences an agent meets after a switch
+
+Checked against Google's published MCP references, since no `tools/list`
+from Google's servers is recorded yet. These are the cases where a call that
+Google's saved schema allowed is refused by this folder; each is also stated
+in the tool's own description and schema, which agents now receive:
+
+| Tool | Google's schema | This folder |
+| --- | --- | --- |
+| `docs__update_doc`, `slides__update_presentation` | `writeControl` optional; `targetRevisionId` allowed | `writeControl.requiredRevisionId` required (read the document first); `targetRevisionId` refused |
+| `docs__update_doc`, `slides__update_presentation` | any request kind | closed list of request kinds; kinds that read another file refused |
+| `sheets__update_spreadsheet` | `writeControl` allowed | `writeControl` refused (no revision check in Sheets REST) |
+| `sheets__get_spreadsheet` | `commentsIncluded: true` allowed | refused (not in the Sheets API) |
+| `sheets__insert_dimension` | `DIMENSION_UNSPECIFIED` in the enum | refused |
+| `calendar__delete_event` | a recurring series ID deletes the series | refused; pass one occurrence |
+| `gmail__create_draft` | attachments | refused, as Google's tool does today |
+| `drive__search_files` | full MCP query language and `orderBy` | terms without a Drive `q` equivalent refused; `orderBy` limited |
+
+Each refusal is a tool error that says what to do, and nothing is changed.
 
 ## Known differences from Google's MCP tools
 

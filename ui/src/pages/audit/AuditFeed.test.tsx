@@ -246,6 +246,68 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("tool_gateway.call_completed");
   });
 
+  it("shows connected Google activity as plain sentences without internal names or IDs", async () => {
+    const connectionId = "7f3c2a10-5b4e-4d2a-9c1f-0e8d6b5a4c3d";
+    const applicationId = "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9";
+    const google = { tool: "mcp.google-workspace-7f3c2a10:gmail-get-message", upstreamToolName: "gmail__get_message", connectionId, applicationId };
+    const providerAccess = { provider: "google", result: "ended", outcomes: ["revoked"] };
+    const row = (id: string, overrides: Record<string, unknown>) => record({
+      id, actorType: "user", actorId: "user-1", agentId: null, runId: null, responsibleUserId: null,
+      entityType: "tool_connection", entityId: connectionId,
+      entity: { issue: null, comment: null, document: null }, ...overrides,
+    });
+    listAgentActionsMock.mockResolvedValue({
+      items: [
+        row("evt-used", { actorType: "agent", actorId: "agent-1", agentId: "agent-1", action: "tool_gateway.call_completed", entityType: "agent", entityId: "agent-1", details: google }),
+        row("evt-denied", { actorType: "agent", actorId: "agent-1", agentId: "agent-1", action: "tool_gateway.call_denied", entityType: "agent", entityId: "agent-1", details: { ...google, decision: "deny", reasonCode: "policy_denied" } }),
+        row("evt-held", { actorType: "agent", actorId: "agent-1", agentId: "agent-1", action: "tool_gateway.approval_requested", entityType: "agent", entityId: "agent-1", details: { ...google, decision: "require_approval" } }),
+        row("evt-connected", { action: "tool_app.connected", details: { galleryKey: "google_workspace", applicationId } }),
+        row("evt-reconnected", { action: "tool_app.reconnected", details: { healthStatus: "healthy" } }),
+        row("evt-removed", { action: "tool_connection.archived", details: { transport: "remote_http", grantsRevoked: 1, providerAccess } }),
+        row("evt-app-removed", { action: "tool_application.archived", entityType: "tool_application", entityId: applicationId, details: { type: "mcp", name: "Google Workspace", reason: "last_connection_removed" } }),
+        row("evt-content-requested", { action: "tool_connection.content_deletion_requested", details: { toolCalls: 3 } }),
+        row("evt-content-deleted", { actorType: "system", actorId: null, action: "tool_connection.content_deleted", details: { toolCalls: 3 } }),
+        row("evt-failed", { actorType: "agent", actorId: "agent-1", agentId: "agent-1", action: "tool_gateway.call_failed", entityType: "agent", entityId: "agent-1", details: { tool: google.tool, connectionId, reasonCode: "prompt_injection_blocked" } }),
+        row("evt-credential-revoked", { action: "tool_connection.grant_revoked", details: { connectionId, kind: "oauth", providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_error"] } } }),
+      ],
+      nextCursor: null,
+      accessTier: "full",
+    });
+
+    await render({ actionDomain: "tool_" });
+
+    const rows = Array.from(container.querySelectorAll('ul[aria-label="Audit activity"] > li'));
+    expect(rows).toHaveLength(11);
+    const primary = rows.map((li) => {
+      const copy = li.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll(".font-mono, time").forEach((node) => node.remove());
+      const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+      const parts: string[] = [];
+      while (walker.nextNode()) parts.push(walker.currentNode.textContent ?? "");
+      return parts.join(" ").replace(/\s+/g, " ");
+    });
+    for (const text of primary) {
+      expect(text).not.toMatch(/__|[a-z]_[a-z]|[0-9a-f]{8}-[0-9a-f]{4}|7f3c2a10/i);
+    }
+    expect(primary[0]).toContain("used Gmail: Get message on");
+    expect(primary[1]).toContain("was blocked from using Gmail: Get message on");
+    expect(primary[2]).toContain("asked to use Gmail: Get message on");
+    expect(primary[3]).toContain("connected the connection");
+    expect(primary[4]).toContain("reconnected the connection");
+    expect(primary[5]).toContain("removed the Google Workspace connection");
+    expect(primary[5]).toContain("Paperclip's access to this Google account was also ended at Google.");
+    expect(primary[6]).toContain("removed Google Workspace");
+    expect(primary[6]).toContain("Its last connection was removed.");
+    expect(primary[7]).toContain("asked to delete stored content from the connection");
+    expect(primary[8]).toContain("deleted stored content from the connection");
+    expect(primary[9]).toContain("could not use gmail get message on the connection");
+    expect(primary[10]).toContain("revoked credentials from the Google Workspace connection");
+    expect(primary[10]).toContain("couldn't end its access at Google");
+    expect(primary[10]).toContain("Paperclip removed the credentials");
+    expect(primary[10]).not.toContain("removed the connection but");
+    expect(rows[0].textContent).toContain("tool_gateway.call_completed");
+  });
+
   it("shows case history with case links and the acting agent's avatar", async () => {
     listAgentActionsMock.mockResolvedValue({
       items: [record({

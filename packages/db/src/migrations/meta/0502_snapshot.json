@@ -1,5 +1,5 @@
 {
-  "id": "8982f790-a0aa-476a-a73c-ae0d12946c39",
+  "id": "e7daf0b9-3e4a-42d7-b72a-4d7d413d9686",
   "prevId": "62fdf61f-883c-4e82-a4ab-4311ff6d39e5",
   "version": "7",
   "dialect": "postgresql",
@@ -54701,33 +54701,6 @@
           "method": "btree",
           "with": {}
         },
-        "routine_runs_routine_history_idx": {
-          "name": "routine_runs_routine_history_idx",
-          "columns": [
-            {
-              "expression": "routine_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "routine_runs_revision_idx": {
           "name": "routine_runs_revision_idx",
           "columns": [
@@ -61627,6 +61600,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "token_hash": {
           "name": "token_hash",
           "type": "text",
@@ -64067,6 +64046,12 @@
         },
         "responsible_user_id": {
           "name": "responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false

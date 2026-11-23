@@ -376,14 +376,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]).toEqual(run);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
   });
-  it.each([["stranded_assigned_issue", "stranded_assigned_issue"], ["configuration_validation", "configuration_incomplete"],
-    ["missing_disposition", "successful_run_missing_state"], ["deliberate_wait_without_target", "deliberate_wait_without_target"]])("preserves a task-only %s warning through offline file migration", async (kind, cause) => {
+  it.each([["stranded_assigned_issue", "stranded_assigned_issue", "offline"], ["configuration_validation", "configuration_incomplete", "offline"],
+    ["missing_disposition", "successful_run_missing_state", "offline"], ["deliberate_wait_without_target", "deliberate_wait_without_target", "offline"],
+    ["stranded_assigned_issue", "stranded_assigned_issue", "online"], ["configuration_validation", "configuration_incomplete", "online"],
+    ["missing_disposition", "successful_run_missing_state", "online"], ["deliberate_wait_without_target", "deliberate_wait_without_target", "online"],
+  ])("preserves a task-only %s warning (%s) through %s file migration", async (kind, cause, mode) => {
     const f = await seed();
     const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind, cause, fingerprint: randomUUID(), nextAction: "Keep the existing task warning", evidence: { latestRunStatus: "failed" } }).returning();
-    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
-    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
-    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    if (mode === "offline") vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    expect(await inventoryRemoteWorkspaceMigration(db, { ...f, writersStopped: mode === "offline" })).toMatchObject({ eligible: true, reasons: [] });
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, ...(mode === "offline" ? { writersStopped: true } : {}) });
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(action);
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
@@ -413,6 +416,26 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
         .where(eq(issueRecoveryActions.id, action!.id)); return result; };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rechecks a task warning that becomes file recovery during an online upload", async () => {
+    const f = await seed();
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "stranded_assigned_issue", cause: "stranded_assigned_issue", fingerprint: randomUUID(), nextAction: "Assign the task" }).returning();
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
+        .where(eq(issueRecoveryActions.id, action!.id)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["workspace_validation", "active_run_watchdog", "export-cause"])("keeps an online blocker for file or execution recovery without a source proof (%s)", async mode => {
+    const f = await seed();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: mode === "export-cause" ? "configuration_validation" : mode,
+      cause: mode === "export-cause" ? "native_workspace_sync_out_unrecoverable" : mode === "workspace_validation" ? "workspace_validation_failed" : "native_session_interrupted",
+      fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery" });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("detects overlapping folders reached through symlinked parent directories", async () => {
@@ -1874,7 +1897,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
-  it.each(["unregistered", "backlink", "pointer", "symlink-backlink"])("refuses a nested Git wrapper with an unproven linked %s", async mode => {
+  it.each([["unregistered", "git_link_unregistered"], ["backlink", "git_links_unreadable"], ["pointer", "git_links_unreadable"],
+    ["symlink-backlink", "git_links_unreadable"], ["stale", "git_link_stale"]])("refuses a nested Git wrapper with an unproven linked %s and names it", async (mode, code) => {
     const { f, nested } = await nestedGitWrapperFixture(), issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Linked wrapper" });
     const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, issueId), alias = path.join(cwd, "nested");
@@ -1885,7 +1909,9 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     if (mode === "backlink") await fs.writeFile(backlink, path.join(alias, "wrong-marker") + "\n");
     if (mode === "pointer") await fs.writeFile(path.join(alias, ".git"), `gitdir: ${path.join(admin, "wrong")}\n`);
     if (mode === "symlink-backlink") { await fs.rename(backlink, backlink + ".real"); await fs.symlink(backlink + ".real", backlink); }
-    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"] });
+    if (mode === "stale") await fs.rm(alias, { recursive: true, force: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"],
+      sourceScopeUnproven: code });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(await db.select().from(workspaceOperations)).toHaveLength(0);
     expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
