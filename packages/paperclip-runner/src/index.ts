@@ -83,7 +83,7 @@ export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
-export { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
+export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";

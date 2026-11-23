@@ -4447,7 +4447,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_authority_cannot_come_from_descriptor_or_recover_a_prior_runner() {
         let directory = temporary_directory("candidate-authority");
         let mut admission = crate::acpx_candidate_admission::test_admission("run-1", "session-1");

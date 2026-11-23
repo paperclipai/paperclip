@@ -2514,7 +2514,13 @@ mod mode_tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
         let mut cfg = config();
         assert!(initialize_params(&cfg).get("candidateAdmission").is_none());

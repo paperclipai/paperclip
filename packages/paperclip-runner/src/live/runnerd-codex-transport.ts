@@ -12,7 +12,7 @@ export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trus
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
-import { bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
+import { bindAcpxCandidateAdmission, isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveClaudeEffort, admittedClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { resolveGrokEffort, admittedGrokEffort } from "../drivers/acpx/grok-effort.js";
@@ -4398,7 +4398,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
       this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
       if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || !isAntigravityNativeTarget(process.platform, process.arch)
+        || admitted.platform !== process.platform || admitted.architecture !== process.arch
         || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId

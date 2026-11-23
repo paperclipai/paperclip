@@ -21,6 +21,11 @@ export interface AcpxCandidateStartupAdmission extends AcpxCandidateAdmission {
   normalizedSessionId: string;
 }
 
+/** A host with a verified, patched Antigravity closure. */
+export function isAntigravityNativeTarget(platform: unknown, architecture: unknown): boolean {
+  return typeof platform === "string" && typeof architecture === "string" && Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, `${platform}-${architecture}`);
+}
+
 const BASE_FIELDS = ["schema", "companyId", "agent", "model", "profileDigest", "nativeClosureDigest", "platform", "architecture", "expiresAt"];
 const stableId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/.test(value);
 const invalid = (): never => { throw Object.assign(new Error("ACPX candidate admission is missing, expired, or does not match the exact authorized execution"), { code: "ACPX_CANDIDATE_ADMISSION_INVALID", retryable: false }); };
@@ -35,8 +40,8 @@ export function parseAcpxCandidateAdmission(
   const profile = entry.agent === "antigravity" ? QUALIFIED_ACPX_PROFILES.antigravity
     : entry.agent === "kimi" ? QUALIFIED_ACPX_PROFILES.kimi : undefined;
   const target = `${entry.platform}-${entry.architecture}`;
-  const closure = entry.agent === "antigravity" && target === "darwin-arm64"
-    ? ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256
+  const closure = entry.agent === "antigravity" && isAntigravityNativeTarget(entry.platform, entry.architecture)
+    ? ANTIGRAVITY_DISTRIBUTION_PINS[target as keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS].closureSha256
     : entry.agent === "kimi" && (target === "darwin-arm64" || target === "linux-x64")
       ? KIMI_DISTRIBUTION_CLOSURE_SHA256[target] : undefined;
   if (!Number.isSafeInteger(now) || now < 0 || Object.keys(entry).length !== BASE_FIELDS.length || Object.keys(entry).some(key => !BASE_FIELDS.includes(key))
