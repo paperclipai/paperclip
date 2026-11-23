@@ -93,6 +93,9 @@ def _paperclip_native_boundary_regressions():
       rejected(lambda: prepare_native_config(config, strategy))
       rejected(lambda: acknowledge_native_config(prepared, native_ack, config))
       config.models[0].name = "literal-model"
+      config.models[0].gemini_api_endpoint.options.thinking_level = "low"
+      rejected(lambda: prepare_native_config(config, strategy))
+      config.models[0].ClearField("gemini_api_endpoint")
       config.system_instructions.appended.appended_sections.add(content="unexpected instruction")
       rejected(lambda: prepare_native_config(config, strategy))
       del config.system_instructions.appended.appended_sections[:]
@@ -111,9 +114,59 @@ def _paperclip_native_boundary_regressions():
       rejected(lambda: prepare_native_config(config, strategy))
     finally:
       _CONTEXT.reset(token)
+  # Mapped API-key targets: base model and thinking level must both match.
+  from google3.cloud.developer_experience.antigravity_extensions.acp_server import model_selection
+  requested = "gemini-3.8-flash-low"
+  base = model_selection.DEFAULT_MODEL_METADATA_MAP[requested].base_model_id
+  raw = b""
+  mapped = {"schema": SCHEMA, "nonce": "mapped-regression", "model": requested, "digest": "sha256:" + hashlib.sha256(raw).hexdigest(), "byteLength": 0, "content": ""}
+  def mapped_config(name, level=None, vertex=False):
+    model = pb.ModelConfig(name=name, types=[1])
+    endpoint = model.vertex_endpoint if vertex else model.gemini_api_endpoint
+    endpoint.SetInParent()
+    if level is not None:
+      endpoint.options.thinking_level = level
+    return pb.HarnessConfig(cascade_id="mapped-session", models=[model])
+  strategy = SimpleNamespace(_binary_path="/untrusted", _env=None)
+  token = _CONTEXT.set(mapped)
+  try:
+    assert prepare_native_config(mapped_config(base, "low"), strategy)["model"] == requested
+    assert prepare_native_config(mapped_config(base, "low", vertex=True), strategy)["model"] == requested
+    assert prepare_native_config(mapped_config(requested), strategy)["model"] == requested
+    for name, level in ((base, "high"), (base, None), (base, ""), ("gemini-3.7-flash", "low"), (requested, "low")):
+      rejected(lambda: prepare_native_config(mapped_config(name, level), strategy))
+  finally:
+    _CONTEXT.reset(token)
   sys.stderr.write("paperclip-native-boundary-regressions: passed\\n")
 
 _paperclip_native_boundary_regressions()
+`;
+
+// The Linux server's own helper discovery misses the sibling helper, and the
+// SDK then refuses every session. The owned patch supplies the kernel path.
+const nativeOwnedHelperPathTests = `
+
+def _paperclip_owned_helper_path_regression():
+  import sys
+  from google.antigravity import types as sdk_types
+  from google.antigravity.connections.local.local_connection_config import LocalAgentConfig
+  saved = os.environ.pop("ANTIGRAVITY_HARNESS_PATH", None)
+  try:
+    configure_owned_helper_path()
+    expected = os.path.join(os.path.dirname(_owned_executable_path()), "localharness_external")
+    assert os.environ.get("ANTIGRAVITY_HARNESS_PATH") == expected, os.environ.get("ANTIGRAVITY_HARNESS_PATH")
+    config = LocalAgentConfig(conversation_id="owned-helper-path-1234567890123456", system_instructions="owned helper path", capabilities=sdk_types.CapabilitiesConfig(enable_subagents=False), models=[sdk_types.ModelTarget(name="literal-model", types=[sdk_types.ModelType.TEXT], endpoint=sdk_types.GeminiAPIEndpoint())])
+    assert config.create_strategy(tool_runner=None, hook_runner=None)._binary_path == expected
+    os.environ["ANTIGRAVITY_HARNESS_PATH"] = "/explicit/operator/helper"
+    configure_owned_helper_path()
+    assert os.environ["ANTIGRAVITY_HARNESS_PATH"] == "/explicit/operator/helper", "an explicit path is never replaced"
+  finally:
+    os.environ.pop("ANTIGRAVITY_HARNESS_PATH", None)
+    if saved is not None:
+      os.environ["ANTIGRAVITY_HARNESS_PATH"] = saved
+  sys.stderr.write("paperclip-owned-helper-path-regression: passed\\n")
+
+_paperclip_owned_helper_path_regression()
 `;
 
 // Calls the real SDK subprocess/stdio/WebSocket startup. The native helper has
@@ -222,7 +275,9 @@ def _paperclip_managed_surface_regressions():
     assert acp_hooks.load_hooks_config(workspace), "unmanaged source loader must remain functional"
     content = "  Exact managed source config 🧷\\n"
     raw = content.encode()
-    admission = {"schema": SCHEMA, "nonce": "managed-source-policy", "model": "gemini-3.1-flash-lite", "digest": "sha256:" + hashlib.sha256(raw).hexdigest(), "byteLength": len(raw), "content": content}
+    # API-key sessions map a catalog id to its base model plus a thinking
+    # level; the exact requested id must still be admitted and acknowledged.
+    admission = {"schema": SCHEMA, "nonce": "managed-source-policy", "model": "gemini-3.8-flash-low", "digest": "sha256:" + hashlib.sha256(raw).hexdigest(), "byteLength": len(raw), "content": content}
     adapter = AgyAdapter()
     adapter._auth_state = AuthState(method_id="gemini-api-key", api_key="controlled-fixture-key-not-used")
     original_preflight = browser_subagent.preflight_launcher
@@ -248,6 +303,8 @@ def _paperclip_managed_surface_regressions():
       assert not native.harness_side_tools.subagents.enabled
       assert not native.harness_side_tools.run_workflow.enabled and not native.custom_subagents
       assert not native.harness_side_tools.schedule.enabled
+      text_targets = [model for model in native.models if 1 in model.types]
+      assert [(model.name, model.gemini_api_endpoint.options.thinking_level) for model in text_targets] == [("gemini-3.8-flash", "low")], text_targets
       prepare_native_config(native, strategy)
       managed_manager = FixtureCredentials()
       adapter._oauth_mgr = managed_manager
@@ -763,11 +820,12 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
   await mkdir(fixtureScripts);
   await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
   const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
-  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + nativeBoundaryTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
+  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + nativeBoundaryTests + nativeOwnedHelperPathTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
   const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
   await patchNative(fixture, join(root, "boundary-fixture"));
   const tested = await runNative(join(root, "boundary-fixture/agy_acp_server.par"), join(root, "fixture-home"), [initialize()]);
   assert.match(tested.stderr, /paperclip-native-boundary-regressions: passed/);
+  assert.match(tested.stderr, /paperclip-owned-helper-path-regression: passed/);
   assert.match(tested.stderr, /paperclip-native-helper-isolation-regression: passed/);
   assert.match(tested.stderr, /paperclip-managed-surface-regressions: passed/);
   assert.match(tested.stderr, /paperclip-model-catalog-regressions: passed/);

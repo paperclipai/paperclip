@@ -26,7 +26,8 @@ export interface NativeAcpxDistributionSnapshot {
 }
 
 const MAX_NATIVE_TREE_BYTES = 1024 * 1024 * 1024;
-const MAX_NATIVE_FILE_BYTES = 384 * 1024 * 1024;
+// Antigravity's Linux ACP server is a ~722 MB launcher with its Python archive.
+const MAX_NATIVE_FILE_BYTES = 768 * 1024 * 1024;
 const MAX_NATIVE_MANIFEST_BYTES = 4 * 1024 * 1024;
 // Bound both file descriptors and buffers. A single larger admitted file runs
 // alone and remains subject to MAX_NATIVE_FILE_BYTES.

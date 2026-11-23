@@ -14,6 +14,7 @@ import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import antigravityDistributions from "../../../antigravity-distributions.json" with { type: "json" };
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -133,6 +134,15 @@ describe("native ACPX execution closure", () => {
       expect(() => parseNativeAcpxDistributionEntries({ entries }, hash(JSON.stringify(entries)))).toThrow();
     }
     expect(() => parseNativeAcpxDistributionEntries({ entries: [entry] }, "b".repeat(64))).toThrow("manifest digest mismatch");
+  });
+  it("admits the largest pinned Linux Antigravity server but not a file over the per-file bound", () => {
+    const sizes = Object.values(antigravityDistributions.platforms as Record<string, { entries?: Array<{ size: number }> }>)
+      .flatMap(platform => platform.entries ?? []).map(entry => entry.size);
+    const largest = { path: "agy_acp_server.par", sha256: "a".repeat(64), size: Math.max(...sizes), executable: true };
+    expect(largest.size).toBeGreaterThan(384 * 1024 * 1024);
+    expect(parseNativeAcpxDistributionEntries({ entries: [largest] }, hash(JSON.stringify([largest])))).toHaveLength(1);
+    const oversized = [{ ...largest, size: 768 * 1024 * 1024 + 1 }];
+    expect(() => parseNativeAcpxDistributionEntries({ entries: oversized }, hash(JSON.stringify(oversized)))).toThrow("file metadata is invalid");
   });
   it("checks every file digest and refuses links at admission", async () => {
     const declaration = await fixture(); const installation = await verifyNativeAcpxInstallation(declaration);

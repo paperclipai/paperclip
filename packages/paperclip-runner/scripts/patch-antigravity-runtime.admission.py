@@ -18,6 +18,7 @@ import sys
 import uuid
 
 from acp import exceptions
+from google3.cloud.developer_experience.antigravity_extensions.acp_server import model_selection
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import paperclip_native_identity
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import request_meta
 from google3.cloud.developer_experience.antigravity_extensions.acp_server import system_prompt
@@ -83,6 +84,34 @@ def _owned_executable_path():
   _fail("unsupported native host")
 
 
+def _native_model_matches(target, requested):
+  """Whether one native text target is exactly the requested `<family>-<level>` id.
+
+  Personal sign-in sends the id literally. API-key, Agent Platform and gateway
+  sessions send the catalog's base model with the thinking level as an
+  endpoint option. Both forms must resolve to the same catalog entry: the
+  base model and the thinking level are checked together, never the family.
+  """
+  levels = [
+      endpoint.options.thinking_level
+      for field, endpoint in (
+          ("gemini_api_endpoint", target.gemini_api_endpoint),
+          ("vertex_endpoint", target.vertex_endpoint),
+      )
+      if target.HasField(field)
+  ]
+  if len(levels) > 1:
+    return False
+  level = levels[0] if levels else ""
+  if target.name == requested and not level:
+    return True
+  metadata = model_selection.DEFAULT_MODEL_METADATA_MAP.get(requested)
+  if metadata is None:
+    return False
+  expected_level = metadata.thinking_level.value if metadata.thinking_level is not None else ""
+  return target.name == metadata.base_model_id and level == expected_level
+
+
 def prepare_native_config(config, strategy):
   """Inspect the protobuf that will actually be sent to this owned harness."""
   admission = _CONTEXT.get()
@@ -103,7 +132,7 @@ def prepare_native_config(config, strategy):
     strategy._env = {**strategy._env, "ANTIGRAVITY_HARNESS_PATH": helper}
   os.environ["ANTIGRAVITY_HARNESS_PATH"] = helper
   targets = [model for model in config.models if 1 in model.types]
-  if len(targets) != 1 or targets[0].name != admission["model"]:
+  if len(targets) != 1 or not _native_model_matches(targets[0], admission["model"]):
     _fail("native text model differs from the exact requested model")
   instructions = config.system_instructions
   expected = admission["content"]
@@ -169,7 +198,26 @@ def _add_receipt(result, receipt):
   return result
 
 
+def configure_owned_helper_path():
+  """Point the SDK at the helper beside this process image.
+
+  The server's own discovery searches beside sys.argv[0] and sys.executable,
+  which does not find the helper in the Linux build; the SDK then refuses to
+  create any session. Managed sessions still verify the helper's digest in
+  prepare_native_config before it is launched.
+  """
+  if os.environ.get("ANTIGRAVITY_HARNESS_PATH"):
+    return
+  try:
+    helper = os.path.join(os.path.dirname(_owned_executable_path()), "localharness_external")
+  except exceptions.RequestError:
+    return
+  if os.path.isfile(helper):
+    os.environ["ANTIGRAVITY_HARNESS_PATH"] = helper
+
+
 def install(adapter_type):
+  configure_owned_helper_path()
   if adapter_type.__dict__.get("_paperclip_admission_installed", False):
     return
   original_initialize = adapter_type.initialize
