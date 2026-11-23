@@ -1,0 +1,112 @@
+import { Fragment, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { CircleAlert } from "lucide-react";
+import { ISSUE_PRIORITIES, type AttentionHeldUpTask, type AttentionItem, type IssueRelationIssueSummary } from "@paperclipai/shared";
+import { issuesApi } from "@/api/issues";
+import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { unblockHeldUp } from "@/lib/coordinator-attention";
+import { queryKeys } from "@/lib/queryKeys";
+
+type BlockerDetail = Extract<NonNullable<AttentionItem["detail"]>, { kind: "blocker" }>;
+
+/** "A", "A and B", "A, B and C": the shape of a short list in a sentence. */
+function inSentence(parts: ReactNode[]): ReactNode {
+  return parts.map((part, index) => (
+    <Fragment key={index}>
+      {index === 0 ? null : index === parts.length - 1 ? " and " : ", "}
+      {part}
+    </Fragment>
+  ));
+}
+
+const isOpen = (status: string | null | undefined) => status !== "done" && status !== "cancelled";
+
+const priorityRank = (priority: string | null | undefined) => {
+  const index = (ISSUE_PRIORITIES as readonly string[]).indexOf(priority ?? "");
+  return index === -1 ? ISSUE_PRIORITIES.length : index;
+};
+const identifierNumber = (identifier: string | null) => Number(identifier?.match(/(\d+)$/)?.[1] ?? Number.MAX_SAFE_INTEGER);
+
+/** The card's order: highest priority first, then the oldest (lowest-numbered) task. */
+export function sortHeldUpTasks(tasks: readonly IssueRelationIssueSummary[]) {
+  return [...tasks].sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority)
+    || identifierNumber(left.identifier) - identifierNumber(right.identifier));
+}
+
+/**
+ * Every open task the blocked task holds up, loaded when the list opens. The
+ * card names only the first few; the same list lives in the task's
+ * Properties under Blocking.
+ */
+function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: string; issueLabel: string; moreCount: number; behindCount: number }) {
+  const [open, setOpen] = useState(false);
+  const issue = useQuery({ queryKey: queryKeys.issues.detail(issueId), queryFn: () => issuesApi.get(issueId), enabled: open });
+  const blocks = sortHeldUpTasks((issue.data?.blocks ?? []).filter((entry) => isOpen(entry.status)));
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-unblock-held-up-more
+          className="text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {moreCount} more
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-0">
+        <p className="border-b border-border px-3 py-2 text-sm font-medium">{issueLabel} holds up {blocks.length || moreCount} tasks</p>
+        <div className="max-h-64 overflow-y-auto py-1">
+          {issue.isLoading ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p> : null}
+          {issue.isError ? <p className="px-3 py-2 text-xs text-destructive">Couldn't load the list. Open {issueLabel} to see it.</p> : null}
+          {blocks.map((entry) => (
+            <div key={entry.id} className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm">
+              <IssueReferencePill issue={entry} />
+              <span className="min-w-0 truncate">{entry.title}</span>
+            </div>
+          ))}
+        </div>
+        {behindCount > 0 ? (
+          <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+            {behindCount} more {behindCount === 1 ? "task is" : "tasks are"} waiting behind these (tasks they block, and their subtasks).
+          </p>
+        ) : null}
+        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">The same list is in {issueLabel} → Properties → Blocking.</p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * The ask on a human unblock card: what the assignee needs from a person, in a
+ * destructive-tinted notice (DESIGN.md's notice recipe), with who asked, in
+ * which task, and what the task holds up in a strip attached below it.
+ */
+export function UnblockAskNotice({ item, detail, askedBy }: { item: AttentionItem; detail: BlockerDetail; askedBy: string | null }) {
+  const task = {
+    id: item.subject.id,
+    identifier: item.subject.identifier ?? null,
+    title: item.subject.title ?? item.subject.identifier ?? "Task",
+    status: item.subject.status ?? undefined,
+  };
+  const taskLabel = task.identifier ?? "this task";
+  const { named, moreCount, behindCount } = unblockHeldUp(detail);
+  const heldUp: ReactNode[] = named.map((entry: AttentionHeldUpTask) => <IssueReferencePill key={entry.id} issue={entry} />);
+  if (moreCount > 0) {
+    heldUp.push(<HeldUpMore key="more" issueId={task.id} issueLabel={taskLabel} moreCount={moreCount} behindCount={behindCount} />);
+  }
+  return (
+    <div className="overflow-hidden rounded-md border border-destructive/20">
+      <div className="flex gap-2.5 bg-destructive/10 px-3.5 py-3 text-sm text-foreground">
+        <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+        <p data-unblock-ask><span className="font-semibold">Needed from you:</span> {detail.unblockAction}</p>
+      </div>
+      <p data-unblock-ask-context className="border-t border-destructive/15 bg-background py-2 pl-10 pr-3.5 text-xs leading-6 text-muted-foreground">
+        {askedBy ? `Asked by ${askedBy} in ` : "Asked in "}
+        <IssueReferencePill issue={task} />
+        {heldUp.length > 0 ? <> · holds up {inSentence(heldUp)}</> : null}
+        {heldUp.length > 0 && behindCount > 0 ? ` · ${behindCount} more waiting behind ${(detail.heldUpDirectCount ?? 0) === 1 ? "it" : "those"}` : null}
+      </p>
+    </div>
+  );
+}

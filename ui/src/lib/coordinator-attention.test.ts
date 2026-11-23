@@ -8,6 +8,7 @@ import {
   coordinatorAssigneeTarget,
   coordinatorCardDetail,
   coordinatorCardTitle,
+  unblockHeldUp,
   decisionHistoryContext,
   decisionHistoryHeadline,
   pendingDecisionTaskIds,
@@ -84,9 +85,38 @@ describe("Decision history presentation (PAP-749 task 2e)", () => {
     expect(coordinatorCardTitle({ ...base, inlineResolvable: false } as AttentionItem)).toBe("Lingering on a done task");
   });
 
+  it("leaves the detail line to the ask notice on a human unblock card", () => {
+    const ask = {
+      id: "o", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Merge the prep branch",
+      subject: { id: "t", kind: "issue", title: "Second stage", metadata: {} }, relatedIssue: null,
+      detail: { kind: "blocker", blockingIssue: null, unblockAction: "Merge the prep branch", heldUpTasks: [], heldUpDirectCount: 0, heldUpTotalCount: 0, images: [] },
+    } as unknown as AttentionItem;
+    expect(coordinatorCardDetail(ask, "Blocked by PAP-1 Prep")).toBeNull();
+  });
+
+  it("names up to three held-up tasks, then two and a count, and counts what waits behind them", () => {
+    const task = (n: number) => ({ id: `t${n}`, identifier: `PAP-${n}`, title: `Task ${n}`, status: "blocked" });
+    const detail = (direct: number, total: number) => ({
+      kind: "blocker", blockingIssue: null, unblockAction: "Do it", images: [],
+      heldUpTasks: [1, 2, 3].slice(0, Math.min(direct, 3)).map(task), heldUpDirectCount: direct, heldUpTotalCount: total,
+    }) as const;
+    const ids = (summary: ReturnType<typeof unblockHeldUp>) => summary.named.map((entry) => entry.identifier);
+    expect(unblockHeldUp(detail(0, 0))).toEqual({ named: [], moreCount: 0, behindCount: 0 });
+    expect(ids(unblockHeldUp(detail(1, 1)))).toEqual(["PAP-1"]);
+    expect(ids(unblockHeldUp(detail(3, 3)))).toEqual(["PAP-1", "PAP-2", "PAP-3"]);
+    expect(unblockHeldUp(detail(3, 3)).moreCount).toBe(0);
+    for (const [direct, more] of [[4, 2], [5, 3], [10, 8], [50, 48], [100, 98]] as const) {
+      const summary = unblockHeldUp(detail(direct, direct));
+      expect(ids(summary)).toEqual(["PAP-1", "PAP-2"]);
+      expect(summary.moreCount).toBe(more);
+      expect(summary.behindCount).toBe(0);
+    }
+    expect(unblockHeldUp(detail(10, 48)).behindCount).toBe(38);
+  });
+
   it("gives a card titled with its bare task or agent name an ask, and explains a stuck task (PAP-770)", () => {
     const blocker = {
-      id: "b", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Blocks 0 tasks and needs human attention.",
+      id: "b", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Needs human attention.",
       subject: { id: "t", kind: "issue", title: "Today's weather forecast", metadata: {} }, relatedIssue: null,
       detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 0, images: [] },
     } as unknown as AttentionItem;

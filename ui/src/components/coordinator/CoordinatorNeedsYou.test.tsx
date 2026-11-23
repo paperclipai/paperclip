@@ -946,3 +946,71 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     client.clear();
   });
 });
+
+describe("Coordinator Needs You — human unblock card", () => {
+  const forMe = { kind: "user", userId: "reviewer", reason: "instigator" };
+  const heldUpTask = (n: number) => ({ id: `task-${n}`, identifier: `PAP-${n}`, title: `Follow-up ${n}`, status: "blocked" });
+  function unblockCard(detail: Record<string, unknown>) {
+    const now = new Date().toISOString();
+    const owner = { id: "owner", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Merge the prep branch, or say to build on it",
+      subject: { id: "task-3", kind: "issue", identifier: "PAP-3", title: "Second stage", href: "/PAP/issues/PAP-3", status: "blocked", metadata: { assigneeAgentId: "agent-eng" } },
+      relatedIssue: null, closeModes: ["archive", "snooze"], obligationKey: "blocked:task-3", obligationLeadId: "owner", activityAt: now, audience: forMe,
+      detail: { kind: "blocker", blockingIssue: null, unblockAction: "Merge the prep branch, or say to build on it", heldUpTasks: [], heldUpDirectCount: 0, heldUpTotalCount: 0, images: [], ...detail },
+    } as unknown as AttentionItem;
+    // The stalled-chain card for the same task folds in as evidence today.
+    const stall = { id: "stall", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Blocks 2 tasks and needs human attention.",
+      subject: { id: "task-3", kind: "issue", identifier: "PAP-3", title: "Second stage", href: "/PAP/issues/PAP-3", metadata: {} },
+      relatedIssue: null, closeModes: ["archive", "snooze"], obligationKey: "blocked:task-3", obligationLeadId: "owner", activityAt: now, audience: forMe,
+      detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 2, images: [] },
+    } as unknown as AttentionItem;
+    return [owner, stall];
+  }
+  /** What a sighted reader sees: the text without screen-reader labels or icon tooltips. */
+  const visibleText = (element: Element | null) => {
+    if (!element) return null;
+    const copy = element.cloneNode(true) as Element;
+    copy.querySelectorAll(".sr-only, svg title").forEach((entry) => entry.remove());
+    return copy.textContent;
+  };
+  async function renderCard(detail: Record<string, unknown>) {
+    agentFixture.rows = [{ id: "agent-eng", name: "Engineer" }] as Agent[];
+    fixture.byView = { mine: unblockCard(detail) };
+    fixture.viewCounts = { mine: 1, unassigned: 0, company: 0 };
+    await renderPage();
+    const card = container.querySelector<HTMLElement>('[data-attention-card="owner"]');
+    expect(card, "unblock card").toBeTruthy();
+    return card!;
+  }
+
+  it("leads with what is needed, says who asked where, names what it holds up, and replies in the task", async () => {
+    const card = await renderCard({ heldUpTasks: [heldUpTask(4), heldUpTask(8)], heldUpDirectCount: 2, heldUpTotalCount: 2 });
+    expect(card.querySelector("[data-unblock-ask]")?.textContent).toBe("Needed from you: Merge the prep branch, or say to build on it");
+    const context = card.querySelector<HTMLElement>("[data-unblock-ask-context]")!;
+    expect(visibleText(context)).toBe("Asked by Engineer in PAP-3 · holds up PAP-4 and PAP-8");
+    // The app's task chip: status icon and ID, the title on hover, a link to the task.
+    expect([...context.querySelectorAll("a")].map((link) => [visibleText(link), link.getAttribute("href"), link.getAttribute("title")])).toEqual([
+      ["PAP-3", "/issues/PAP-3", "Second stage"],
+      ["PAP-4", "/issues/PAP-4", "Follow-up 4"],
+      ["PAP-8", "/issues/PAP-8", "Follow-up 8"],
+    ]);
+    // The stalled-chain card only repeated this task, so it no longer adds a line.
+    expect(card.querySelector("[data-attention-evidence]")).toBeNull();
+    expect(card.textContent).not.toContain("Blocked by");
+    expect(card.textContent).not.toContain("Open blocking task");
+    expect([...card.querySelectorAll("[data-decision-footer] button, [data-decision-footer] a")].map((entry) => entry.textContent)).toContain("Reply in PAP-3");
+  });
+
+  it("names two held-up tasks and a count when there are more, and counts the work waiting behind them", async () => {
+    const card = await renderCard({ heldUpTasks: [heldUpTask(4), heldUpTask(8), heldUpTask(9)], heldUpDirectCount: 10, heldUpTotalCount: 48 });
+    expect(visibleText(card.querySelector("[data-unblock-ask-context]")))
+      .toBe("Asked by Engineer in PAP-3 · holds up PAP-4, PAP-8 and 8 more · 38 more waiting behind those");
+    expect(card.querySelector("[data-unblock-held-up-more]")?.textContent).toBe("8 more");
+  });
+
+  it("keeps an open blocker as the thing to open", async () => {
+    const card = await renderCard({ blockingIssue: { id: "task-2", identifier: "PAP-2", title: "Prep", status: "in_progress" } });
+    expect(card.querySelector("[data-unblock-waiting-on]")?.textContent).toContain("Waiting on");
+    expect(card.querySelector("[data-unblock-waiting-on] a")?.getAttribute("href")).toBe("/issues/PAP-2");
+    expect([...card.querySelectorAll("[data-decision-footer] button, [data-decision-footer] a")].map((entry) => entry.textContent)).toContain("Open blocking task");
+  });
+});

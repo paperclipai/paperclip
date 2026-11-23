@@ -19,7 +19,7 @@ import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DEC
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
-import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
+import { attentionEvidenceToShow, attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
@@ -323,7 +323,7 @@ export function CoordinatorNeedsYou() {
     const detail = coordinatorCardDetail(item, attentionDetailLine(item));
     // The ask, with one plain line under it (UI1).
     const heading = <div className={cn("space-y-1.5", ANALYTICS_MASK_CLASS)}><h2>{title}</h2>{detail && !sameText(detail, title) ? <p className="text-sm text-muted-foreground">{detail}</p> : null}</div>;
-    const footerContext = <AttentionObligationEvidence item={item} evidence={attentionObligationEvidence(obligations, item)} />;
+    const footerContext = <AttentionObligationEvidence item={item} evidence={attentionEvidenceToShow(item, attentionObligationEvidence(obligations, item))} />;
     const type = attentionCardType(item);
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
