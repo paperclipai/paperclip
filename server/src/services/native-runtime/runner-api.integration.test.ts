@@ -244,6 +244,25 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       .toMatchObject({ status: "blocked", billingCode: "REST-PARITY" });
   });
 
+  it("returns a task update without the repeated text and keeps it in the receipt", async () => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true });
+    const description = "d".repeat(2000);
+    const comment = "c".repeat(2000);
+    await server.db.update(issues).set({ description }).where(eq(issues.id, fixture.blockerId));
+    const call = { tool: "call_api", callId: "update-echo", arguments: {
+      operationId: "PATCH /api/issues/{id}", pathParams: { id: fixture.blockerId }, body: { title: "Renamed", comment },
+    } };
+    const result = await fixture.authority.execute(call) as { data: Record<string, unknown> };
+    expect(result).toMatchObject({ ok: true, data: { title: "Renamed" }, omitted: { fields: ["description", "comment.body"] } });
+    expect(JSON.stringify(result)).not.toContain(description);
+    expect(JSON.stringify(result)).not.toContain(comment);
+    expect(await new PaperclipRunnerToolAuthority(server.db, fixture).execute(call)).toEqual(result);
+    const receipts = await server.db.select({ result: heartbeatRuns.resultJson }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, fixture.companyId));
+    expect(JSON.stringify(receipts)).toContain(description);
+    expect(JSON.stringify(receipts)).toContain(comment);
+  });
+
   it.each(["company owner", "unrelated parent", "no fallback"])(
     "keeps the authenticated native run responsible user over %s", async fallback => {
       const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
