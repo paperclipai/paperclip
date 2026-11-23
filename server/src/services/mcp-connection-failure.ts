@@ -35,8 +35,10 @@ export function mcpDiscoveryHttpFailure(response: Response, message: string): Ht
 /** Only an actual MCP response can attach this evidence to a protocol wrapper. */
 export function markMcpHttpResponseFailure<T extends Error>(response: Response, error: T): T {
   const status = response.status;
+  // MCP Streamable HTTP always accepts POST, so a 405 means the saved URL is
+  // not an MCP endpoint (for example a web page or a legacy SSE-only path).
   const reason: Reason | null = status === 401 || status === 403 ? "authentication_failed"
-    : status === 404 ? "endpoint_not_found"
+    : status === 404 || status === 405 ? "endpoint_not_found"
       : status === 429 ? "rate_limited"
         : status >= 500 && status <= 599 ? "remote_unavailable" : null;
   if (reason) remember(error, reason);

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentWakeupRequests, chatConversations, chatDeliveries, chatMessageLinks, createDb, heartbeatRuns,
-  issueComments, issues, type Db } from "@paperclipai/db";
+  issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { seedBoundChatAuthorization } from "../../../__tests__/helpers/bound-chat-authorization.js";
 import { authorizeChatConversationForBoundRun } from "../../../services/native-runtime/chat-attachment-reuse.js";
@@ -11,7 +11,7 @@ import { saveUndeliveredUserComments } from "../../../services/work-intent-outbo
 import { queuedCommentIdsFromWakePayload } from "../../../services/issue-queued-comment-queue.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "../application/use-cases.js";
 import type { WakeAdmissionActiveExecutionRun } from "../application/ports.js";
-import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionReader,
+import { createPostgresWakeQueueAdapter, createWakeAdmissionReader,
   createWakeAdmissionWriter } from "./postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -30,17 +30,6 @@ describe.skipIf(!support.supported)("chat wake batches stay within one conversat
   let f: Awaited<ReturnType<typeof seedBoundChatAuthorization>>;
   let otherConversationId: string;
   let deferOnly = true;
-
-  const admit = createAdmitWakeBehindIssueExecution({
-    reader: createWakeAdmissionReader(),
-    writer: createWakeAdmissionWriter(),
-    helpers: {
-      filterZombieCoalesceTarget: (target) => target,
-      mergeCoalescedContextSnapshot,
-      shouldDeferFollowupWakeForSameIssue: () => deferOnly,
-      shouldQueueFollowupForRunningIssueWake: () => false,
-    },
-  });
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("wake-chat-conversation-batch-");
@@ -102,7 +91,16 @@ describe.skipIf(!support.supported)("chat wake batches stay within one conversat
   async function admitWake(contextSnapshot: Record<string, unknown>, activeExecutionRun?: WakeAdmissionActiveExecutionRun) {
     const commentId = contextSnapshot.wakeCommentId as string;
     const chat = contextSnapshot.source === "chat:slack";
-    return db.transaction(async (tx) => admit(createAdmissionTransactionScope(f.companyId, tx as unknown as Db), {
+    return db.transaction((tx) => createAdmitWakeBehindIssueExecution({
+      reader: createWakeAdmissionReader(tx, f.companyId),
+      writer: createWakeAdmissionWriter(tx, f.companyId),
+      helpers: {
+        filterZombieCoalesceTarget: (target) => target,
+        mergeCoalescedContextSnapshot,
+        shouldDeferFollowupWakeForSameIssue: () => deferOnly,
+        shouldQueueFollowupForRunningIssueWake: () => false,
+      },
+    })({
       companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, agentNameKey: "chat runner",
       issueExecutionAgentNameKey: null,
       activeExecutionRun: activeExecutionRun ?? { id: f.runId, agentId: f.agentId, status: "running",

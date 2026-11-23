@@ -476,7 +476,7 @@ export {
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
 
-export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export { PluginEnvironmentAcquisitionError, PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
 export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
 export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
@@ -498,8 +498,8 @@ export type { PluginEnvironmentTaskErrorDiagnostic } from "./environment-task-er
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 
-export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentTaskConfiguredEnvironmentSchema, MAX_CONFIGURED_ENVIRONMENT_KEYS, MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES, MAX_CONFIGURED_ENVIRONMENT_BYTES, parseEnvironmentTaskResult } from "./environment-tasks.js";
-export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskConfiguredEnvironment, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentTaskConfiguredEnvironmentSchema, MAX_CONFIGURED_ENVIRONMENT_KEYS, MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES, MAX_CONFIGURED_ENVIRONMENT_BYTES, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskCredentialProvider, PluginEnvironmentTaskConfiguredEnvironment, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 
 export type { PluginEnvironmentRunnerLaunchRequirements, PluginEnvironmentPreparedLaunch } from "./environment-tasks.js";

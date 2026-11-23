@@ -14,7 +14,7 @@ import {
   pluginAppSlug,
   reviewedToolRisk,
 } from "./plugin-apps.js";
-import type { AppDefinition } from "./types/app-definition.js";
+import { PLUGIN_CONNECTOR_TOOL_TIMEOUT_MAX_MS, PLUGIN_CONNECTOR_TOOL_TIMEOUT_MIN_MS, type AppDefinition } from "./types/app-definition.js";
 import { appDefinitionSchema } from "./validators/app-definition.js";
 import { pluginManifestV1Schema } from "./validators/plugin.js";
 
@@ -131,6 +131,37 @@ describe("plugin connector settings schemas", () => {
     { type: "object", properties: { token: { type: "string", format: "secret-ref" } } },
   ])("rejects settings the board cannot render: %j", (settingsSchema) => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apps: [app(settingsSchema)] }).success).toBe(false);
+  });
+});
+
+describe("plugin connector tool timeouts", () => {
+  const pluginMethod = (extra: { timeoutMs?: unknown; toolTimeoutMs?: unknown }) => ({
+    key: "default", transport: "plugin", auth: "none", ownershipModes: ["customer"], whenToUse: "Use", guidanceMd: "Use", riskTier: "S1",
+    ...(extra.timeoutMs !== undefined ? { timeoutMs: extra.timeoutMs } : {}),
+    tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" },
+      ...(extra.toolTimeoutMs !== undefined ? { timeoutMs: extra.toolTimeoutMs } : {}) }] },
+  });
+  const parse = (methodDef: Record<string, unknown>) =>
+    pluginManifestV1Schema.safeParse({ ...manifest, apps: [{ ...structuredClone(circleback), methods: [methodDef] }] }).success;
+
+  it("accepts method and tool timeouts from 1 s to the 60 s gateway ceiling", () => {
+    expect(parse(pluginMethod({ timeoutMs: 30_000, toolTimeoutMs: 45_000 }))).toBe(true);
+    expect(parse(pluginMethod({ timeoutMs: PLUGIN_CONNECTOR_TOOL_TIMEOUT_MIN_MS, toolTimeoutMs: PLUGIN_CONNECTOR_TOOL_TIMEOUT_MAX_MS }))).toBe(true);
+  });
+
+  it.each([
+    { timeoutMs: PLUGIN_CONNECTOR_TOOL_TIMEOUT_MAX_MS + 1 },
+    { timeoutMs: 999 },
+    { timeoutMs: 1_500.5 },
+    { timeoutMs: "30000" },
+    { toolTimeoutMs: 120_000 },
+    { toolTimeoutMs: 0 },
+  ])("rejects a timeout outside the gateway's range: %j", (extra) => {
+    expect(parse(pluginMethod(extra))).toBe(false);
+  });
+
+  it("rejects timeoutMs on methods the plugin worker does not serve", () => {
+    expect(parse({ ...structuredClone(circleback.methods[0]!), timeoutMs: 30_000 })).toBe(false);
   });
 });
 

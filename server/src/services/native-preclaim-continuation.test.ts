@@ -136,6 +136,36 @@ describe("native run that failed before its first coordinator claim", () => {
     expect(await successorsOf(f.runId)).toHaveLength(0);
   }, 60_000);
 
+  // Staging 2026-11-20: a user's exact chat Retry failed before its first
+  // claim. Its authority is bound to its own chat action and Retry intent, so
+  // a system successor carrying the copied selector is always refused at
+  // setup. The saved hold keeps the task for the user's next Retry or message.
+  it("does not continue a chat Retry automatically under its consumed exact-request authority", async () => {
+    const f = await preClaimNativeFailure();
+    const current = await run(f.runId);
+    // The failed run the user retried. It precedes the Retry, so it does not
+    // supersede it.
+    const [failedSource] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "failed", contextSnapshot: { issueId: f.issueId }, createdAt: new Date(current.createdAt.getTime() - 60_000) })
+      .returning();
+    const retryOfRunId = failedSource!.id;
+    await db.update(heartbeatRuns).set({
+      errorCode: "chat_failed_run_retry_not_authorized", retryOfRunId,
+      contextSnapshot: { ...current.contextSnapshot, retryOfRunId, forceFreshSession: true, taskRetryRequestId: randomUUID(),
+        chatFailedRunRetry: { version: 1, actionId: current.wakeupRequestId ?? randomUUID(), failedRunId: retryOfRunId } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await recoverRetainedWorkspace(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)).toMatchObject({ status: "recovered" });
+
+    await sweep();
+
+    expect(await successorsOf(f.runId)).toHaveLength(0);
+    const hold = await action(f.actionId);
+    expect(hold).toMatchObject({ outcome: "blocked", evidence: { automaticRecovery: { replay: "blocked" } } });
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task.status).toBe("blocked");
+  }, 60_000);
+
   it.each(["claimed", "provider_event", "tool_call", "uncertain_side_effect", "process", "superseded"] as const)(
     "keeps reconciliation when the run may have acted: %s", async gate => {
       const f = await preClaimNativeFailure();

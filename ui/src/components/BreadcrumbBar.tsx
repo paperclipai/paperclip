@@ -61,7 +61,11 @@ function GlobalToolbar({
   );
 }
 
-export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
+export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout, toolbarAction }: {
+  taskDetailLayout?: boolean;
+  showPropertiesToggle?: boolean;
+  toolbarAction?: ReactNode;
+}) {
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
@@ -98,7 +102,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
   const globalToolbarSlots = (
     <GlobalToolbar
       context={globalToolbarSlotContext}
-      pageToolbar={isMobile ? null : breadcrumbToolbar}
+      pageToolbar={isMobile ? null : <>{breadcrumbToolbar}{toolbarAction}</>}
     />
   );
 

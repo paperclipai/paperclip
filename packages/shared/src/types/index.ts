@@ -527,6 +527,7 @@ export type {
   ConnectToolAppResult,
   MachineSignInPublicKey,
   MachineSignInStatus,
+  AwsConnectionSetup,
   MachineSignInSetupResult,
   ToolAppMetadataPreflightAttempt,
   ToolAppMetadataPreflightResult,
@@ -653,6 +654,7 @@ export type {
   ToolProfileSummary,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileListItem,
   ToolProfileConfiguration,
   ToolRateLimitCounter,
   ToolRateLimitRule,
@@ -728,6 +730,7 @@ export type {
 } from "./external-object.js";
 export type {
   CompactIssue,
+  IssueInboxArchiveFilter,
   IssueSummary,
   Issue,
   IssueChangeReceiptEntry,

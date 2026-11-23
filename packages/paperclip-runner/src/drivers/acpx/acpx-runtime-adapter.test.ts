@@ -1118,9 +1118,48 @@ describe("Codex ACPX runtime adapter", () => {
       expect(spawnedAgentEnvironment(runtimeOptions, options.command)).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
+        ...(binding === "absent" ? {} : { PAPERCLIP_ACPX_MCP_BEARER_0: "bridge-secret" }),
       });
     },
   );
+
+  it("keeps Claude MCP bearer tokens out of the CLI argv and in the launch environment", async () => {
+    const options = openOptions(fakeCommand());
+    options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    options.mcpServers = [
+      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: { HOME: "/runtime/home" }, runnerOwned: false },
+      { name: "paperclip", url: "http://127.0.0.1:3210/mcp", bearerToken: "bridge-secret", runnerOwned: true },
+      { name: "connector", url: "https://connector.invalid/mcp", bearerToken: "connector-secret", runnerOwned: false },
+    ];
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    await openQualifiedAcpxRuntime(options, {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (created) => {
+        runtimeOptions = created;
+        return fakeRuntime();
+      },
+    });
+    const projected = JSON.stringify(runtimeOptions?.mcpServers);
+    expect(projected).not.toContain("bridge-secret");
+    expect(projected).not.toContain("connector-secret");
+    expect(runtimeOptions?.mcpServers).toEqual([
+      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: [{ name: "HOME", value: "/runtime/home" }] },
+      {
+        type: "http", name: "paperclip", url: "http://127.0.0.1:3210/mcp",
+        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_1}" }],
+      },
+      {
+        type: "http", name: "connector", url: "https://connector.invalid/mcp",
+        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_2}" }],
+      },
+    ]);
+    expect(spawnedAgentEnvironment(runtimeOptions, options.command)).toMatchObject({
+      PAPERCLIP_ACPX_MCP_BEARER_1: "bridge-secret",
+      PAPERCLIP_ACPX_MCP_BEARER_2: "connector-secret",
+    });
+    expect(spawnedAgentEnvironment(runtimeOptions, options.command)).not.toHaveProperty("PAPERCLIP_ACPX_MCP_BEARER_0");
+  });
 
   it("launches only through the verified command lease", async () => {
     const runtime = fakeRuntime();

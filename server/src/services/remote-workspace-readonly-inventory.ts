@@ -24,7 +24,7 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
     if (!before.isDirectory() || before.isSymbolicLink() || await fs.realpath(directory) !== directory) fail();
     const names: string[] = [];
     for await (const entry of await fs.opendir(directory)) {
-      check(); if (++scannedEntries > 100_000) budget(); names.push(entry.name);
+      check(); if (++scannedEntries > 2_000_000) budget(); names.push(entry.name);
     }
     const inGit = relative.split("/").includes(".git");
     const repository = !inGit && names.includes(".git") ? directory : parentRepository;
@@ -132,5 +132,6 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
 
 export function readonlyWorkspaceInventoryScript() {
   const source = readWorkspaceInventory.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
-  return `const __name=value=>value;const inspect=${source};inspect(process.argv[1]).then(value=>process.stdout.write(JSON.stringify(value))).catch(()=>{process.stderr.write('remote_workspace_readonly_capture_unsafe');process.exitCode=1});`;
+  // A refusal names only its fixed token or an errno-style code; never error text or paths.
+  return `const __name=value=>value;const inspect=${source};inspect(process.argv[1]).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const code=typeof error?.code==='string'&&/^E[A-Z0-9]{2,15}$/.test(error.code)?error.code.toLowerCase():null;process.stderr.write(error?.message==='remote_workspace_readonly_capture_budget'?error.message:code?'remote_workspace_readonly_capture_fs_'+code:'remote_workspace_readonly_capture_unsafe');process.exitCode=1});`;
 }

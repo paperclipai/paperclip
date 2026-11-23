@@ -1113,6 +1113,10 @@ pub struct DurableStateStore {
 }
 
 impl DurableStateStore {
+    pub fn exists(&self) -> bool {
+        fs::symlink_metadata(&self.path).is_ok()
+    }
+
     pub fn new(state_dir: &Path) -> Result<Self, DurableRunnerError> {
         if let Ok(metadata) = fs::symlink_metadata(state_dir) {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {

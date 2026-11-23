@@ -1,5 +1,6 @@
 import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { readTransientLeaseAcquisitionFailure } from "../services/environment-provider-unavailable-error.js";
 import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -1496,6 +1497,37 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .toEqual([expect.objectContaining({ state: "pending", originalEnvironmentId: seeded.environment.id, runId: seeded.runId })]);
   });
 
+  it.each(["worker", "forged error", "invalid worker diagnostic"])("records the step of a sandbox the provider could not start and removed: %s", async (mode) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const data = { schema: "paperclip/environment-acquire-error/v1",
+      acquisitionDiagnostic: { phase: mode === "invalid worker diagnostic" ? "private-command" : "create",
+        elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } };
+    const failure = mode === "forged error"
+      ? Object.assign(new Error("Daytona could not start the sandbox; it was removed."), { data })
+      : new JsonRpcCallError({ code: -32002, message: "Daytona could not start the sandbox; it was removed.", data });
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method === "environmentAcquireLease") throw failure;
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const caught = await environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, issueId: null, heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: null }).catch(error => error);
+    expect(caught).toBe(failure);
+    const run = { id: seeded.runId, companyId: seeded.companyId };
+    const execution = collectRunFailureDiagnostics({ ...run, errorCode: "setup_failed", resultJson: null,
+    } as typeof heartbeatRuns.$inferSelect, { error: caught, phase: "setup" }).execution;
+    if (mode === "worker") {
+      expect(execution).toMatchObject({ environmentAcquisitionPhase: "create", environmentAcquisitionProviderState: "error" });
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toEqual({ reason: "provider_start_failed" });
+    } else {
+      expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toBeNull();
+    }
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"))).toHaveLength(0);
+  });
+
   it.each(["deleted receipt lost", "observation response lost", "journal write failed", "foreign observation"])(
     "journals observed creation identity before deletion and recovers: %s", async (fault) => {
       const seeded = await seedReusablePluginSandboxLease();
@@ -2377,6 +2409,58 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(
       runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: builtinLease }),
     ).resolves.toBe(true);
+  });
+
+  it("probes the plugin that recorded a failed creation when two plugins share its provider key", async () => {
+    // An interactive setup can create its sandbox through the second of two
+    // plugins with the same provider key, while the first is disabled. The
+    // cleanup must follow the recorded plugin, not the first one with the key.
+    const disabledPluginId = randomUUID();
+    const creatorPluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Shared Provider Key Cleanup",
+      config: { provider: "fake-plugin-shared", image: "fake:test", reuseLease: false },
+    });
+    const sharedDriver = [{ driverKey: "fake-plugin-shared", kind: "sandbox_provider", displayName: "Fake Shared", configSchema: { type: "object" } }];
+    await insertSandboxProviderPlugin(disabledPluginId, {
+      pluginKey: "paperclip.fake-shared-disabled", packageName: "@paperclipai/plugin-fake-shared-disabled",
+      environmentDrivers: sharedDriver, status: "disabled", installOrder: 1,
+    });
+    await insertSandboxProviderPlugin(creatorPluginId, {
+      pluginKey: "paperclip.fake-shared-creator", packageName: "@paperclipai/plugin-fake-shared-creator",
+      environmentDrivers: sharedDriver, status: "ready", installOrder: 2,
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === creatorPluginId),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const insertOrphan = async (providerLeaseId: string, metadata: Record<string, unknown>) => {
+      const orphan = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, executionWorkspaceId: null, issueId: null, heartbeatRunId: runId,
+        provider: "fake-plugin-shared", providerLeaseId,
+        metadata: { provider: "fake-plugin-shared", driver: "sandbox", reuseLease: false, ...metadata },
+        failureReason: "interrupted_setup_creation",
+      });
+      return (await environmentService(db).getLeaseById(orphan.id))!;
+    };
+
+    const setupLease = await insertOrphan("paperclip-create-shared", {
+      pluginId: creatorPluginId,
+      failedCreateCleanup: {
+        providerLeaseId: "paperclip-create-shared", companyId, environmentId: environment.id,
+        attemptId: "attempt-shared", accountFingerprint: "account-shared", labels: {},
+      },
+    });
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(true);
+
+    // The pinned plugin's worker is down: a transient window, not ready.
+    (workerManager.isRunning as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(false);
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
   it("reports the plugin cleanup provider not ready while the plugin is not ready, then ready after it recovers", async () => {

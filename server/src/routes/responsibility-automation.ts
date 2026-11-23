@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -10,7 +11,8 @@ import {
   type AcceptedAutomationProposal,
   type ProposeAutomationInteraction,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { validate } from "../middleware/validate.js";
 import {
   authorizationDeniedDetails,
@@ -66,7 +68,7 @@ export function responsibilityAutomationRoutes(
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function assertCompanyRead(req: Request, companyId: string) {
@@ -145,12 +147,7 @@ export function responsibilityAutomationRoutes(
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = automationQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
-    if (!ownerUserId) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to read"
-        : "ownerUserId is required");
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     res.json(await automation.overview(companyId, ownerUserId, { scope: await readScope(req) }));
   });
 
@@ -159,7 +156,7 @@ export function responsibilityAutomationRoutes(
     const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     assertBoard(req);
-    res.json(await conversations.conversationFor(issue));
+    res.json(await conversations.conversationFor(issue, boardUserId(req)));
   });
 
   router.post("/issues/:id/automation-conversation", validate(startAutomationConversationSchema), async (req, res) => {
@@ -169,7 +166,7 @@ export function responsibilityAutomationRoutes(
     assertBoard(req);
     await assertBoardCanAssignTasks(req, source.companyId);
     const actor = getActorInfo(req);
-    const agentId = req.body.agentId ?? await conversations.defaultAgentId(source, req.body.responsibilityId);
+    const agentId = req.body.agentId ?? await conversations.defaultAgentId(source, boardUserId(req), req.body.responsibilityId);
     if (agentId) {
       // The same assignment permission the delegate route checks.
       const decision = await access.decide({
@@ -222,7 +219,7 @@ export function responsibilityAutomationRoutes(
         requestedByActorId: actor.actorId,
       });
     }
-    const body = await conversations.conversation(source);
+    const body = await conversations.conversation(source, boardUserId(req));
     if (created) {
       res.status(201).json(body);
       return;

@@ -154,6 +154,36 @@ describe("readTransientLeaseAcquisitionFailure", () => {
     expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000), run)).toEqual({ reason: "acquisition_incomplete" });
   });
 
+  it("retries a sandbox the provider could not start and already removed", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "Daytona could not start the sandbox; it was removed.",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId: run.id },
+      readEnvironmentAcquisitionDiagnostic(error));
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause: error }), run)).toEqual({ reason: "provider_start_failed" });
+    const unavailable = new EnvironmentProviderUnavailableError({ environmentName: "Daytona warm", driver: "sandbox",
+      evidence: { reason: "provider_start_failed" }, cause: error });
+    expect(unavailable.providerFailure).toMatchObject({ retryability: "transient", providerCode: "provider_start_failed" });
+    expect(unavailable.message).toContain("the provider could not start the sandbox");
+  });
+
+  it("names a later-step failure an unfinished acquisition, not a start failure", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "shell", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId: run.id },
+      readEnvironmentAcquisitionDiagnostic(error));
+    expect(readTransientLeaseAcquisitionFailure(error, run)).toEqual({ reason: "acquisition_incomplete" });
+  });
+
+  it("does not retry a removed sandbox whose step was never recorded for this run", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    expect(readTransientLeaseAcquisitionFailure(error, run)).toBeNull();
+  });
+
   it("ignores an unfinished-creation diagnostic recorded for another run", () => {
     expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000, "run-2"), run)).toBeNull();
   });

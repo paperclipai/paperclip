@@ -9,7 +9,8 @@ import {
   ListMultipartUploadsCommand,
   AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
-import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry } from "./s3-multipart.js";
+import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry,
+  sendThrottledRequestWithRetry, withBufferedUploadBody } from "./s3-multipart.js";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
@@ -271,17 +272,21 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         await putS3Multipart(client, bucket, key, input);
         return;
       }
-      const send = () => withS3FailureDiagnostics("put_object", () => client.send(
+      const send = (body: Buffer | Readable) => withS3FailureDiagnostics("put_object", () => client.send(
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
-          Body: input.body,
+          Body: body,
           ContentType: input.contentType,
           ContentLength: input.contentLength,
         }),
         { abortSignal: input.signal },
       ), input.signal);
-      await (Buffer.isBuffer(input.body) ? sendThroughStorageOutage(send, input.signal) : send());
+      const sendBytes = async (body: Buffer) => {
+        await sendThroughStorageOutage(() => sendThrottledRequestWithRetry(input.signal, () => send(body)), input.signal);
+      };
+      if (Buffer.isBuffer(input.body)) return sendBytes(input.body);
+      if (!(await withBufferedUploadBody(input.body, input.contentLength, input.signal, sendBytes))) await send(input.body);
     },
 
     async getObject(input): Promise<GetObjectResult> {

@@ -274,6 +274,7 @@ export async function workspaceArchive(input: {
         const stat = await handle.stat();
         if (!stat.isFile() || await fs.realpath(source) !== source) fail("changed");
         const digest = crypto.createHash("sha256"); let size = 0;
+        check();
         for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal, highWaterMark: 1024 * 1024 })) {
           check(); digest.update(bytes); size += bytes.length; await consume?.(bytes);
         }
