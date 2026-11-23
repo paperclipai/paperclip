@@ -13,6 +13,7 @@ import { aiConnectionService } from "../services/ai-connections.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
 import * as secretModule from "../services/secrets.js";
 import { secretService } from "../services/secrets.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn() }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -300,6 +301,26 @@ describe("Claude subscription idle renewal", () => {
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run));
     expect(await finished.service.credential(finished.row)).toBe("renewed");
     expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the renewal after a run ends tracked as active work until it is saved", async () => {
+    const { account, owner, state } = await connect(document(Date.now() + 3600_000));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      await gate;
+      return new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 }));
+    });
+    const other = await holdingRun(account.grantId);
+    const current = await holdingRun(account.grantId);
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: current });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    const idle = idleWorkSnapshot().active;
+    await run.cleanup();
+    expect(idleWorkSnapshot().active).toBe(idle + 1);
+    release();
+    await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(idle), { timeout: 10_000 });
   });
 
   it("renews a nearly expired token when its last run ends", async () => {

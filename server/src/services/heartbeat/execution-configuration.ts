@@ -227,7 +227,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   identityRedactor.addSecretValues(secretEnvironmentValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
-      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig, currentRunId: run.id }));
+      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig,
+        // An adopted live runner still uses the token this run started with, so
+        // the run stays counted as a holder and does not renew under itself.
+        currentRunId: input.task.adoptingLiveRunner ? undefined : run.id }));
       onManagedAiRuntimeAcquired(managedAiRuntime);
     } catch (error) {
       // Only fresh executions can receive a pre-provider wait receipt. A

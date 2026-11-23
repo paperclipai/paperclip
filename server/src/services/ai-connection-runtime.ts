@@ -30,6 +30,7 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { trackIdleWork } from "./task-admission.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -560,7 +561,9 @@ export async function prepareManagedAiRuntime(
           await removeHome();
           // This run no longer holds the token. If no other run does, renew a
           // token that is close to expiry now instead of under the next run.
-          if (claudeSubscription) void service.runtimeCredential(selection, { currentRunId: input.currentRunId }).catch(() => undefined);
+          // The exchange consumes a single-use refresh token, so it stays
+          // tracked as active work until its save settles.
+          if (claudeSubscription) void trackIdleWork(service.runtimeCredential(selection, { currentRunId: input.currentRunId })).catch(() => undefined);
         } catch (error) {
           if (!durableGoogleRefresh && !removalOnly) throw error;
           // Once native retirement and encrypted fsync transfer ownership, the

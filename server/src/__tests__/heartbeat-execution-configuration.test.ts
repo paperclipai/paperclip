@@ -371,6 +371,16 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }) };
   }
 
+  it.each([false, true])("names the run to the managed AI runtime only when no live runner holds its token (adopting=%s)", async adopting => {
+    const f = await seed(true);
+    const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error("fixture managed account reached"));
+    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", null, undefined, adopting, binding);
+    await opening.prepare().catch(() => undefined);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare.mock.calls[0]![1].currentRunId).toBe(adopting ? undefined : opening.run.id);
+  });
+
   it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {
     const f = await seed(true);
     const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace" } } as Environment;
