@@ -407,6 +407,15 @@ describe("online durable-data migration pass", () => {
       expect(migrateWorkspace.mock.calls[0]).not.toEqual([expect.objectContaining({ writersStopped: expect.anything() })]);
     });
 
+    it("counts a workspace moved without files as moved and names it separately", async () => {
+      const migrateWorkspace = vi.fn(async (input: { workspaceId: string }) => ({ alreadyMigrated: true, reasons: [],
+        ...(input.workspaceId === "w2" ? { filesUnavailable: true } : {}) }));
+      const fixture = owners({ localWorkspaces: async () => [workspace(1), workspace(2)], migrateWorkspace });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.counts).toMatchObject({ workspaces: 2, workspacesFilesUnavailable: 1 });
+      expect(Object.keys(result.deferred).filter(key => key.startsWith("workspaces:"))).toEqual([]);
+    });
+
     it("defers busy and unsupported workspaces with their owner reasons and does not force them", async () => {
       const reasons: Record<string, string[]> = { w1: ["active_execution"], w2: ["task_binding_required", "workspace_provider_unsupported"], w3: [] };
       const migrateWorkspace = vi.fn(async () => ({ alreadyMigrated: true, reasons: [] }));
