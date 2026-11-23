@@ -288,6 +288,10 @@ export function localAiLoginService(db: Db) {
       ));
       if (!session?.aiConnection || !sameTarget(session.aiConnection, intent))
         throw notFound("Local sign-in attempt not found for this connection.");
+      if (session.status === "authenticated" || session.connectionId)
+        return { status: "expired", error: "This sign-in already connected the account." };
+      if (session.status === "cancelled" || session.failureReason === RETIREMENT_PENDING)
+        return { status: "expired", error: "This sign-in attempt was cancelled or replaced by a newer one. Start sign-in again." };
       if (session.status !== "waiting_for_user" || !session.expiresAt || session.expiresAt.getTime() <= Date.now())
         return { status: "expired" };
       directory = loginHome(id);

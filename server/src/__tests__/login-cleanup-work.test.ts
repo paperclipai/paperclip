@@ -12,7 +12,7 @@ import { loginCleanupSchedule, orphanLoginLeases } from "../services/login-clean
 import { createDbAdapterAuthSessionStore, LOGIN_LEASE_SESSION_TAG_KEY } from "../services/device-login-service.js";
 import { createDeviceLoginReaper, createProductionLoginSessionReaperRuntime } from "../services/device-login-reaper.js";
 import { createDbSetupTokenCleanupStore, transitionSetupTokenSessionToStored } from "../services/setup-token-session.js";
-import { createSetupTokenReaper } from "../services/setup-token-reaper.js";
+import { createProductionSetupTokenReaper, createSetupTokenReaper } from "../services/setup-token-reaper.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -192,6 +192,31 @@ describe.skipIf(!support.supported)("durable login cleanup", () => {
     expect(driver.releaseRunLease).toHaveBeenCalledTimes(1); expect(c.nextWakeAt()).not.toBeNull();
     await vi.advanceTimersByTimeAsync(10_000); expect(driver.releaseRunLease).toHaveBeenCalledTimes(1);
     failedDelete = false; await quiet(c); expect(driver.releaseRunLease).toHaveBeenCalledTimes(2);
+  });
+  it("clears setup-token sessions a restart left in submitting, with and without a lease", async () => {
+    const expired = new Date(Date.now() - 1_000);
+    const orphan = async (providerLeaseId: string | null) => {
+      const sessionId = randomUUID();
+      await db.insert(adapterAuthSessions).values({ companyId, environmentId, adapterType: "claude_local", startedByUserId: randomUUID(),
+        publicSessionId: sessionId, status: "submitting", providerLeaseId, expiresAt: expired });
+      return sessionId;
+    };
+    const withoutLease = await orphan(null);
+    const leaseSession = randomUUID();
+    const leaseId = await lease(leaseSession);
+    const withLease = await orphan(leaseId);
+    const lines: string[] = [];
+    const reaper = createProductionSetupTokenReaper({ db: observed, environmentRuntime: { getDriver: () => driver } as any, log: line => lines.push(line) });
+
+    expect(await reaper.sweep()).toEqual({ released: 2, failed: 0 });
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0 });
+
+    const remaining = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.companyId, companyId));
+    expect(remaining.map(row => row.publicSessionId)).not.toEqual(expect.arrayContaining([withoutLease]));
+    expect(remaining.map(row => row.publicSessionId)).not.toEqual(expect.arrayContaining([withLease]));
+    expect(driver.releaseRunLease).toHaveBeenCalledTimes(1);
+    expect(driver.releaseRunLease.mock.calls[0]![0].lease.id).toBe(leaseId);
+    expect(lines).toEqual([]);
   });
   it.each([false, true])("keeps nested producer intent until outer settlement (rollback=%s)", async rollback => {
     const c = await adapterWorker(); await quiet(c);
