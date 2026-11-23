@@ -13,8 +13,8 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/api/agentSetupProgress", () => ({ agentSetupProgressApi: {} }));
-const account = vi.hoisted(() => ({ userId: "user-1" as string | null }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: true }) }));
+const account = vi.hoisted(() => ({ userId: "user-1" as string | null, settled: true }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: account.settled }) }));
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const BASE = `https://acme.paperclip.app/api/agent-setup-progress/${ID}`;
@@ -38,6 +38,7 @@ describe("agent setup progress", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     window.sessionStorage.clear();
     account.userId = "user-1";
+    account.settled = true;
   });
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -188,7 +189,9 @@ describe("agent setup progress", () => {
     const third: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_third", progress: { ...WAITING, id: "44444444-4444-4444-8444-444444444444" } };
     const reopenCreate = vi.fn().mockResolvedValueOnce(third);
     const finishedCache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    finishedCache.setQueryData(["agent-setup-progress-handoff", "user-1", "company-1", "aws_connection", "conn-1"], HANDOFF);
+    finishedCache.setQueryData(["agent-setup-progress-handoff", "user-1", "company-1", "aws_connection", "conn-1"], { handoff: HANDOFF, fromEarlierVisit: false });
+    // Cached before this step opens, like a checklist from an earlier visit in this session.
+    await new Promise((resolve) => setTimeout(resolve, 2));
     const reopenClient: AgentSetupProgressClient = { create: reopenCreate, get: vi.fn(async (id: string) => id === ID ? { ...failedAttempt, status: "done" as const } : third.progress) };
     await act(async () => root.unmount());
     root = createRoot(container);
@@ -232,5 +235,24 @@ describe("agent setup progress", () => {
     await flush();
     expect(create).toHaveBeenCalledTimes(2);
     expect(token()).toBe("pcsp_other_account");
+  });
+
+  it("replaces a finished checklist from an earlier visit even when the session arrives late", async () => {
+    // A previous visit in this tab stored a checklist that has since finished.
+    window.sessionStorage.setItem("paperclip:agent-setup-progress:user-1:company-1:aws_connection:conn-1", JSON.stringify(HANDOFF));
+    const fresh: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_fresh_visit", progress: { ...WAITING, id: "66666666-6666-4666-8666-666666666666" } };
+    const create = vi.fn().mockResolvedValueOnce(fresh);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === ID ? { ...WAITING, status: "done" as const } : fresh.progress) };
+    account.userId = null;
+    account.settled = false;
+    const tree = () => <QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>;
+    await act(async () => { root.render(tree()); });
+    await flush();
+    expect(create).not.toHaveBeenCalled();
+    account.userId = "user-1";
+    account.settled = true;
+    await act(async () => { root.render(tree()); });
+    await vi.waitFor(() => expect(token()).toBe("pcsp_fresh_visit"));
+    expect(create).toHaveBeenCalledOnce();
   });
 });

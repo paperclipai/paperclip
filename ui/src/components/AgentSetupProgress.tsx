@@ -72,10 +72,11 @@ export function useAgentSetupProgress({
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
-      const created = storedAgentSetupHandoff(storageKey)
-        ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
-      storeAgentSetupHandoff(storageKey, created);
-      return created;
+      // A handoff found in this tab's storage came from an earlier visit; a created one is new.
+      const stored = storedAgentSetupHandoff(storageKey);
+      const handoff = stored ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
+      storeAgentSetupHandoff(storageKey, handoff);
+      return { handoff, fromEarlierVisit: Boolean(stored) };
     },
     enabled: Boolean(companyId) && enabled && accountKnown,
     // Created once per setup: never re-created on its own (renew does that). A failed create
@@ -86,7 +87,7 @@ export function useAgentSetupProgress({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const handoff = handoffQuery.data ?? null;
+  const handoff = handoffQuery.data?.handoff ?? null;
 
   const progressId = handoff?.progress.id ?? null;
   const query = useQuery({
@@ -113,16 +114,18 @@ export function useAgentSetupProgress({
   useEffect(() => {
     if (finished) storeAgentSetupHandoff(storageKey, null);
   }, [finished, storageKey]);
-  // Only a checklist the page opened with (from an earlier visit) is replaced: one that finishes while
-  // this page is open stays on screen.
-  const openedWithEarlier = useRef<boolean | null>(null);
-  if (openedWithEarlier.current === null) openedWithEarlier.current = queryClient.getQueryData(handoffKey) !== undefined;
+  // Only a checklist from an earlier visit is replaced: one this page created that finishes while it is
+  // open stays on screen. "Earlier" means found in storage, or cached before this step opened. It is
+  // decided once per account-specific key, so a session that arrives late is judged on its own key.
+  const openedAt = useRef(Date.now());
+  const checkedKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!openedWithEarlier.current || !handoff || !query.isFetched) return;
-    openedWithEarlier.current = false;
-    if (finished) renew();
+    if (!handoffQuery.data || !query.isFetched || checkedKey.current === storageKey) return;
+    checkedKey.current = storageKey;
+    const fromEarlier = handoffQuery.data.fromEarlierVisit || handoffQuery.dataUpdatedAt < openedAt.current;
+    if (fromEarlier && finished) renew();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handoff, query.isFetched]);
+  }, [handoffQuery.data, handoffQuery.dataUpdatedAt, query.isFetched, storageKey, finished]);
 
   return {
     handoff,

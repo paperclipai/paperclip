@@ -5,7 +5,7 @@ summary: A live checklist a person's own agent fills in while it sets something 
 
 When Paperclip offers "Set it up with your agent", the setup page can show a live checklist of what the person's own agent (for example Claude Code on their computer) is doing. The page creates the checklist and puts its URLs and a token in the setup prompt. The agent sets the checklist, updates each step and finishes; each change appears on the page right away.
 
-The agent needs no Paperclip sign-in. Its token can only write to this one checklist, works for six hours, and allows up to 300 updates. Paperclip keeps only a hash of the token. The prompt that carries the token is a credential for this checklist: it is meant for the person's own agent, not for sharing. The create response is sent with `Cache-Control: no-store`. A finished checklist refuses further updates (`409`), and a company's checklists are deleted a day after they expire (when that company creates a new one).
+The agent needs no Paperclip sign-in. Its token can only write to this one checklist, works for six hours, and allows up to 300 updates. Paperclip keeps only a hash of the token. The prompt that carries the token is a credential for this checklist: it is meant for the person's own agent, not for sharing. The create response is sent with `Cache-Control: no-store`. A finished checklist refuses further updates (`409`), and checklists are deleted a day after they expire: a company's own when it creates a new one, and every company's once at server start (never as a recurring scan).
 
 ## Create a Checklist (Board)
 

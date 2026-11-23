@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { activityLog, agentSetupProgress, companies, companyMemberships, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { AGENT_SETUP_PROGRESS_LIMITS, type AgentSetupProgressHandoff, type LiveEvent } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentSetupProgressAgentRoutes, agentSetupProgressBoardRoutes } from "../routes/agent-setup-progress.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { agentSetupProgressService } from "../services/agent-setup-progress.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 const userId = "setup-progress-user";
@@ -184,6 +185,21 @@ describe("agent setup progress", () => {
     expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, foreign.progress.id))).toHaveLength(1);
     expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, handoff.progress.id))).toHaveLength(0);
     expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, second.progress.id))).toHaveLength(1);
+  });
+
+  it("clears long-expired checklists across companies once at startup, and keeps the rest", async () => {
+    const first = await company();
+    const second = await company();
+    const make = async (org: Awaited<ReturnType<typeof company>>) => ((await request(app([org.id])).post(`/api/companies/${org.id}/agent-setup-progress`)
+      .send({ purpose: "aws_connection", subjectId: org.connectionId }).expect(201)).body as AgentSetupProgressHandoff).progress.id;
+    const oldA = await make(first);
+    const oldB = await make(second);
+    const recent = await make(second);
+    await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 48 * 3600_000) }).where(inArray(agentSetupProgress.id, [oldA, oldB]));
+    await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 3600_000) }).where(eq(agentSetupProgress.id, recent));
+    expect(await agentSetupProgressService(db).sweepExpired()).toBeGreaterThanOrEqual(2);
+    const left = (await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress).where(inArray(agentSetupProgress.id, [oldA, oldB, recent]))).map((row) => row.id);
+    expect(left).toEqual([recent]);
   });
 
   it("does not let a cache keep the agent's token", async () => {

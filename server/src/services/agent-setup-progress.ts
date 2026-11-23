@@ -151,6 +151,19 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
     },
 
     /** The checklist and who started it (for the read check; not part of the API response). */
+    /**
+     * Removes checklists more than a day past expiry, across companies. Runs once at server start
+     * (reconstructing cleanup from the rows, never as a recurring scan), so companies that stopped
+     * using agent setup do not keep dead rows; creating a checklist also cleans its own company.
+     */
+    async sweepExpired(limit = 1000): Promise<number> {
+      const stale = await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress)
+        .where(lt(agentSetupProgress.expiresAt, new Date(now().getTime() - 24 * 60 * 60 * 1000))).limit(limit);
+      if (stale.length === 0) return 0;
+      await db.delete(agentSetupProgress).where(inArray(agentSetupProgress.id, stale.map((row) => row.id)));
+      return stale.length;
+    },
+
     async get(id: string): Promise<(AgentSetupProgress & { createdByUserId: string | null }) | null> {
       const [row] = await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, id));
       return row ? { ...toProgress(row), createdByUserId: row.createdByUserId } : null;
