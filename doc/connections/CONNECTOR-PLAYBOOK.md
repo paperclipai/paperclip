@@ -1569,7 +1569,13 @@ sizes and hashes stay. A step that cannot confirm its deletion fails, and the
 request stays pending and retries; it completes only when every step succeeded.
 A `tool_connection_content_deletions` row is the durable request; the
 `tool-connection-content-deletion` delivery queue resumes it after a restart.
-Runs that are still working are skipped and counted. The user-facing help is
+Runs that are still working are skipped and counted. Deleting a task queues an
+`issue_connection_content_deletions` row that runs the same steps for the
+task's runs and waits, for up to a day, for runs and approvals still open. Deleting a company queues its run
+logs and files in `stored_object_deletions`, which outlives the company. A new
+store that keeps connection content must be covered by all three paths;
+`tool-connection-content-deletion-canary.test.ts` scans every text column and
+every storage copy after each one. The user-facing help is
 `docs/guides/board-operator/deleting-connection-data.md`.
 
 Responses may contain secret IDs, version selectors, header names, prefixes,

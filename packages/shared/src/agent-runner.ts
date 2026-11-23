@@ -65,10 +65,14 @@ export function agentRunner(adapterType: string): AgentRunner {
   return adapterType === "paperclip_runner" ? "paperclip" : "legacy";
 }
 
+/** Product name of the harness an agent runs; reported as telemetry `adapter_type`. */
+export function agentHarnessName(adapterType: string, config: Record<string, unknown> = {}): string {
+  const harness = agentHarnessType(adapterType, config);
+  return harness === "acpx:copilot" ? "copilot_runtime" : harness;
+}
+
 /** Stable configuration group across native and legacy execution backends. */
 export function agentRuntimeSettingsHarness(adapterType: string, config: Record<string, unknown> = {}): string {
-  const harness = agentHarnessType(adapterType, config);
-  if (harness === "acpx:copilot") return "copilot_runtime";
-  if (harness === "cursor") return "cursor_local";
-  return harness;
+  const harness = agentHarnessName(adapterType, config);
+  return harness === "cursor" ? "cursor_local" : harness;
 }
