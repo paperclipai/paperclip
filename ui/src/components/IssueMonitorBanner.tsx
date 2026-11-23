@@ -67,6 +67,7 @@ export interface MonitorSurfaceCopy {
   pullRequestReview?: boolean;
   automaticChecksPaused?: boolean;
   checkUnavailable?: boolean;
+  executionWait?: boolean;
 }
 
 function capitalize(value: string): string {
@@ -84,6 +85,7 @@ export function buildMonitorSurfaceCopy(
   scheduledRetryReason?: string | null,
   pendingPullRequestReviews = 0,
   issueStatus?: string,
+  hasActiveRun = false,
 ): MonitorSurfaceCopy | null {
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
@@ -103,6 +105,17 @@ export function buildMonitorSurfaceCopy(
     };
   }
 
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "environment_provider_wait") {
+    return {
+      bannerTitle: "Waiting for the sandbox provider",
+      stripTitle: "Waiting for the sandbox provider",
+      bannerMeta: ["The sandbox provider is unavailable. Work continues automatically when it is back."],
+      stripMeta: ["Work continues automatically when the sandbox provider is back."],
+      tone: "info",
+      workspaceWait: true,
+    };
+  }
+
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
     return {
       bannerTitle: "Waiting for workspace",
@@ -116,7 +129,21 @@ export function buildMonitorSurfaceCopy(
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
-  if (derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0) {
+  const awaitingPullRequestReview = derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0;
+  if (derived.source === "monitor" && hasActiveRun) {
+    const hint = "The check can start after the current run finishes saving its work.";
+    return {
+      bannerTitle: "Monitor waits for current run",
+      stripTitle: "Monitor waits for current run",
+      bannerMeta: [hint, `Scheduled for ${absolute} (your time)`],
+      stripMeta: [hint, `Scheduled for ${absolute}`],
+      tone: "info",
+      executionWait: true,
+      checkUnavailable: true,
+      pullRequestReview: awaitingPullRequestReview,
+    };
+  }
+  if (awaitingPullRequestReview) {
     return {
       bannerTitle: "Pull request review requested",
       stripTitle: "Pull request review requested",
@@ -179,7 +206,7 @@ export function buildMonitorSurfaceCopy(
   };
 }
 
-function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number): MonitorSurfaceCopy | null {
+function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number, hasActiveRun: boolean): MonitorSurfaceCopy | null {
   // `nextCheckAt` is stable for a given issue; derive once to seed the ticking
   // countdown cadence, then re-derive against the live clock so the surfaces
   // roll scheduled → due → overdue on their own.
@@ -188,7 +215,7 @@ function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number):
     return derived.source === "monitor" && areAutomaticMonitorChecksPaused(issue) ? null : derived.nextCheckAt;
   }, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews]);
+  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status, hasActiveRun), [issue, now, pendingPullRequestReviews, hasActiveRun]);
 }
 
 function CheckNowButton({
@@ -254,6 +281,7 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
 
 export interface IssueMonitorSurfaceProps {
   issue: Issue;
+  hasActiveRun?: boolean;
   onCheckNow?: (() => void) | null;
   checkingNow?: boolean;
   workProducts?: IssueWorkProduct[] | null;
@@ -268,6 +296,7 @@ export interface IssueMonitorSurfaceProps {
  */
 export function IssueMonitorBanner({
   issue,
+  hasActiveRun = false,
   onCheckNow = null,
   checkingNow = false,
   workProducts,
@@ -275,8 +304,12 @@ export function IssueMonitorBanner({
   onCancelMonitor,
 }: IssueMonitorSurfaceProps) {
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
-  const copy = useMonitorSurfaceCopy(issue, reviews.length);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length, hasActiveRun);
   if (!copy) return null;
+
+  // A busy workspace is a transient system wait the user cannot act on. It stays
+  // a quiet status (composer strip, properties row), never a pinned notice.
+  if (copy.workspaceWait) return null;
 
   const canCancel = onCancelMonitor && deriveMonitorState(issue).source === "monitor";
 
@@ -305,6 +338,7 @@ export function IssueMonitorBanner({
  */
 export function IssueMonitorComposerStrip({
   issue,
+  hasActiveRun = false,
   onCheckNow = null,
   checkingNow = false,
   workProducts,
@@ -312,7 +346,7 @@ export function IssueMonitorComposerStrip({
   className,
 }: IssueMonitorSurfaceProps & { className?: string }) {
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
-  const copy = useMonitorSurfaceCopy(issue, reviews.length);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length, hasActiveRun);
   if (!copy) return null;
 
   return (
@@ -323,7 +357,7 @@ export function IssueMonitorComposerStrip({
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-2">
-          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <Clock className={cn("mt-0.5 h-4 w-4 shrink-0", issue.displayStatus === "monitoring" ? "text-(--status-task-icon-monitoring)" : "text-muted-foreground")} aria-hidden="true" />
           <div className="flex min-w-0 flex-col gap-2">
             <div className="text-sm font-medium text-foreground">{copy.stripTitle}</div>
             {copy.pullRequestReview ? <IssuePullRequestLinks products={reviews} /> : null}
@@ -334,9 +368,11 @@ export function IssueMonitorComposerStrip({
       </div>
       {!copy.automaticChecksPaused ? (
         <p className="mt-1.5 text-xs text-muted-foreground">
-          {copy.pullRequestReview
+          {copy.pullRequestReview && copy.executionWait
+            ? "Review on GitHub while the current run finishes saving its work."
+            : copy.pullRequestReview
             ? "Review on GitHub, then check status to have the agent verify the result."
-            : copy.workspaceWait
+            : copy.workspaceWait || copy.executionWait
             ? "You can keep sending instructions while the agent waits."
             : "Sending a reply wakes the agent now — before the scheduled check."}
         </p>

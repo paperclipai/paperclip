@@ -63,8 +63,9 @@ export function approvalRecords(db: Db) {
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
-    // cleanup. Idempotent: a no-op on already-resolved approvals.
-    cancel: async (id: string, reason?: string | null) => {
+    // cleanup, or when a person withdraws it as out of date (PAP-749). It is
+    // never an approval. Idempotent: a no-op (null) on already-resolved approvals.
+    cancel: async (id: string, reason?: string | null, options: { cancelledByUserId?: string | null } = {}) => {
       const now = new Date();
       const [existing] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, id));
       if (!existing) return null;
@@ -74,13 +75,14 @@ export function approvalRecords(db: Db) {
         .set({
           status: "cancelled",
           decisionNote: reason ?? null,
+          ...(options.cancelledByUserId ? { decidedByUserId: options.cancelledByUserId } : {}),
           decidedAt: now,
           updatedAt: now,
         })
         .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
         .returning()
         .then((rows) => rows[0] ?? null);
-      });
+      }, { approvalId: id });
       return updated;
     },
 
@@ -102,7 +104,7 @@ export function approvalRecords(db: Db) {
         })
         .where(eq(approvals.id, id))
         .returning()
-        .then((rows) => rows[0]));
+        .then((rows) => rows[0]), { approvalId: id });
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -124,7 +126,7 @@ export function approvalRecords(db: Db) {
         })
         .where(eq(approvals.id, id))
         .returning()
-        .then((rows) => rows[0]));
+        .then((rows) => rows[0]), { approvalId: id });
     },
 
     listComments: async (approvalId: string) => {

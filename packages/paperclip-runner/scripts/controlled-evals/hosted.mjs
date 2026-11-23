@@ -1,7 +1,8 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isEntrypoint } from './entrypoint.mjs';
-import { assertHostedAdmission, canonical, costRuntime, fields, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
+import { assertHostedAdmission, canonical, fields, requestBindingSha256, sha256, units, validateManifest } from './manifest.mjs';
 import { readRegularFile } from './evidence-files.mjs';
 
 export function hostedPaths(runId) {
@@ -11,21 +12,41 @@ export function hostedPaths(runId) {
     manifest: join(root, 'controller-manifest.json'), evidence: join(root, 'evidence') };
 }
 
-export function hostedPolicyConfiguration(policy) {
-  const { capacityBound, ...configuration } = policy;
-  return configuration;
+export const HOSTED_DEFAULTS_SCHEMA = 'paperclip.runner-eval.hosted-defaults/v1';
+export const HOSTED_POLICY_SCHEMA = 'paperclip.runner-eval.hosted-policy/v2';
+const MAX_HOSTED_CELLS = 512;
+// The committed price table has no review expiry. Each campaign receives a
+// validity window that covers only its own deadline plus a short settlement margin.
+const SETTLEMENT_MARGIN_MS = 3_600_000;
+
+// Derive the campaign policy from committed defaults. Cell count comes from the
+// selected catalog, prices from the committed table and the dependency lock from
+// the committed frozen lockfile. Only the campaign spend cap may be overridden.
+export function hostedPolicy(defaults, { cellCount, now = Date.now(), maxUsd, projectId, controllerLockSha256 }) {
+  fields(defaults, ['schema', 'maxUsd', 'durationMs', 'route', 'models', 'allocations', 'overhead', 'observability']);
+  if (defaults.schema !== HOSTED_DEFAULTS_SCHEMA || !defaults.observability || !Array.isArray(defaults.models) || !defaults.models.length
+      || !Number.isSafeInteger(defaults.durationMs) || defaults.durationMs < 1 || defaults.durationMs > 4 * 3_600_000
+      || !Array.isArray(defaults.allocations) || !defaults.allocations.length) throw new Error('A bounded hosted policy with tracing is required');
+  if (!Number.isSafeInteger(cellCount) || cellCount < 1 || cellCount > MAX_HOSTED_CELLS) throw new Error('Invalid controlled campaign selection');
+  if (!/^[a-f0-9]{64}$/.test(controllerLockSha256 ?? '')) throw new Error('Invalid hosted controller lock binding');
+  fields(defaults.overhead, ['version', 'accountingReadiness', 'reference', 'runner', 'components']);
+  fields(defaults.observability, ['capture', 'nativeLimits']);
+  if (defaults.overhead.accountingReadiness !== 'model_requests') throw new Error('Controller requires current full-lifecycle operating bounds');
+  const cap = maxUsd === undefined || maxUsd === '' ? defaults.maxUsd : maxUsd;
+  units(cap);
+  const verifiedAt = new Date(now).toISOString();
+  const expiresAt = new Date(now + defaults.durationMs + SETTLEMENT_MARGIN_MS).toISOString();
+  return { schema: HOSTED_POLICY_SCHEMA, maxUsd: cap, durationMs: defaults.durationMs, maxCells: cellCount,
+    pricingVerifiedAt: verifiedAt, pricingExpiresAt: expiresAt, route: defaults.route,
+    ...(defaults.route === 'braintrust' && projectId ? { projectId } : {}),
+    models: structuredClone(defaults.models), allocations: structuredClone(defaults.allocations),
+    overhead: { ...structuredClone(defaults.overhead), verifiedAt, expiresAt },
+    observability: { ...(projectId ? { projectId } : {}), ...structuredClone(defaults.observability) }, controllerLockSha256 };
 }
 
-export function prepareHostedManifest({ catalog, catalogSha256, prepared, policy, artifacts, environment, now = Date.now() }) {
-  fields(policy, ['schema', 'maxUsd', 'durationMs', 'pricingVerifiedAt', 'pricingExpiresAt', 'route', 'projectId', 'models', 'overhead', 'observability', 'allocations', 'maxCells', 'capacityBound', 'controllerLockSha256']);
-  if (policy.schema !== 'paperclip.runner-eval.hosted-policy/v1' || !policy.observability
-      || !Number.isSafeInteger(policy.durationMs) || policy.durationMs < 1 || policy.durationMs > 4 * 3_600_000
-      || !Number.isSafeInteger(policy.maxCells) || policy.maxCells < 1 || policy.maxCells > 512
-      || !Array.isArray(policy.allocations) || !policy.allocations.length) throw new Error('A bounded hosted policy with tracing is required');
-  if (!/^[a-f0-9]{64}$/.test(policy.controllerLockSha256 ?? '')) throw new Error('Invalid hosted controller lock binding');
-  if (policy.overhead?.accountingReadiness !== 'model_requests' || policy.capacityBound !== undefined) {
-    costRuntime.reservationBound('operating_allowance', policy.capacityBound, hostedPolicyConfiguration(policy));
-  }
+export function prepareHostedManifest({ catalog, catalogSha256, prepared, defaults, maxUsd, projectId, controllerLockSha256, artifacts, environment, now = Date.now() }) {
+  const policy = hostedPolicy(defaults, { cellCount: Array.isArray(prepared?.cells) ? prepared.cells.length : 0,
+    now, maxUsd, projectId, controllerLockSha256 });
   fields(policy.observability, ['projectId', 'capture', 'nativeLimits']);
   const runId = environment.GITHUB_RUN_ID, paths = hostedPaths(runId);
   if (prepared.schema !== 'paperclip.runner-eval.prepared-requests/v1' || prepared.githubRunId !== runId || prepared.githubRunAttempt !== 1
@@ -67,10 +88,9 @@ export function prepareHostedManifest({ catalog, catalogSha256, prepared, policy
     models: policy.models, overhead: policy.overhead, observability: { ...policy.observability },
     sourceRevision: prepared.sourceRevision, definitionsRevision: prepared.definitionsRevision, ...artifacts,
     outputDirectory: paths.evidence, hosted: { repository: environment.GITHUB_REPOSITORY, runId, runAttempt: 1, workflowRevision: environment.GITHUB_SHA, controllerLockSha256: policy.controllerLockSha256, policySha256: sha256(canonical(policy)) }, attempts };
-  if (policy.capacityBound !== undefined) manifest.observability.provisionalBound = { ...policy.capacityBound, configurationSha256: sha256(canonical(observabilityBoundConfiguration(manifest))) };
   const validated = validateManifest(manifest, now);
   assertHostedAdmission(manifest, attempts[0], { ...environment, PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: attempts[0].executionId });
-  return validated;
+  return { ...validated, policy };
 }
 
 export async function verifyHostedCell({ manifestPath, manifestSha256, cellId, environment }) {
@@ -101,14 +121,17 @@ export function hostedAdmissionDiagnostic(error) {
   if (error instanceof Error && safeAdmissionReasons.has(error.message)) return error.message;
   if (error?.code === 'ENOENT') return 'A required hosted input file is missing';
   if (error instanceof SyntaxError) return 'A hosted input is not valid JSON';
-  return 'Invalid or unreadable hosted input; check the catalog, policy and runtime bindings';
+  return 'Invalid or unreadable hosted input; check the catalog, committed defaults and runtime bindings';
 }
 
 if (await isEntrypoint(import.meta.url)) {
   try {
     const [command, ...args] = process.argv.slice(2);
-    if (command === 'prepare' && args.length === 5) {
-      const [catalogPath, preparedPath, policyPath, runner, output] = args;
+    if (command === 'prepare' && args.length === 4) {
+      // Defaults are read beside this verified controller code, never from the workspace,
+      // which the private evals program can modify during preparation.
+      const [catalogPath, preparedPath, runner, output] = args;
+      const defaultsPath = fileURLToPath(new URL('./hosted-defaults.json', import.meta.url));
       const json = async path => JSON.parse((await readRegularFile(path, 16 * 1_048_576)).toString('utf8'));
       const catalogBytes = await readRegularFile(catalogPath, 16 * 1_048_576);
       const prepared = await json(preparedPath), paths = hostedPaths(process.env.GITHUB_RUN_ID), artifacts = {};
@@ -116,14 +139,17 @@ if (await isEntrypoint(import.meta.url)) {
         artifacts[name] = { path: join(paths.runner, relative), sha256: sha256(await readFile(join(runner, relative))) };
       }
       const result = prepareHostedManifest({ catalog: JSON.parse(catalogBytes), catalogSha256: sha256(catalogBytes), prepared,
-        policy: await json(policyPath), artifacts, environment: process.env });
+        defaults: await json(defaultsPath), maxUsd: process.env.RUNNER_PROTOCOL_EVAL_MAX_USD || undefined,
+        projectId: process.env.PAPERCLIP_RUNNER_EVAL_BRAINTRUST_PROJECT_ID || undefined,
+        controllerLockSha256: process.env.PAPERCLIP_RUNNER_EVAL_CONTROLLER_LOCK_SHA256, artifacts, environment: process.env });
       await mkdir(output, { mode: 0o700 });
       await writeFile(join(output, 'controller-manifest.json'), canonical(result.manifest), { flag: 'wx', mode: 0o600 });
+      await writeFile(join(output, 'hosted-policy.json'), `${JSON.stringify(result.policy, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
       console.log(JSON.stringify({ manifestSha256: result.manifestSha256, cells: result.manifest.attempts.length,
-        allocatedUsd: result.allocatedUsd, providerCalls: 0 }));
+        maxUsd: result.manifest.maxUsd, allocatedUsd: result.allocatedUsd, providerCalls: 0 }));
     } else if (command === 'verify' && args.length === 3) {
       await verifyHostedCell({ manifestPath: args[0], manifestSha256: args[1], cellId: args[2], environment: process.env });
-    } else throw new Error('Usage: hosted.mjs <prepare catalog prepared policy runner output | verify manifest digest cell>');
+    } else throw new Error('Usage: hosted.mjs <prepare catalog prepared runner output | verify manifest digest cell>');
   } catch (error) {
     console.error(`Hosted campaign admission failed: ${hostedAdmissionDiagnostic(error)}. No provider work was started by this command.`); process.exitCode = 2;
   }

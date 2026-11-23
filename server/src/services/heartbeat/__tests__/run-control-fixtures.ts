@@ -58,6 +58,7 @@ export function callbacks(db: Db): TestCallbacks {
     startNextQueuedRunForAgent: vi.fn<HeartbeatRunControlDependencies["startNextQueuedRunForAgent"]>(),
     sweepPendingCleanupLeases: vi.fn<HeartbeatRunControlDependencies["sweepPendingCleanupLeases"]>(),
     timerClaimWasFirstHeartbeat: vi.fn<HeartbeatRunControlDependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
+    scheduleBoundedRetry: vi.fn<HeartbeatRunControlDependencies["scheduleBoundedRetry"]>(),
     wakeQueue: { releaseIssueExecution: vi.fn<HeartbeatRunControlDependencies["wakeQueue"]["releaseIssueExecution"]>(async () => ({ outcome: { kind: "released" }, postCommitEffects: [] })) },
     applyWakeQueuePostCommitEffects: vi.fn(async () => undefined),
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),
@@ -71,7 +72,7 @@ export const runControlPostgresSupport = externalTestDatabaseUrl ? { supported: 
 if (!runControlPostgresSupport.supported) console.warn(`Skipping run-control database tests: ${runControlPostgresSupport.reason}`);
 
 export function setupRunControlDatabase(name: string, ready: (db: Db) => void) {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);

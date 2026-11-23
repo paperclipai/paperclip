@@ -67,3 +67,21 @@ it("does not load agent tabs that have not opted into task side panels", async (
   expect(container.textContent).toBe("0");
   expect(fetch).not.toHaveBeenCalled();
 });
+
+it("records each plugin module's blob URL with its plugin key for error attribution", async () => {
+  const { readPluginModuleOrigin, __resetPluginModuleOrigins } = await import("@/lib/plugin-module-origins");
+  __resetPluginModuleOrigins();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("export const Switcher = () => null;")));
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:http://localhost/plugin-module");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    // jsdom cannot import the blob URL; the loader logs that failure and settles.
+    await ensurePluginContributionLoaded(contribution);
+    expect(readPluginModuleOrigin([
+      { stacktrace: { frames: [{ filename: "blob:http://localhost/plugin-module" }] } },
+    ])).toBe("fixture.navigation");
+  } finally {
+    __resetPluginModuleOrigins();
+  }
+});

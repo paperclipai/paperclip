@@ -17,6 +17,7 @@ export function toCatalogEntry(
     inputSchema: row.inputSchema ?? {},
     outputSchema: row.outputSchema ?? null,
     annotations: row.annotations ?? {},
+    icons: row.icons ?? null,
     riskLevel: row.riskLevel,
     isReadOnly: row.isReadOnly,
     isWrite: row.isWrite,

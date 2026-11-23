@@ -6,7 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
+import { ApiError } from "@/api/client";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
 let credentialProps: ComponentProps<typeof AiConnectionCredentialStep> | undefined;
@@ -206,4 +208,49 @@ it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a match
   const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes("Pi provider account"));
   expect(choice).toBeDefined();
   expect(choice?.getAttribute("aria-disabled")).not.toBe("true");
+});
+
+it("keeps loaded connections usable when a refetch fails during an outage", async () => {
+  await mount([account()]);
+  expect(document.body.textContent).toContain("Reconnect account");
+  mocks.list.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+  await client.invalidateQueries();
+  await settle();
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
+  expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+  expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+});
+
+it("shows readable copy with a retry when connections cannot be loaded", async () => {
+  mocks.list.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+  await mount([account()]);
+  const alerts = Array.from(document.querySelectorAll('[role="alert"]')).map(node => node.textContent).join(" ");
+  expect(alerts).toContain("An unexpected error occurred");
+  expect(document.body.textContent).not.toContain("internal_error");
+  expect(document.body.textContent).not.toContain("Request failed: 500");
+  expect(document.body.textContent).not.toContain("Reconnect account");
+  await click("Retry connections");
+  await settle();
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
+});
+
+it("masks the adoption dialog's account label in session replay", async () => {
+  const personal = account({ id: "00000000-0000-4000-8000-000000000011", grantId: "00000000-0000-4000-8000-000000000012", provider: "openai", method: "api_key", name: "OpenAI", accountLabel: "solenne.drake@example.test", status: "connected", isDefault: false });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [personal], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="codex_local" legacy onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Choose a managed connection");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(choice => choice.textContent?.includes("solenne.drake@example.test"))!.click());
+  await settle();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(replayLeaks("solenne.drake@example.test", dialog)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Adopt Connections for Nova", dialog)).toEqual({ rendered: true, recorded: false });
 });

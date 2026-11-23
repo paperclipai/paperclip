@@ -9,6 +9,21 @@
   ],
   "$defs": {
     "protocolVersion": { "const": 2 },
+    "turnDispatchJournalFile": {
+      "description": "File name of the sidecar's prompt-dispatch journal in the session runtime directory. It holds turnDispatchJournalRecord lines for the latest turn only.",
+      "const": "paperclip-turn-dispatch.jsonl"
+    },
+    "turnDispatchJournalRecord": {
+      "description": "One journal line. The runtime port truncates the file and writes `received` when it starts the turn, before any provider work. It appends `dispatched` and fsyncs it immediately before the turn's first session/prompt request is written to the provider. The Runner reads the journal only after it proves that the sidecar and provider are gone: a lone `received` line proves the prompt never reached the provider.",
+      "type": "object",
+      "properties": {
+        "schema": { "const": "paperclip.acpx-turn-dispatch.v1" },
+        "turnId": { "type": "string", "minLength": 1 },
+        "phase": { "enum": ["received", "dispatched"] }
+      },
+      "required": ["schema", "turnId", "phase"],
+      "additionalProperties": false
+    },
     "command": {
       "enum": [
         "initialize",
@@ -25,6 +40,7 @@
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
+        "session.provider_turn",
         "session.suspend",
         "session.close"
       ]
@@ -36,6 +52,7 @@
         "runtime.permission_requested",
         "runtime.input_requested",
         "runtime.tool_called",
+        "runtime.turn_started",
         "runtime.turn_terminal",
         "runtime.process",
         "runtime.diagnostic",
@@ -54,16 +71,83 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "if": { "properties": { "command": { "enum": ["initialize", "session.open"] } } },
+          "then": { "properties": { "params": {
+            "type": "object",
+            "properties": { "candidateAdmission": { "$ref": "#/$defs/candidateAdmission" } },
+            "if": { "properties": { "candidateAdmission": {} }, "required": ["candidateAdmission"] },
+            "then": { "required": ["agent", "model"], "properties": { "agent": { "const": "antigravity" }, "model": { "type": "string" } } }
+          } } },
+          "else": { "properties": { "params": { "type": "object", "properties": { "candidateAdmission": false } } } }
+        },
+        {
           "if": { "properties": { "command": { "const": "turn.steer" } } },
           "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
         },
         {
+          "if": { "properties": { "command": { "const": "session.provider_turn" } } },
+          "then": { "properties": { "params": { "$ref": "#/$defs/providerTurnArming" } } }
+        },
+        {
           "if": { "properties": { "command": { "const": "session.open" } } },
-          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
+          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenParams" }, { "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
         }
       ]
     },
+    "candidateAdmission": {
+      "description": "The same closed record is accepted only from trusted runner startup CLI and repeated on sidecar initialize/open. Company authority is validated by the server; the runtime additionally checks compiled pins, actual run/session identity, native host, and expiry.",
+      "type": "object",
+      "required": ["schema", "companyId", "agent", "model", "profileDigest", "nativeClosureDigest", "platform", "architecture", "expiresAt", "runId", "normalizedSessionId"],
+      "properties": {
+        "schema": { "const": "paperclip.acpx-candidate-admission.v1" },
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "agent": { "const": "antigravity" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+        "profileDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "nativeClosureDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "platform": { "const": "darwin" },
+        "architecture": { "const": "arm64" },
+        "expiresAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "runId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+      },
+      "additionalProperties": false
+    },
     "piThinkingLevel": { "enum": ["off", "low", "high", "max"] },
+    "sessionOpenParams": {
+      "description": "The closed session.open parameter set. The sidecar's open-parameter allowlist is generated from these property names; field-specific rules live in the sibling definitions.",
+      "type": "object",
+      "properties": {
+        "runtimeDirectory": true,
+        "normalizedSessionId": true,
+        "workingDirectory": true,
+        "agent": true,
+        "model": true,
+        "permissionMode": true,
+        "mode": true,
+        "piThinkingLevel": true,
+        "claudeEffort": true,
+        "grokEffort": true,
+        "grokDisableWebSearch": true,
+        "permissionModePinned": true,
+        "providerPolicy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/providerPolicy" }] },
+        "systemInstructions": true,
+        "runtimeContext": { "description": "Validated against runtime-context.schema.json." },
+        "tools": true,
+        "providerSessionKey": true,
+        "expectedIdentity": true,
+        "candidateAdmission": true
+      },
+      "additionalProperties": false
+    },
+    "providerPolicy": {
+      "type": "object",
+      "required": ["readOnly"],
+      "properties": {
+        "readOnly": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "sessionOpenThinkingLevel": {
       "type": "object",
       "properties": {
@@ -134,7 +218,8 @@
           "properties": {
             "code": { "type": "string", "minLength": 1, "maxLength": 160 },
             "message": { "type": "string", "maxLength": 8192 },
-            "retryable": { "type": "boolean" }
+            "retryable": { "type": "boolean" },
+            "providerFailure": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-failure.schema.json" }
           },
           "additionalProperties": false
         }
@@ -162,6 +247,18 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "if": { "properties": { "eventType": { "const": "runtime.event" }, "payload": {
+            "type": "object",
+            "properties": { "type": { "const": "status" }, "tag": { "const": "usage_update" } },
+            "required": ["type", "tag"]
+          } } },
+          "then": { "properties": { "payload": { "type": "object", "properties": { "cost": { "$ref": "#/$defs/usageCost" } } } } }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_terminal" } } },
+          "then": { "properties": { "payload": { "type": "object", "properties": { "backgroundTasks": { "$ref": "#/$defs/backgroundTasks" } } } } }
+        },
+        {
           "if": { "properties": { "eventType": { "const": "runtime.rich_event" } } },
           "then": {
             "properties": {
@@ -170,8 +267,72 @@
               "payload": { "$ref": "#/$defs/richEvent" }
             }
           }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_started" } } },
+          "then": {
+            "properties": {
+              "runId": { "type": "string" },
+              "turnId": { "type": "string" },
+              "payload": { "$ref": "#/$defs/providerTurnStarted" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.diagnostic" }, "payload": {
+            "type": "object",
+            "properties": { "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" } },
+            "required": ["code"]
+          } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/providerTurnLost" } } }
         }
       ]
+    },
+    "providerTurnArming": {
+      "description": "runnerd arms or disarms adoption of Claude's next own cycle. Arming names the completed terminal that reported live background tasks; the sidecar adopts a cycle only while armed and replies whether it is armed.",
+      "type": "object",
+      "required": ["turnId", "armed"],
+      "properties": {
+        "turnId": { "type": "string", "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "armed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "providerTurnLost": {
+      "description": "runtime.diagnostic payload the sidecar sends when the provider exits while runnerd is armed for a provider-started turn. runnerd stops awaiting and releases the run.terminal it held back.",
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" },
+        "message": { "type": "string", "maxLength": 8192 }
+      },
+      "additionalProperties": false
+    },
+    "providerTurnStarted": {
+      "description": "Claude began its own cycle with no prompt in flight. runnerd admits it only while it awaits a provider-started turn.",
+      "type": "object",
+      "required": ["origin"],
+      "properties": { "origin": { "const": "provider" } },
+      "additionalProperties": false
+    },
+    "backgroundTasks": {
+      "description": "Claude's live background tasks, carried on a completed runtime.turn_terminal payload and on a session.snapshot result taken with no active turn. The sidecar sends it only when it knows the count. An absent value means unknown, and runnerd then restarts the provider as before. runnerd keeps the provider between turns only for exactly {\"live\": 0}.",
+      "type": "object",
+      "properties": {
+        "live": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": ["live"],
+      "additionalProperties": false
+    },
+    "usageCost": {
+      "description": "Provider cost is session-cumulative unless basis explicitly identifies a complete turn total. A turn total is never a session counter.",
+      "type": ["object", "null"],
+      "properties": {
+        "amount": { "type": ["number", "null"], "minimum": 0 },
+        "currency": { "type": ["string", "null"], "maxLength": 16 },
+        "basis": { "enum": ["turn", "session_cumulative"] }
+      },
+      "additionalProperties": false
     },
     "richEvent": {
       "type": "object",
@@ -184,6 +345,7 @@
         "eventType": {
           "enum": [
             "plan.updated",
+            "plan.proposed",
             "tool.execution.started",
             "tool.execution.progressed",
             "tool.execution.completed",

@@ -1,6 +1,14 @@
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value)
   ? value as RecordValue : {};
+const nativeRecoveryTerminalCauses = new Set([
+  "native_provider_runtime_missing", "native_provider_model_rejected", "native_provider_approval_required",
+  "native_event_replay_conflict", "runner_remote_provider_artifact_incompatible",
+  "runner_remote_provider_verification_unavailable", "native_provider_terminal_failed",
+  "native_current_wake_comments_unread", "native_current_wake_comments_changed_after_read",
+  "native_session_cleanup_quarantined", "native_adopted_runner_authentication_timeout", "native_provider_usage_limit",
+  "native_permission_declined", "native_session_retry_exhausted",
+]);
 
 function hasProviderUsage(value: unknown): boolean {
   if (value == null) return false;
@@ -13,6 +21,22 @@ function hasProviderUsage(value: unknown): boolean {
     if (key === "ledgerScope") return typeof entry !== "object" || Array.isArray(entry);
     return true;
   });
+}
+
+export function isPendingNativeRecovery(run: RecordValue, deadlineAt: number): boolean {
+  const execution = object(run.execution);
+  const finishedAt = typeof run.finishedAt === "string" ? Date.parse(run.finishedAt) : NaN;
+  const retryAt = typeof execution.retryAt === "string" ? Date.parse(execution.retryAt) : NaN;
+  return run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure" &&
+    typeof run.errorCode === "string" && run.errorCode.trim().length > 0 && execution.cause === run.errorCode &&
+    !nativeRecoveryTerminalCauses.has(run.errorCode) &&
+    typeof run.nativeIssueId === "string" && run.nativeIssueId === object(run.contextSnapshot).issueId &&
+    (run.issueId == null || run.issueId === run.nativeIssueId) &&
+    (execution.phase === "retry_scheduled" || execution.phase === "reconnecting") && execution.recoveryOwner === "agent" &&
+    Number.isInteger(execution.attempt) && Number(execution.attempt) >= 1 &&
+    execution.maxAttempts === 3 && Number(execution.attempt) < execution.maxAttempts && execution.successorRunId === null &&
+    Number.isFinite(finishedAt) && Number.isFinite(retryAt) && Number.isFinite(deadlineAt) &&
+    retryAt > finishedAt && retryAt <= deadlineAt;
 }
 
 /** Admission may set startedAt before selecting a runtime. Only this explicit

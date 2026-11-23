@@ -17,18 +17,26 @@ export function registerEnvironmentCleanupWork(
   const spacing = input.minimumSpacingMs ?? 30_000;
   function register(queue: DeliveryQueue, run: () => Promise<unknown>, deadline: () => Promise<number | null>, minimumSpacing = spacing) {
     let requested = 1, reconciled = 0, next: number | null = null, earliest = 0;
+    let sweepComplete = false;
     const worker = coordinator.register(queue, {
       retryMs: spacing, pausePassiveMaintenance: true,
       onSettled: () => { requested++; },
       run: async () => {
         if (!input.canRun()) { requested++; next = null; return; }
-        if (Date.now() < earliest) { next = earliest; return; }
+        if (Date.now() < earliest) {
+          next = earliest;
+          const generation = requested;
+          if (sweepComplete && await deadline() === null) { next = null; reconciled = generation; }
+          return;
+        }
         const generation = ++requested;
         earliest = Date.now() + minimumSpacing;
+        sweepComplete = false;
         await run();
         const due = await deadline();
         next = due === null ? null : Math.max(due, earliest);
         reconciled = generation;
+        sweepComplete = true;
       },
       hasPending: async () => requested !== reconciled,
       nextRunAt: () => next,

@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { History } from "lucide-react";
 import { AgentActionButtons } from "./AgentActionButtons";
 import { useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
@@ -148,6 +149,17 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining(`runner=${adapterType === "paperclip_runner" ? "paperclip" : "legacy"}`));
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
+  it("reopens the saved pending Antigravity choice while its execution adapter remains held", async () => {
+    render(makeAgent({ adapterType: "process", adapterConfig: {}, status: "paused", lifecycleState: "paused", pauseReason: "setup",
+      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } } }));
+    await flushReact();
+    const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
+    await act(() => finish!.click());
+    const params = new URL(mockNavigate.mock.calls[0][0], "http://local").searchParams;
+    expect(Object.fromEntries(params)).toMatchObject({ adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto", setupAgentId: "agent-1" });
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+  });
 
   it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
     render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));
@@ -266,6 +278,57 @@ describe("AgentActionButtons", () => {
     expect(document.body.textContent).toContain("Reset Sessions");
   });
 
+  it("moves work actions into the menu, leaving Assign task as the one button", async () => {
+    const openHistory = vi.fn();
+    render(makeAgent({ status: "error" }), {
+      assignLabel: "Assign task",
+      workActionsInMenu: true,
+      menuItems: [{ label: "Agent history", icon: History, onSelect: openHistory }],
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean)).toEqual(["Assign task"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
+    expect(items).toEqual(["Run Heartbeat", "Clear error", "Agent history", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
+
+    await act(async () => {
+      [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Agent history")?.click();
+    });
+    expect(openHistory).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Clear error and return agent to idle"]')?.click();
+    });
+    await flushReact();
+    expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
+  });
+
+  it("keeps Finish setup as the one button while setup is pending in menu mode", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }), {
+      assignLabel: "Assign task",
+      workActionsInMenu: true,
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean)).toEqual(["Finish setup"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
+    expect(items).toEqual(["Assign task", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
+  });
+
   it("calls clearError and refreshes agent-related queries", async () => {
     render(makeAgent({ status: "error" }));
     await flushReact();
@@ -310,8 +373,31 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
   });
 
-  it.each(["terminating", "cleaning_up"] as const)("keeps the detail page open during %s", async lifecycleState => {
+  it.each([
+    ["terminating", false],
+    ["cleaning_up", false],
+    ["terminating", true],
+    ["cleaning_up", true],
+  ] as const)("leaves the detail page after termination is accepted during %s (work actions in menu: %s)", async (lifecycleState, workActionsInMenu) => {
     mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated", lifecycleState }));
+    const onTerminateSuccess = vi.fn();
+    render(makeAgent(), { onTerminateSuccess, workActionsInMenu });
+    await flushReact();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')!.click(); });
+    await flushReact();
+    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
+    await flushReact();
+    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(onTerminateSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      id: "agent-1",
+      lifecycleState,
+    }));
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+  });
+
+  it("keeps the detail page open and reports a failed termination", async () => {
+    mockAgentsApi.terminate.mockRejectedValue(new Error("Termination failed"));
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });
     await flushReact();
@@ -319,9 +405,13 @@ describe("AgentActionButtons", () => {
     await flushReact();
     await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
     await flushReact();
-    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+
     expect(onTerminateSuccess).not.toHaveBeenCalled();
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
+    expect(invalidateQueries).not.toHaveBeenCalled();
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Termination failed",
+      tone: "error",
+    }));
   });
 
   it("calls the terminate success handler after terminating an agent", async () => {
@@ -374,7 +464,7 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
   });
 
-  it("rechecks navigation when the form becomes dirty while termination is pending", async () => {
+  it.each([undefined, "terminating", "cleaning_up"] as const)("rechecks unsaved changes before leaving after termination returns %s", async lifecycleState => {
     let resolveTermination!: (agent: Agent) => void;
     mockAgentsApi.terminate.mockReturnValue(new Promise((resolve) => {
       resolveTermination = resolve;
@@ -406,7 +496,7 @@ describe("AgentActionButtons", () => {
       onTerminateSuccess,
     });
     await flushReact();
-    resolveTermination(makeAgent({ status: "terminated" }));
+    resolveTermination(makeAgent({ status: "terminated", lifecycleState }));
     await flushReact();
 
     expect(onBeforeNavigate).toHaveBeenCalledTimes(2);

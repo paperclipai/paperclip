@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { describeError } from "@/api/errors";
 import { toolsApi } from "@/api/tools";
 import { useAccountIdentity } from "@/api/companies-query";
 import { queryKeys } from "@/lib/queryKeys";
@@ -8,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ToolConnection } from "@paperclipai/shared";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function ArcadeDiscoverySetup({ connection, onClose }: { connection: ToolConnection; onClose: () => void }) {
   const [apiKey, setApiKey] = useState("");
@@ -20,9 +22,9 @@ export function ArcadeDiscoverySetup({ connection, onClose }: { connection: Tool
     },
     onSuccess: onClose,
   });
-  return <Dialog open onOpenChange={open => { if (!open && !save.isPending) onClose(); }}><DialogContent>
+  return <Dialog open onOpenChange={open => { if (!open && !save.isPending) onClose(); }}><DialogContent className={ANALYTICS_MASK_CLASS}>
     <DialogHeader><DialogTitle>Sync Arcade accounts</DialogTitle>
-      <DialogDescription>See apps available through “{connection.name}”. Your gateway works without account sync.</DialogDescription>
+      <DialogDescription>See apps available through <span className={ANALYTICS_MASK_CLASS}>“{connection.name}”</span>. Your gateway works without account sync.</DialogDescription>
     </DialogHeader>
     <form className="space-y-4" onSubmit={event => { event.preventDefault(); save.mutate(); }}>
       <div className="space-y-2"><Label htmlFor="arcade-discovery-key">Project API key</Label>
@@ -33,7 +35,7 @@ export function ArcadeDiscoverySetup({ connection, onClose }: { connection: Tool
         <p className="text-xs text-muted-foreground">Use the end-user ID configured for this gateway’s sign-in. This may differ from your email address.</p>
         <Input id="arcade-discovery-user" autoComplete="off" required value={userId} onChange={event => setUserId(event.target.value)} />
       </div>
-      {save.isError ? <p role="alert" className="text-sm text-destructive">{save.error instanceof Error ? save.error.message : "Couldn’t save account sync. Try again."}</p> : null}
+      {save.error ? <p role="alert" className="text-sm text-destructive">{describeError(save.error).body}</p> : null}
       <DialogFooter className="sm:justify-between"><Button type="button" variant="ghost" disabled={save.isPending} onClick={onClose}>Cancel</Button>
         <Button type="submit" disabled={!settled || save.isPending || !apiKey.trim() || !userId.trim()}>{save.isPending ? "Saving…" : "Save and sync"}</Button>
       </DialogFooter>
