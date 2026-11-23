@@ -105,9 +105,9 @@ export function outlineV2Href(responsibilityId: string): string {
 }
 
 /** The collapsed groups' keys as stored; empty when nothing is stored or storage is unavailable. Never throws. */
-export function readCollapsedAreas(): Set<string> {
+export function readCollapsedAreas(scope: string): Set<string> {
   try {
-    const stored = globalThis.localStorage?.getItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY);
+    const stored = globalThis.localStorage?.getItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:${scope}`);
     const parsed: unknown = stored ? JSON.parse(stored) : [];
     return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === "string") : []);
   } catch {
@@ -116,9 +116,9 @@ export function readCollapsedAreas(): Set<string> {
 }
 
 /** Remembers the collapsed groups when storage is available; silently does nothing otherwise. */
-export function writeCollapsedAreas(keys: ReadonlySet<string>): void {
+export function writeCollapsedAreas(keys: ReadonlySet<string>, scope: string): void {
   try {
-    globalThis.localStorage?.setItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY, JSON.stringify([...keys]));
+    globalThis.localStorage?.setItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:${scope}`, JSON.stringify([...keys]));
   } catch {
     // Private windows and blocked storage: the choice lasts for this visit only.
   }

@@ -12,13 +12,14 @@ import {
 import { createRequest, isJsonRpcResponse, JsonRpcCallError, parseMessage, serializeMessage, type JsonRpcResponse } from "../src/protocol.js";
 import { startWorkerRpcHost } from "../src/worker-rpc-host.js";
 
-async function acquire(error: unknown) {
+async function acquire(error: unknown, method: "environmentAcquireLease" | "environmentStartInteractiveSetup" = "environmentAcquireLease") {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const lines = createInterface({ input: stdout });
   const worker = startWorkerRpcHost({ stdin, stdout, plugin: definePlugin({
     async setup() {},
     async onEnvironmentAcquireLease() { throw error; },
+    async onEnvironmentStartInteractiveSetup() { throw error; },
   }) });
   try {
     const response = new Promise<JsonRpcResponse>((resolve) => {
@@ -27,7 +28,7 @@ async function acquire(error: unknown) {
         if (isJsonRpcResponse(message)) resolve(message);
       });
     });
-    stdin.write(serializeMessage(createRequest("environmentAcquireLease", {}, "acquire-test")));
+    stdin.write(serializeMessage(createRequest(method, {}, "acquire-test")));
     const result = await response;
     if (!("error" in result) || !result.error) throw new Error("Expected RPC error");
     return new JsonRpcCallError(result.error);
@@ -57,6 +58,16 @@ describe("environment acquisition refusal diagnostics", () => {
     expect(readEnvironmentAcquireErrorDiagnostic(callError)).toEqual({ httpStatus: 502 });
     // The ownership envelope that drives cleanup reconciliation is unchanged.
     expect(readEnvironmentCreationCleanupError(callError)).toMatchObject({ providerLeaseId: cleanup.providerLeaseId, attemptId: cleanup.attemptId });
+  });
+
+  it("keeps the cleanup envelope and create status when an interactive setup create fails", async () => {
+    const createError = Object.assign(new Error("Bad gateway at https://private.example/api"), { statusCode: 502 });
+    const callError = await acquire(new PluginEnvironmentCreationCleanupError([createError, new Error("lookup failed")],
+      "Daytona sandbox creation failed (HTTP 502); cleanup could not be confirmed for paperclip-create-05f81d77", cleanup),
+    "environmentStartInteractiveSetup");
+    expect(readEnvironmentAcquireErrorDiagnostic(callError)).toEqual({ httpStatus: 502 });
+    expect(readEnvironmentCreationCleanupError(callError)).toMatchObject({ providerLeaseId: cleanup.providerLeaseId, attemptId: cleanup.attemptId });
+    expect(JSON.stringify(callError.data)).not.toContain("private.example");
   });
 
   it("carries a closed connection errno and omits unstructured failures", async () => {

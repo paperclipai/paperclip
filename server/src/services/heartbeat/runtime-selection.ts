@@ -610,12 +610,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         );
       if ("runtimeContext" in nativeExecution) {
         const savedVersions = parseObject(run.contextSnapshot?.skillVersions);
-        const accessibleKeys = new Set(runtimeSkillEntries.filter(entry => entry.sourceStatus !== "missing").map(entry => entry.key));
-        if (nativeExecution.runtimeContext.skills.some(skill =>
-          Object.prototype.hasOwnProperty.call(savedVersions, skill.key) && !accessibleKeys.has(skill.key))) {
+        const currentEntries = new Map(runtimeSkillEntries.map(entry => [entry.key, entry]));
+        const savedSkills = nativeExecution.runtimeContext.skills.filter(skill =>
+          Object.prototype.hasOwnProperty.call(savedVersions, skill.key));
+        if (savedSkills.some(skill => !currentEntries.has(skill.key))) {
           throw new ConfigurationIncompleteFailure("Project skill access changed while this execution was suspended. Restore access or start a new execution.", {
             configurationIncomplete: { reason: "skill_access_changed", actionUrl: "/skills" },
           });
+        }
+        const unprepared = savedSkills.find(skill => currentEntries.get(skill.key)?.sourceStatus === "missing");
+        if (unprepared) {
+          const detail = currentEntries.get(unprepared.key)?.missingDetail?.trim() || "its saved files are unavailable";
+          throw new Error(`Saved skill "${unprepared.key}" could not be prepared for this resumed execution: ${detail}`);
         }
       }
       // Recover only the originally admitted request. A stored idle

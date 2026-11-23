@@ -13,6 +13,7 @@ import {
   type QueuedRunDispatchInput,
 } from "./queued-run-dispatch-order.js";
 import { parseHeartbeatPolicy } from "./timer-policy.js";
+import { QUEUED_RUN_ORDER_CONTEXT_KEYS, cleanContinuationSourceRunId, listCleanContinuationSourceRunIds } from "./queued-run-provenance.js";
 import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "../instance-settings.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -175,8 +176,11 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       return issueId && issueById.has(issueId) && !issueById.get(issueId)?.createdByUserId ? [issueId] : [];
     }))
     : new Set<string>();
+  const cleanSources = await listCleanContinuationSourceRunIds(db, agent.companyId,
+    [...new Set(queuedRuns.flatMap(run => cleanContinuationSourceRunId(run) ?? []))]);
   const facts = queuedRuns.map(run => {
     const issueId = issueIdOf(run);
+    const cleanSourceRunId = cleanContinuationSourceRunId(run);
     const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
     const issue = issueId ? issueById.get(issueId) : null;
     const sourceRunId = sourceRunIdOf(run);
@@ -191,6 +195,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
       personTask: Boolean(issue?.createdByUserId) || Boolean(issueId && personTreeIssueIds.has(issueId)),
+      cleanContinuation: Boolean(cleanSourceRunId && cleanSources.has(cleanSourceRunId)),
     };
   });
   const since = dispatchHistoryStart(facts, now);
@@ -282,10 +287,8 @@ export async function agentQueuedRunLine(
     wakeupRequestId: heartbeatRuns.wakeupRequestId,
     retryOfRunId: heartbeatRuns.retryOfRunId,
     // Only the keys ordering reads; full snapshots are large.
-    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-      'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-      'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
-      'previousRunId', ${heartbeatRuns.contextSnapshot}->'previousRunId')`,
+    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(${sql.join(QUEUED_RUN_ORDER_CONTEXT_KEYS.map(key =>
+      sql`${key}::text, ${heartbeatRuns.contextSnapshot}->${key}::text`), sql`, `)})`,
   }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
       eq(heartbeatRuns.status, "queued"), cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined))
