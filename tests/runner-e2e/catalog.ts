@@ -12,7 +12,8 @@ import { caseReceiptTask, caseReceiptDefinitionDigest, CASE_RECEIPT_BUDGET_CENTS
 import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
 import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
 import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
-import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { nativeActiveStopTasks, nativeProviderLossTasks } from "./native-active-stop-tasks.js";
+import { ANTIGRAVITY_API_KEY_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP_SUITE, ANTIGRAVITY_MODEL_LINEUP_SUITE, buildAntigravityModelLineupSuite, buildAntigravityProfile, buildAntigravityQualificationSuite, type AntigravitySuiteDependencies } from "./antigravity-qualification-cases.js";
 import { CURSOR_CLOUD_SUITE, cursorCloudArtifactTask, cursorCloudStopTask, CURSOR_CLOUD_QUIET_WINDOW_MS, cursorCloudDefinitionDigest } from "./cursor-cloud-cases.js";
 import { kimiLifecycleTasks } from "./kimi-lifecycle-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
@@ -211,7 +212,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi" | "antigravity";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
@@ -1262,6 +1263,24 @@ export const kimiRunnerProfile = nativeProfile({
   modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
 });
 
+const antigravitySuiteDependencies: AntigravitySuiteDependencies = {
+  nativeProfile, localEnvironment, daytonaWarmEnvironment,
+  daytonaEnvironment: runnerEnvironments.find(environment => environment.id === "daytona")!,
+  runnerTasks, localIntegrityTasks, extendedHarnessFileTask, chatHardeningTasks, nativeActiveStopTasks, nativeProviderLossTasks,
+  // Workspace-file continuity: ACP collects changed agent files only after
+  // provider retirement, so the managed-home variant is not used here.
+  warmFollowupTask: { ...daytonaWarmContinuityTask,
+    buildPrompt: nonce => warmTurnInstructions(1, nonce),
+    buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
+    turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } },
+};
+/** Google Antigravity through a Gemini API key; pending until the qualification flip. */
+export const antigravityRunnerProfile = buildAntigravityProfile(antigravitySuiteDependencies);
+/** Chat evals under Antigravity are opt-in: name the profile explicitly. */
+const antigravityChatProfile: RunnerProfileFixture = { ...chatFeatureProfile(antigravityRunnerProfile), explicitOnly: true };
+/** Instructions and assigned skills under the production default; opt-in by profile. */
+const antigravityNativeCompletionProfile: RunnerProfileFixture = { ...nativeCompletionProfile(antigravityRunnerProfile), explicitOnly: true };
+
 /**
  * ACPX facades admitted only for the reliability long-silent-command case. Like the
  * rolling-deployment matrix, they run as ordinary released profiles: a pending
@@ -1299,7 +1318,7 @@ function everydayReliabilityExcludedIds(suiteId: string): string[] {
 }
 
 
-const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
+const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile, antigravityRunnerProfile]
   .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
     && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
   .map(original => {
@@ -1585,15 +1604,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Lose the owned Cursor runtime while a native mutation remains unanswered; require a visible failed run, closed unanswerable input, stale-answer refusal and independent retirement with no effects or replay.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
     environments: runnerEnvironments,
-    tasks: [{
-      id: "pending-permission-provider-loss", label: "Owned runtime loss with pending permission", groups: [], workMode: "standard", flow: "native_provider_loss",
-      expectedRunCount: 1, attemptTimeoutMs: { local: 300_000, daytona: 300_000 }, turnTimeoutMs: 120_000,
-      expectedTerminalState: { issue: "blocked", run: "failed" },
-      buildTitle: nonce => `Native provider loss ${nonce}`,
-      buildVisibleMarker: nonce => `NATIVE-PROVIDER-LOSS-${nonce}`,
-      buildPrompt: () => "Attempt the supplied exact native shell operation once and leave its permission callback unanswered. Do not retry, use another tool or path, answer your own permission, call paperclip_finish, or claim completion. The qualification fixture will deliberately lose the isolated runtime before any approval.",
-      buildMatchers: () => [],
-    }], expectedMatrixSize: 2,
+    tasks: nativeProviderLossTasks, expectedMatrixSize: 2,
     definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", fault: "observed-per-turn-run-root-loss", remoteFaultAuthority: "pidfd-start-ticks-boot-id", replayAllowed: false },
   },
 
@@ -1672,6 +1683,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       remoteLifecycleBootstrap: "observer-bound-scoped-get-task-context-dual-turn-workspace-binding-full-semantic-command-ack-and-bounded-native-receipt",
       nativeWriteLifecycle: "pending-permission-stop-and-exact-native-worker-loss", nativeWriteCleanup: "continuous-no-effects-through-owned-tree-retirement" },
   },
+  buildAntigravityQualificationSuite(antigravitySuiteDependencies),
+  buildAntigravityModelLineupSuite(antigravitySuiteDependencies, { id: ANTIGRAVITY_MODEL_LINEUP_SUITE, label: "Google Antigravity API-key model lineup",
+    models: ANTIGRAVITY_API_KEY_LINEUP, route: "gemini-api-key" }),
+  buildAntigravityModelLineupSuite(antigravitySuiteDependencies, { id: ANTIGRAVITY_GEMINI4_LINEUP_SUITE, label: "Google Antigravity Gemini 4 model lineup",
+    models: ANTIGRAVITY_GEMINI4_LINEUP, route: "gemini-4 (billed key, subscription or Agent Platform)" }),
   {
     id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
     description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
@@ -1808,8 +1824,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "native-completion", label: "Native completion guidance", manualOnly: true,
     description: "Production-default assigned-skill document completion and concrete whole-task blocking, with independent native result/final ordering.",
     groups: ["native", "local"],
-    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile),
-    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 6,
+    profiles: [...runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile), antigravityNativeCompletionProfile],
+    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 8,
     definitionMetadata: { version: 1, fixtureDigest: nativeCompletionDefinitionDigest(), instructions: "unchanged-master-production-default",
       providerTurns: 6, maximumAttemptsPerCell: 1, automaticRetryPolicy: "single_attempt", budgetMonthlyCents: NATIVE_COMPLETION_BUDGET_CENTS,
       grading: "original-assigned-skill-durable-document-plus-native-disposition-and-observable-final-order", scheduling: "explicit-only" },
@@ -1892,8 +1908,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: [chatFeatureExecutionProfile,
       chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
         provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
-      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile)],
-    environments: [localEnvironment], tasks: [...chatFeatureTasks, ...chatCatalogTasks], expectedMatrixSize: 5 + chatCatalogTasks.length,
+      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile), antigravityChatProfile],
+    environments: [localEnvironment], tasks: [...chatFeatureTasks, ...chatCatalogTasks], expectedMatrixSize: 5 + chatCatalogTasks.length + chatFeatureTasks.length + chatCatalogTasks.length,
     excludedExecutionIds: [
       ...chatCatalogTasks.map(task => `chat-features.runner-codex-subscription.local.${task.id}`),
       ...[...chatFeatureTasks, ...chatCatalogTasks].filter(task => task.id !== "create-backlog").map(task => `chat-features.runner-opencode-deepseek-1017.local.${task.id}`),

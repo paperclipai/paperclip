@@ -367,6 +367,22 @@ it("preserves a provider explanation on a failed task without changing retry aut
     .not.toHaveProperty("providerFailure");
 });
 
+it("asks for billing action for an exhausted provider quota without inventing a retry time", () => {
+  const failed = { ...run, errorCode: "native_provider_usage_limit", resultJson: { providerFailure: {
+    schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+    category: "quota_exhausted", providerCode: "insufficient_quota", message: "Check your plan and billing details.",
+    retryability: "requires_action",
+  } } };
+  const input = { run: failed, agent, paused: false, approval: false };
+  expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "waiting_for_user", responsibility: "user",
+    userAction: "provider_billing", nextRetryAt: null });
+  expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+  expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  expect(projectTaskInterruption(issue, { ...input, run: { ...failed, resultJson: { providerFailure: {
+    ...failed.resultJson.providerFailure, retryAt: new Date(Date.now() + 60_000).toISOString(),
+  } } } })).not.toMatchObject({ userAction: "provider_billing" });
+});
+
 describe("task project-access interruption", () => {
   it("explains a project denial without offering a futile retry", () => {
     expect(projectTaskInterruption(issue, { run, agent, paused: false, approval: false })).toMatchObject({

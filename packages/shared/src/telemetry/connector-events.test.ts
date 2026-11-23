@@ -5,6 +5,8 @@ import {
   trackConnectionCreated,
   trackConnectionUpdated,
   trackConnectionInvoked,
+  trackConnectionAppLinked,
+  trackConnectionAppRequested,
 } from "./events.js";
 import type { TelemetryState } from "./types.js";
 
@@ -104,6 +106,31 @@ describe("registered connector events against the real TelemetryClient", () => {
     expect(client.isRegisteredEventName("connection.updated")).toBe(true);
     expect(client.isRegisteredEventName("connection.invoked")).toBe(true);
     expect(client.isRegisteredEventName("project.created")).toBe(true);
+  });
+
+  it("sends server_domain and the aggregator app events as registered events", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    const { client } = makeClient();
+    expect(client.isRegisteredEventName("connection.app_linked")).toBe(true);
+    expect(client.isRegisteredEventName("connection.app_requested")).toBe(true);
+
+    trackConnectionInvoked(client, {
+      connector_key: "custom",
+      transport: "mcp_remote",
+      status: "succeeded",
+      origin: "agent",
+      server_domain: "smithery.ai",
+    });
+    trackConnectionAppLinked(client, { provider: "composio", app: "github" });
+    trackConnectionAppRequested(client, { provider: "arcade", app: "other", origin: "agent", outcome: "needs_auth" });
+    await client.flush();
+
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.events.map((event: { name: string; dimensions: unknown }) => [event.name, event.dimensions])).toEqual([
+      ["connection.invoked", { connector_key: "custom", transport: "mcp_remote", status: "succeeded", origin: "agent", server_domain: "smithery.ai" }],
+      ["connection.app_linked", { provider: "composio", app: "github" }],
+      ["connection.app_requested", { provider: "arcade", app: "other", origin: "agent", outcome: "needs_auth" }],
+    ]);
   });
 
   it("a disabled client drops even registered events", async () => {

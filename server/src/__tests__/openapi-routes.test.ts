@@ -119,6 +119,7 @@ const apiPrefixes: Record<string, string> = {
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
   "workload-identity.ts": "/api",
+  "agent-setup-progress.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -216,6 +217,7 @@ function normalizeExpressPath(routePath: string) {
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
   if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
+  if (file === "agent-setup-progress.ts" && routePath.startsWith("/api/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -424,6 +426,21 @@ describe("openapi routes", () => {
     for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
+  });
+  it("documents the agent's setup progress routes as needing the checklist's bearer token", () => {
+    const spec = buildOpenApiSpec() as any;
+    expect(spec.components.securitySchemes.AgentSetupTokenAuth).toMatchObject({ type: "http", scheme: "bearer" });
+    for (const [path, method] of [
+      ["/api/agent-setup-progress/{id}/checklist", "put"],
+      ["/api/agent-setup-progress/{id}/items/{key}", "post"],
+      ["/api/agent-setup-progress/{id}/finish", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security, `${method} ${path}`).toEqual([{ AgentSetupTokenAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "setup_token" });
+      expect(operation.responses).toHaveProperty("401");
+    }
+    expect(spec.paths["/api/agent-setup-progress/{id}"].get["x-paperclip-authorization"]).toEqual({ actor: "board" });
   });
   it("documents connected-app skill review as board only and file reads as agent-run only", () => {
     const spec = buildOpenApiSpec() as any;

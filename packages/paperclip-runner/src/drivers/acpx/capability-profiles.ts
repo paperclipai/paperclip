@@ -1,4 +1,10 @@
-import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import { QUALIFIED_ACPX_PROFILES, type QualifiedAcpxAgent } from "./qualified-profiles.js";
+
+/** Antigravity's interactive claims follow its declaration: 1.5.2 questions
+ * arrive as `interaction_*` permission callbacks that the admission guard turns
+ * into forms, and every other permission goes through the interactive runner
+ * policy. They take effect with the qualification flip and not before. */
+const ANTIGRAVITY_RELEASED = QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus !== "pending";
 
 export interface AcpxCapabilityProfile {
   readonly displayName: string;
@@ -22,7 +28,8 @@ export interface AcpxCapabilityProfile {
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
   antigravity: {
     displayName: "Google Antigravity", qualification: "pending", models: "unverified",
-    permissions: "unverified", questions: "not-exposed", plans: "semantic-only", tools: "unverified",
+    permissions: ANTIGRAVITY_RELEASED ? "interactive" : "unverified", questions: ANTIGRAVITY_RELEASED ? "form" : "not-exposed",
+    plans: "semantic-only", tools: "unverified",
     recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
     artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
   },

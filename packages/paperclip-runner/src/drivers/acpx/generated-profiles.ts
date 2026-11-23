@@ -1,4 +1,4 @@
-// Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.
+// Generated from acpx-profiles.json, cursor-distributions.json and antigravity-distributions.json. Do not edit.
 export const QUALIFIED_ACPX_VERSION = "0.22.0" as const;
 export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
@@ -11,10 +11,10 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agent": "antigravity",
     "agentProfileVersion": 1,
     "agentServerPackage": "native:antigravity-acp",
-    "agentServerVersion": "1.4.3",
+    "agentServerVersion": "1.5.2",
     "agentRuntimePackage": "native:antigravity-localharness",
-    "agentRuntimeVersion": "1.4.3",
-    "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+    "agentRuntimeVersion": "1.5.2",
+    "commandDigest": "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
     "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   },
@@ -129,10 +129,26 @@ export const CURSOR_DISTRIBUTION_PINS = {
   }
 } as const;
 
+export const ANTIGRAVITY_RUNTIME_VERSION = "1.5.2" as const;
+
 export const ANTIGRAVITY_DISTRIBUTION_PINS = {
   "darwin-arm64": {
-    "closureSha256": "044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a",
+    "closureSha256": "ab9df40a64806a8e1812234ce5331e04d1c6b5f8c7e5bdbb456cd645e58c5aad",
     "executable": "agy_acp_server.par",
     "args": []
+  },
+  "linux-x64": {
+    "closureSha256": "be35d65a32667550b5474588d705e6987a813e2fa619cf5db7d82d141c3c05fb",
+    "executable": "agy_acp_server.par",
+    "args": [
+      "--uid="
+    ]
+  },
+  "linux-arm64": {
+    "closureSha256": "46c36293779283c1f933eb438a143d116421a331f614601c754f1b94d9dc171a",
+    "executable": "agy_acp_server.par",
+    "args": [
+      "--uid="
+    ]
   }
 } as const;

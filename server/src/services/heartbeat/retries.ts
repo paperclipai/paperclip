@@ -9,6 +9,7 @@ import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
+import { isProviderQuotaActionRequired } from "../provider-quota-reset.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
   isWorkspaceValidationFailedRun,
@@ -510,6 +511,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preserveWakeContext?: boolean;
     },
   ) {
+    if (isProviderQuotaActionRequired(run, opts?.now)) return { outcome: "not_scheduled" as const,
+      reason: "Review the provider account's billing and usage allowance before retrying.",
+      issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     const preparation = parseObject(run.resultJson?.executionRecovery);
     if (typeof preparation.preparationSettledAt === "string" && await isInterruptedNativePreparation(db, run)) {
       const children = await db.select().from(heartbeatRuns).where(and(

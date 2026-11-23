@@ -13,7 +13,7 @@ import { isProductDeliveredSecret, trackedPrivateSecrets } from "./private-diagn
 import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { runChatBoundaryFlow } from "./chat-boundary-flow.js";
 import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
-import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
+import { candidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
 import { captureTaskChat, type TaskChatEvidence } from "./task-chat.js";
@@ -643,9 +643,9 @@ for (const execution of executions) {
     }) : undefined;
     const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
     const onCompanyCreated = async (id: string) => {
-      const admission = kimiCandidateAdmissionForExecution(execution, id);
+      const admission = candidateAdmissionForExecution(execution, id);
       if (admission) {
-        await restartIsolatedPaperclipServer({ api, requestId: `kimi-startup-${nonce}`,
+        await restartIsolatedPaperclipServer({ api, requestId: `${admission.agent}-startup-${nonce}`,
           kimiCandidateAdmission: admission, deadlineAt: startedAtMs + deadlineMs });
         if (execution.environment.id === "daytona") {
           await waitForFixtureDaytonaProvider(api, { companyId: id, deadlineAt: startedAtMs + deadlineMs });
