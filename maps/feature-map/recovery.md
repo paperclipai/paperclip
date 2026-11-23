@@ -303,8 +303,8 @@ and the revised behavior still needs live qualification.
 
 ### `run-detail`
 
-Automated: run workspace recovery
-tests this host; it is component coverage, not an end-to-end repair.
+Automated: none for mocked UI (`RunWorkspaceRecoverySurface` component tests were
+removed; verify the run workspace recovery host manually).
 
 Manual: prepare a failed run with error code `workspace_validation_failed`, a
 linked source task, and a live `workspace_validation` recovery action on that
@@ -335,11 +335,10 @@ provider stop reply, and verifies that HTTP Retry cannot admit a successor until
 the real temporary files are restored. Duplicate requests then admit one queued
 turn. GitHub and Telegram admission also retain the exact pending recovery.
 
-Automated: disposition notices
-tests pending/error/gated states and waiting for the real retry acknowledgement.
-The recovery-card suite covers workspace divergence, reissue, reconcile, and
-confirmation. Workspace export
-covers quiet restoration, legacy/operator assistance and resolved states.
+Automated: [IssueRecoveryActionCard](../../ui/src/components/IssueRecoveryActionCard.test.tsx)
+covers workspace divergence, reissue, reconcile, and confirmation (mocked UI tests
+for `DispositionRecoveryNotice` and `WorkspaceExportRecovery` were removed; verify
+those notice and export states via Storybook/manual checks).
 
 For a retained legacy or native file hold, open the source task after its recovery
 action has resolved but its files still need recovery. The shared task projection
@@ -348,10 +347,9 @@ infrastructure attention card. Unknown external outcomes remain fenced internall
 An authorized board operator can use the resolution API to record verified files
 and a backup link without changing task status or starting another run. The
 server independently validates the original stopped-execution receipt. Agent
-Chat retains the hold rather than suggesting another message. The
-notice and
-[repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
-cover quiet live recovery, read-only access, stale or missing stop proof,
+Chat retains the hold rather than suggesting another message. The [repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
+covers quiet live recovery, read-only access, stale or missing stop proof,
+(mocked `ExecutionBlockerNotice` UI tests were removed; verify notice UI manually) and
 source-only repair, and preserved task status. These tests use fixtures; separately
 verify original files and their attached artifact before recording a real repair.
 
@@ -478,7 +476,7 @@ Capability ID: `recovery/exhaustion`.
 Scope: ui
 Storybook: Exhausted/overdue attempts, operator retry pending/error, blocked authority/gate and specific escalation.
 Production: Inspect durable attempt bounds and actual eligible retry/repair; acknowledgment alone does not prove continued execution.
-Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), DispositionRecoveryNotice.test.tsx, [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
+Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
 
 #### `unknown-outcome`
 

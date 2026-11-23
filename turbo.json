@@ -79,25 +79,17 @@
     },
     "//#ci:chat": {
       "inputs": [
-        "server/src/__tests__/chat-channels.integration.test.ts",
-        "server/src/__tests__/helpers/slack-cloud/**",
-        "server/src/__tests__/helpers/*chat*",
-        "server/src/services/chat-channels/**",
-        "server/src/services/*chat*",
-        "server/src/routes/*chat*",
-        "server/src/middleware/*chat*",
-        "server/src/modules/wake-queue/**",
-        "server/src/chat-webhook-public-url.ts",
-        "server/src/services/delivery-work-*",
-        "server/src/services/heartbeat/**",
-        "server/src/services/heartbeat.ts",
-        "server/src/services/native-runtime/**",
-        "server/src/services/task-retry.ts",
-        "server/src/services/fast-responses.ts",
-        "server/src/services/fast-response-provider.ts",
-        "packages/db/src/schema/chat_*",
-        "packages/shared/src/types/chat-*",
-        "packages/shared/src/validators/chat-*"
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
       ],
       "outputs": [],
       "cache": true
@@ -155,6 +147,7 @@
       "inputs": [
         "server/**",
         "packages/**",
+        "tests/runner-e2e/**",
         "ui/src/lib/**",
         "ui/src/api/**",
         "ui/src/types/**",
@@ -178,7 +171,9 @@
       "inputs": [
         "packages/paperclip-runner/**",
         "packages/paperclip-eval-kernel/**",
-        "packages/adapters/codex-local/**"
+        "packages/adapters/codex-local/**",
+        "packages/adapter-utils/**",
+        "tests/runner-e2e/**"
       ],
       "outputs": [],
       "cache": false

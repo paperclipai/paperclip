@@ -3,10 +3,17 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 import { invocationEnv } from "./ci-profile/record.mjs";
 import { vitestRetryArgs } from "./ci/vitest-retry.mjs";
+import {
+  PR_WORKFLOW_NAME,
+  isNightlyExclusionEnabled,
+  loadNightlyOnlySuites,
+  resolveNightlyOnlySuitesPath,
+} from "./ci/nightly-only-suites.mjs";
+import { runUnderSharedPostgres, shouldWrapWithSharedPostgres } from "./ci/vitest-shared-postgres.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -120,57 +127,20 @@ const nativeRunnerSuites = [
 // caller of the same group keeps the suite in the server shards, so a renamed or
 // unknown workflow degrades to today's slower-but-covered behavior rather
 // than dropping the suite.
-const prWorkflowName = "PR";
+const prWorkflowName = PR_WORKFLOW_NAME;
 const nativeRunnerSuiteRunsInRustCachedLane = process.env.GITHUB_WORKFLOW === prWorkflowName;
 const withoutChatExcludedSuites = nativeRunnerSuiteRunsInRustCachedLane
   ? [chatSuite, ...nativeRunnerSuites]
   : [chatSuite];
-const nightlyOnlySuitesPath = process.env.PAPERCLIP_CI_NIGHTLY_SUITES_FILE?.trim()
-  ? path.resolve(repoRoot, process.env.PAPERCLIP_CI_NIGHTLY_SUITES_FILE.trim())
-  : path.join(scriptsDir, "ci", "nightly-only-suites.json");
+const nightlyOnlySuitesPath = resolveNightlyOnlySuitesPath({ repoRoot });
 const strictlySerialServerTests = new Set([]);
 
-function loadNightlyOnlySuites(manifestPath) {
-  if (!existsSync(manifestPath)) {
-    return new Set();
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
-  } catch (error) {
-    fail(`Failed to parse nightly-only suites manifest ${manifestPath}: ${error.message}`);
-  }
-  const entries = Array.isArray(parsed) ? parsed : parsed?.suites;
-  if (!Array.isArray(entries)) {
-    fail(`Nightly-only suites manifest ${manifestPath} must contain a "suites" array.`);
-  }
-  const suites = new Set();
-  for (const entry of entries) {
-    const suitePath = typeof entry === "string" ? entry : entry?.path;
-    if (typeof suitePath !== "string" || suitePath.trim() === "") {
-      fail(`Invalid entry in nightly-only suites manifest ${manifestPath}.`);
-    }
-    suites.add(suitePath.trim().split(path.sep).join("/"));
-  }
-  return suites;
+let allNightlyOnlySuites;
+try {
+  allNightlyOnlySuites = loadNightlyOnlySuites(nightlyOnlySuitesPath);
+} catch (error) {
+  fail(error.message);
 }
-
-function isNightlyExclusionEnabled(env = process.env) {
-  const fullOverride = env.PAPERCLIP_CI_FULL?.trim().toLowerCase();
-  if (fullOverride === "1" || fullOverride === "true") {
-    return false;
-  }
-  const excludeOverride = env.PAPERCLIP_CI_EXCLUDE_NIGHTLY?.trim().toLowerCase();
-  if (excludeOverride === "0" || excludeOverride === "false") {
-    return false;
-  }
-  if (excludeOverride === "1" || excludeOverride === "true") {
-    return true;
-  }
-  return env.GITHUB_WORKFLOW === prWorkflowName;
-}
-
-const allNightlyOnlySuites = loadNightlyOnlySuites(nightlyOnlySuitesPath);
 const nightlyExclusionActive = isNightlyExclusionEnabled();
 const activeNightlyOnlySuites = nightlyExclusionActive ? allNightlyOnlySuites : new Set();
 
@@ -604,18 +574,9 @@ function chatShardWorkers(index, count) {
   }));
 }
 
-function resolveTsxLoaderPath() {
-  const candidates = [
-    path.join(repoRoot, "packages", "db", "node_modules", "tsx", "dist", "loader.mjs"),
-    path.join(repoRoot, "node_modules", "tsx", "dist", "loader.mjs"),
-    path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "loader.mjs"),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
 function groupUsesPostgres(opts, sel) {
   if (sel) {
-    return Boolean(sel["@paperclipai/server"] || sel["@paperclipai/db"]);
+    return Boolean(sel["@paperclipai/server"]?.length || sel["@paperclipai/db"]?.length);
   }
   if (opts.mode === serializedModeName || opts.mode === allModeName) {
     return true;
@@ -651,70 +612,6 @@ function hasScheduledSuitesForRun(opts, sel) {
     return files.length > 0;
   }
   return true;
-}
-
-function shouldWrapWithSharedPostgres(opts, sel, env = process.env) {
-  if (opts.dryRun) return false;
-  if (env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()) return false;
-  if (hasSharedTestDatabase) return false;
-  const sharedOverride = env.PAPERCLIP_TEST_POSTGRES_SHARED?.trim().toLowerCase();
-  if (sharedOverride === "0" || sharedOverride === "false") return false;
-  // Mocked-pnpm node:test harnesses run under NODE_TEST_CONTEXT; don't boot a
-  // real Postgres cluster for unit tests unless explicitly opted in.
-  if (env.NODE_TEST_CONTEXT && sharedOverride !== "1" && sharedOverride !== "true") return false;
-  if (!groupUsesPostgres(opts, sel)) return false;
-  if (!hasScheduledSuitesForRun(opts, sel)) return false;
-  const wrapperScript = path.join(repoRoot, "packages", "db", "src", "test-postgres-command.ts");
-  if (!existsSync(wrapperScript)) return false;
-  return resolveTsxLoaderPath() !== null;
-}
-
-async function runUnderSharedPostgres() {
-  const tsxLoader = resolveTsxLoaderPath();
-  const wrapperScript = path.join(repoRoot, "packages", "db", "src", "test-postgres-command.ts");
-  const child = spawn(
-    process.execPath,
-    [
-      "--import",
-      pathToFileURL(tsxLoader).href,
-      wrapperScript,
-      "--",
-      process.execPath,
-      fileURLToPath(import.meta.url),
-      ...process.argv.slice(2),
-    ],
-    {
-      cwd: repoRoot,
-      env: process.env,
-      stdio: "inherit",
-    },
-  );
-  const forwardSignal = (signal) => {
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill(signal);
-      } catch {
-        // Ignore ESRCH if child already exited.
-      }
-    }
-  };
-  process.on("SIGINT", forwardSignal);
-  process.on("SIGTERM", forwardSignal);
-  process.on("SIGHUP", forwardSignal);
-  try {
-    const status = await new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", (code, signal) => {
-        if (signal) resolve(128 + (os.constants.signals[signal] ?? 1));
-        else resolve(code ?? 1);
-      });
-    });
-    process.exitCode = status;
-  } finally {
-    process.removeListener("SIGINT", forwardSignal);
-    process.removeListener("SIGTERM", forwardSignal);
-    process.removeListener("SIGHUP", forwardSignal);
-  }
 }
 
 async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null, additionalExcludedSuites = []) {
@@ -933,6 +830,11 @@ if (selection?.["@paperclipai/server"]) {
     if (!owned.has(file)) fail(`Selected test belongs to another server lane: ${file}`);
   }
 }
+if (selection && activeNightlyOnlySuites.size > 0) {
+  for (const [project, files] of Object.entries(selection)) {
+    selection[project] = files.filter((file) => !activeNightlyOnlySuites.has(file));
+  }
+}
 if (selection && options.dryRun) {
   writeFileSync(1, JSON.stringify({ selection }));
   process.exit(0);
@@ -1029,8 +931,17 @@ if (options.dryRun) {
 }
 
 try {
-  if (shouldWrapWithSharedPostgres(options, selection)) {
-    await runUnderSharedPostgres();
+  if (shouldWrapWithSharedPostgres({
+    repoRoot,
+    dryRun: options.dryRun,
+    hasSharedTestDatabase,
+    usesPostgres: groupUsesPostgres(options, selection),
+    hasScheduledSuites: hasScheduledSuitesForRun(options, selection),
+  })) {
+    await runUnderSharedPostgres({
+      repoRoot,
+      runnerScriptPath: fileURLToPath(import.meta.url),
+    });
   } else if (selection) {
     for (const [project, files] of Object.entries(selection)) {
       if (files.length === 0) continue;

@@ -41,13 +41,13 @@ test("a UI component retains browser and build coverage without unrelated server
   assert.equal(result.jobs.general_tests.selected, 2);
 });
 
-test("ordinary app PRs skip canary dry run, runner support, docker context, chat and runner package lanes", () => {
+test("ordinary app PRs skip canary dry run, runner support, docker context and runner package lanes", () => {
   const serverRoute = plan(["server/src/routes/issues.ts"]);
   const tasks = selectedTasks(serverRoute);
-  for (const required of ["ci:server", "ci:serialized", "ci:build", "ci:typecheck", "ci:e2e", "ci:workspaces-b", "ci:runner-static", "ci:runner-vitest"]) {
+  for (const required of ["ci:server", "ci:chat", "ci:serialized", "ci:build", "ci:typecheck", "ci:e2e", "ci:workspaces-b", "ci:runner-static", "ci:runner-vitest"]) {
     assert.ok(tasks.has(required), `expected ${required}`);
   }
-  for (const skipped of ["ci:canary", "ci:runner-e2e-support", "ci:docker", "ci:chat", "ci:workspaces-a", "ci:db", "ci:runner-package", "ci:runner-rust", "ci:sandbox-providers"]) {
+  for (const skipped of ["ci:canary", "ci:runner-e2e-support", "ci:docker", "ci:workspaces-a", "ci:db", "ci:runner-package", "ci:runner-rust", "ci:sandbox-providers"]) {
     assert.ok(!tasks.has(skipped), `unexpected ${skipped}`);
   }
   // Feature PR adding a table, route, and UI page still skips non-PR release/runner bloat.
@@ -55,7 +55,7 @@ test("ordinary app PRs skip canary dry run, runner support, docker context, chat
   assert.equal(selected(featurePr, "canary_dry_run"), false);
   assert.equal(selected(featurePr, "verify_runner_e2e_support"), false);
   assert.equal(selected(featurePr, "docker_context_integrity"), false);
-  assert.equal(selectedTasks(featurePr).has("ci:chat"), false);
+  assert.equal(selectedTasks(featurePr).has("ci:chat"), true);
   assert.equal(selectedTasks(featurePr).has("ci:runner-package"), false);
   assert.equal(selectedTasks(featurePr).has("ci:db"), true);
   assert.equal(selectedTasks(featurePr).has("ci:workspaces-a"), true);
@@ -72,16 +72,17 @@ test("canary dry run, runner support, chat, docker and test-only edits select th
     "server/src/services/native-runtime/canonical.ts", ".github/workflows/pr-trusted.yml"]) {
     assert.equal(selected(plan([file]), "verify_runner_e2e_support"), true, `runner-e2e-support: ${file}`);
   }
-  for (const file of ["server/src/services/chat-channels/github/retry.ts", "packages/db/src/schema/chat_channels.ts",
-    "server/src/routes/board-chat.ts", "server/src/services/heartbeat.ts"]) {
+  for (const file of ["server/src/services/chat-channels/github/retry.ts", "server/src/services/connectors/slack-access.ts",
+    "packages/db/src/schema/chat_channels.ts", "server/src/routes/board-chat.ts", "server/src/services/heartbeat.ts"]) {
     assert.equal(selectedTasks(plan([file])).has("ci:chat"), true, `chat: ${file}`);
   }
   for (const file of ["Dockerfile", ".dockerignore", "packages/paperclip-runner/src/index.ts"]) {
     assert.equal(selected(plan([file]), "docker_context_integrity"), true, `docker: ${file}`);
   }
   assert.deepEqual([...selectedTasks(plan(["tests/e2e/smoke.spec.ts"]))].sort(), ["ci:e2e", "ci:typecheck"]);
-  assert.deepEqual([...selectedTasks(plan(["tests/runner-e2e/catalog.test.ts"]))].sort(), ["ci:runner-e2e-support", "ci:typecheck"]);
+  assert.deepEqual([...selectedTasks(plan(["tests/runner-e2e/catalog.test.ts"]))].sort(), ["ci:runner-e2e-support", "ci:runner-package", "ci:runner-static", "ci:typecheck"]);
   assert.equal(selectedTasks(plan(["packages/paperclip-runner/src/index.ts"])).has("ci:runner-package"), true);
+  assert.equal(selectedTasks(plan(["packages/adapter-utils/src/github-launcher.ts"])).has("ci:runner-package"), true);
   assert.equal(selectedTasks(plan(["cli/src/commands/onboard.ts"])).has("ci:workspaces-a"), true);
   assert.equal(selected(plan(["cli/src/commands/onboard.ts"]), "verify_paperclip_runner"), false);
   assert.equal(selectedTasks(plan(["packages/db/src/schema/issues.ts"])).has("ci:workspaces-a"), true);
