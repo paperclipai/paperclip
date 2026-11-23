@@ -236,6 +236,38 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
   } catch { return null; }
 }
 
+/** Provider refusals of one request that a later request can clear unchanged. */
+const TRANSIENT_PROVIDER_REFUSALS: ReadonlySet<string> = new Set<ProviderFailure["category"]>(["overloaded", "rate_limit"]);
+
+/**
+ * True when a failed turn already has an accepted done report (the agent's
+ * finish) and its only failure is a transient provider refusal of a later
+ * request in that turn. The finished work is then the run's outcome: retrying
+ * would repeat it and post its reply again. Other accepted dispositions keep
+ * the bounded capacity retry. Anything else, including a
+ * model rejection, an exhausted allowance, a rejected sign-in or an untyped
+ * failure, stays a failure. Reads only the committed terminal's typed failure.
+ * Callers pass a terminal that belongs to an accepted run result.
+ */
+export function nativeAcceptedResultOutlivesProviderFailure(input: {
+  terminal: Pick<PrpTerminalState, "turnTerminalState" | "runTerminalState" | "reportedWorkDisposition">;
+  /** `forTerminal`: the classified failure, if any. */
+  providerFailure: { errorCode: string } | null;
+  /** `providerFailureForTerminal`: the typed provider explanation, if any. */
+  providerExplanation: ProviderFailure | null;
+}): boolean {
+  if (input.terminal.runTerminalState !== "failed" || input.terminal.turnTerminalState !== "failed" ||
+      input.terminal.reportedWorkDisposition !== "done") return false;
+  if (input.providerFailure) return input.providerFailure.errorCode === NATIVE_PROVIDER_OVERLOADED_CODE;
+  const failure = input.providerExplanation;
+  return failure !== null && failure.retryability === "transient" && TRANSIENT_PROVIDER_REFUSALS.has(failure.category);
+}
+
+/** The terminal an accepted result keeps after a transient provider refusal. */
+export function nativeAcceptedResultTerminal<T extends PrpTerminalState>(terminal: T): T {
+  return { ...terminal, turnTerminalState: "completed", runTerminalState: "succeeded" };
+}
+
 /** Observe only events accepted by the bound control-plane persistence port. */
 export function createNativeProviderFailureObservation(
   provider: { kind: string; model?: string | null; agent?: string },

@@ -32,6 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { nativeAcceptedResultOutlivesProviderFailure } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
@@ -1571,10 +1572,20 @@ export async function finalizeNativeRun(input: {
   const envelope = record(resultRow.resultJson);
   const result = record(envelope.result);
   const terminal = record(envelope.terminal);
-  const terminalState = terminal.runTerminalState;
-  if (!["succeeded", "failed", "cancelled"].includes(String(terminalState))) {
+  if (!["succeeded", "failed", "cancelled"].includes(String(terminal.runTerminalState))) {
     throw new Error("native_finalization_invalid");
   }
+  const failureEvidence = await readPersistedNativeFailureEvidence(
+    input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
+  );
+  // An accepted finish followed only by a transient provider refusal is the
+  // run's outcome, as the executor decided for the live run.
+  const acceptedDespiteProviderFailure = nativeAcceptedResultOutlivesProviderFailure({
+    terminal: envelope.terminal as PrpTerminalState,
+    providerFailure: failureEvidence.providerFailure,
+    providerExplanation: failureEvidence.providerExplanation,
+  });
+  const terminalState = acceptedDespiteProviderFailure ? "succeeded" : terminal.runTerminalState;
 
   await input.db
     .update(nativeRunFinalizations)
@@ -1735,9 +1746,8 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
-      input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
-    );
+    const { providerFailure, turnFailure, providerExplanation } = acceptedDespiteProviderFailure
+      ? { providerFailure: null, turnFailure: null, providerExplanation: null } : failureEvidence;
     const ownsProviderFailureDecision =
       (!authoritativeIssue.executionRunId || authoritativeIssue.executionRunId === run.id) &&
       (reviewContext ? nativeReview?.interaction.status === "pending"

@@ -122,7 +122,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
-import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
+import { nativeAcceptedResultOutlivesProviderFailure, nativeAcceptedResultTerminal, createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
@@ -13193,7 +13193,11 @@ async function executePaperclipNativeSessionAttempt(
       }
       await input.onLog?.("stderr", "[paperclip-runner] managed credential refresh failed; provider session retired.\n");
     }
-    if (native.terminal.runTerminalState === "succeeded") {
+    if (native.terminal.runTerminalState === "succeeded" || nativeAcceptedResultOutlivesProviderFailure({
+      terminal: native.terminal,
+      providerFailure: providerFailureObservation.forTerminal(native.turnId, native.terminal),
+      providerExplanation: providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal),
+    })) {
       // A truncated, verified external-chat wake cannot settle from the
       // provider's partial inline prompt. The run-scoped reader records a
       // durable complete-page receipt; this fence revalidates that exact
@@ -14227,6 +14231,14 @@ async function executePaperclipNativeSessionAttempt(
       logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
+  const classifiedProviderFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
+  const typedProviderFailure = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
+  // The agent's finish was accepted before the provider refused a later
+  // request in the same turn: the run succeeded with that result.
+  const acceptedDespiteProviderFailure = nativeAcceptedResultOutlivesProviderFailure({
+    terminal: native.terminal, providerFailure: classifiedProviderFailure, providerExplanation: typedProviderFailure,
+  });
+  const terminal = acceptedDespiteProviderFailure ? nativeAcceptedResultTerminal(native.terminal) : native.terminal;
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
     runtimeMode: "native",
@@ -14234,7 +14246,7 @@ async function executePaperclipNativeSessionAttempt(
     issueId: input.execution.binding.issueId,
     companyId: input.execution.binding.companyId,
     result: native.result as unknown as Record<string, unknown>,
-    terminal: native.terminal,
+    terminal,
     turnId: native.turnId,
     sourceInstanceId: effectiveRunnerInstanceId,
     normalizedSessionId: native.normalizedSessionId,
@@ -14245,28 +14257,30 @@ async function executePaperclipNativeSessionAttempt(
     highestContiguousSourceSeq: native.highestContiguousSourceSeq,
     workspaceFinalizeStatus: "pending",
   };
-  const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
-  const providerExplanation = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
+  const providerFailure = acceptedDespiteProviderFailure ? null : classifiedProviderFailure;
+  const providerExplanation = acceptedDespiteProviderFailure ? null : typedProviderFailure;
   // Keep the generic failure behavior, but record why the turn failed.
-  const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, native.terminal);
+  const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, terminal);
   const adapterResult: AdapterExecutionResult = {
-    exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
+    exitCode: terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
     timedOut: false,
     errorMessage:
-      native.terminal.runTerminalState === "succeeded"
+      terminal.runTerminalState === "succeeded"
         ? null
         : providerFailure?.errorMessage ?? explainNativeTurnFailure(unclassifiedTurnFailure)?.error
-          ?? `Native session ${native.terminal.runTerminalState}`,
+          ?? `Native session ${terminal.runTerminalState}`,
     ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
-      nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      nativeTerminal: terminal as unknown as Record<string, unknown>,
       ...((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") ? { providerAccounting: { usage: null, cost: null, externallyBilled: true }, externalStopConfirmed: false } : {}),
       ...(input.execution.provider.kind === "cursor_cloud" ? { providerAccounting: { usage: null, cost: null, externallyBilled: true } } : {}),
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
       ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
+      ...(acceptedDespiteProviderFailure && typedProviderFailure
+        ? { providerFailureAfterAcceptedResult: { provider: typedProviderFailure.provider, category: typedProviderFailure.category } } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
@@ -14291,11 +14305,11 @@ async function executePaperclipNativeSessionAttempt(
   if (taskSettleScope) {
     await trace.end(taskSettleScope, {
       outcome:
-        native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+        terminal.runTerminalState === "succeeded" ? "ok" : "failed",
     });
   }
   await trace.finish(
-    native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+    terminal.runTerminalState === "succeeded" ? "ok" : "failed",
   );
   return adapterResult;
 }
