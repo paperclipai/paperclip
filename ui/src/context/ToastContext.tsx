@@ -30,6 +30,7 @@ export type ToastActor = {
 
 export interface ToastInput {
   id?: string;
+  dedupe?: boolean;
   dedupeKey?: string;
   title: string;
   body?: string;
@@ -128,11 +129,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const lastSeen = dedupeRef.current.get(dedupeKey);
-      if (lastSeen && now - lastSeen < DEDUPE_WINDOW_MS) {
-        return null;
+      // Distinct events (two runs, two status changes) can render the same
+      // visible text. Showing it twice reads as a duplicate, so match on that too.
+      const contentKey = `content|${tone}|${input.title}|${input.body ?? ""}`;
+      const recentlyShown = [dedupeKey, contentKey].some((key) => {
+        const lastSeen = dedupeRef.current.get(key);
+        return lastSeen !== undefined && now - lastSeen < DEDUPE_WINDOW_MS;
+      });
+      if (input.dedupe !== false) {
+        if (recentlyShown) return null;
+        dedupeRef.current.set(dedupeKey, now);
+        dedupeRef.current.set(contentKey, now);
       }
-      dedupeRef.current.set(dedupeKey, now);
 
       const id = input.id ?? generateToastId();
       clearTimer(id);

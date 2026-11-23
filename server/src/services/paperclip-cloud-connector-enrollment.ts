@@ -17,7 +17,7 @@ const IDENTITY_VERSION = 1;
 const ENROLLMENT_FILE = "paperclip-cloud-connector.json";
 const REQUEST_TYPE = "paperclip-cloud-connector-request+jwt";
 
-export type LocalConnectorEnvironment = "development" | "staging" | "production";
+export type LocalConnectorEnvironment = "development" | "test" | "staging" | "production";
 
 type PendingEnrollment = {
   enrollmentId: string;
@@ -350,10 +350,13 @@ function connectorEnvironment(
     ? "production"
     : host === "my-staging.paperclip.app"
       ? "staging"
-      : "development";
+      : host === "test.paperclip.app"
+        ? "test"
+        : "development";
   const value = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim() || fallback || inferred;
   if (!isEnvironment(value)) throw new Error("Paperclip Cloud connector environment is invalid");
   if ((host === "my.paperclip.app" && value !== "production")
+    || (host === "test.paperclip.app" && value !== "test")
     || (host === "my-staging.paperclip.app" && value !== "staging")) {
     throw new Error("Paperclip Cloud connector broker and environment do not match");
   }
@@ -390,7 +393,7 @@ function hasManagedConnectorIdentityOverride(env: NodeJS.ProcessEnv): boolean {
 }
 
 function isEnvironment(value: unknown): value is LocalConnectorEnvironment {
-  return value === "development" || value === "staging" || value === "production";
+  return value === "development" || value === "test" || value === "staging" || value === "production";
 }
 
 function normalizeBrokerOrigin(value: string): string {
