@@ -8,7 +8,6 @@ import { githubResponseExecution } from "./response-execution.js";
 import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 import { HttpError } from "../../../errors.js";
-/** Bump when the settle decision changes, so parked requests are re-read once. */
 export const GITHUB_TERMINAL_RESPONSE_DECISION_VERSION = "v2";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string; conversationId: string; repositoryId: string | null; number: number | null; dueAt: number };
@@ -50,8 +49,6 @@ export function registerGitHubTerminalResponseWork(
   // the request's own row changes. Such a request records this key, and a broad
   // rebuild skips it until one of them changes. A targeted load still reads it.
   const actionVersion = sql<string>`extract(epoch from ${chatActions.updatedAt})::text`;
-  // The key starts with the decision's version. A deploy that changes how a
-  // request settles bumps it, so requests parked by older code are read again.
   const waitKey = sql<string>`${GITHUB_TERMINAL_RESPONSE_DECISION_VERSION} || '|' || coalesce(${latestIssueRun.version}, 'none')
     || '|' || ${issues.status} || '|' || ${actionVersion}`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
