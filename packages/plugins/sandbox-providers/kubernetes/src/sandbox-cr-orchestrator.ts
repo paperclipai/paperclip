@@ -265,7 +265,20 @@ export async function waitForSandboxReady(
       name,
     }) as Record<string, unknown>;
 
+    const metadata = (cr.metadata as Record<string, unknown>) ?? {};
     const status = (cr.status as Record<string, unknown>) ?? {};
+
+    // Guard against acting on stale controller status when both generation and
+    // observedGeneration are reported.
+    if (
+      typeof metadata.generation === "number" &&
+      typeof status.observedGeneration === "number" &&
+      status.observedGeneration < metadata.generation
+    ) {
+      await sleep(pollMs);
+      continue;
+    }
+
     // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
     // not status.phase. Fall back to phase for forward-compat.
     const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
