@@ -345,6 +345,44 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it.each([
+    "Fn",
+    "Option",
+    "Shift (Option in iTerm2, Fn in Terminal.app)",
+  ])("skips the copy hint that names the %s key", (key) => {
+    const hint = chaSpaced(`Hold ${key} while selecting to use your terminal's native copy`.split(" "));
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "", hint, "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("skips the long copy hint when it wraps across two rows", () => {
+    const first = chaSpaced("Hold Shift (Option in iTerm2, Fn in Terminal.app) while selecting to use your".split(" "));
+    const second = chaSpaced("terminal's native copy".split(" "));
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "", "", "", first, "", second, "", "", "", "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("returns null when a copy hint names an unknown key", () => {
+    const hint = "Hold Ctrl while selecting to use your terminal's native copy";
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, hint, PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null when an unrelated line follows a partial copy hint", () => {
+    const text = [
+      PREAMBLE_LINE,
+      CLAUDE_COM_URL,
+      "Hold Shift (Option in iTerm2, Fn in Terminal.app) while selecting to use your",
+      "an unrelated line",
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.
