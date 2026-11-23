@@ -31,8 +31,17 @@ const serializedDurationsManifest = path.join(
 // themselves run inside a workflow on CI.
 function workflowEnv(envOverrides = {}) {
   const env = { ...process.env, ...envOverrides };
-  if (!("GITHUB_WORKFLOW" in envOverrides)) {
-    delete env.GITHUB_WORKFLOW;
+  for (const key of [
+    "GITHUB_WORKFLOW",
+    "PAPERCLIP_CI_FULL",
+    "PAPERCLIP_CI_EXCLUDE_NIGHTLY",
+    "PAPERCLIP_CI_NIGHTLY_SUITES_FILE",
+    "PAPERCLIP_VITEST_MAX_WORKERS",
+    "PAPERCLIP_TEST_POSTGRES_ADMIN_URL",
+  ]) {
+    if (!(key in envOverrides)) {
+      delete env[key];
+    }
   }
   return env;
 }
@@ -383,7 +392,11 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(pluginWarmOwnerSuitePath));
   assert.ok(!files.includes(pluginReleaseResumeSuitePath));
   assert.ok(!files.includes(pluginEvictionSuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  const excludedNightly = shards[0].excludedNightlySuites ?? [];
+  for (const shard of shards) {
+    assert.deepEqual(shard.excludedNightlySuites ?? [], excludedNightly, "nightly exclusions must agree across shards");
+  }
+  assert.deepEqual([...files, ...excludedNightly, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -769,7 +782,8 @@ function defaultLauncher({ shared = false, failureIndex = null } = {}) {
     const result = spawnSync(process.execPath, [script, "--mode", "general"], {
       cwd: repoRoot, encoding: "utf8", timeout: 30_000,
       env: workflowEnv({ GITHUB_WORKFLOW: "PR", PATH: `${directory}${path.delimiter}${process.env.PATH}`,
-        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false" }),
+        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0" }),
     });
     const events = existsSync(receipt) ? readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
     return { result, events, lines };
@@ -857,7 +871,7 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
       "--shard-index", "0", "--shard-count", "3"], {
       cwd: repoRoot, encoding: "utf8", timeout: 30_000,
       env: { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`,
-        PAPERCLIP_TEST_DATABASE_URL: "", PAPERCLIP_CI_PROFILE: "false" },
+        PAPERCLIP_TEST_DATABASE_URL: "", PAPERCLIP_CI_PROFILE: "false", PAPERCLIP_TEST_POSTGRES_SHARED: "0" },
     });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stderr, /failed \(7\)/);
@@ -867,10 +881,11 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   }
 });
 
-for (const [group, parallelWorkers, shardArgs] of [
-  ["general-server-native-runner", 4, []],
-  ["general-server-without-chat-or-native-runner", 3, ["--shard-index", "0", "--shard-count", "12"]],
-]) test(`${group} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
+for (const [label, modeArgs, parallelWorkers] of [
+  ["general-server-native-runner", ["--mode", "general", "--group", "general-server-native-runner"], 4],
+  ["general-server-without-chat-or-native-runner", ["--mode", "general", "--group", "general-server-without-chat-or-native-runner", "--shard-index", "0", "--shard-count", "12"], 4],
+  ["serialized", ["--mode", "serialized", "--shard-index", "4", "--shard-count", "9"], 3],
+]) test(`${label} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
   const receipt = path.join(directory, "args.json");
   const fakePnpm = path.join(directory, "pnpm");
@@ -882,21 +897,188 @@ for (const [group, parallelWorkers, shardArgs] of [
       [{ PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test" }, 1],
       [{ PAPERCLIP_ISSUE_RECOVERY_TEST_DATABASE_URL: "postgresql://shared/recovery_test" }, 1],
       [{ PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgresql://owned/postgres" }, parallelWorkers],
+      [{ PAPERCLIP_VITEST_MAX_WORKERS: "2" }, 2],
     ]) {
-      const env = workflowEnv({ PATH: `${directory}${path.delimiter}${process.env.PATH}`, PAPERCLIP_CI_PROFILE: "false" });
+      const env = workflowEnv({
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0",
+      });
       for (const key of Object.keys(env)) if (key.endsWith("_TEST_DATABASE_URL")) delete env[key];
       Object.assign(env, databaseEnv);
-      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", group, ...shardArgs], {
+      const result = spawnSync(process.execPath, [script, ...modeArgs], {
         cwd: repoRoot, encoding: "utf8", env,
       });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const args = JSON.parse(readFileSync(receipt, "utf8"));
-      assert.ok(args.includes(`--maxWorkers=${workers}`));
+      assert.ok(args.includes(`--maxWorkers=${workers}`), `expected --maxWorkers=${workers} in ${args.join(" ")}`);
       assert.ok(args.includes(workers > 1 ? "--fileParallelism" : "--no-file-parallelism"));
       if (workers > 1) assert.ok(args.includes("--pool=forks") && args.includes("--isolate"));
-      if (group === "general-server-native-runner") {
+      if (label === "general-server-native-runner") {
         for (const file of [restartRecoverySuitePath, ...restartWaitSuites]) assert.ok(args.includes(file));
       }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("general-workspaces-b and general-workspaces-a batch all projects into one vitest invocation", { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "batch-workspaces-"));
+  const receipt = path.join(directory, "calls.ndjson");
+  const fakePnpm = path.join(directory, "pnpm");
+  writeFileSync(fakePnpm, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`);
+  chmodSync(fakePnpm, 0o755);
+  try {
+    const run = (args) => {
+      rmSync(receipt, { force: true });
+      const result = spawnSync(process.execPath, [script, ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: workflowEnv({
+          PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+          PAPERCLIP_CI_PROFILE: "false",
+          PAPERCLIP_TEST_POSTGRES_SHARED: "0",
+        }),
+      });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return readFileSync(receipt, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    };
+
+    const workspacesBProjects = dryRunJson(["--mode", "general", "--group", "general-workspaces-b"]).workspaceProjects;
+    const bCalls = run(["--mode", "general", "--group", "general-workspaces-b"]);
+    assert.equal(bCalls.length, 1, "general-workspaces-b must invoke vitest once for all projects");
+    const bProjectsArg = bCalls[0].flatMap((arg, index) => (arg === "--project" ? [bCalls[0][index + 1]] : []));
+    assert.deepEqual(bProjectsArg, workspacesBProjects);
+
+    const workspacesAProjects = dryRunJson(["--mode", "general", "--group", "general-workspaces-a"]).workspaceProjects;
+    const aCalls = run(["--mode", "general", "--group", "general-workspaces-a", "--shard-index", "1", "--shard-count", "2"]);
+    assert.equal(aCalls.length, 1, "general-workspaces-a must invoke vitest once for all projects in the shard");
+    const aProjectsArg = aCalls[0].flatMap((arg, index) => (arg === "--project" ? [aCalls[0][index + 1]] : []));
+    assert.deepEqual(aProjectsArg, workspacesAProjects);
+    assert.ok(aCalls[0].includes("--shard=2/2"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nightly-only suites manifest excludes listed suites only in PR mode and respects PAPERCLIP_CI_FULL=1", { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "nightly-manifest-"));
+  const manifestFile = path.join(directory, "nightly-only-suites.json");
+  const fullGeneral = dryRunJson(["--mode", "general", "--group", "general-server-without-chat", "--shard-index", "0", "--shard-count", "1"], { GITHUB_WORKFLOW: "PR", PAPERCLIP_CI_FULL: "1" });
+  const sampleGeneralSuite = fullGeneral.selectedGeneralServerSuites[0];
+  const fullSerialized = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"]);
+  const sampleSerializedSuite = fullSerialized.selectedSerializedSuites[0];
+  const sampleNativeSuite = nativeRunnerSuitePath;
+  const sampleDbSuite = "packages/db/src/client.test.ts";
+
+  writeFileSync(manifestFile, JSON.stringify({
+    $comment: "fixture manifest",
+    suites: [
+      { path: sampleGeneralSuite, category: "soak", reason: "fixture", measuredMs: 120000 },
+      sampleSerializedSuite,
+      { path: sampleNativeSuite, category: "restart-lease-soak", reason: "fixture", measuredMs: 200000 },
+      { path: sampleDbSuite, category: "db-soak", reason: "fixture", measuredMs: 90000 },
+    ],
+  }, null, 2));
+
+  try {
+    const prEnv = { GITHUB_WORKFLOW: "PR", PAPERCLIP_CI_NIGHTLY_SUITES_FILE: manifestFile };
+    const prGeneral = dryRunJson(["--mode", "general", "--group", "general-server-without-chat", "--shard-index", "0", "--shard-count", "1"], prEnv);
+    assert.equal(prGeneral.nightlyExclusionActive, true);
+    assert.ok(!prGeneral.selectedGeneralServerSuites.includes(sampleGeneralSuite));
+    assert.deepEqual(prGeneral.excludedNightlySuites, [sampleGeneralSuite]);
+
+    const prSerialized = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"], prEnv);
+    assert.ok(!prSerialized.selectedSerializedSuites.includes(sampleSerializedSuite));
+    assert.equal(prSerialized.serializedSuiteCount, fullSerialized.serializedSuiteCount - 1);
+    assert.deepEqual(prSerialized.excludedNightlySuites, [sampleSerializedSuite]);
+
+    const prNative = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"], prEnv);
+    assert.ok(!prNative.selectedGeneralServerSuites.includes(sampleNativeSuite));
+    assert.deepEqual(prNative.excludedNightlySuites, [sampleNativeSuite]);
+
+    // PAPERCLIP_CI_FULL=1, Release, Cloud readiness, and local runs retain all suites.
+    for (const fullEnv of [
+      { ...prEnv, PAPERCLIP_CI_FULL: "1" },
+      { GITHUB_WORKFLOW: "Release", PAPERCLIP_CI_NIGHTLY_SUITES_FILE: manifestFile },
+      { GITHUB_WORKFLOW: "Cloud readiness", PAPERCLIP_CI_NIGHTLY_SUITES_FILE: manifestFile },
+      { PAPERCLIP_CI_NIGHTLY_SUITES_FILE: manifestFile },
+    ]) {
+      const general = dryRunJson(["--mode", "general", "--group", "general-server-without-chat", "--shard-index", "0", "--shard-count", "1"], fullEnv);
+      assert.equal(general.nightlyExclusionActive, false);
+      assert.deepEqual(general.excludedNightlySuites, []);
+      assert.ok(general.selectedGeneralServerSuites.includes(sampleGeneralSuite));
+      const serialized = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"], fullEnv);
+      assert.ok(serialized.selectedSerializedSuites.includes(sampleSerializedSuite));
+      const native = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"], fullEnv);
+      assert.ok(native.selectedGeneralServerSuites.includes(sampleNativeSuite));
+    }
+
+    // Empty-list guard: when every native-runner suite is excluded in PR mode, vitest must NOT run unfiltered.
+    const allNative = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"]).selectedGeneralServerSuites;
+    const allNativeManifest = path.join(directory, "all-native-nightly.json");
+    writeFileSync(allNativeManifest, JSON.stringify({ suites: allNative }));
+    const receipt = path.join(directory, "empty-guard-calls.ndjson");
+    const fakePnpm = path.join(directory, "pnpm");
+    writeFileSync(fakePnpm, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`);
+    chmodSync(fakePnpm, 0o755);
+    const emptyResult = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-server-native-runner"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: workflowEnv({
+        GITHUB_WORKFLOW: "PR",
+        PAPERCLIP_CI_NIGHTLY_SUITES_FILE: allNativeManifest,
+        PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0",
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+      }),
+    });
+    assert.equal(emptyResult.status, 0, emptyResult.stdout + emptyResult.stderr);
+    assert.equal(existsSync(receipt), false, "an empty filtered suite set must skip vitest instead of running unfiltered");
+
+    // general-workspaces-c forwards packages/db nightly excludes to vitest --exclude.
+    const dbResult = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-workspaces-c"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: workflowEnv({
+        ...prEnv,
+        PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0",
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+      }),
+    });
+    assert.equal(dbResult.status, 0, dbResult.stdout + dbResult.stderr);
+    const dbCall = JSON.parse(readFileSync(receipt, "utf8").trim());
+    assert.ok(dbCall.includes("--exclude") && dbCall.includes("src/client.test.ts"), `expected db nightly exclude in ${dbCall.join(" ")}`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("shared Postgres wrapper skips non-Postgres workspace groups even when opted in", { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "shared-pg-skip-"));
+  const receipt = path.join(directory, "env.json");
+  const fakePnpm = path.join(directory, "pnpm");
+  writeFileSync(
+    fakePnpm,
+    `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ admin: process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL ?? null, template: process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE ?? null }));\n`,
+  );
+  chmodSync(fakePnpm, 0o755);
+  try {
+    for (const group of ["general-workspaces-a", "general-workspaces-b"]) {
+      rmSync(receipt, { force: true });
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", group], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: workflowEnv({
+          PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+          PAPERCLIP_CI_PROFILE: "false",
+          PAPERCLIP_TEST_POSTGRES_SHARED: "1",
+        }),
+      });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), { admin: null, template: null }, `${group} must not boot shared Postgres`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
