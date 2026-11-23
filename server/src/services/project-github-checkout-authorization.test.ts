@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import { connectionGrants, projectWorkspaces, toolConnections, type Db } from "@paperclipai/db";
 import { authorizeProjectGitHubCheckout, resolveBoundProjectGitHubCredentials } from "./project-run-github-access.js";
 
 const input = {
@@ -34,17 +34,30 @@ function grantDb() {
   return { select, from, where };
 }
 
+function connectionDb() {
+  const where = vi.fn().mockResolvedValue([{ authKind: "oauth2", config: {} }]);
+  const from = vi.fn().mockReturnValue({ where });
+  return { from, where };
+}
+
+/** Routes each query by table: the first workspace read sees the first snapshot, later reads the last one. */
 function checkoutDb(snapshots: Array<Array<{ repoUrl: string | null; metadata: Record<string, unknown> | null }>>) {
   const workspaceQueries = snapshots.map(rows => workspaceDb(rows));
   const grants = grantDb();
-  let queryIndex = 0;
-  const select = vi.fn(() => {
-    const index = queryIndex++;
-    return { from: index === 0 || index === 3
-      ? workspaceQueries[index === 0 ? 0 : workspaceQueries.length - 1]!.from
-      : grants.from };
-  });
-  return { db: { select } as unknown as Db, select, workspaceQueries, grants };
+  const connections = connectionDb();
+  let workspaceReads = 0;
+  const select = vi.fn(() => ({
+    from: (table: unknown) => {
+      if (table === projectWorkspaces) {
+        const query = workspaceQueries[workspaceReads++ === 0 ? 0 : workspaceQueries.length - 1]!;
+        return query.from(table);
+      }
+      if (table === connectionGrants) return grants.from(table);
+      if (table === toolConnections) return connections.from(table);
+      throw new Error("unexpected table in checkout authorization fixture");
+    },
+  }));
+  return { db: { select } as unknown as Db, select, workspaceQueries, grants, connections };
 }
 
 const liveRepositoryResponse = (id: number) => ({ ok: true, json: vi.fn().mockResolvedValue({ id }) });
