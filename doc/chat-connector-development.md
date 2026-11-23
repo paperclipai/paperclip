@@ -89,7 +89,9 @@ delivery behavior.
 A queued update also supersedes a blocker continuation. If the active run
 reports a blocker that Paperclip would continue in a fresh session, and a GitHub
 update waits behind that run, Paperclip releases the task instead. The waiting
-update then starts the next turn with its own source binding.
+update then starts the next turn with its own source binding. A blocker for a
+person or an external owner, or one whose automatic continuations are spent,
+is still bound at once.
 
 Each native GitHub receipt stays separate until steering acknowledges its exact input.
 This prevents ordinary wake coalescing from merging a newer input into an
