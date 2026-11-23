@@ -30,7 +30,7 @@ function runnerInventory(group) {
   const args = group === "serialized" ? ["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"]
     : ["--mode", "general", "--group", group,
       ...(group === "general-server-without-chat" ? ["--shard-index", "0", "--shard-count", "1"] : [])];
-  const env = { ...process.env, GITHUB_WORKFLOW: "PR" };
+  const env = { ...process.env, GITHUB_WORKFLOW: "PR", PAPERCLIP_CI_FULL: "1" };
   delete env.PAPERCLIP_CI_TEST_SELECTION;
   return JSON.parse(execFileSync(process.execPath, ["scripts/run-vitest-stable.mjs", ...args, "--dry-run"],
     { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
