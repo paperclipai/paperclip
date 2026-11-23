@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, queuedCommentIdsFromWakePayload, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, messageIdsFromRunContext, queuedCommentIdsFromWakePayload, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
@@ -174,6 +174,34 @@ describe("withQueuedCommentIdsInRunContext", () => {
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
     expect(result).not.toHaveProperty("paperclipTurnContext");
     expect(withQueuedCommentIdsInRunContext(result, ["comment-3"]).queuedCommentSourceWakeIds).toEqual(["123e4567-e89b-12d3-a456-426614174001"]);
+  });
+});
+
+describe("messageIdsFromRunContext", () => {
+  const commentId = "123e4567-e89b-12d3-a456-426614174000";
+
+  it("returns an empty list when every wake comment id is malformed, without falling back to the raw array", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: ["x"] }, "x")).toEqual([]);
+  });
+
+  it("keeps only UUIDs from a mixed wake comment id list", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: ["x", commentId] }, commentId)).toEqual([commentId]);
+  });
+
+  it("returns the filtered wake comment ids when they are valid", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: [commentId] }, commentId)).toEqual([commentId]);
+  });
+
+  it("falls back to a valid singular wake comment id when no id list is present", () => {
+    expect(messageIdsFromRunContext({}, commentId)).toEqual([commentId]);
+  });
+
+  it("does not pass a malformed singular wake comment id through", () => {
+    expect(messageIdsFromRunContext({}, "x")).toEqual([]);
+  });
+
+  it("returns an empty list when no ids are present at all", () => {
+    expect(messageIdsFromRunContext({}, null)).toEqual([]);
   });
 });
 

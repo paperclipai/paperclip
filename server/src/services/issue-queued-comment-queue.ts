@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 
 export {
+  messageIdsFromRunContext,
   queuedCommentIdsFromRunContext,
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInRunContext,

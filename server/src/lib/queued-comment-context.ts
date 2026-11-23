@@ -31,6 +31,16 @@ export function queuedCommentIdsFromRunContext(contextValue: unknown): string[] 
   return uniqueIds(parseObject(contextValue)[WAKE_COMMENT_IDS_KEY]);
 }
 
+export function messageIdsFromRunContext(
+  contextValue: unknown,
+  wakeCommentId: string | null,
+): string[] {
+  if (Array.isArray(parseObject(contextValue)[WAKE_COMMENT_IDS_KEY])) {
+    return queuedCommentIdsFromRunContext(contextValue);
+  }
+  return wakeCommentId !== null && isUuidLike(wakeCommentId) ? [wakeCommentId] : [];
+}
+
 export function withQueuedCommentIdsInWakePayload(
   payloadValue: unknown,
   ids: string[],
