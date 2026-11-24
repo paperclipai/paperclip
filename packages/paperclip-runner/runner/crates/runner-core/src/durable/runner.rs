@@ -49,9 +49,6 @@ enum CommandLifecycle {
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_PARK_PREPARATION_BUDGET: Duration = Duration::from_secs(20);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
-/// How long an emptying ACK may wait for another save to carry it before the
-/// connected loop saves it by itself.
-const DEFERRED_ACK_SAVE_DELAY: Duration = Duration::from_millis(250);
 
 fn reconnect_delay(base: Duration, max_delay: Duration, attempt: &mut u32) -> Duration {
     let multiplier = 1_u128 << (*attempt).min(5);
@@ -458,42 +455,9 @@ fn record_recoverable_transport_failure(state: &mut DurableState, reason: &str) 
 #[derive(Default)]
 struct CumulativeAckPersistence {
     advanced_since_save: usize,
-    empty_outbox_rides_next_save: bool,
-    deferred_since: Option<Instant>,
 }
 
 impl CumulativeAckPersistence {
-    /// For the connected loop, whose next provider batch, command, lifecycle
-    /// change or park saves the full state anyway. An ACK that empties the
-    /// outbox rides that save instead of adding one of its own. When no save
-    /// follows within `DEFERRED_ACK_SAVE_DELAY`, `save_deferred_ack` saves it,
-    /// so the file of a quiet runner shows every ACK.
-    fn riding_next_save() -> Self {
-        Self {
-            empty_outbox_rides_next_save: true,
-            ..Self::default()
-        }
-    }
-
-    fn save_deferred_ack(
-        &mut self,
-        state: &DurableState,
-        store: &DurableStateStore,
-        now: Instant,
-    ) -> Result<(), DurableRunnerError> {
-        let Some(deferred_since) = self.deferred_since else {
-            return Ok(());
-        };
-        if store.durable_acked_source_seq() == Some(state.acked_source_seq) {
-            self.deferred_since = None;
-        } else if now.saturating_duration_since(deferred_since) >= DEFERRED_ACK_SAVE_DELAY {
-            store.save(state)?;
-            self.advanced_since_save = 0;
-            self.deferred_since = None;
-        }
-        Ok(())
-    }
-
     fn apply(
         &mut self,
         state: &mut DurableState,
@@ -502,14 +466,9 @@ impl CumulativeAckPersistence {
         protocol_version: u64,
     ) -> Result<(), DurableRunnerError> {
         let previous = state.acked_source_seq;
-        let backpressure = state.backpressure;
         state.apply_ack(acked_source_seq, protocol_version)?;
         if acked_source_seq == previous {
             return Ok(());
-        }
-        // Count advances past the cursor on disk; any other save resets it.
-        if store.durable_acked_source_seq() == Some(previous) {
-            self.advanced_since_save = 0;
         }
         self.advanced_since_save = self.advanced_since_save.saturating_add(1);
         // ACKs are cumulative and replay-safe: after a crash, an older durable
@@ -517,23 +476,11 @@ impl CumulativeAckPersistence {
         // and return the same or a newer ACK. Persist often enough to bound that
         // replay, but do not rewrite a large outbox once for every frame in a
         // burst. Command and lifecycle mutations independently save the full
-        // current state before authority can change, and a host park saves the
-        // exact cut it reports; an incomplete batch may safely replay from its
-        // older durable cursor. Leaving backpressure changes lifecycle, so it
-        // is saved at once.
-        let empty_outbox_saves_now = state.outbox.is_empty()
-            && (!self.empty_outbox_rides_next_save || state.backpressure != backpressure);
-        if self.advanced_since_save >= CUMULATIVE_ACK_PERSIST_INTERVAL || empty_outbox_saves_now {
+        // current state before authority can change; an incomplete batch may
+        // safely replay from its older durable cursor.
+        if self.advanced_since_save >= CUMULATIVE_ACK_PERSIST_INTERVAL || state.outbox.is_empty() {
             store.save(state)?;
             self.advanced_since_save = 0;
-            self.deferred_since = None;
-        } else if state.outbox.is_empty() {
-            // Time the wait from the first ACK that the file does not hold.
-            if store.durable_acked_source_seq() == Some(previous) {
-                self.deferred_since = Some(Instant::now());
-            } else {
-                self.deferred_since.get_or_insert_with(Instant::now);
-            }
         }
         Ok(())
     }
@@ -1005,7 +952,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         }
         let mut sent_source_seq = state.acked_source_seq;
         let replayed_through_source_seq = state.highest_source_seq();
-        let mut ack_persistence = CumulativeAckPersistence::riding_next_save();
+        let mut ack_persistence = CumulativeAckPersistence::default();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
         let mut authority_rotation = None;
@@ -1285,7 +1232,6 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             if polls_provider {
                 quiet_through_source_seq = source_seq_before_poll;
             }
-            ack_persistence.save_deferred_ack(&state, &store, Instant::now())?;
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -1603,11 +1549,6 @@ fn process_host_control<E: CommandExecutor>(
             if !ready {
                 control.channel.reply(&request, "conflict")?;
                 return Ok(HostAction::None);
-            }
-            // A relaunch from disk must match the exact cut this reply
-            // reports, including an ACK that was riding the next save.
-            if store.durable_acked_source_seq() != Some(state.acked_source_seq) {
-                store.save(state)?;
             }
             control.park_id = Some(id.clone());
             control.channel.reply(&request, "parked")?;

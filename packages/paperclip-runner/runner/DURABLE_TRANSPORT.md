@@ -56,16 +56,6 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
-While connected, runnerd does not save an ACK on its own when it empties the
-outbox. The cursor is saved with runnerd's next save: the next provider batch,
-command result or lifecycle change. If no such save follows within 250 ms,
-runnerd saves the cursor by itself, so the file of a quiet runner shows every
-ACK. The cursor is also saved after at most 16 advances, and when the runner
-leaves backpressure. A host park saves the exact cut it
-reports before it replies. If runnerd stops before that save, recovery sends
-the acknowledged suffix again under its original identities, and the controller
-deduplicates it.
-
 After disconnect, runnerd tries Core when reconnect is due. Between attempts,
 live Codex and ACPX processes can drain local output into the outbox. Work that
 needs a provider request waits for Core, including managed-provider history
@@ -86,8 +76,8 @@ outbox commit. Runnerd commits each polled batch of up to 128 events with one
 save, and only then acknowledges the batch to the executor. If an event is
 oversized or exceeds capacity, runnerd still saves and acknowledges the events
 before it, and the executor keeps the rejected event and everything after it.
-If the save fails, the executor keeps the whole batch. Each retained executor event has a stable identity that
-runnerd derives into its PRP `sourceEventId`. If the process stops after the
+If the save fails, the executor keeps the whole batch. Each retained executor
+event has a stable identity that runnerd derives into its PRP `sourceEventId`. If the process stops after the
 outbox commit but before the executor acknowledgement, a bounded durable
 receipt journal recognizes and byte-validates the retained copy without
 appending a second event. Receipts outlive transport ACK removal; because the
