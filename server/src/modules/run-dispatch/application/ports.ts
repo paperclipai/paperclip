@@ -30,7 +30,16 @@ export type EvaluateScheduledRetryGateInput = {
 
 /** Read-only scheduled-retry operations exposed to application use cases. */
 export interface ScheduledRetryReader {
-  nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null>;
+  /**
+   * Earliest `scheduled_retry` due time across every retry mechanism.
+   *
+   * `excludeReason` narrows the read to the rows scheduled for another reason.
+   * A caller that owes one mechanism a backoff — a degraded quota-recovery
+   * sweep, whose parked rows keep their own past due time on purpose — still
+   * has to see the retries that mechanism does not gate, otherwise that
+   * mechanism's window delays work that never depended on it.
+   */
+  nextScheduledRetryAt(input: { cutoff: Date | null; excludeReason?: string }): Promise<number | null>;
   evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput): Promise<GateDecision>;
   /**
    * Due `scheduled_retry` rows, oldest due time first.
