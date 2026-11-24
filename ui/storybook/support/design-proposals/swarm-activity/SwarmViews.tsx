@@ -193,7 +193,11 @@ export function ThreadList({ view, annotate }: { view: SwarmView; annotate?: boo
   if (!view.threads.length) return null;
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <SectionTitle source="live" annotate={annotate}>Threads</SectionTitle>
+      <div className="flex flex-wrap items-center gap-2">
+        <SectionTitle source="live" annotate={annotate}>Threads</SectionTitle>
+        {annotate ? <span className="text-xs text-muted-foreground">state, count and Now line:</span> : null}
+        <SourceTag source="files" show={annotate} />
+      </div>
       <ul className="flex min-w-0 flex-col gap-1">
         {view.threads.map((thread) => {
           const state = threadState(view, thread);
@@ -231,14 +235,13 @@ export function SwarmNotes({ view }: { view: SwarmView }) {
       {view.reason ? <Notice icon={view.status === "stopped" ? Square : TriangleAlert} tone={view.status === "stopped" ? "muted" : "danger"}>{view.reason}</Notice> : null}
       {view.status === "stopping" ? <Notice icon={Hourglass}>Stopping the coordinator and its helpers. Files already written stay in the task folder.</Notice> : null}
       {view.files ? <Notice icon={Info}>Files changed in the task folder: {view.files.join(", ")}</Notice> : null}
-      {view.usage ? <Notice icon={Info}>{view.usage.total.toLocaleString()} tokens. This total includes the helpers; Google does not itemise it per helper.</Notice> : null}
+      {view.usage ? <Notice icon={Info}>The coordinator used {view.usage.total.toLocaleString()} tokens.{view.usage.helpers ? ` The helpers used ${view.usage.helpers.input.toLocaleString()} in and ${view.usage.helpers.output.toLocaleString()} out more, read from the swarm's files.` : ""}</Notice> : null}
     </div>
   );
 }
 
 function subagentStatus(helper: SwarmHelper, view: SwarmView): TaskChatSubagentStatus {
   if (helper.state === "done") return "completed";
-  if (helper.state === "blocked") return "failed";
   if (helper.state === "stopped" || view.status === "stopped" || view.status === "failed") return "cancelled";
   return "running";
 }
@@ -248,10 +251,10 @@ function toSubagent(helper: SwarmHelper, view: SwarmView): TaskChatSubagent {
   return {
     id: `swarm-${helper.name}`,
     agentType: helper.name,
-    description: helper.task,
     prompt: helper.brief,
     model: helper.model,
     status: subagentStatus(helper, view),
+    description: helper.state === "blocked" ? `Blocked · ${helper.task}` : helper.task,
     progressSummary: helper.state === "in_review" ? "Waiting for the verifier" : helper.state === "waiting" ? `Standing by${helper.action ? ` · ${helper.action}` : ""}` : helper.action,
     activity: [],
     result: lastPost ? plainPost(lastPost.text) : undefined,

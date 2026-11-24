@@ -1,6 +1,15 @@
 {
-  "about": "Representative real events from one Antigravity CLI 1.5.15 swarm turn (agy acp, session mode auto, isolated --gemini-dir), 2026-11-24. Paths are redacted to <task-folder>/<state-dir>; account tier redacted. acp = what Paperclip receives over ACP (coordinator session only). files = what the CLI writes under its private --gemini-dir for the same swarm (Paperclip owns that directory).",
+  "about": "Representative real events from one Antigravity CLI 1.5.15 swarm turn (agy acp, session mode auto, isolated --gemini-dir), 2026-11-24. Paths are redacted to <task-folder>/<state-dir>; account tier redacted. acp: what Paperclip receives over ACP (coordinator session only). files: what the CLI writes under its private --gemini-dir for the same swarm (Paperclip owns that directory).",
   "request": "Build a tiny static unit-converter page in the current folder (four named helpers + a verifier).",
+  "run": {
+    "model": "Gemini 4 Neon",
+    "filesChanged": [
+      "README.md",
+      "convert.js",
+      "index.html",
+      "style.css"
+    ]
+  },
   "acp": [
     {
       "at": "2026-11-24T18:12:30.299Z",
@@ -300,13 +309,13 @@
     }
   ],
   "files": {
-    "swarm/swarm.json": {
+    "swarm": {
       "version": 1,
       "backend": "local",
       "swarm_id": "9c3e4522-32a6-436f-94dd-427b32a6d896",
       "created_at": "2026-11-24T18:13:39Z"
     },
-    "swarm/plan.json": {
+    "plan": {
       "goal": {
         "title": "Build tiny static unit-converter web page",
         "line": "Write HTML, CSS, JS, and README, then verify everything."
@@ -342,7 +351,7 @@
         }
       ]
     },
-    "swarm/members.json (trimmed)": {
+    "members": {
       "title": "Static unit-converter page",
       "members": {
         "coordinator": {
@@ -410,7 +419,7 @@
         }
       }
     },
-    "swarm/board.jsonl": [
+    "board": [
       {
         "seq": 1,
         "agent": "coordinator",
@@ -490,7 +499,7 @@
         "time": "2026-11-24T18:15:21.000Z"
       }
     ],
-    "worker transcripts (summarised)": {
+    "workers": {
       "css-writer": {
         "model": "gemini-4-neon-high",
         "steps": 10,
@@ -734,5 +743,10 @@
         ]
       }
     }
+  },
+  "recordedBlock": {
+    "source": "Wording of a helper permission failure recorded in an earlier run of the same CLI version (a write outside the task folder). The helper name and path are adapted to this run; this run itself had no block.",
+    "helper": "logic-writer",
+    "text": "@coordinator [blocked] permission check failed for write_file \"../shared/units.json\": Permission prompt for action write_file timed out waiting for user response after 60s; the user did not respond, which is not an explicit denial."
   }
 }

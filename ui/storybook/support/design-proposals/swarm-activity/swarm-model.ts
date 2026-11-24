@@ -56,31 +56,117 @@ export interface SwarmView {
   helpers: SwarmHelper[];
   posts: SwarmPost[];
   threads: SwarmThread[];
-  usage?: { total: number; input: number; output: number };
+  usage?: { total: number; input: number; output: number; helpers?: { input: number; output: number } };
   model: string;
   reason?: string;
   files?: string[];
   synthetic?: boolean;
 }
 
-interface SampleAction { at: string; tool: string; summary?: string; target?: string }
-interface SampleWorker { model?: string; tokens: { input: number; output: number }; actions: SampleAction[] }
-interface SampleBoardPost { seq: number; agent: string; text: string; time: string; kind?: string }
-interface SampleAcp { kind: string; name?: string; rawInput?: Record<string, unknown>; result?: { usage?: Record<string, number> } }
-interface SamplePlan { goal: { title: string; line: string }; tasks: Record<string, string>; threads: { id: string; title: string; goal: string; tasks: string[] }[] }
+export interface SwarmAction { at: string; tool: string; summary?: string; target?: string }
+export interface SwarmWorker { model?: string; tokens: { input: number; output: number }; actions: SwarmAction[] }
+export interface SwarmBoardPost { seq: number; agent: string; text: string; time: string; kind?: string }
+export interface SwarmAdd { name: string; brief: string }
+export interface SwarmPlan { goal: { title: string; line: string }; tasks: Record<string, string>; threads: { id: string; title: string; goal: string; tasks: string[] }[] }
 
-const acp = sample.acp as SampleAcp[];
-const files = sample.files as Record<string, unknown>;
-const plan = files["swarm/plan.json"] as SamplePlan;
-const board = files["swarm/board.jsonl"] as SampleBoardPost[];
-const workers = files["worker transcripts (summarised)"] as Record<string, SampleWorker>;
+export interface SwarmFixture {
+  request: string;
+  model: string;
+  filesChanged: string[];
+  title: string;
+  adds: SwarmAdd[];
+  coordinatorUsage: { total: number; input: number; output: number } | null;
+  plan: SwarmPlan;
+  board: SwarmBoardPost[];
+  workers: Record<string, SwarmWorker>;
+  recordedBlock: { helper: string; text: string };
+}
+
+type Json = Record<string, unknown>;
+
+function fail(path: string, expected: string): never {
+  throw new Error(`Swarm fixture: ${path} should be ${expected}`);
+}
+
+function object(value: unknown, path: string): Json {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : fail(path, "an object");
+}
+
+function array(value: unknown, path: string): unknown[] {
+  return Array.isArray(value) ? value : fail(path, "an array");
+}
+
+function text(value: unknown, path: string): string {
+  return typeof value === "string" ? value : fail(path, "a string");
+}
+
+function count(value: unknown, path: string): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fail(path, "a number");
+}
+
+function optionalText(value: unknown, path: string): string | undefined {
+  return value === undefined ? undefined : text(value, path);
+}
+
+export function parseSwarmFixture(raw: unknown): SwarmFixture {
+  const root = object(raw, "fixture");
+  const run = object(root.run, "run");
+  const files = object(root.files, "files");
+  const events = array(root.acp, "acp").map((event, index) => object(event, `acp[${index}]`));
+  const swarmInputs = events
+    .filter((event) => event.name === "swarm")
+    .map((event, index) => object(event.rawInput, `swarm call ${index}.rawInput`));
+  const titleInput = swarmInputs.find((input) => input.action === "title");
+  const usageEvent = events.find((event) => event.kind === "prompt_result");
+  const usage = usageEvent ? object(object(usageEvent.result, "prompt_result.result").usage, "prompt_result.result.usage") : null;
+  const planRaw = object(files.plan, "files.plan");
+  const goal = object(planRaw.goal, "files.plan.goal");
+  const tasks = object(planRaw.tasks, "files.plan.tasks");
+  const board = array(files.board, "files.board").map((value, index) => {
+    const post = object(value, `files.board[${index}]`);
+    return { seq: count(post.seq, `files.board[${index}].seq`), agent: text(post.agent, `files.board[${index}].agent`), text: text(post.text, `files.board[${index}].text`), time: text(post.time, `files.board[${index}].time`), kind: optionalText(post.kind, `files.board[${index}].kind`) };
+  });
+  if (!board.length) fail("files.board", "non-empty");
+  const workers = Object.fromEntries(Object.entries(object(files.workers, "files.workers")).map(([name, value]) => {
+    const worker = object(value, `files.workers.${name}`);
+    const tokens = object(worker.tokens, `files.workers.${name}.tokens`);
+    const actions = array(worker.actions, `files.workers.${name}.actions`).map((entry, index) => {
+      const action = object(entry, `files.workers.${name}.actions[${index}]`);
+      const at = text(action.at, `files.workers.${name}.actions[${index}].at`);
+      return { at, tool: text(action.tool, `files.workers.${name}.actions[${index}].tool`), summary: optionalText(action.summary, "summary"), target: optionalText(action.target, "target") };
+    });
+    return [name, { model: optionalText(worker.model, `files.workers.${name}.model`), tokens: { input: count(tokens.input, "tokens.input"), output: count(tokens.output, "tokens.output") }, actions }];
+  }));
+  const block = object(root.recordedBlock, "recordedBlock");
+  return {
+    request: text(root.request, "request"),
+    model: text(run.model, "run.model"),
+    filesChanged: array(run.filesChanged, "run.filesChanged").map((value, index) => text(value, `run.filesChanged[${index}]`)),
+    title: titleInput ? text(titleInput.title, "swarm title") : text(goal.title, "files.plan.goal.title"),
+    adds: swarmInputs.filter((input) => input.action === "add").map((input, index) => ({ name: text(input.name, `swarm add ${index}.name`), brief: text(input.brief, `swarm add ${index}.brief`) })),
+    coordinatorUsage: usage ? { total: count(usage.totalTokens, "usage.totalTokens"), input: count(usage.inputTokens, "usage.inputTokens"), output: count(usage.outputTokens, "usage.outputTokens") } : null,
+    plan: {
+      goal: { title: text(goal.title, "files.plan.goal.title"), line: text(goal.line, "files.plan.goal.line") },
+      tasks: Object.fromEntries(Object.entries(tasks).map(([name, value]) => [name, text(value, `files.plan.tasks.${name}`)])),
+      threads: array(planRaw.threads, "files.plan.threads").map((value, index) => {
+        const thread = object(value, `files.plan.threads[${index}]`);
+        return { id: text(thread.id, "thread.id"), title: text(thread.title, "thread.title"), goal: text(thread.goal, "thread.goal"), tasks: array(thread.tasks, "thread.tasks").map((name) => text(name, "thread.tasks[]")) };
+      }),
+    },
+    board,
+    workers,
+    recordedBlock: { helper: text(block.helper, "recordedBlock.helper"), text: text(block.text, "recordedBlock.text") },
+  };
+}
+
+export const FIXTURE = parseSwarmFixture(sample);
 
 function fileName(path?: string): string | undefined {
   if (!path) return undefined;
   return path.replace(/^<task-folder>\/?/, "").split("/").pop() || undefined;
 }
 
-export function actionLabel(action: SampleAction): string {
+export function actionLabel(action: SwarmAction): string {
   if (action.summary) return action.summary;
   switch (action.tool) {
     case "read_board": return "Reading the messages";
@@ -117,37 +203,40 @@ export function plainPost(text: string): string {
   return text.replace(/^(@[a-z0-9#_-]+\s*)+/i, "").replace(/\[(done|blocked|stall|update)\]\s*/gi, "").replace(/\s+/g, " ").trim();
 }
 
-const adds = acp.filter((event) => event.name === "swarm" && event.rawInput?.action === "add");
-const titleEvent = acp.find((event) => event.name === "swarm" && event.rawInput?.action === "title");
-const usageEvent = acp.find((event) => event.kind === "prompt_result");
-
-export const REAL_RUN = {
-  request: sample.request,
-  title: String(titleEvent?.rawInput?.title ?? plan.goal.title),
-  startedAt: board[0]!.time,
-  lastSeq: board.at(-1)!.seq,
-  addedHelpers: adds.map((event) => ({ name: String(event.rawInput?.name), brief: String(event.rawInput?.brief ?? "") })),
-};
-
-function seqTime(seq: number): string {
-  return board.find((post) => post.seq === seq)?.time ?? board.at(-1)!.time;
+export function blockedReason(text: string): string {
+  const target = /permission check failed for \w+ "([^"]+)"/i.exec(text)?.[1];
+  return target ? `Blocked: tried to change ${target}, outside the task folder` : "Blocked by the task folder boundary";
 }
 
-export function deriveRealSwarm(atSeq: number, status: SwarmStatus = "running"): SwarmView {
-  const until = seqTime(atSeq);
-  const posts: SwarmPost[] = board
-    .filter((post) => post.seq <= atSeq)
-    .map((post) => ({ seq: post.seq, author: post.agent, text: post.text, at: post.time, kind: postKind(post.agent, post.text, post.kind) }));
+export const REAL_RUN = {
+  request: FIXTURE.request,
+  title: FIXTURE.title,
+  startedAt: FIXTURE.board[0]!.time,
+  lastSeq: FIXTURE.board[FIXTURE.board.length - 1]!.seq,
+  addedHelpers: FIXTURE.adds,
+};
+
+export function boardPost(fixture: SwarmFixture, post: SwarmBoardPost): SwarmPost {
+  return { seq: post.seq, author: post.agent, text: post.text, at: post.time, kind: postKind(post.agent, post.text, post.kind) };
+}
+
+export function deriveSwarm(fixture: SwarmFixture, atSeq: number, status: SwarmStatus = "running", extraPosts: SwarmBoardPost[] = []): SwarmView {
+  const lastSeq = fixture.board[fixture.board.length - 1]!.seq;
+  const cutoff = fixture.board.find((post) => post.seq === atSeq) ?? fixture.board[fixture.board.length - 1]!;
+  const until = Date.parse(cutoff.time);
+  const posts = [...fixture.board.filter((post) => post.seq <= atSeq), ...extraPosts].map((post) => boardPost(fixture, post));
   const verified = posts.some((post) => post.author.startsWith("verifier") && post.kind === "done");
-  const helpers: SwarmHelper[] = adds.map((event) => {
-    const name = String(event.rawInput?.name);
+  const helpers: SwarmHelper[] = fixture.adds.map(({ name, brief }) => {
     const role = roleOf(name);
-    const worker = workers[name];
-    const seen = (worker?.actions ?? []).filter((action) => action.at <= until);
-    const last = seen.at(-1);
-    const posted = posts.some((post) => post.author === name && post.kind === "done");
+    const worker = fixture.workers[name];
+    const seen = (worker?.actions ?? []).filter((action) => Date.parse(action.at) <= until);
+    const last = seen[seen.length - 1];
+    const own = posts.filter((post) => post.author === name);
+    const blocked = own.filter((post) => post.kind === "blocked").pop();
+    const posted = own.some((post) => post.kind === "done");
     let state: HelperState = seen.length ? "working" : "starting";
     if (role === "monitor") state = "waiting";
+    else if (blocked) state = "blocked";
     else if (posted && role === "verifier") state = "done";
     else if (posted) state = verified ? "done" : "in_review";
     else if (last?.tool === "swarm_wait") state = "waiting";
@@ -156,29 +245,33 @@ export function deriveRealSwarm(atSeq: number, status: SwarmStatus = "running"):
     return {
       name,
       role,
-      task: plan.tasks[name] ?? plainBrief(String(event.rawInput?.brief ?? "")),
-      brief: plainBrief(String(event.rawInput?.brief ?? "")),
+      task: fixture.plan.tasks[name] ?? plainBrief(brief),
+      brief: plainBrief(brief),
       state,
-      action: settled ? undefined : role === "monitor" ? "Watching for stalls" : last ? actionLabel(last) : undefined,
+      action: state === "blocked" ? blockedReason(blocked!.text) : settled ? undefined : role === "monitor" ? "Watching for stalls" : last ? actionLabel(last) : undefined,
       model: worker?.model,
-      tokens: worker ? { input: worker.tokens.input, output: worker.tokens.output } : undefined,
+      tokens: worker ? { ...worker.tokens } : undefined,
     };
   });
-  const usage = usageEvent?.result?.usage;
-  const finished = status === "completed" || status === "stopped";
+  const turnEnded = status === "completed" && atSeq >= lastSeq;
+  const helperTokens = Object.values(fixture.workers).reduce((sum, worker) => ({ input: sum.input + worker.tokens.input, output: sum.output + worker.tokens.output }), { input: 0, output: 0 });
   return {
-    request: REAL_RUN.request,
-    title: REAL_RUN.title,
-    goal: plan.goal,
+    request: fixture.request,
+    title: fixture.title,
+    goal: fixture.plan.goal,
     status,
-    startedAt: REAL_RUN.startedAt,
+    startedAt: fixture.board[0]!.time,
     helpers,
     posts,
-    threads: plan.threads.map((thread) => ({ id: thread.id, title: thread.title, goal: thread.goal, helpers: thread.tasks })),
-    usage: finished && usage ? { total: usage.totalTokens ?? 0, input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } : undefined,
-    model: "Gemini 4 Neon",
-    files: status === "completed" ? ["README.md", "convert.js", "index.html", "style.css"] : undefined,
+    threads: fixture.plan.threads.map((thread) => ({ id: thread.id, title: thread.title, goal: thread.goal, helpers: thread.tasks })),
+    usage: turnEnded && fixture.coordinatorUsage ? { ...fixture.coordinatorUsage, helpers: helperTokens } : undefined,
+    model: fixture.model,
+    files: turnEnded ? fixture.filesChanged : undefined,
   };
+}
+
+export function deriveRealSwarm(atSeq: number, status: SwarmStatus = "running", extraPosts: SwarmBoardPost[] = []): SwarmView {
+  return deriveSwarm(FIXTURE, atSeq, status, extraPosts);
 }
 
 export interface SwarmProgress {

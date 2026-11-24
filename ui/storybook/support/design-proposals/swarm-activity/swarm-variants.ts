@@ -1,8 +1,6 @@
-import { REAL_RUN, deriveRealSwarm, plainBrief, type SwarmHelper, type SwarmPost, type SwarmView } from "./swarm-model";
+import { FIXTURE, REAL_RUN, deriveRealSwarm, plainBrief, type SwarmHelper, type SwarmPost, type SwarmView } from "./swarm-model";
 
 export const REQUEST = "Build a tiny static unit-converter page in this folder: page, styles, conversion logic and a README, then have it checked.";
-
-const BLOCKED_TEXT = "@coordinator [blocked] permission check failed for write_file \"../shared/units.json\": the permission prompt timed out waiting for user response after 60s.";
 
 export function starting(): SwarmView {
   const view = deriveRealSwarm(6, "starting");
@@ -14,13 +12,9 @@ export function running(): SwarmView {
 }
 
 export function runningWithBlocked(): SwarmView {
-  const view = running();
-  const post: SwarmPost = { seq: 9, author: "logic-writer", text: BLOCKED_TEXT, at: view.posts.at(-1)!.at, kind: "blocked" };
-  return {
-    ...view,
-    helpers: view.helpers.map((helper) => (helper.name === "logic-writer" ? { ...helper, state: "blocked", action: "Blocked: tried to change a file outside the task folder" } : helper)),
-    posts: [...view.posts, post],
-  };
+  const at = FIXTURE.board.find((post) => post.seq === 8)!.time;
+  const recorded = { seq: 9, agent: FIXTURE.recordedBlock.helper, text: FIXTURE.recordedBlock.text, time: at };
+  return { ...deriveRealSwarm(8, "running", [recorded]), request: REQUEST };
 }
 
 export function stopping(): SwarmView {
