@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, max, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, max, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueRelations, issues, workspaceOperations } from "@paperclipai/db";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
@@ -123,7 +123,17 @@ export async function readDependencyWakeCircuit(
         eq(workspaceOperations.phase, "workspace_finalize"),
         eq(workspaceOperations.status, "succeeded"),
       ));
-    changeTimes.push(completed?.at, finalized?.at);
+    // Workspace recovery saves blocker work without an execution workspace. The
+    // null workspace still matches the leading columns of the same index.
+    const [recovered] = await db.select({ at: max(workspaceOperations.finishedAt) }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId),
+      isNull(workspaceOperations.executionWorkspaceId),
+      inArray(workspaceOperations.issueId, input.blockerIssueIds),
+      eq(workspaceOperations.phase, "workspace_finalize"),
+      eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->>'owningService' = 'workspace_recovery'`,
+    ));
+    changeTimes.push(completed?.at, finalized?.at, recovered?.at);
   }
   // A changed blocker set is a new attempt: an added blocker leaves a relation
   // row, and every add or removal through the API records issue.blockers_updated.

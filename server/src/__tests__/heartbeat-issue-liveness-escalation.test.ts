@@ -1458,6 +1458,20 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.healed).toBe(1);
   });
 
+  it("resets the failure backoff when workspace recovery saves newer blocker work", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(workspaceOperations).values({
+      companyId: fixture.companyId, executionWorkspaceId: null, issueId: fixture.blockerIssueId,
+      phase: "workspace_finalize", status: "succeeded", metadata: { owningService: "workspace_recovery" },
+      startedAt: new Date(Date.now() - 20_000), finishedAt: new Date(Date.now() - 10_000),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
   it("resets the failure backoff when a blocker produces a newer result", async () => {
     const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
