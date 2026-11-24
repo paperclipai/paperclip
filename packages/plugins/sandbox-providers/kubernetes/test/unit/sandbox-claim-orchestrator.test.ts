@@ -180,7 +180,9 @@ describe("waitForSandboxClaimReady & deleteSandboxClaim", () => {
       metadata: { name: "sb-warm-1" },
       status: {
         phase: "Running",
-        containerStatuses: [{ name: "agent", restartCount: 0 }],
+        containerStatuses: [
+          { name: "agent", restartCount: 0, state: { running: { startedAt: "2026-11-23T00:00:01Z" } } },
+        ],
       },
     });
     const clients = {
@@ -223,17 +225,17 @@ describe("waitForSandboxClaimReady & deleteSandboxClaim", () => {
         metadata: { name: "sb-sidecar" },
         status: {
           phase: "Running",
-          containerStatuses: [{ name: "istio-proxy", restartCount: 0 }],
+          containerStatuses: [{ name: "istio-proxy", restartCount: 0, state: { running: {} } }],
         },
       })
-      // Poll 2: agent container status now present with restartCount === 0
+      // Poll 2: agent container status now present and running with restartCount === 0
       .mockResolvedValueOnce({
         metadata: { name: "sb-sidecar" },
         status: {
           phase: "Running",
           containerStatuses: [
-            { name: "istio-proxy", restartCount: 0 },
-            { name: "agent", restartCount: 0 },
+            { name: "istio-proxy", restartCount: 0, state: { running: {} } },
+            { name: "agent", restartCount: 0, state: { running: { startedAt: "2026-11-23T00:00:02Z" } } },
           ],
         },
       });
@@ -249,6 +251,60 @@ describe("waitForSandboxClaimReady & deleteSandboxClaim", () => {
 
     expect(readPod).toHaveBeenCalledTimes(2);
     expect(res.podName).toBe("sb-sidecar");
+  });
+
+  it("keeps polling when agent container has restartCount=0 but is waiting or terminated instead of running", async () => {
+    const getCustom = vi.fn().mockResolvedValue({
+      metadata: { generation: 1 },
+      status: {
+        sandbox: { name: "sb-stopped-agent" },
+        conditions: [{ type: "Ready", status: "True", observedGeneration: 1 }],
+      },
+    });
+    const readPod = vi
+      .fn()
+      .mockResolvedValueOnce({
+        metadata: { name: "sb-stopped-agent" },
+        status: {
+          phase: "Running",
+          containerStatuses: [
+            { name: "istio-proxy", restartCount: 0, state: { running: {} } },
+            { name: "agent", restartCount: 0, state: { waiting: { reason: "ContainerCreating" } } },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        metadata: { name: "sb-stopped-agent" },
+        status: {
+          phase: "Running",
+          containerStatuses: [
+            { name: "istio-proxy", restartCount: 0, state: { running: {} } },
+            { name: "agent", restartCount: 0, state: { terminated: { exitCode: 0 } } },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        metadata: { name: "sb-stopped-agent" },
+        status: {
+          phase: "Running",
+          containerStatuses: [
+            { name: "istio-proxy", restartCount: 0, state: { running: {} } },
+            { name: "agent", restartCount: 0, state: { running: { startedAt: "2026-11-23T00:00:03Z" } } },
+          ],
+        },
+      });
+    const clients = {
+      custom: { getNamespacedCustomObject: getCustom },
+      core: { readNamespacedPod: readPod },
+    };
+
+    const res = await waitForSandboxClaimReady(clients as never, "paperclip-acme", "claim-stopped", {
+      timeoutMs: 2000,
+      pollMs: 5,
+    });
+
+    expect(readPod).toHaveBeenCalledTimes(3);
+    expect(res.podName).toBe("sb-stopped-agent");
   });
 
   it("rejects CrashLoop false-ready pods with restartCount > 0", async () => {
@@ -267,7 +323,7 @@ describe("waitForSandboxClaimReady & deleteSandboxClaim", () => {
           metadata: { name: "sb-crash" },
           status: {
             phase: "Running",
-            containerStatuses: [{ name: "agent", restartCount: 2 }],
+            containerStatuses: [{ name: "agent", restartCount: 2, state: { running: {} } }],
           },
         }),
       },

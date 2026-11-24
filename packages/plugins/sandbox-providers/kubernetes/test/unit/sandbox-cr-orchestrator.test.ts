@@ -246,6 +246,25 @@ describe("waitForSandboxReady", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it("fails promptly on Terminating even when a stale Ready condition has observedGeneration < generation", async () => {
+    const get = vi.fn().mockResolvedValue({
+      metadata: { generation: 3 },
+      status: {
+        observedGeneration: 2,
+        phase: "Terminating",
+        conditions: [{ type: "Ready", status: "True", observedGeneration: 2 }],
+      },
+    });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 5000,
+        pollMs: 5,
+      }),
+    ).rejects.toThrow(/Terminating/);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
   it("polls until Ready", async () => {
     const get = vi
       .fn()

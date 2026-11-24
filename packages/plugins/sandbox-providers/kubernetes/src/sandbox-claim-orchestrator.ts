@@ -20,8 +20,9 @@
  *   condition-level `observedGeneration >= metadata.generation`, `Ready=True`,
  *   a non-empty `status.sandbox.name`, and a secondary Pod `GET` requiring
  *   `phase === "Running"`, no `deletionTimestamp`, and an explicit `"agent"`
- *   container status entry with `restartCount === 0` (keeps polling if only
- *   sidecar container statuses are present).
+ *   container status entry with `state.running` and `restartCount === 0`
+ *   (keeps polling if only sidecar container statuses are present or if `agent`
+ *   is waiting/terminated).
  * - Idempotent Foreground deletion: `deleteSandboxClaim` treats HTTP 404 as success.
  */
 
@@ -272,14 +273,19 @@ type AgentContainerHealth =
   | { status: "restarted"; restartCount: number };
 
 /**
- * Requires an explicit `"agent"` container status entry with a numeric
- * `restartCount === 0`. If `agent` status is missing (for example when an
- * injected sidecar keeps the Pod `Running` before `agent` reports status),
- * returns `"pending"` so readiness polling continues instead of passing.
+ * Requires an explicit `"agent"` container status entry with `state.running`
+ * and a numeric `restartCount === 0`. If `agent` status is missing, waiting,
+ * or terminated (for example when an injected sidecar keeps the Pod `Running`
+ * while `agent` is not yet running or has stopped), returns `"pending"` so
+ * readiness polling continues instead of returning an unusable Pod.
  */
 function inspectAgentContainerStatus(pod: {
   status?: {
-    containerStatuses?: Array<{ name?: string; restartCount?: number }>;
+    containerStatuses?: Array<{
+      name?: string;
+      restartCount?: number;
+      state?: { running?: unknown; waiting?: unknown; terminated?: unknown };
+    }>;
   };
 }): AgentContainerHealth {
   const statuses = pod.status?.containerStatuses;
@@ -290,6 +296,9 @@ function inspectAgentContainerStatus(pod: {
   }
   if (agent.restartCount > 0) {
     return { status: "restarted", restartCount: agent.restartCount };
+  }
+  if (!agent.state?.running) {
+    return { status: "pending" };
   }
   return { status: "ready" };
 }
@@ -312,7 +321,8 @@ function isConditionCurrent(
  * 2. Requires `Ready=True` condition and non-empty `status.sandbox.name`.
  * 3. Performs a secondary Pod `GET` confirming `phase === "Running"`, no
  *    `deletionTimestamp`, and an explicit `"agent"` container status with
- *    `restartCount === 0` (defends against sidecar-only or CrashLoop pods).
+ *    `state.running` and `restartCount === 0` (defends against sidecar-only,
+ *    waiting/stopped agent, or CrashLoop pods).
  */
 export async function waitForSandboxClaimReady(
   clients: KubeClients,
@@ -384,7 +394,11 @@ export async function waitForSandboxClaimReady(
         metadata?: { name?: string; deletionTimestamp?: unknown };
         status?: {
           phase?: string;
-          containerStatuses?: Array<{ name?: string; restartCount?: number }>;
+          containerStatuses?: Array<{
+            name?: string;
+            restartCount?: number;
+            state?: { running?: unknown; waiting?: unknown; terminated?: unknown };
+          }>;
         };
       };
 
