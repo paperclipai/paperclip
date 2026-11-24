@@ -404,9 +404,7 @@ export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, company
   const driver = await pluginEnvironmentRunnerTaskDriver(db, environment, input.pluginWorkers);
   const harness = agentHarnessName(input.adapterType, input.adapterConfig ?? {});
   if (driver?.supportedAdapters && !driver.supportedAdapters.includes(harness)) {
-    throw unprocessable("This environment does not support the selected harness. Choose a supported harness or environment.", {
-      code: "agent_runner_unavailable", harness,
-    });
+    throw unsupportedHarness(harness);
   }
 }
 
@@ -449,7 +447,23 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
     return selected;
   }
   const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes, input.pluginWorkers);
-  return resolveNewAgentRunner({ ...input, target });
+  const selected = resolveNewAgentRunner({ ...input, target });
+  // A saved Paperclip Runner agent can skip the availability check above, so
+  // check its harness against the target's supported adapters here too.
+  assertRunnerTargetSupportsHarness(target, selected);
+  return selected;
+}
+
+function assertRunnerTargetSupportsHarness(target: RunnerTarget, selected: { adapterType: string; adapterConfig: Record<string, unknown> }) {
+  if (selected.adapterType !== "paperclip_runner" || !target.runnerTasks || !target.supportedAdapters) return;
+  const harness = agentHarnessName(selected.adapterType, selected.adapterConfig);
+  if (!target.supportedAdapters.includes(harness)) throw unsupportedHarness(harness);
+}
+
+function unsupportedHarness(harness: string) {
+  return unprocessable("This environment does not support the selected harness. Choose a supported harness or environment.", {
+    code: "agent_runner_unavailable", harness,
+  });
 }
 
 export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[],

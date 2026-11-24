@@ -784,6 +784,11 @@ describe("Runner-only plugin environments", () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, defaultEnvironmentId: "computer" }))
       .rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable", harness: "grok_local" } });
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", runner: "auto",
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, defaultEnvironmentId: "computer" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable", harness: "grok_local" } });
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", runner: "auto",
+      adapterConfig: copilot, defaultEnvironmentId: "computer" })).resolves.toMatchObject({ adapterType: "paperclip_runner" });
     state.settings = { defaultEnvironmentId: "computer" };
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } }))
       .rejects.toMatchObject({ details: { harness: "codex_local" } });
