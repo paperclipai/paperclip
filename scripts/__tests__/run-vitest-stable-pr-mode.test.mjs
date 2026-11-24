@@ -6,7 +6,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { selectionHash } from "../ci/test-selection-manifest.mjs";
-import { defaultServerParallelWorkers, resolveServerParallelWorkers } from "../ci/vitest-workers.mjs";
+import {
+  defaultServerParallelWorkers,
+  resolveServerParallelWorkers,
+  resolveWorkspaceParallelWorkers,
+} from "../ci/vitest-workers.mjs";
 import { partitionWorkspaceProjects, selectWorkspaceProjectsShard } from "../ci/workspaces-b-shard.mjs";
 import { discoverWorkspacePackagePaths, ensureAllWorkspaceLinksCurrent } from "../ensure-workspace-package-links.mjs";
 
@@ -78,6 +82,7 @@ test("general-workspaces-b and general-workspaces-a batch all projects into one 
     const aProjectsArg = aCalls[0].flatMap((arg, index) => (arg === "--project" ? [aCalls[0][index + 1]] : []));
     assert.deepEqual(aProjectsArg, workspacesAProjects);
     assert.ok(aCalls[0].includes("--shard=2/2"));
+    assert.ok(aCalls[0].some((arg) => /^--maxWorkers=\d+$/.test(arg)), `expected top-level --maxWorkers in ${aCalls[0].join(" ")}`);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -251,6 +256,9 @@ test("dynamic server workers scale cleanly across 4-core and 8-core runners whil
 
   assert.equal(resolveServerParallelWorkers("general", { PAPERCLIP_VITEST_CPU_COUNT: "8" }), 7);
   assert.equal(resolveServerParallelWorkers("serialized", { PAPERCLIP_VITEST_CPU_COUNT: "8" }), 5);
+  assert.equal(resolveWorkspaceParallelWorkers({ PAPERCLIP_VITEST_CPU_COUNT: "4" }), 4);
+  assert.equal(resolveWorkspaceParallelWorkers({ PAPERCLIP_VITEST_CPU_COUNT: "8" }), 7);
+  assert.equal(resolveWorkspaceParallelWorkers({ PAPERCLIP_VITEST_CPU_COUNT: "8", PAPERCLIP_VITEST_MAX_WORKERS: "3" }), 3);
   assert.equal(
     resolveServerParallelWorkers("general", { PAPERCLIP_VITEST_CPU_COUNT: "8", PAPERCLIP_VITEST_MAX_WORKERS: "2" }),
     2,

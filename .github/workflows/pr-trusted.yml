@@ -254,7 +254,12 @@ jobs:
       - name: Check CI test budget policy
         run: |
           if [[ -f ./scripts/check-test-budget.mjs ]]; then
-            node ./scripts/check-test-budget.mjs
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            if [[ -n "$base_sha" ]]; then
+              node ./scripts/check-test-budget.mjs --base "$base_sha"
+            else
+              node ./scripts/check-test-budget.mjs
+            fi
           fi
           if [[ -f ./scripts/check-test-budget.test.mjs ]]; then
             node "$CI_NODE_TEST" ./scripts/check-test-budget.test.mjs

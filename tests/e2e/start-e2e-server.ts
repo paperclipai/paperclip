@@ -62,20 +62,24 @@ process.once("SIGTERM", () => {
 });
 
 try {
+  const usesExternalPostgres = Boolean(process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim());
   db = await startEmbeddedPostgresTestDatabase("paperclip-e2e-pg-");
 
-  // Disposable E2E database destroyed on exit: disable durability flushes so
-  // per-test writes across all specs run at memory speed.
-  const adminUrl = new URL(db.connectionString);
-  adminUrl.pathname = "/postgres";
-  const admin = createDb(adminUrl.toString(), { maxConnections: 1 });
-  try {
-    await admin.$client.unsafe("ALTER SYSTEM SET fsync = off");
-    await admin.$client.unsafe("ALTER SYSTEM SET synchronous_commit = off");
-    await admin.$client.unsafe("ALTER SYSTEM SET full_page_writes = off");
-    await admin.$client.unsafe("SELECT pg_reload_conf()");
-  } finally {
-    await admin.$client.end({ timeout: 1 });
+  // Only tune cluster-wide durability settings on a disposable embedded
+  // PostgreSQL instance owned by this script. Never mutate a shared external
+  // PostgreSQL server passed via PAPERCLIP_TEST_POSTGRES_ADMIN_URL.
+  if (!usesExternalPostgres) {
+    const adminUrl = new URL(db.connectionString);
+    adminUrl.pathname = "/postgres";
+    const admin = createDb(adminUrl.toString(), { maxConnections: 1 });
+    try {
+      await admin.$client.unsafe("ALTER SYSTEM SET fsync = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET synchronous_commit = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET full_page_writes = off");
+      await admin.$client.unsafe("SELECT pg_reload_conf()");
+    } finally {
+      await admin.$client.end({ timeout: 1 });
+    }
   }
 
   const config = {

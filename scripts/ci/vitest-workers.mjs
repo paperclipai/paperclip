@@ -46,3 +46,14 @@ export function resolveServerParallelWorkers(lane, env = process.env) {
   }
   return defaultServerParallelWorkers(lane, resolveAvailableCpuCount(env));
 }
+
+export function resolveWorkspaceParallelWorkers(env = process.env) {
+  const raw = env.PAPERCLIP_VITEST_MAX_WORKERS?.trim();
+  if (raw) {
+    return parsePositiveIntegerEnv(raw, "PAPERCLIP_VITEST_MAX_WORKERS");
+  }
+  // Vitest defaults to cpus - 1 for forks (3 workers on 4-core CI, leaving a core idle).
+  // Use 4 workers on 4-core runners and cap at 7 on 8+-core runners so 1 core stays
+  // free for the Vite transform server.
+  return Math.min(7, resolveAvailableCpuCount(env));
+}

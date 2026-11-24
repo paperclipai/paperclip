@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   checkTestFileBudget,
   findUnbudgetedSleeps,
@@ -10,18 +11,23 @@ import {
   validateNightlyManifest,
 } from "./check-test-budget.mjs";
 
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 test("checked-in scripts/ci/nightly-only-suites.json passes full manifest & invariant validation", () => {
   const result = runTestBudgetCheck({ manifestOnly: true });
   assert.deepEqual(result.violations, []);
   assert.ok(result.nightlyCount > 0, "expected non-empty nightly-only-suites.json");
 });
 
-test("findUnbudgetedSleeps flags real-clock sleeps >1000ms and respects allow-sleep annotations", () => {
+test("findUnbudgetedSleeps flags real-clock sleeps >1000ms (including inline callbacks and products) and respects allow-sleep annotations", () => {
   const source = [
     "await delay(500);",
     "await delay(1000);",
     "await delay(1_500);",
     "await setTimeout(resolve, 2500);",
+    "await new Promise((resolve) => setTimeout(() => resolve(), 2500));",
+    "await new Promise((resolve) => setTimeout(() => { resolve(); }, 60 * 1000));",
+    "await delay(2 * 1000);",
     "await page.waitForTimeout(3000);",
     "await delay(5000); // test-budget:allow-sleep: socket idle check",
     "// await delay(9000);",
@@ -34,6 +40,9 @@ test("findUnbudgetedSleeps flags real-clock sleeps >1000ms and respects allow-sl
       { rule: "sleep-over-1s", line: 3 },
       { rule: "sleep-over-1s", line: 4 },
       { rule: "sleep-over-1s", line: 5 },
+      { rule: "sleep-over-1s", line: 6 },
+      { rule: "sleep-over-1s", line: 7 },
+      { rule: "sleep-over-1s", line: 8 },
     ],
   );
 });
@@ -52,6 +61,13 @@ test("checkTestFileBudget enforces migration, prose-guidance, and tiny embedded-
     { isNew: true },
   );
   assert.deepEqual(guidance.map((v) => v.rule), ["prose-guidance-grep"]);
+
+  const nestedGuidance = checkTestFileBudget(
+    "server/src/__tests__/bar-guidance.test.ts",
+    'const text = readFileSync(path.join(dir, "README.md"), "utf8"); expect(text).toContain("Usage");',
+    { isNew: true },
+  );
+  assert.deepEqual(nestedGuidance.map((v) => v.rule), ["prose-guidance-grep"]);
 
   const tinyPg = checkTestFileBudget(
     "server/src/__tests__/tiny-one-off.test.ts",
@@ -85,6 +101,9 @@ test("validateNightlyManifest rejects missing files, duplicates, and protected c
     writeFileSync(path.join(tmp, "server/src/__tests__/authz-company-access.test.ts"), "// authz\n");
     writeFileSync(path.join(tmp, "server/src/services/connectors/slack-access.test.ts"), "// access\n");
     writeFileSync(path.join(tmp, "server/src/services/budget-resume-continuation.test.ts"), "// budget\n");
+    writeFileSync(path.join(tmp, "server/src/__tests__/webhook-ingress.test.ts"), "// webhook\n");
+    writeFileSync(path.join(tmp, "server/src/__tests__/storage-s3-credential-rotation.test.ts"), "// cred\n");
+    writeFileSync(path.join(tmp, "server/src/__tests__/connection-management.integration.test.ts"), "// isolation\n");
     writeFileSync(path.join(tmp, "server/src/__tests__/real-soak.test.ts"), "// soak\n");
     writeFileSync(
       path.join(tmp, "scripts/ci/nightly-only-suites.json"),
@@ -96,6 +115,9 @@ test("validateNightlyManifest rejects missing files, duplicates, and protected c
           { path: "server/src/__tests__/authz-company-access.test.ts" },
           { path: "server/src/services/connectors/slack-access.test.ts" },
           { path: "server/src/services/budget-resume-continuation.test.ts" },
+          { path: "server/src/__tests__/webhook-ingress.test.ts" },
+          { path: "server/src/__tests__/storage-s3-credential-rotation.test.ts" },
+          { path: "server/src/__tests__/connection-management.integration.test.ts" },
         ],
       }),
     );
@@ -103,9 +125,23 @@ test("validateNightlyManifest rejects missing files, duplicates, and protected c
     const { violations } = validateNightlyManifest(tmp);
     assert.deepEqual(
       violations.map((v) => v.rule),
-      ["nightly-manifest", "nightly-manifest", "protected-invariant", "protected-invariant", "protected-invariant"],
+      [
+        "nightly-manifest",
+        "nightly-manifest",
+        "protected-invariant",
+        "protected-invariant",
+        "protected-invariant",
+        "protected-invariant",
+        "protected-invariant",
+        "protected-invariant",
+      ],
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("pr-trusted.yml invokes check-test-budget.mjs with --base on pull requests", () => {
+  const workflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
+  assert.match(workflow, /node \.\/scripts\/check-test-budget\.mjs --base "\$base_sha"/);
 });

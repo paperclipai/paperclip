@@ -8,55 +8,148 @@ const repoRootDefault = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 export const NIGHTLY_MANIFEST_REL = "scripts/ci/nightly-only-suites.json";
 
 const TEST_FILE_PATTERN = /^(?:packages\/db\/src|server\/src|ui\/src)\/.+\.test\.tsx?$|^tests\/e2e\/.+\.spec\.ts$/;
-const SLEEP_CALL_PATTERN = /\b(?:setTimeout|delay|waitForTimeout)\s*\(([^)\n]*)\)/g;
-const NUMERIC_LITERAL_PATTERN = /\b(\d[\d_]*)\b/g;
+const SLEEP_CALL_START_PATTERN = /\b(setTimeout|delay|waitForTimeout)\s*\(/g;
+const READ_FILE_START_PATTERN = /\breadFile(?:Sync)?\s*\(/g;
 const HISTORICAL_MIGRATION_FILE_PATTERN = /^(?:packages\/db\/src|server\/src)\/.*migration\.test\.ts$/;
 const HISTORICAL_MIGRATION_CONTENT_PATTERN = /\b0\d{3}_[a-z0-9_]+\.sql\b|--> statement-breakpoint/;
 const GUIDANCE_FILE_PATTERN = /-guidance\.test\.ts$/;
-const PROSE_READ_PATTERN = /\breadFile(?:Sync)?\s*\([^)\n]*(?:\.(?:md|tsx)\b|SKILL\.md|AGENTS\.md|README\.md)/;
+const PROSE_TARGET_PATTERN = /\.(?:md|tsx)\b|SKILL\.md|AGENTS\.md|README\.md/;
 const EMBEDDED_PG_PATTERN = /\b(?:startEmbeddedPostgresTestDatabase|createTestPostgres)\b/;
 
 export const PROTECTED_INVARIANT_PATTERN =
-  /(?:auth|authz|-access(?:\.|\/|$)|company-access|isolation|checkout|assignee|approval|(?:^|\/)budget-|budget-policy|budget-cancellation|budget-evaluation|budget-hold|activity-log|secret|csrf|redaction|guard|security|tenant|privacy|sentry|telemetry|otel|observability|injection|ssrf|oracle|cli-invocation-safety)/i;
+  /(?:auth|authz|-access(?:\.|\/|$)|company-access|isolation|checkout|assignee|approval|(?:^|\/)budget-|budget-policy|budget-cancellation|budget-evaluation|budget-hold|activity-log|secret|csrf|redaction|guard|security|tenant|privacy|sentry|telemetry|otel|observability|injection|ssrf|oracle|cli-invocation-safety|webhook-ingress|credential|signature|device-login|policy-sweep|connection-management|document-scope)/i;
 
 const MAX_PR_SLEEP_MS = 1_000;
 const TINY_DB_FILE_MAX_LOC = 80;
 
-function parseNumericMs(raw) {
-  const value = Number(raw.replaceAll("_", ""));
-  return Number.isFinite(value) ? value : 0;
+function extractBalancedCallArgs(text, openParenIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  let argStart = openParenIndex + 1;
+  const args = [];
+  for (let i = openParenIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        args.push(text.slice(argStart, i));
+        return { args, endIndex: i };
+      }
+      continue;
+    }
+    if (ch === "," && depth === 1) {
+      args.push(text.slice(argStart, i));
+      argStart = i + 1;
+    }
+  }
+  return null;
+}
+
+function evaluateDurationExprMs(expr) {
+  const cleaned = expr.replace(/\/\*[\s\S]*?\*\//g, "").trim();
+  if (!cleaned) return 0;
+  // Match pure numeric expressions like `2500`, `1_500`, `60 * 1000`, `5 * 60 * 1_000`, `2_000 + 500`.
+  if (/^[\d_\s+*().]+$/.test(cleaned)) {
+    const sumTerms = cleaned.replace(/[()]/g, "").split("+");
+    let total = 0;
+    for (const term of sumTerms) {
+      const factors = term.split("*").map((part) => Number(part.trim().replaceAll("_", "")));
+      if (factors.some((n) => !Number.isFinite(n))) return 0;
+      total += factors.reduce((acc, n) => acc * n, 1);
+    }
+    return total;
+  }
+  // Fallback: inspect the largest standalone numeric literal inside a compound expression.
+  let max = 0;
+  for (const m of cleaned.matchAll(/\b(\d[\d_]*)\b/g)) {
+    const value = Number(m[1].replaceAll("_", ""));
+    if (Number.isFinite(value) && value > max) max = value;
+  }
+  return max;
+}
+
+function lineNumberAt(source, offset) {
+  let line = 1;
+  for (let i = 0; i < offset; i += 1) {
+    if (source.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+}
+
+function hasProseSourceRead(source) {
+  READ_FILE_START_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = READ_FILE_START_PATTERN.exec(source)) !== null) {
+    const openParen = match.index + match[0].length - 1;
+    const call = extractBalancedCallArgs(source, openParen);
+    const firstArg = call?.args[0] ?? "";
+    if (PROSE_TARGET_PATTERN.test(firstArg)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function findUnbudgetedSleeps(source, { onlyLineNumbers = null } = {}) {
   const violations = [];
   const lines = source.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const lineNumber = index + 1;
-    if (onlyLineNumbers && !onlyLineNumbers.has(lineNumber)) continue;
-    const line = lines[index];
-    if (line.includes("test-budget:allow-sleep")) continue;
+  SLEEP_CALL_START_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = SLEEP_CALL_START_PATTERN.exec(source)) !== null) {
+    const lineNumber = lineNumberAt(source, match.index);
+    const line = lines[lineNumber - 1] ?? "";
     if (/^\s*\/\//.test(line)) continue;
-
-    SLEEP_CALL_PATTERN.lastIndex = 0;
-    let match;
-    while ((match = SLEEP_CALL_PATTERN.exec(line)) !== null) {
-      const args = match[1] ?? "";
-      // For setTimeout(fn, ms), check the last numeric literal in the argument list;
-      // for delay(ms) / waitForTimeout(ms), check the first numeric literal.
-      const isSetTimeout = match[0].startsWith("setTimeout");
-      const targetSlice = isSetTimeout ? args.split(",").slice(1).join(",") : args.split(",")[0] ?? "";
-      NUMERIC_LITERAL_PATTERN.lastIndex = 0;
-      let numMatch;
-      while ((numMatch = NUMERIC_LITERAL_PATTERN.exec(targetSlice)) !== null) {
-        const ms = parseNumericMs(numMatch[1]);
-        if (ms > MAX_PR_SLEEP_MS) {
-          violations.push({
-            rule: "sleep-over-1s",
-            line: lineNumber,
-            message: `Unbudgeted real-clock sleep (${ms}ms > ${MAX_PR_SLEEP_MS}ms). Use fake timers/condition waits, move soak suite to ${NIGHTLY_MANIFEST_REL}, or annotate with // test-budget:allow-sleep: <reason>.`,
-          });
+    const openParen = match.index + match[0].length - 1;
+    const call = extractBalancedCallArgs(source, openParen);
+    if (!call) continue;
+    const endLineNumber = lineNumberAt(source, call.endIndex);
+    if (onlyLineNumbers) {
+      let touchesAdded = false;
+      for (let ln = lineNumber; ln <= endLineNumber; ln += 1) {
+        if (onlyLineNumbers.has(ln)) {
+          touchesAdded = true;
+          break;
         }
       }
+      if (!touchesAdded) continue;
+    }
+    let allowed = false;
+    for (let ln = lineNumber; ln <= endLineNumber; ln += 1) {
+      if ((lines[ln - 1] ?? "").includes("test-budget:allow-sleep")) {
+        allowed = true;
+        break;
+      }
+    }
+    if (allowed) continue;
+
+    const callee = match[1];
+    const delayArg = callee === "setTimeout" ? call.args[1] ?? "" : call.args[0] ?? "";
+    const ms = evaluateDurationExprMs(delayArg);
+    if (ms > MAX_PR_SLEEP_MS) {
+      violations.push({
+        rule: "sleep-over-1s",
+        line: lineNumber,
+        message: `Unbudgeted real-clock sleep (${ms}ms > ${MAX_PR_SLEEP_MS}ms). Use fake timers/condition waits, move soak suite to ${NIGHTLY_MANIFEST_REL}, or annotate with // test-budget:allow-sleep: <reason>.`,
+      });
     }
   }
   return violations;
@@ -143,7 +236,7 @@ export function checkTestFileBudget(fileRel, source, { isNew = true, nightlyPath
 
     if (
       GUIDANCE_FILE_PATTERN.test(fileRel) &&
-      PROSE_READ_PATTERN.test(source) &&
+      hasProseSourceRead(source) &&
       !source.includes("test-budget:allow-prose-check")
     ) {
       violations.push({

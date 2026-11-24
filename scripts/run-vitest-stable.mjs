@@ -14,7 +14,7 @@ import {
   resolveNightlyOnlySuitesPath,
 } from "./ci/nightly-only-suites.mjs";
 import { runUnderSharedPostgres, shouldWrapWithSharedPostgres } from "./ci/vitest-shared-postgres.mjs";
-import { resolveServerParallelWorkers } from "./ci/vitest-workers.mjs";
+import { resolveServerParallelWorkers, resolveWorkspaceParallelWorkers } from "./ci/vitest-workers.mjs";
 import { selectWorkspaceProjectsShard } from "./ci/workspaces-b-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
@@ -552,7 +552,7 @@ async function runGeneralSuites(routeTests, chatShards) {
   }
 }
 
-async function runProjectGroup(projects, groupName, shardIndex = null, shardCount = null, excludedFiles = []) {
+async function runProjectGroup(projects, groupName, shardIndex = null, shardCount = null, excludedFiles = [], extraArgs = []) {
   // Run the whole group in a single multi-project Vitest invocation so Vitest
   // boots once and shares module transform/worker pool overhead across packages.
   // With shard args, Vitest's native --shard deterministically partitions the
@@ -565,7 +565,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
   const label = projects.length === 1
     ? `${groupName} project ${projects[0]}${shardSuffix}`
     : `${groupName} (${projects.length} projects)${shardSuffix}`;
-  await runVitest([...projectArgs, ...excludeArgs, ...shardArgs], label);
+  await runVitest([...projectArgs, ...excludeArgs, ...shardArgs, ...extraArgs], label);
 }
 
 function chatShardWorkers(index, count) {
@@ -710,8 +710,12 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     // The ui project dominates this lane (~224s of a 319s job in actions run
     // 31371439296, 2026-08-10, where workspaces-a was the slowest PR check).
     // Its test files shard cleanly with Vitest's native --shard, so the lane
-    // splits across runners without a duration manifest.
-    await runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount);
+    // splits across runners without a duration manifest. Pass --maxWorkers at
+    // the top level so both projects share one worker pool (Vitest 5 rejects
+    // per-project maxWorkers mismatches within the same sequence.groupOrder).
+    await runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount, [], [
+      `--maxWorkers=${resolveWorkspaceParallelWorkers()}`,
+    ]);
     return;
   }
 

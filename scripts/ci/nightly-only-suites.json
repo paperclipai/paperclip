@@ -92,12 +92,6 @@
       "measuredMs": 187000
     },
     {
-      "path": "server/src/__tests__/connection-management.integration.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "External chat/voice/connector channel integration soak (185.8s in run 45238253588)",
-      "measuredMs": 185806
-    },
-    {
       "path": "server/src/services/native-runtime/external-chat-wait.integration.test.ts",
       "category": "restart-lease-soak",
       "reason": "Long-running external chat wait & native restart soak (85 cases, 181s)",
@@ -1268,12 +1262,6 @@
       "measuredMs": 21032
     },
     {
-      "path": "server/src/__tests__/storage-s3-credential-rotation.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (21.0s in run 45238253588)",
-      "measuredMs": 20958
-    },
-    {
       "path": "server/src/services/workspace-recovery-stop-proof.test.ts",
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (20.9s in run 45238253588)",
@@ -1740,12 +1728,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (13.5s in run 45238253588)",
       "measuredMs": 13543
-    },
-    {
-      "path": "server/src/services/native-runtime/task-document-scope.integration.test.ts",
-      "category": "integration-soak",
-      "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (13.5s in run 45238253588)",
-      "measuredMs": 13521
     },
     {
       "path": "server/src/__tests__/eval-feedback-recovery.integration.test.ts",
@@ -2228,12 +2210,6 @@
       "measuredMs": 8957
     },
     {
-      "path": "server/src/services/chat-channels/github/webhook-ingress.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "External chat/voice/connector channel integration soak (8.9s in run 45238253588)",
-      "measuredMs": 8916
-    },
-    {
       "path": "server/src/__tests__/board-native-attachments.integration.test.ts",
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (8.9s in run 45238253588)",
@@ -2262,12 +2238,6 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (8.8s in run 45238253588)",
       "measuredMs": 8794
-    },
-    {
-      "path": "server/src/modules/agent-lifecycle/__tests__/policy-sweep.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (8.8s in run 45238253588)",
-      "measuredMs": 8793
     },
     {
       "path": "server/src/__tests__/plugin-workspace-terminal-retry.integration.test.ts",
@@ -2670,12 +2640,6 @@
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (7.0s in run 45238253588)",
       "measuredMs": 7014
-    },
-    {
-      "path": "server/src/services/connectors/tailscale/device-login.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "External chat/voice/connector channel integration soak (7.0s in run 45238253588)",
-      "measuredMs": 6990
     },
     {
       "path": "server/src/__tests__/native-recovery-dispatch-lease-reacquire.test.ts",
@@ -3096,12 +3060,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (2.7s in run 45238253588)",
       "measuredMs": 2696
-    },
-    {
-      "path": "server/src/services/native-runtime/antigravity-credential-recovery.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (2.7s in run 45238253588)",
-      "measuredMs": 2691
     },
     {
       "path": "server/src/__tests__/scheduled-work.test.ts",
