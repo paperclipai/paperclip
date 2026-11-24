@@ -134,8 +134,7 @@ Only closed reason/policy values supplement the existing recorded failure;
 the observation is neither historical cause nor permission to execute. Canonical
 workspace recovery coverage lives in
 [workspace recovery admission](../../server/src/services/workspace-recovery-admission.test.ts)
-and [remote workspace integration](../../server/src/services/remote-workspaces.integration.test.ts)
-(the standalone `workspace-recovery-source` soak file was retired). Deployed agent use is unverified.
+and [remote workspace integration](../../server/src/services/remote-workspaces.integration.test.ts). Deployed agent use is unverified.
 
 Evidence: `source-only` — scoped review of `f10210990a3c9cad1a4359318388f237de3169dd`:
 [run routes](../../server/src/routes/agents.ts),

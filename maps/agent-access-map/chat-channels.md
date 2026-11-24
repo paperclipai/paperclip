@@ -669,9 +669,8 @@ remains a separate check. See [receipt worker](../../server/src/services/chat-ch
 Controller-owned receipt reactions accept the SDK's empty thread timestamp for
 linear DMs. Channel IDs and source message timestamps remain validated. This
 does not add an agent tool or change sender, task, or credential authorization.
-Slack conversation lifecycle coverage remains in
-[Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts)
-(the standalone receipt soak file was retired); live
+The pinned SDK transport regression is covered in
+[receipt tests](../../server/src/services/chat-slack-receipts.test.ts); live
 acknowledgement speed needs a separate provider test.
 
 Slack assignment and tool discovery bound concurrent endpoint preparation to
@@ -679,8 +678,7 @@ two. Every endpoint keeps the live task, company, agent and linked-user checks;
 403 denials omit only that endpoint. Preparation waits for both active checks
 before it returns an ordered result or propagates an error. Tool authority reads
 the current bot token without resolving unrelated webhook credentials. See the
-[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts)
-(the standalone real-database preparation soak file was retired).
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts).
 These local controls do not establish live Slack latency or provider access.
 
 Native tool gateways use the durable run task binding for discovery and policy
@@ -693,8 +691,7 @@ Endpoint settings, linked identity, tool profiles, and invocation policy still
 apply on each call. The native tool contract rotates older provider sessions so
 an empty retained catalog is not reused. PostgreSQL fixtures cover discovery,
 review publication, Slack reads, and revocation in
-[channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-(the standalone run-origin soak file was retired).
+[channel integration](../../server/src/__tests__/chat-channels.integration.test.ts).
 The [voice gateway fixture](../../server/src/__tests__/voice-session-store.integration.test.ts)
 also verifies durable task binding for a later personal callback invocation.
 Failure replies cannot replace final answers inherited from an earlier run.

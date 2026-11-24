@@ -375,8 +375,7 @@ status must stay unchanged, and later saved input must become eligible for norma
 admission. A running or queued source and a normal retry of a successful turn
 remain denied. Canonical workspace recovery coverage lives in
 [workspace recovery admission](../../server/src/services/workspace-recovery-admission.test.ts)
-and [workspace recovery warm handoff](../../server/src/services/workspace-recovery-warm-handoff.test.ts)
-(the standalone restore-reconciliation soak file was retired) without claiming live provider proof.
+and [workspace recovery warm handoff](../../server/src/services/workspace-recovery-warm-handoff.test.ts) without claiming live provider proof.
 
 For an abandoned native copyback owner, the harness verifies the exact stopped
 deployment and the reconciler restores saved work automatically. Task users see

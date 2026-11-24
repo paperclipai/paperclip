@@ -66,7 +66,7 @@ Historical Cloud sandbox cleanup remains server-owned. Cleanup-only absence
 reads authenticate the tenant host with its server capability; they expose no
 new board or agent endpoint. Their signed scope cannot authorize task recovery.
 [Idle sleep safety regressions](../../server/src/__tests__/idle-sleep-safety.test.ts)
-cover idle-gate safety (the standalone historical cleanup soak file was retired),
+cover idle-gate safety,
 while [receipt checks](../../server/src/services/sandbox-absence-proof.test.ts)
 cover signature, identity, freshness and separation from recovery authority.
 These checks do not establish a deployed sleep/wake result.
@@ -128,8 +128,7 @@ composes transaction-safe owner seeds and writes a private receipt. Every
 qualification rereads current revisions and image package evidence; a completed
 historical receipt grants no deployment or execution authority.
 [Reader coverage](../../server/src/__tests__/cloud-configuration-readers.test.ts)
-checks bounded sources and pnpm-style link integrity (the standalone PostgreSQL
-migration soak file was retired). These are local fixtures;
+checks bounded sources and pnpm-style link integrity. These are local fixtures;
 see the [scope and operator procedure](../../doc/cloud-configuration-migration.md).
 
 Cloud stack Admins may update experimental settings through the trusted Cloud

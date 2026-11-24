@@ -98,9 +98,8 @@ hosted provider turn.
 For slow source preparation, configure a short PostgreSQL idle-transaction
 timeout in a disposable instance. Hold preparation beyond that interval and
 verify it retains its source lock, rejects competing preparation, and leaves
-ordinary reads available. Canonical remote workspace coverage lives in
-[remote workspace integration tests](../../server/src/services/remote-workspaces.integration.test.ts)
-(the standalone source-lock soak file was retired); it does not prove provider startup or deployed recovery.
+ordinary reads available. The [source-lock regression](../../server/src/services/isolated-remote-workspace-source-lock.test.ts)
+uses real PostgreSQL; it does not prove provider startup or deployed recovery.
 
 Create an authorized task whose selected checkout is also used by private historical
 tasks and many old workspace records. Start and reuse it without a historical-source
@@ -197,8 +196,7 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
   The [service tests](../../server/src/__tests__/execution-workspaces-service.test.ts)
-  cover real PostgreSQL signals and retained worktrees (the standalone
-  terminal-workspace worker soak file was retired). These tests do not
+  cover real PostgreSQL signals and retained worktrees. These tests do not
   qualify an external wake alarm or a live provider deployment.
 - Organizational project, source project, task files, personal `AGENT_HOME`, and
   provider home have separate meanings. Private source ownership remains attached

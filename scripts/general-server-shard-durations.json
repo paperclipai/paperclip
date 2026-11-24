@@ -12,7 +12,7 @@
   "coverage": {
     "measured": 1573,
     "withSetup": 1573,
-    "inventory": 1649
+    "inventory": 1653
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
@@ -491,6 +491,7 @@
     "server/src/__tests__/http-log-aborted-response.test.ts": 1296,
     "server/src/__tests__/http-log-policy.test.ts": 881,
     "server/src/__tests__/http-log-redaction.test.ts": 8186,
+    "server/src/__tests__/idle-database-backup-sync.test.ts": 890,
     "server/src/__tests__/idle-incoming-wake.test.ts": 32015,
     "server/src/__tests__/idle-sleep-diagnostics.test.ts": 8607,
     "server/src/__tests__/idle-sleep-safety.test.ts": 150013,
@@ -1204,6 +1205,7 @@
     "server/src/services/chat-sdk-runtime.test.ts": 4829,
     "server/src/services/chat-sdk-state.test.ts": 730,
     "server/src/services/chat-slack-native-modal.test.ts": 4543,
+    "server/src/services/chat-slack-receipts.test.ts": 5112,
     "server/src/services/chat-slack-sessions.test.ts": 770,
     "server/src/services/chat-task-url.test.ts": 7206,
     "server/src/services/chat-teams-credentials.test.ts": 1809,
@@ -1324,6 +1326,7 @@
     "server/src/services/hot-restart.test.ts": 1840,
     "server/src/services/inbox-mine-read.test.ts": 950,
     "server/src/services/instance-settings-readonly.test.ts": 5892,
+    "server/src/services/isolated-remote-workspace-source-lock.test.ts": 10495,
     "server/src/services/isolated-task-directory.test.ts": 1839,
     "server/src/services/issue-comment-wakeup.test.ts": 768,
     "server/src/services/issue-dependency-wakeups.test.ts": 2037,
@@ -1345,6 +1348,7 @@
     "server/src/services/native-local-process-stop.test.ts": 3551,
     "server/src/services/native-log-archive.integration.test.ts": 23689,
     "server/src/services/native-runtime/acpx-qualification.test.ts": 3297,
+    "server/src/services/native-runtime/agent-chat-response-recovery.test.ts": 22254,
     "server/src/services/native-runtime/agent-instruction-tools.test.ts": 6003,
     "server/src/services/native-runtime/antigravity-candidate-admission.test.ts": 3151,
     "server/src/services/native-runtime/antigravity-credential-recovery.test.ts": 3128,

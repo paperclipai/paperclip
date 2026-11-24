@@ -52,8 +52,7 @@ Setup is covered in [connection setup](./connection-setup.md).
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
 Monitor continuation coverage lives in [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts)
-(the standalone monitor-continuation soak file was retired). In a disposable live thread, request work that needs deferred repository
+and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts). In a disposable live thread, request work that needs deferred repository
 preparation. Verify a useful continuation explanation, automatic resumption, and
 the final result in that same thread. A successful provider turn alone is insufficient.
 
@@ -123,8 +122,7 @@ that both permitted tool sets remain available, then revoke one linked identity
 and confirm that the next preparation excludes it. Canonical endpoint preparation
 and Slack lifecycle coverage lives in
 [batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts)
-and [Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts)
-(the standalone real-database preparation soak file was retired);
+and [Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts);
 these do not prove live provider latency or an end-to-end response target.
 
 Catalog discovery rechecks live authority and current credentials without

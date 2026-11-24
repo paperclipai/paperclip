@@ -94,8 +94,7 @@ assignment role; reassignment during preparation cancels the old assignee's retr
 The
 [preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
 and [remote workspace integration tests](../../server/src/services/remote-workspaces.integration.test.ts)
-cover reservation and persisted waits with PostgreSQL (standalone busy-heartbeat
-and reservation soak files were retired); live sandbox provider acceptance
+cover reservation and persisted waits with PostgreSQL; live sandbox provider acceptance
 remains separate. This is automated evidence, not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
@@ -181,10 +180,10 @@ Capability ID: `workspaces/provisioning`.
 
 Source preparation keeps its dedicated lock connection active during work on
 other connections. It preserves company/source exclusion and existing admission
-authority; it adds no agent API or permission. Canonical remote workspace
-coverage lives in
-[remote workspace integration tests](../../server/src/services/remote-workspaces.integration.test.ts)
-(the standalone source-lock soak file was retired). Deployed agent recovery requires separate live evidence.
+authority; it adds no agent API or permission. The
+[source-lock regression](../../server/src/services/isolated-remote-workspace-source-lock.test.ts)
+covers PostgreSQL idle timeout, competing preparation, ordinary pool availability,
+and failure cleanup. Deployed agent recovery requires separate live evidence.
 
 Review: `baseline`.
 
@@ -213,7 +212,7 @@ use that saved continuation; explicit completion remains completion. Existing
 status decisions and wake admission retain Stop and authorization gates. The
 [workspace session tests](../../server/src/__tests__/heartbeat-workspace-session.test.ts)
 and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
-cover workspace continuation contracts (the standalone workspace-API soak file was retired); live qualification remains separate.
+cover workspace continuation contracts; live qualification remains separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
@@ -281,7 +280,7 @@ Publication is create-only after staging/hash checks; conflicting files and syml
 paths fail. Retry the identical identity after an unknown outcome. Audit records
 contain identity/outcome only; contents remain untrusted and screening still applies.
 The [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
-suite uses disposable data and real files (the standalone authority integration soak file was retired); provider transport qualification is separate.
+suite uses disposable data and real files; provider transport qualification is separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.

@@ -59,7 +59,7 @@ boundary; hosted overlap and active-run continuity require separate qualificatio
 
 Automated: [idle sleep safety](../../server/src/__tests__/idle-sleep-safety.test.ts)
 and [idle incoming wake](../../server/src/__tests__/idle-incoming-wake.test.ts)
-cover idle-gate safety (the standalone static-UI idle soak file was retired).
+cover idle-gate safety.
 It does not qualify provider cleanup or a hosted sleep/wake cycle.
 
 Manual: On an otherwise idle disposable instance, close a static UI download
@@ -79,7 +79,7 @@ explicit package evidence digest for same-package comparison. Confirm stale
 qualification and missing legacy files cannot clear blockers. This recipe covers
 configuration/packages and does not qualify whole-server zero downtime, secret
 bytes, or volume removal. [Cloud configuration readers](../../server/src/__tests__/cloud-configuration-readers.test.ts)
-cover reader boundaries (the standalone PostgreSQL migration soak file was retired);
+cover reader boundaries;
 this does not establish a hosted replacement.
 
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.

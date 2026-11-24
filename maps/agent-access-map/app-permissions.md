@@ -111,7 +111,7 @@ retain their saved profile assignments, including deliberately removed grants.
 Non-empty saves still remove legacy connection-wide include entries from the
 managed app profile when no new targets are added.
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
-Verification: `not-run` — individual agent-authenticated operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite (the standalone installation-permission soak file was retired). Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Verification: `not-run` — individual agent-authenticated operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 ## `action-policy`
 

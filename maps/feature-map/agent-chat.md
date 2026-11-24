@@ -81,7 +81,7 @@ inaccessible saved conversation; verify no cross-user or cross-company history a
 
 ### `project-handoff`
 
-Automated: [agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and [agent chat messages](../../server/src/__tests__/agent-chat-messages.test.ts) cover canonical agent-chat contracts (standalone chat-project-tools and coordinator-handoff soak files were retired); live model choice and UI handoff require a manual run.
+Automated: [agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and [agent chat messages](../../server/src/__tests__/agent-chat-messages.test.ts) cover canonical agent-chat contracts; live model choice and UI handoff require a manual run.
 
 Note: a suggested task remains a proposal until acceptance, its task,
 initial plan and source-chat audience are saved atomically, and retries do

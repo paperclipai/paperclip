@@ -144,8 +144,7 @@ tasks; nested execution tasks retain normal parent/child rules. Source participa
 session generation, task assignment and private-source inheritance are checked;
 quality confirmations remain separate from task completion and publication.
 Canonical conversation coverage lives in
-[agent conversations](../../server/src/__tests__/agent-conversations.test.ts)
-(the standalone coordinator-handoff soak file was retired) and does not claim
+[agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and does not claim
 live model/tool selection or external delivery verification.
 Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
 exercise native task creation and completion delivery through the real chat UI.
