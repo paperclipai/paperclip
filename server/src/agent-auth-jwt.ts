@@ -35,7 +35,6 @@ export function isRevokedRunAuthority(companyId: string, agentId: string, runId:
   );
 }
 
-// Incident-specific source candidate; admission and live issuer evidence remain separate.
 export function isRestrictedIncidentRunOutput(companyId: string, runId?: string | null): boolean {
   return companyId === "0000000a-0000-4000-8000-00000000000a" && (
     runId === "0000000b-0000-4000-8000-00000000000b" ||

@@ -37,8 +37,6 @@ await check("creation source retains run identity",()=>assert.match(source("serv
 await check("live event retains run identity",()=>assert.match(source("server/src/realtime/live-events-ws.ts"),/const run = await sharedDeliveryRead\(reads, `run:\$\{runId\}`, async \(\) => \(await db.select\(\{\s+id: heartbeatRuns.id/));
 for(const operation of ["inspect","revealFrame","download"]){await check("provider trace "+operation+" gated",()=>{const s=source("server/src/routes/agents.ts");const offset=s.indexOf("await providerTraces."+operation+"(");assert.match(s.slice(offset-130,offset),/assertRunReadAllowed\(req, res, run\)/)})}
 
-// Model Drizzle's selected projection: omitted columns must not appear in rows.
-// A DB mock returning the entire fixture would hide a lost run ID.
 const ordinaryRun="11111111-1111-4111-8111-111111111111";
 function workspaceDb(runId:string, scopeKind:string, exists=true){
  return {select:(selection:Record<string,string>)=>({from:(table:unknown)=>({where:()=>{

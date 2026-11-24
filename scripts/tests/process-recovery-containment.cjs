@@ -5,7 +5,6 @@ const {transformSync} = require('esbuild');
 const path = require('node:path');
 const root = path.resolve(process.argv[2] || process.cwd());
 const source = fs.readFileSync(path.join(root, 'server/src/agent-auth-jwt.ts'), 'utf8');
-// This isolated VM never receives the caller's environment or signing material.
 const moduleFixture = {exports: {}};
 vm.runInNewContext(transformSync(source, {loader:'ts',format:'cjs',target:'es2022'}).code, {
   module:moduleFixture, exports:moduleFixture.exports, Buffer,

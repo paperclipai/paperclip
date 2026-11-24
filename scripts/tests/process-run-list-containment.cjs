@@ -2,7 +2,6 @@ const fs=require('fs'),path=require('path'),vm=require('vm'),crypto=require('cry
 const esbuild=require(process.env.CONTAINMENT_ESBUILD_MODULE || 'esbuild');
 const root=path.resolve(process.argv[2] || '.');
 const company='0000000a-0000-4000-8000-00000000000a', incidents=['0000000b-0000-4000-8000-00000000000b','0000000c-0000-4000-8000-00000000000c'];
-// Execute the exact predicate already independently qualified; synthetic actor/data only.
 const auth=fs.readFileSync(path.join(root,'server/src/agent-auth-jwt.ts'),'utf8');
 const a=auth.indexOf('export function isRestrictedIncidentRunOutput('),b=auth.indexOf('\nexport function isRevokedIncidentRunAuthority',a);
 const src=fs.readFileSync(path.join(root,'server/src/routes/activity.ts'),'utf8');

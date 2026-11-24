@@ -26,7 +26,6 @@ vm.runInNewContext(esbuild.transformSync(fs.readFileSync(path.join(root,'server/
  privacyCalls=0;const allow=await mod.exports.canActorReadAssetContent(db,{type:'agent',companyId:company,agentId:'synthetic'},{id:'synthetic',companyId:company,objectKey:company+'/assets/companies/synthetic',createdByAgentId:'synthetic',createdByUserId:null});
  const assetPass=allow===expected;results.push({surface:'asset',origin,expectedAllow:expected,allowed:allow,privacyCalls,pass:assetPass});if(!assetPass)failed++;
  }
- // Projection-aware mixed attachment references: all attached provenance must pass.
  origins=['ordinary',...incident];const allow=await mod.exports.canActorReadAssetContent(db,{type:'agent',companyId:company},{id:'synthetic',companyId:company,objectKey:company+'/assets/companies/synthetic'});results.push({surface:'asset-mixed-incidents',allowed:allow,pass:!allow});if(allow)failed++;
  console.log(JSON.stringify({checks:results.length,failures:failed,results,sourceOnly:true,actualArtifactMapping:false},null,2));process.exitCode=failed?1:0;
 })();
