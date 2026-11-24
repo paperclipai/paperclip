@@ -29,8 +29,7 @@ export type AntigravitySwarmErrorCode =
   | "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED"
   | "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH"
   | "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE"
-  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT"
-  | "ANTIGRAVITY_SWARM_RESULT_MISMATCH";
+  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT";
 
 /** `message` is written for the person who asked for the swarm. */
 export class AntigravitySwarmError extends Error {

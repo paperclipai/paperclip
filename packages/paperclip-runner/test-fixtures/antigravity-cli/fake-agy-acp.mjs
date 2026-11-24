@@ -15,6 +15,9 @@
 //   quota          the 429 quota refusal, as seen live on 2026-11-24
 //   wrong-version | no-auto | wrong-mode | wrong-model   receipt mismatches
 //   hang-helpers   the follow-up wait never ends
+//   mode-flip      the CLI switches back to default mode right after the model is set
+//   mode-flip-idle the CLI switches back to default mode after the session opened, between turns
+//   cautious-brief a helper brief says "Do not create debug.log"; the run is correct
 // FAKE_AGY_LOG (optional) appends every client message, one JSON per line.
 import { spawn } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
@@ -47,7 +50,8 @@ const addWriters = async () => {
   await tool("swarm", { action: "title", title: "Two writers and a verifier" });
   await tool("swarm", { action: "add", name: "writer-a", workspace: "inherit", brief: "Write a.txt containing exactly 'A' in the current workspace directory. Once done, post to the board: '@verifier [done] a.txt written'." });
   await tool("swarm", { action: "add", name: "writer-b", workspace: "inherit", brief: "Write b.txt containing exactly 'B' in the current workspace directory. Once done, post to the board: '@verifier [done] b.txt written'." });
-  await tool("swarm", { action: "add", name: "verifier", workspace: "inherit", brief: "Wait for writer-a and writer-b, then read a.txt and b.txt and report." });
+  await tool("swarm", { action: "add", name: "verifier", workspace: "inherit", brief: scenario === "cautious-brief"
+    ? "Wait for writer-a and writer-b, then read a.txt and b.txt. Do not create debug.log or any other file." : "Wait for writer-a and writer-b, then read a.txt and b.txt and report." });
   await tool("swarm", { action: "add", name: "monitor", workspace: "inherit", brief: "You are this swarm's stall monitor. Load the swarm_monitor skill and follow it." });
 };
 const writeFiles = () => {
@@ -142,7 +146,10 @@ async function handle(message) {
     write({ jsonrpc: "2.0", id, result: {} });
     const match = /^(.*)-(low|medium|high)$/.exec(params.modelId);
     state.model = match[1]; state.level = scenario === "wrong-model" ? "high" : match[2];
-    return update(state.sessionId, { sessionUpdate: "config_option_update", configOptions: configOptions() });
+    update(state.sessionId, { sessionUpdate: "config_option_update", configOptions: configOptions() });
+    if (scenario === "mode-flip") update(state.sessionId, { sessionUpdate: "current_mode_update", currentModeId: "default" });
+    if (scenario === "mode-flip-idle") setTimeout(() => update(state.sessionId, { sessionUpdate: "current_mode_update", currentModeId: "default" }), 100);
+    return;
   }
   if (method === "session/prompt") return prompt(id, params);
   if (method === "session/cancel") { state.cancelled = true; state.worker?.kill("SIGTERM"); state.cancel?.(); return; }

@@ -114,10 +114,48 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(run.titles).toEqual(expect.arrayContaining(["Blocked: Write /outside/c.txt", "A helper was blocked from changing something outside the task folder"]));
   });
 
-  it("does not accept a result the task folder does not contain", async () => {
+  it("shows what actually changed in the task folder when a helper misreports, and keeps its usage", async () => {
     const run = await runTurn("misreport");
-    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_RESULT_MISMATCH" } });
-    expect((run.result as { error: { message: string } }).error.message).toContain("b.txt");
+    expect(run.result).toMatchObject({ status: "completed" });
+    expect(run.titles).toContain("Files changed in the task folder: a.txt");
+    expect(run.status.terminalPromptUsage).toMatchObject({ event: { breakdown: { totalTokens: 133035 } } });
+  });
+
+  it("never turns free-form brief wording into a required file", async () => {
+    const run = await runTurn("cautious-brief");
+    expect(run.result).toMatchObject({ status: "completed" });
+  });
+
+  it("refuses a swarm in a read-only (planning) run before the CLI starts", async () => {
+    const { options, clientMessages } = setup("success", { readOnly: true });
+    await expect(openAntigravitySwarmRuntime(options)).rejects.toMatchObject({ code: "ANTIGRAVITY_SWARM_UNAVAILABLE", message: expect.stringMatching(/planning/) });
+    expect(clientMessages()).toEqual([]);
+  });
+
+  it("refuses to resume a saved swarm session and extra tool servers it would have to drop", async () => {
+    await expect(openAntigravitySwarmRuntime(setup("success", { restoringSession: true }).options)).rejects.toThrow(/fresh swarm/);
+    const extra = setup("success");
+    (extra.options as unknown as { mcpServers: unknown[] }).mcpServers.push({ name: "github", command: "/bin/x", args: [], env: {}, runnerOwned: false });
+    await expect(openAntigravitySwarmRuntime(extra.options)).rejects.toThrow(/other tool servers/);
+  });
+
+  it("turns a provider mode change during admission into a typed failure, stops the CLI, and keeps the caller alive", async () => {
+    const { options } = setup("mode-flip");
+    let pid = 0;
+    const spawn = options.command.spawn;
+    (options.command as { spawn: typeof spawn }).spawn = (...args) => { const child = spawn(...args); pid = child.pid!; return child; };
+    await expect(openAntigravitySwarmRuntime(options, { readbackTimeoutMs: 500 })).rejects.toMatchObject({ code: "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH" });
+    expect(alive(pid)).toBe(false);
+  });
+
+  it("fails the next turn and stops the CLI when settings change between turns", async () => {
+    const { options } = setup("mode-flip-idle");
+    const runtime = await openAntigravitySwarmRuntime(options);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const turn = runtime.startTurn({ text: "go", requestId: "r:1" });
+    for await (const _ of turn.events) { /* drain */ }
+    expect(await turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH" } });
+    await runtime.close({ reason: "done" });
   });
 
   it("refuses a helper on its own workspace copy", async () => {
