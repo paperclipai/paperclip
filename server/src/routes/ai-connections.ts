@@ -1,6 +1,7 @@
 import { connectionManagementGuard, connectionRequestActor, connectionRequestContext, connectionRequestUserId, aiLoginUserAction, filterConnectionManagementRows } from "./connection-management-authz.js";
 import { connectionManagementService } from "../services/connection-management.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
+import { probeAiRoutingModels } from "../services/ai-routing-models-probe.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
@@ -18,6 +19,7 @@ import {
 import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
+  aiRoutingModelsProbeSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
   browserCodeSchema,
@@ -183,6 +185,20 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const poolId = z.string().uuid().parse(req.params.poolId);
     const { expectedRevision } = z.object({ expectedRevision: z.number().int().positive() }).strict().parse(req.body);
     res.json(await pools.remove(companyId, poolId, expectedRevision, responsibleUserForAiRequest(req)!, connectionRequestContext(req)));
+  });
+  router.post("/companies/:companyId/ai-connections/probe-models", managementGuard("connections:configure", "POST /companies/:companyId/ai-connections/probe-models", { personal: true }), validate(aiRoutingModelsProbeSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const input = aiRoutingModelsProbeSchema.parse(req.body);
+    const isLocalOperator =
+      req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+    res.setHeader("Cache-Control", "no-store");
+    // The schema guarantees exactly one form: an inline routing endpoint, or a
+    // saved connection whose stored credential the service resolves server-side.
+    res.json({
+      models: input.connectionId
+        ? await service.probeModels(companyId, connectionRequestUserId(req) ?? getActorInfo(req).actorId, input.connectionId, input.grantId, isLocalOperator)
+        : await probeAiRoutingModels(input.routing!, input.apiKey ?? "", { isLocalOperator }),
+    });
   });
   router.post("/companies/:companyId/ai-connections/local/attempts", managementGuard("connections:configure", "POST /companies/:companyId/ai-connections/local/attempts", { personal: true }), validate(localAiLoginStartSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

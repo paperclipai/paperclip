@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { aiRoutingModel, type AiConnectionBinding, type AiProviderRouting } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
@@ -32,13 +32,37 @@ export function useConnectionModelsState(
     enabled: Boolean(companyId && discover),
     staleTime: 60_000,
   });
+  // Local and gateway connections have no public catalog: the model picker's
+  // refresh lists their endpoint directly, with the stored credential resolved
+  // server-side. All probe state (data, error, pending) is tagged with the
+  // connection it targeted, so switching connections never shows another
+  // endpoint's results, errors, or progress.
+  const endpointRoute = routing?.kind === "local" || routing?.kind === "gateway";
+  const endpointProbe = useMutation({
+    mutationFn: (target: { companyId: string; connectionId: string; grantId: string }) =>
+      aiConnectionsApi.probeRoutingModels(target.companyId, {
+        connectionId: target.connectionId,
+        grantId: target.grantId,
+      }).then((result) => ({ connectionId: target.connectionId, models: result.models })),
+  });
+  const probeForCurrent = endpointProbe.variables?.connectionId === connection?.id
+    ? endpointProbe
+    : undefined;
+  // undefined = no successful probe for this connection yet; an empty array is a
+  // successful reply and must override any stale saved list.
+  const probedModels =
+    probeForCurrent?.data && probeForCurrent.data.connectionId === connection?.id
+      ? probeForCurrent.data.models
+      : undefined;
   const catalogView = useQueryView(catalog);
   const effectiveRouting: AiProviderRouting | undefined = routing ?? (openRouter
     ? { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] }
     : undefined);
   const modelOptions = discover
     ? (catalog.data ?? []).map((m) => ({ ...m, id: ["opencode_local", "pi_local"].includes(harness) ? m.id : m.id.replace(/^openrouter\//, "") }))
-    : routing?.models ?? [];
+    : endpointRoute && probedModels !== undefined
+      ? probedModels
+      : routing?.models ?? [];
   const connectionModels = effectiveRouting
     ? {
         models: modelOptions.map((m) => ({
@@ -46,9 +70,19 @@ export function useConnectionModelsState(
           label: m.label ?? m.id,
         })),
         isLoading: discover && (catalog.isLoading || catalogView.kind === "reconnecting"),
-        error: discover && catalogView.kind === "error" ? catalog.error : null,
-        refreshing: discover && catalog.isFetching,
-        refreshModels: discover ? async () => { await catalog.refetch(); } : undefined,
+        error: discover && catalogView.kind === "error" ? catalog.error : endpointRoute ? probeForCurrent?.error ?? null : null,
+        refreshing: (discover && catalog.isFetching) || (probeForCurrent?.isPending ?? false),
+        refreshModels: discover
+          ? async () => { await catalog.refetch(); }
+          : endpointRoute
+            ? async () => {
+                await endpointProbe.mutateAsync({
+                  companyId: companyId!,
+                  connectionId: connection!.id,
+                  grantId: connection!.grantId,
+                }).catch(() => {});
+              }
+            : undefined,
         resolveModel: (model: string) =>
           aiRoutingModel(effectiveRouting, harness, model),
       }
