@@ -1442,6 +1442,22 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.healed).toBe(1);
   });
 
+  it("resets the failure backoff when a blocker finalizes newer work", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "finalized" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.update(workspaceOperations).set({ finishedAt: new Date(Date.now() - 2 * 60 * 60_000) })
+      .where(eq(workspaceOperations.issueId, fixture.blockerIssueId));
+    await db.insert(workspaceOperations).values({
+      companyId: fixture.companyId, executionWorkspaceId: fixture.executionWorkspaceId, issueId: fixture.blockerIssueId,
+      phase: "workspace_finalize", status: "succeeded", startedAt: new Date(Date.now() - 20_000),
+      finishedAt: new Date(Date.now() - 10_000),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
   it("resets the failure backoff when a blocker produces a newer result", async () => {
     const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });

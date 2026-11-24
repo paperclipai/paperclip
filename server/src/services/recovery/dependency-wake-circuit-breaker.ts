@@ -108,12 +108,21 @@ export async function readDependencyWakeCircuit(
       eq(issues.companyId, input.companyId),
       inArray(issues.id, input.blockerIssueIds),
     ));
-    const [finalized] = await db.select({ at: max(workspaceOperations.finishedAt) }).from(workspaceOperations).where(and(
-      eq(workspaceOperations.companyId, input.companyId),
-      inArray(workspaceOperations.issueId, input.blockerIssueIds),
-      eq(workspaceOperations.phase, "workspace_finalize"),
-      eq(workspaceOperations.status, "succeeded"),
-    ));
+    // Join through each blocker's execution workspace so the read uses
+    // workspace_operations_company_workspace_issue_started_idx.
+    const [finalized] = await db.select({ at: max(workspaceOperations.finishedAt) })
+      .from(issues)
+      .innerJoin(workspaceOperations, and(
+        eq(workspaceOperations.companyId, issues.companyId),
+        eq(workspaceOperations.executionWorkspaceId, issues.executionWorkspaceId),
+        eq(workspaceOperations.issueId, issues.id),
+      ))
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        inArray(issues.id, input.blockerIssueIds),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+        eq(workspaceOperations.status, "succeeded"),
+      ));
     changeTimes.push(completed?.at, finalized?.at);
   }
   // A changed blocker set is a new attempt: an added blocker leaves a relation
