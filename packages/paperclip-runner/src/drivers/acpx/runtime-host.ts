@@ -726,9 +726,10 @@ export class AcpxRuntimeHost {
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
             ],
-            // The bridge's own served catalog: the run's tools plus the
-            // reserved finish and block tools it adds itself.
-            ...(toolBridge ? { paperclipTools: toolBridge.toolNames.map(canonicalRunnerToolName) } : {}),
+            // The bridge's own admitted names, one source: the run's tools,
+            // the reserved finish and block tools it adds itself, and any
+            // private tools.
+            ...(toolBridge ? { paperclipTools: toolBridge.admittedToolNames.map(canonicalRunnerToolName) } : {}),
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),

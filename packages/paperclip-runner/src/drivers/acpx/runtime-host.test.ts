@@ -1119,7 +1119,8 @@ describe("ACPX runtime host", () => {
     const host = await AcpxRuntimeHost.open({
       ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "deny-all",
       environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
-      semanticTools: { tools: [{ name: "write_document", inputSchema: { type: "object", properties: {} } }], handler: async () => ({}) },
+      semanticTools: { tools: [{ name: "write_document", inputSchema: { type: "object", properties: {} } }],
+        privateTools: [{ name: "report_private_progress", inputSchema: { type: "object", properties: {} } }], handler: async () => ({}) },
     }, fixture.dependencies({ openRuntime: async options => { opened = options; return runtimePort(); } }));
     try {
       const bridge = urlBridge(opened!.mcpServers.find(server => server.runnerOwned)!);
@@ -1127,13 +1128,16 @@ describe("ACPX runtime host", () => {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
       const served = ((await response.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map(tool => tool.name);
       expect(served).toEqual(expect.arrayContaining(["paperclip_finish", "paperclip_block"]));
-      expect([...opened!.paperclipTools!].sort()).toEqual(served.map(canonicalRunnerToolName).sort());
+      // Production derives the policy from the bridge's admitted names: the
+      // served catalog plus private tools, finish and block included.
+      expect([...opened!.paperclipTools!].sort()).toEqual([...served, "report_private_progress"].map(canonicalRunnerToolName).sort());
       const policy = { paperclipServerOwned: bridge.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER, paperclipTools: new Set(opened!.paperclipTools) };
       const call = (tool: string, server = bridge.name) => ({ raw: { toolCall: { title: `${server}_${tool}`, kind: "other",
         _meta: { mcp: { tool, server }, is_mcp_tool_call: true } } } });
       expect(antigravityPlanModeAllows(call("paperclip_finish"), policy)).toBe(true);
       expect(antigravityPlanModeAllows(call("paperclip_block"), policy)).toBe(true);
       expect(antigravityPlanModeAllows(call("write_document"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("report_private_progress"), policy)).toBe(true);
       expect(antigravityPlanModeAllows(call("delete_company"), policy)).toBe(false);
       expect(antigravityPlanModeAllows({ raw: { toolCall: { title: "Run write_to_file?", kind: "edit" } } }, policy)).toBe(false);
     } finally { await host.close({ reason: "plan catalog verified" }); }
