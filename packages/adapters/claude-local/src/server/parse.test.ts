@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { readProviderFailure } from "@paperclipai/shared";
 import {
   claudeModelUsageTotals,
+  claudeSubscriptionTokenRejection,
   parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -82,6 +84,21 @@ describe("detectClaudeLoginRequired", () => {
     expect(
       detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
     ).toBe(true);
+  });
+
+  it("reports a refused subscription token in the typed form, from the terminal result only", () => {
+    const parsed = { is_error: true, api_error_status: 401, result: "Failed to authenticate. API Error: 401 Invalid bearer token" };
+    const report = claudeSubscriptionTokenRejection({ parsed, subscriptionToken: true });
+    expect(report).toMatchObject({ provider: "anthropic", category: "authentication", httpStatus: 401, retryability: "requires_action" });
+    expect(readProviderFailure(report)).toEqual(report);
+    // Another credential: the provider of the failure can differ from the provider of the connection.
+    expect(claudeSubscriptionTokenRejection({ parsed, subscriptionToken: false })).toBeNull();
+    // A login prompt in raw output is login required, but it does not show that the provider saw the token.
+    expect(detectClaudeLoginRequired({ parsed: null, stdout: "", stderr: "Invalid API key · Please run /login" }).requiresLogin).toBe(true);
+    expect(claudeSubscriptionTokenRejection({ parsed: null, subscriptionToken: true })).toBeNull();
+    expect(claudeSubscriptionTokenRejection({ parsed: { is_error: true, result: "Please run /login" }, subscriptionToken: true })).toBeNull();
+    // A successful run that repeats a token phrase is not a rejection.
+    expect(claudeSubscriptionTokenRejection({ parsed: { is_error: false, subtype: "success", result: "invalid bearer token" }, subscriptionToken: true })).toBeNull();
   });
 
   it("does not classify a successful probe whose assistant text repeats a token phrase", () => {
