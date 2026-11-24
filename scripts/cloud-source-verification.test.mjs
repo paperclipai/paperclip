@@ -261,7 +261,7 @@ test("a transient gateway error is retried instead of failing the release", asyn
 });
 
 test("every transient status is retried, and the backoff grows", async () => {
-  for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+  for (const status of [408, 425, 500, 502, 503, 504]) {
     const { api, seen, waits } = reader({ responses: [{ status }, { status }, { status: 200, body: { ok: true } }] });
     await api("/repos/x");
     assert.equal(seen.length, 3, `status ${status} should be retried`);
@@ -284,14 +284,15 @@ test("a rate-limited 403 is retried, and a forbidden 403 is not", async () => {
   }
 });
 
-test("Retry-After sets the wait, capped so one header cannot stall the poll", async () => {
+test("Retry-After sets the wait and an excessive delay fails without retrying early", async () => {
   const { api, waits } = reader({ responses: [{ status: 429, headers: { "retry-after": "5" } }, { status: 200 }] });
   await api("/repos/x");
   assert.deepEqual(waits, [5_000]);
 
   const capped = reader({ responses: [{ status: 429, headers: { "retry-after": "86400" } }, { status: 200 }], maxRetryAfterMs: 60_000 });
-  await capped.api("/repos/x");
-  assert.deepEqual(capped.waits, [60_000]);
+  await assert.rejects(capped.api("/repos/x"), /GitHub API rate limited/);
+  assert.deepEqual(capped.waits, []);
+  assert.equal(capped.seen.length, 1);
 });
 
 test("a body that fails while being read is retried", async () => {

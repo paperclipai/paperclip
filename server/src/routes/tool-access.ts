@@ -88,6 +88,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
+import { paperclipGoogleSignInAvailable } from "../services/google-sign-in-availability.js";
 import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -951,6 +952,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
     const pluginApps = (await loadPluginAppCatalog(db)).definitions;
+    const cloudHosted = paperclipGoogleSignInAvailable();
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
       // Full definitions of plugin-provided connectors. Like the built-in
@@ -973,9 +975,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...pluginApps.map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });
@@ -2548,6 +2550,38 @@ function connectorEnrollmentPrincipal(req: Request): string {
       ? await requestStoredContentDeletion(req, connection)
       : null;
     res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
+  });
+
+  router.post("/tool-connections/:connectionId/sign-in/cancel", managementGuard("connections:configure", "POST /tool-connections/:connectionId/sign-in/cancel", { personal: true }), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const applicationBefore = await svc.getApplication(existing.applicationId);
+    const result = await svc.abandonFirstSignIn(existing.id, existing.companyId, connectionRequestActor(req));
+    if (!result.abandoned) {
+      res.json({ abandoned: false, connection: result.connection });
+      return;
+    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.sign_in_cancelled",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: { transport: existing.transport, ...result.removal },
+    });
+    const applicationAfter = await svc.getApplication(existing.applicationId);
+    if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
+      await logActivity(db, {
+        companyId: applicationAfter.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_application.archived",
+        entityType: "tool_application",
+        entityId: applicationAfter.id,
+        details: { type: applicationAfter.type, name: applicationAfter.name, reason: "sign_in_cancelled" },
+      });
+    }
+    res.json({ abandoned: true, connection: result.connection });
   });
 
   async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {

@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Browse } from "./Browse";
+import { Browse, pendingFirstSignInOnlyApplicationIds } from "./Browse";
 import { getAppStoreDefinition } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
@@ -304,5 +304,23 @@ describe("Connectors landing page privacy & access gates", () => {
     await flushReact();
     const removeDialog = document.querySelector('[role="alertdialog"]')!;
     expect(replayLeaks("Notebook account", removeDialog)).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("finds apps with only unfinished sign-ins in one pass over a large list", () => {
+    const connections = Array.from({ length: 5000 }, (_, index) => ({
+      applicationId: `app-${index % 2500}`,
+      status: index < 2500 ? "draft" as const : "active" as const,
+      firstSignInPending: index < 2500 || undefined,
+    }));
+    connections.push({ applicationId: "app-only-pending", status: "draft", firstSignInPending: true });
+    let reads = 0;
+    const counted = new Proxy(connections, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect([...pendingFirstSignInOnlyApplicationIds(counted)]).toEqual(["app-only-pending"]);
+    expect(reads).toBeLessThanOrEqual(connections.length);
   });
 });

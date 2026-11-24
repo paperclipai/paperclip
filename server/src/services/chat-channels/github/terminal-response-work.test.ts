@@ -8,7 +8,7 @@ import { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.j
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../../task-admission.js";
 import { registerGitHubAcknowledgementWork } from "./acknowledgement-work.js";
-import { registerGitHubTerminalResponseWork } from "./terminal-response-work.js";
+import { GITHUB_TERMINAL_RESPONSE_DECISION_VERSION, registerGitHubTerminalResponseWork } from "./terminal-response-work.js";
 import { readGitHubResponseRuns } from "./response-run-state.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -212,6 +212,29 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, publishing.actionId));
     expect(waiting).toMatchObject({ status: "processed" });
     expect(waiting!.result?.final).not.toBe(true);
+  }, 300_000);
+
+  it("reads requests parked by an older decision once after a deploy", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const base = Date.UTC(2026, 9, 28);
+    for (const [index, request] of f.stale.entries()) {
+      const issueNumber = f.runs.findIndex(run => run.issueId === request.issueId) + 1;
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        nativeIssueId: request.issueId, issueId: request.issueId, scopeKind: "issue", status: "succeeded",
+        contextSnapshot: { issueId: request.issueId, wakeCommentId: request.commentId },
+        createdAt: new Date(base + issueNumber * 3_600_000 - (index + 1) * 1_000) });
+    }
+    const previous = `v${Number(GITHUB_TERMINAL_RESPONSE_DECISION_VERSION.slice(1)) - 1}|`;
+    const versioned = new Set(f.stale.filter((_, index) => index % 2 === 0).map(request => request.actionId));
+    await db.execute(sql`update ${chatActions} a set result = coalesce(a.result, '{}'::jsonb) || jsonb_build_object('terminalWaitKey',
+      (case when a.id in (${sql.join([...versioned].map(id => sql`${id}::uuid`), sql`, `)}) then ${previous} else '' end) || (select r.id::text || ':' || r.status || ':' || extract(epoch from r.updated_at)::text from ${heartbeatRuns} r
+        where r.company_id = a.company_id and r.native_issue_id = c.issue_id order by r.created_at desc, r.id desc limit 1)
+      || '|' || i.status || '|' || extract(epoch from a.updated_at)::text)
+      from chat_conversations c, issues i
+      where c.id = a.conversation_id and i.id = c.issue_id and a.id in (${sql.join(f.stale.map(request => sql`${request.actionId}::uuid`), sql`, `)})`);
+    await start(); await advance(31_000);
+    expect(new Set(acknowledged)).toEqual(new Set(f.stale.map(request => request.deliveryId)));
   }, 300_000);
 
   it("acknowledges every owed request of a page when one run's requester provenance changed", async () => {

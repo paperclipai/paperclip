@@ -1,4 +1,5 @@
 import { tailscaleNetworks } from "./services/connectors/tailscale/network.js";
+import { agentSetupProgressService } from "./services/agent-setup-progress.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
 import { registerReattachPhaseWork } from "./services/heartbeat/reattach-phase.js";
@@ -2050,6 +2051,8 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("approval_queue_seeding", () => registerApprovalQueueSeedingWork(deliveryWork, approvalQueueSeedingService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      // Once per start, not a recurring scan: clear agent setup checklists a day past expiry.
+      await step("agent_setup_progress_cleanup", () => agentSetupProgressService(db).sweepExpired());
       await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),

@@ -22,6 +22,7 @@ export * from "./contracts/types.js";
 export * from "./backends/harness-driver-backend.js";
 export * from "./drivers/dot/dot-harness-driver.js";
 export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";
+export { nativeRunAttachReservedBytes } from "./backends/runtime-context.js";
 export { createOpenCodeNativeSessionBackend } from "./backends/opencode-native-backend.js";
 export {
   createNativeSessionBackend,

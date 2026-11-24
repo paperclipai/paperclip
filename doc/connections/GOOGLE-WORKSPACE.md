@@ -100,6 +100,44 @@ The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
 
+## Who can use Paperclip's Google sign-in
+
+Paperclip's own Google sign-in ("Connect with Paperclip") is available only on
+Paperclip Cloud workspaces. Google's restricted-scope verification and security
+assessment cover Paperclip's infrastructure, so Paperclip does not give
+restricted-scope Google tokens to servers it does not run.
+
+A self-hosted Paperclip connects Google with its own Google OAuth client (the
+"Use your own Google OAuth app" method). See
+[Self-hosted instances: use your own Google client](#self-hosted-instances-use-your-own-google-client).
+
+The app decides Cloud or self-hosted with `isCloudManagedInstance()`
+(`server/src/services/cloud-instance.ts`), the same check every other Cloud
+behavior uses, through `paperclipGoogleSignInAvailable()`
+(`server/src/services/google-sign-in-availability.ts`). The board UI uses the
+health response's `cloud` block (`useCloudInstance`), which the server fills
+from the same check. On a self-hosted instance:
+
+- The gallery and setup validation leave out every Paperclip-managed Google
+  method (`appDefinitionForDeployment` in
+  `packages/shared/src/google-sign-in-deployment.ts`). Setup shows only the
+  customer-owned Google client, with a short explanation and a link to
+  Google's client setup guide. It never offers instance enrollment for Google.
+- Starting a Paperclip-managed Google authorization fails with
+  `google_sign_in_cloud_only` before any call to Paperclip Cloud.
+- A broker refusal with `PROVIDER_CLOUD_ONLY` (for example a broker that
+  sees the instance as self-hosted) maps to the same message on start.
+
+Google connections that a self-hosted instance already made through
+Paperclip keep refreshing until a sunset date the owner sets on the broker.
+After it, a refresh fails with `oauth_reauthorization_required` and reason
+`google_sign_in_cloud_only`, the grant is marked for reconnection, and the
+message tells the user to reconnect with their own Google OAuth client.
+Removing the connection still works. Cloud workspaces are not affected.
+
+The app works with brokers from before and after this change: an older broker
+never refuses, and the app's own check already hides and refuses the method.
+
 ## Combined profile deployment and verification
 
 Deploy the companion Cloud broker registry before enabling `workspace.all` in
@@ -395,7 +433,9 @@ whose provider, profile, or exact scope set does not match its closed registry.
 
 ## Instance configuration
 
-All Paperclip-managed Google methods use the existing enrolled-instance keys:
+All Paperclip-managed Google methods use the existing enrolled-instance keys.
+Only Paperclip Cloud workspaces use them for Google; see
+[Who can use Paperclip's Google sign-in](#who-can-use-paperclips-google-sign-in).
 
 ```dotenv
 PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=https://my.paperclip.app
@@ -411,14 +451,12 @@ OAuth client ID and secret and stores them through the normal instance-vault
 path.
 
 Cloud-hosted stacks receive these values through the existing per-stack secret
-delivery path. A self-hosted instance creates its keys during enrollment and
-stores them with owner-only permissions in the instance's ignored secret
-directory. The setup page supplies its authenticated same-origin HTTPS address
-to enrollment, so a normal Tailscale-hosted self-hoster does not need to edit
-`config.json` or set `PAPERCLIP_PUBLIC_URL`; the enrolled origin becomes the
-durable callback binding. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
-Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
-reconnect legacy grants before their old access tokens expire.
+delivery path. A self-hosted instance does not enroll with Paperclip Cloud
+for Google: it uses its own Google OAuth client (see
+[Self-hosted instances: use your own Google client](#self-hosted-instances-use-your-own-google-client)).
+Enrollment of a self-hosted instance still serves other Paperclip-managed
+providers, such as GitHub and Asana. The former `PAPERCLIP_ID_CONNECTOR_*`
+values use an incompatible Paperclip ID protocol and are not read aliases.
 
 The gallery requests the broker capability document with a short cache. A
 Paperclip-managed method is omitted unless its exact profile is enabled at the
@@ -429,6 +467,24 @@ collapsing the nine cards into one app.
 See [Gmail connection](./GMAIL.md) for the detailed enrollment, signing,
 encryption, environment-isolation, and security review runbook inherited by all
 profiles.
+
+## Self-hosted instances: use your own Google client
+
+1. In the Google Cloud console, create or choose a project and enable the APIs
+   for the services you want (Gmail, Drive, Docs, Sheets, Slides, Calendar).
+2. Configure the OAuth consent screen. Add the scopes for the services you
+   will select. Paperclip asks only for the services you choose.
+3. Create an OAuth client of type "Web application". Add Paperclip's callback
+   URL as an authorized redirect URI. The setup screen shows the exact URL to
+   copy.
+4. In Paperclip, open **Apps**, choose **Google Workspace**, and enter the
+   client ID and client secret. Paperclip stores them in the instance vault.
+5. Choose the services and sign in with Google.
+
+Google's guide:
+[Configure Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers).
+An unverified Google app shows a warning screen and has a user cap; only you
+can decide whether to submit your own app for Google's verification.
 
 ## Safety boundary
 

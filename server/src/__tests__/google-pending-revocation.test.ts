@@ -36,6 +36,8 @@ import { secretService } from "../services/secrets.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => true }));
+
 vi.mock("../services/paperclip-cloud-connector-status.js", () => ({
   reconcilePaperclipCloudConnectorEnrollmentStatus: async (_env: unknown, _request: unknown, onRemoved?: () => Promise<unknown>) => {
     await onRemoved?.();

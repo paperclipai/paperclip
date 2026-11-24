@@ -84,6 +84,18 @@ describe("online durable-data migration pass", () => {
       "run_logs:native_log_archive_source_unsettled": 2 });
   });
 
+  it("settles skills whose remote source is gone instead of deferring them", async () => {
+    const installations = vi.fn(async () => ({ inspected: 3, after: null, results: [
+      { skillId: "s1", companyId: "c", status: "converted", reconstructed: true },
+      { skillId: "s2", companyId: "c", status: "source_unavailable" },
+      { skillId: "s3", companyId: "c", status: "converted" }] }));
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 },
+      owners({ skillInstallations: () => ({ installations }) }).owners);
+    expect(installations).toHaveBeenCalledWith(expect.objectContaining({ apply: true, writersStopped: false, settleUnavailableSources: true }));
+    expect(result.counts).toMatchObject({ skillInstallations: 1, skillInstallationsReconstructed: 1, skillInstallationsSourceUnavailable: 1 });
+    expect(Object.keys(result.deferred).filter(key => key.startsWith("skills:"))).toEqual([]);
+  });
+
   it("migrates agent files with live writers, never the offline mode", async () => {
     const agentFiles = vi.fn(async () => ({ results: [], next: null }));
     await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ agentFiles }).owners);
@@ -385,6 +397,19 @@ describe("online durable-data migration pass", () => {
       expect(JSON.stringify(result)).not.toContain("private");
     });
 
+    it("names the recovery kind and finalizer state that keep a workspace local", async () => {
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1), workspace(2)],
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => input.workspaceId === "w1"
+          ? { reasons: ["workspace_recovery_unresolved"], details: ["workspace_recovery_unresolved:active_run_watchdog"] }
+          : { reasons: ["execution_finalization_unresolved"], details: ["execution_finalization_unresolved:finalizer_leased", "bad:/private"] },
+      });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:workspace_recovery_unresolved": 1, "workspaces:workspace_recovery_unresolved:active_run_watchdog": 1,
+        "workspaces:execution_finalization_unresolved": 1, "workspaces:execution_finalization_unresolved:finalizer_leased": 1 });
+      expect(JSON.stringify(result)).not.toContain("private");
+    });
+
     it("migrates an idle workspace through the online owner with a bounded source-lock wait, never the offline mode", async () => {
       const migrateWorkspace = vi.fn(async () => ({ alreadyMigrated: true, reasons: [] }));
       const fixture = owners({ localWorkspaces: async () => [workspace(1)], migrateWorkspace });
@@ -392,6 +417,15 @@ describe("online durable-data migration pass", () => {
       expect(migrateWorkspace).toHaveBeenCalledWith({ db, storage: s3, companyId: "c1", workspaceId: "w1", apply: true,
         signal: expect.any(AbortSignal), sourceLockWaitMs: 1_000 });
       expect(migrateWorkspace.mock.calls[0]).not.toEqual([expect.objectContaining({ writersStopped: expect.anything() })]);
+    });
+
+    it("counts a workspace moved without files as moved and names it separately", async () => {
+      const migrateWorkspace = vi.fn(async (input: { workspaceId: string }) => ({ alreadyMigrated: true, reasons: [],
+        ...(input.workspaceId === "w2" ? { filesUnavailable: true } : {}) }));
+      const fixture = owners({ localWorkspaces: async () => [workspace(1), workspace(2)], migrateWorkspace });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.counts).toMatchObject({ workspaces: 2, workspacesFilesUnavailable: 1 });
+      expect(Object.keys(result.deferred).filter(key => key.startsWith("workspaces:"))).toEqual([]);
     });
 
     it("defers busy and unsupported workspaces with their owner reasons and does not force them", async () => {

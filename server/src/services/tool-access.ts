@@ -13,6 +13,7 @@ import { createConnectionCredentialValidation } from "./tool-access/connections/
 import { createConnectionGrants } from "./tool-access/connections/grants.js";
 import { createConnectionInstalls } from "./tool-access/connections/installs.js";
 import { createConnectionRemoval } from "./tool-access/connections/removal.js";
+import { createFirstSignInDrafts } from "./tool-access/connections/first-sign-in.js";
 import { createToolRemoteHttp } from "./tool-access/remote-http.js";
 import { classifyRisk, normalizeToolDescriptor, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
 export { classifyRisk, isGmailToolPermanentlyBlocked, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
@@ -155,6 +156,7 @@ import { googleWorkspaceCatalogToolTitle } from "./google-workspace-rest-dispatc
 
 import { createToolRuntimeSupervisor } from "./tool-runtime-supervisor.js";
 
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 import { appWithPaperclipCloudConnectorAvailability, paperclipCloudConnectorCapabilitiesFromEnv, createPaperclipCloudConnector, isPaperclipCloudConnectorStrategy, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { createVercelConnectClient, deriveVercelConnectSubject, vercelConnectIntegrationStatus, type VercelConnectClient } from "./vercel-connect.js";
 
@@ -781,7 +783,7 @@ export function toolAccessService(
     const profiles = connectorWasProvided
       ? (await currentCloudConnector()?.getCapabilities() ?? [])
       : await paperclipCloudConnectorCapabilitiesFromEnv();
-    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+    return appWithPaperclipCloudConnectorAvailability(app, profiles, paperclipGoogleSignInAvailable());
   }
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -790,6 +792,7 @@ export function toolAccessService(
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
   const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets });
   const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow });
+  const firstSignInDrafts = createFirstSignInDrafts(db, { removeConnection });
   /**
    * Connection setup resolves connector definitions synchronously. Refresh the
    * plugin-provided part of the catalog from the plugins table first, so a
@@ -4795,6 +4798,7 @@ export function toolAccessService(
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       await annotateSavedOAuthClientSecret(connections, viewerUserId);
+      await firstSignInDrafts.annotateFirstSignInPending(companyId, rows, connections);
       return connections;
     },
 
@@ -5005,6 +5009,8 @@ export function toolAccessService(
     },
 
     archiveConnection: removeConnection,
+
+    abandonFirstSignIn: firstSignInDrafts.abandonFirstSignIn,
 
     checkHealth: checkConnectionHealth,
 

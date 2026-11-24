@@ -43,9 +43,9 @@ type Owners = {
   workspaceCompanies: typeof listLocalWorkspaceCompanies;
   workspaceOperations: (db: Db, input: { companyId: string; signal: AbortSignal }) => Promise<{ reconciled: number; held: Array<{ reason: string }> }>;
   localWorkspaces: typeof listLocalWorkspaces;
-  inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[]; sourceScopeUnproven?: string }>;
+  inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[]; sourceScopeUnproven?: string; details?: string[] }>;
   migrateWorkspace: (input: { db: Db; storage: StorageService; companyId: string; workspaceId: string; apply: true;
-    signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
+    signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[]; filesUnavailable?: boolean }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
   runEvidencePage: typeof migrateRunEvidencePage;
@@ -205,9 +205,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           return result.inspected < limit || !result.after ? null : result.after;
         }
         case "skill_installations": {
-          const result = await skills.installations({ apply: true, writersStopped: false, after, limit, signal });
+          const result = await skills.installations({ apply: true, writersStopped: false, settleUnavailableSources: true, after, limit, signal });
           for (const row of result.results) {
-            if (row.status === "converted") add(counts, "skillInstallations");
+            if (row.status === "converted") add(counts, row.reconstructed ? "skillInstallationsReconstructed" : "skillInstallations");
+            else if (row.status === "source_unavailable") add(counts, "skillInstallationsSourceUnavailable");
             else if (row.status !== "unchanged") defer(`skills:${row.status === "blocked" ? row.code ?? "blocked" : row.status}`);
           }
           return result.inspected < limit || !result.after ? null : result.after;
@@ -258,6 +259,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
               const inventory = await owners.inventoryWorkspace(db, { companyId, workspaceId });
               reasons = inventory.sourceScopeUnproven && /^[a-z_]{1,60}$/.test(inventory.sourceScopeUnproven)
                 ? [...inventory.reasons, `source_scope_${inventory.sourceScopeUnproven}`] : inventory.reasons;
+              reasons = [...reasons, ...(inventory.details ?? []).filter(item => /^[a-z_]{1,60}:[a-z_]{1,60}$/.test(item))];
               if (!reasons.length) {
                 const work = owners.migrateWorkspace({ db, storage, companyId, workspaceId, apply: true, signal,
                   sourceLockWaitMs: WORKSPACE_SOURCE_LOCK_WAIT_MS });
@@ -266,6 +268,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
                 workspaceOwner = tracked;
                 const result = await untilAborted(work, signal);
                 reasons = result.alreadyMigrated ? [] : result.reasons.length ? result.reasons : ["not_migrated"];
+                if (result.filesUnavailable) add(counts, "workspacesFilesUnavailable");
               }
             } catch (error) {
               if (signal.aborted) throw error;
@@ -279,6 +282,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
         case "native_harness_backups": {
           await owners.nativeHarnessBackups(db, { storage, signal, onOutcome: outcome => {
             if (outcome === "published") add(counts, "nativeHarnessBackups");
+            else if (outcome === "source_gone_recorded") add(counts, "nativeHarnessBackupSourcesGone");
             else if (outcome !== "current") defer(`native_harness:${outcome}`);
           } });
           return null;
