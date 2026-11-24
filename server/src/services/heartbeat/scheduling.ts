@@ -918,6 +918,11 @@ export function createHeartbeatScheduling(
     }
   }
 
+  // A native run that is still executing, or whose finalization is unsettled,
+  // holds the task's monitor. One exception: a failed run waiting to retry
+  // itself (`retryable_failure`) no longer holds it once a Retry run that
+  // names it as `previousRunId` has succeeded and committed. That retry
+  // replaced it, so its own retry will never come.
   function noActiveNativeMonitorRun() {
     return sql`not exists (select 1 from ${heartbeatRuns} monitor_run
       where monitor_run.company_id = ${issues.companyId}
@@ -927,7 +932,17 @@ export function createHeartbeatScheduling(
           or exists (select 1 from ${nativeRunFinalizations} monitor_finalization
             where monitor_finalization.company_id = monitor_run.company_id
               and monitor_finalization.run_id = monitor_run.id
-              and monitor_finalization.phase not in ('committed', 'terminal_failure'))))`;
+              and monitor_finalization.phase not in ('committed', 'terminal_failure')
+              and not (monitor_finalization.phase = 'retryable_failure'
+                and monitor_run.status = 'failed'
+                and exists (select 1 from ${heartbeatRuns} retry_run
+                  where retry_run.company_id = monitor_run.company_id
+                    and retry_run.native_issue_id = monitor_run.native_issue_id
+                    and retry_run.runtime_mode = 'native'
+                    and retry_run.status = 'succeeded'
+                    and retry_run.native_phase = 'committed'
+                    and retry_run.context_snapshot->>'previousRunId' = monitor_run.id::text
+                    and nullif(retry_run.context_snapshot->>'taskRetryRequestId', '') is not null)))))`;
   }
 
   async function triggerIssueMonitor(
