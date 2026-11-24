@@ -58,8 +58,10 @@ again with the same identity and source sequence.
 
 While connected, runnerd does not save an ACK on its own when it empties the
 outbox. The cursor is saved with runnerd's next save: the next provider batch,
-command result or lifecycle change. It is also saved after at most 16 advances,
-and when the runner leaves backpressure. A host park saves the exact cut it
+command result or lifecycle change. If no such save follows within 250 ms,
+runnerd saves the cursor by itself, so the file of a quiet runner shows every
+ACK. The cursor is also saved after at most 16 advances, and when the runner
+leaves backpressure. A host park saves the exact cut it
 reports before it replies. If runnerd stops before that save, recovery sends
 the acknowledged suffix again under its original identities, and the controller
 deduplicates it.

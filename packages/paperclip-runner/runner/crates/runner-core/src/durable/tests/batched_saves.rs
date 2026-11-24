@@ -203,3 +203,65 @@ fn host_park_saves_the_ack_that_was_riding_the_next_save() {
     assert!(host_park_checkpoint_is_settled(&reloaded));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn a_deferred_ack_is_saved_when_no_other_save_carries_it() {
+    let directory = std::env::temp_dir().join(format!(
+        "paperclip-runner-deferred-ack-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let config = config(directory.clone());
+    let store = DurableStateStore::new(&directory).unwrap();
+    let (mut state, _) = store.load_or_create(&config).unwrap();
+    for _ in 0..2 {
+        state
+            .enqueue_event(
+                &config,
+                "provider.notice.recorded",
+                EventPriority::P1,
+                json!({}),
+            )
+            .unwrap();
+    }
+    store.save(&state).unwrap();
+    let mut persistence = CumulativeAckPersistence::riding_next_save();
+
+    // Another save carries the deferred cursor: no save of its own follows.
+    persistence.apply(&mut state, &store, 1, 2).unwrap();
+    assert!(persistence.deferred_since.is_none());
+    persistence.apply(&mut state, &store, 2, 2).unwrap();
+    let deferred_since = persistence.deferred_since.unwrap();
+    assert_eq!(store.durable_acked_source_seq(), Some(0));
+    // For example, the save of the next provider batch.
+    store.save(&state).unwrap();
+    let saves = store.save_count();
+    persistence
+        .save_deferred_ack(&state, &store, deferred_since + DEFERRED_ACK_SAVE_DELAY)
+        .unwrap();
+    assert_eq!(store.save_count(), saves);
+    assert!(persistence.deferred_since.is_none());
+
+    // Nothing carries it: the cursor waits for the delay, then is saved.
+    state
+        .enqueue_event(
+            &config,
+            "provider.notice.recorded",
+            EventPriority::P1,
+            json!({}),
+        )
+        .unwrap();
+    store.save(&state).unwrap();
+    persistence.apply(&mut state, &store, 3, 2).unwrap();
+    let deferred_since = persistence.deferred_since.unwrap();
+    persistence
+        .save_deferred_ack(&state, &store, deferred_since)
+        .unwrap();
+    assert_eq!(store.durable_acked_source_seq(), Some(2));
+    persistence
+        .save_deferred_ack(&state, &store, deferred_since + DEFERRED_ACK_SAVE_DELAY)
+        .unwrap();
+    assert_eq!(store.durable_acked_source_seq(), Some(3));
+    let (reloaded, _) = store.load_or_create(&config).unwrap();
+    assert!(reloaded.outbox.is_empty());
+    fs::remove_dir_all(directory).unwrap();
+}
