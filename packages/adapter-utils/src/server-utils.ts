@@ -5092,6 +5092,7 @@ export async function runChildProcess(
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               void Promise.resolve()
+                .then(() => spawnPersistPromise)
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({

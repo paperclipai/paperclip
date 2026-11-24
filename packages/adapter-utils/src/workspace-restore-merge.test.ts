@@ -33,6 +33,20 @@ describe("workspace restore merge", () => {
     }
   });
 
+  it("restores a read-only source file through a writable flush handle and retains its mode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-readonly-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "source"), targetDir = path.join(root, "target");
+    await mkdir(sourceDir); await mkdir(targetDir);
+    const baseline = await captureDirectorySnapshot(targetDir);
+    await writeFile(path.join(sourceDir, "readonly.txt"), "durable content");
+    await chmod(path.join(sourceDir, "readonly.txt"), 0o444);
+    await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+    expect(await readFile(path.join(targetDir, "readonly.txt"), "utf8")).toBe("durable content");
+    expect((await stat(path.join(targetDir, "readonly.txt"))).mode & 0o222).toBe(0);
+    expect((await readdir(targetDir)).some(name => name.startsWith(".paperclip-merge-"))).toBe(false);
+  });
+
   it("locks absent publications independently while sharing the published target's merge lock", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-publication-lock-"));
     cleanupDirs.push(root);
@@ -515,12 +529,12 @@ describe("workspace restore merge", () => {
         entriesDuringLock = await readdir(lockRootDir);
       });
 
-      expect((await stat(lockRootDir)).mode & 0o777).toBe(0o700);
+      if (process.platform !== "win32") expect((await stat(lockRootDir)).mode & 0o777).toBe(0o700);
       expect(entriesDuringLock.filter((name) => name.endsWith(".owner.json"))).toHaveLength(1);
       const entriesAfterRelease = await readdir(lockRootDir);
       expect(entriesAfterRelease).toHaveLength(1);
       expect(entriesAfterRelease[0]).toMatch(/\.lock\.sqlite$/);
-      expect((await stat(path.join(lockRootDir, entriesAfterRelease[0]!))).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect((await stat(path.join(lockRootDir, entriesAfterRelease[0]!))).mode & 0o777).toBe(0o600);
     });
 
     it("classifies the real lock-timeout error by its stable code, never by the message text", async () => {
