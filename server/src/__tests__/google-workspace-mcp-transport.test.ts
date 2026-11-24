@@ -257,7 +257,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("offers agents only the allowlisted actions, whatever Google's servers list", async () => {
     const f = await connectWorkspace();
     expect(names(f.catalog.filter((entry) => entry.status === "active"))).toEqual(allowlisted());
-    const offered = (await f.listed()).map((tool) => tool.upstreamToolName).sort();
+    const offered = (await f.listed()).map((tool) => tool.upstreamToolName ?? "").sort();
     expect(offered).toEqual(allowlisted());
     for (const forbidden of Object.values(FORBIDDEN).flat()) expect(offered.some((name) => name.endsWith(`__${forbidden}`))).toBe(false);
     expect(offered.some((name) => /^(chat|people|search)__/.test(name))).toBe(false);
