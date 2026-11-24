@@ -119,7 +119,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await session.own({ kind: "issue", name: title, id: created.issueId, journeyId: id });
     return context.api.get<Row>(`/api/issues/${created.issueId}`);
   };
-  const read = async (issue: Row): Promise<TaskState> => {
+  const read = async (issue: Row): Promise<TaskState> => waitFor(options.deadlineAt, async () => {
     const route = `/api/issues/${issue.id}`;
     const [currentIssue, summaries, comments, interactions, attachments] = await Promise.all([
       context.api.get<TaskState["currentIssue"]>(route), context.api.get<Row[]>(`${route}/runs`), context.api.get<Row[]>(`${route}/comments?order=asc`),
@@ -131,7 +131,9 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await retain(`${issue.id}-latest.json`, state);
     validateAgentTaskState(context, issue.id, state, maxRuns, cancelled, options.deadlineAt);
     return state;
-  };
+  // No consumer may act on a card, reply or artifact produced by an unsettled
+  // retry. Gate the shared read so Plan and protected-action waits stay safe too.
+  }, state => !state.taskRuns.some(run => isPendingNativeRecovery(run, options.deadlineAt)), "agent_recovery_not_completed");
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
     agentTaskSettled(state, count), "agent_task_not_completed");
   const finalReply = async (issue: Row, state: TaskState, marker?: string) => {
