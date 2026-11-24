@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { readWorkspaceInventory } from "./remote-workspace-readonly-inventory.js";
 
@@ -41,3 +43,12 @@ it("inventories one directory with more than 100,000 names", async () => {
   expect(inventory.entries).toBe(100_002);
   expect(await readWorkspaceInventory(root, true)).toEqual(inventory);
 }, 240_000);
+
+it.skipIf(process.platform === "win32")("excludes a named pipe and counts only the file beside it", async () => {
+  await fs.writeFile(path.join(root, "saved.txt"), "work\n");
+  await promisify(execFile)("mkfifo", [path.join(root, "pipe")]);
+  const inventory = await readWorkspaceInventory(root);
+  expect(inventory.exclude).toContain("pipe");
+  expect(inventory.entries).toBe(1);
+  expect(await readWorkspaceInventory(root, true)).toEqual(inventory);
+});

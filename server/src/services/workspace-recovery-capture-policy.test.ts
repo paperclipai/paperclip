@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -99,6 +101,18 @@ describe("saves exhausted under an older workspace capture policy", () => {
     const rearmed = await db.select().from(activityLog).where(eq(activityLog.action, "issue.workspace_recovery_rearmed"));
     expect(rearmed).toEqual([expect.objectContaining({ actorType: "system", entityId: f.issueId, runId: f.runId,
       details: expect.objectContaining({ reason: "capture_policy_changed" }) })]);
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("retries a save exhausted under policy 2 by a named pipe and saves the files beside it", async () => {
+    const f = await exhaustedCaptureHold(2);
+    await promisify(execFile)("mkfifo", [path.join(f.remote, "pipe")]);
+
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, vi.fn(async () => undefined), true) ?? []);
+
+    const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(state).toMatchObject({ state: "complete", capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION });
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
   }, 60_000);
 
   /**

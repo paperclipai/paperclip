@@ -361,11 +361,16 @@ describe("portable remote workspace archives", () => {
       expect(JSON.parse(archive.subarray(start + 4, start + 4 + length).toString()).excluded).toContain("s");
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   });
-  it.skipIf(process.platform === "win32")("records a named pipe as excluded and preserves the files beside it", async () => {
+  it.skipIf(process.platform === "win32").each(["local", "serialized"])("records a named pipe as excluded and preserves the files beside it in %s capture", async mode => {
     const cwd = await source(), pipe = path.join(cwd, "pipe");
     await execute("mkfifo", [pipe]);
     await fs.writeFile(path.join(cwd, "saved.txt"), "uncommitted work\n");
-    const snapshot = await capture(cwd);
+    let snapshot: Awaited<ReturnType<typeof capture>>;
+    if (mode === "serialized") {
+      const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "remote.pcws");
+      await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+      snapshot = { archivePath, ...JSON.parse((await execute(process.execPath, [helper, "capture", cwd, archivePath])).stdout) };
+    } else snapshot = await capture(cwd);
     expect((await fs.lstat(pipe)).isFIFO()).toBe(true);
     const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
