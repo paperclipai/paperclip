@@ -11,6 +11,7 @@ describe("trusted /swarm for Google Antigravity", () => {
     expect(antigravitySwarmRefusal({ enabled: true, agent: { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } } }))
       .toMatch(/Google Antigravity agent/);
     expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, remote: true })).toMatch(/this computer/);
+    expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, planning: true })).toMatch(/Plan mode/);
   });
 
   it("reads a swarm request only from the wake's structured marker, never from comment text", () => {

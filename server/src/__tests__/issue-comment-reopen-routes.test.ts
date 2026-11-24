@@ -162,6 +162,17 @@ vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
 
+const mockSwarm = vi.hoisted(() => ({
+  refusal: vi.fn(async (): Promise<string | null> => null),
+  record: vi.fn(async () => undefined),
+}));
+vi.mock("../services/antigravity-swarm.js", () => ({
+  ANTIGRAVITY_SWARM_COMMAND: "swarm",
+  ANTIGRAVITY_SWARM_UNAVAILABLE: "antigravity_swarm_unavailable",
+  antigravitySwarmCommentRefusal: mockSwarm.refusal,
+  recordAntigravitySwarmRequest: mockSwarm.record,
+}));
+
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
 }));
@@ -1299,6 +1310,42 @@ describe("issue comment reopen routes", () => {
         }),
       ),
     );
+  });
+
+  it("records a signed-in user's /swarm request and marks the assignee's wake with it", async () => {
+    mockSwarm.refusal.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...makeIssue("blocked"), ...patch }));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "two helpers write a.txt and b.txt", nativeCommand: "swarm" });
+    expect(res.status).toBe(201);
+    expect(mockSwarm.record).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ commentId: "comment-1", userId: "local-board" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ contextSnapshot: expect.objectContaining({ antigravitySwarmCommentId: "comment-1" }) }),
+    ));
+  });
+
+  it("refuses an unavailable /swarm in plain language and posts nothing", async () => {
+    mockSwarm.refusal.mockResolvedValue("Swarm is not turned on for this Paperclip.");
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "do it", nativeCommand: "swarm" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "Swarm is not turned on for this Paperclip.", code: "antigravity_swarm_unavailable" });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("accepts a swarm request only from a signed-in user", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp(), { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1" }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "do it", nativeCommand: "swarm" });
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {

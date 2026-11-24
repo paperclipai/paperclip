@@ -34,11 +34,13 @@ export function antigravitySwarmRefusal(input: {
   enabled: boolean;
   agent: { adapterType: string; adapterConfig: unknown } | null;
   remote?: boolean;
+  planning?: boolean;
 }): string | null {
   if (!input.enabled) {
     return "Swarm is not turned on for this Paperclip. An instance admin can turn on \"Google Antigravity swarm\" in Settings, Experimental.";
   }
   if (!isAntigravityAgent(input.agent)) return "Swarm works only for tasks assigned to a Google Antigravity agent.";
+  if (input.planning) return "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
   if (input.remote) return "Swarm is not available for this agent: it runs only on this computer, not in a cloud or remote environment.";
   return null;
 }
@@ -56,12 +58,12 @@ async function swarmEnabled(db: Db): Promise<boolean> {
 }
 
 /** Comment-time check, so an unavailable swarm is refused before anything is posted. */
-export async function antigravitySwarmCommentRefusal(db: Db, issue: { companyId: string; assigneeAgentId: string | null }): Promise<string | null> {
+export async function antigravitySwarmCommentRefusal(db: Db, issue: { companyId: string; assigneeAgentId: string | null; workMode?: string | null }): Promise<string | null> {
   const [agent] = issue.assigneeAgentId
     ? await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents)
       .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
     : [];
-  return antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: agent ?? null });
+  return antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: agent ?? null, planning: issue.workMode === "planning" });
 }
 
 /**
@@ -89,6 +91,7 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   agent: { id: string; adapterType: string; adapterConfig: unknown };
   context: unknown;
   remote: boolean;
+  planning: boolean;
 }): Promise<boolean> {
   const commentId = requestedAntigravitySwarmCommentId(input.context);
   if (!commentId) return false;
@@ -99,14 +102,14 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
     .limit(1);
   if (!requested) return false;
-  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: input.agent, remote: input.remote });
+  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: input.agent, remote: input.remote, planning: input.planning });
   if (refusal) throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, refusal);
   await logActivity(db, {
     companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,
     issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
     details: {
       commentId,
-      summary: "Started a Google Antigravity swarm with helpers. Helper actions inside the task folder are approved automatically; actions outside it are blocked. Usage is reported as one total for the coordinator and its helpers.",
+      summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode, which keeps file changes in the task folder; helper shell commands are not visible to Paperclip and Paperclip does not sandbox them on this computer. Usage is one total for the coordinator and its helpers.",
     },
   });
   return true;
