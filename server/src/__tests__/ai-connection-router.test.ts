@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createDb, closeRegisteredClients, companies, projects, projectWorkspaces, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations, heartbeatRunEvents, agentWakeupRequests, issueRecoveryActions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, LOW_TRUST_REVIEW_PRESET, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
@@ -23,6 +23,7 @@ import { aiConnectionRoutes } from "../routes/ai-connections.js";
 import { errorHandler } from "../middleware/index.js";
 import { heartbeatService, buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { recordVerifiedRouterQuotaCooldown } from "../services/heartbeat/run-completion.js";
 import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution-recovery.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
@@ -1531,7 +1532,14 @@ describe("durable, authorized connection routing", () => {
     const [issue] = await db.insert(issues).values({ companyId, title: "Pool repair", status: "in_progress", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     const selection = await resolve(pool.id, issue!.id, { agentId: agent!.id });
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: agent!.id, responsibleUserId: "alice", adapterType: "paperclip_runner", config: selection.runtimeConfig, binding: selection.binding });
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "failed", runtimeMode: "native", nativeIssueId: issue!.id, errorCode: native ? "native_provider_auth_failed" : "acpx_auth_required", responsibleUserId: "alice", startedAt: new Date(), contextSnapshot: { issueId: issue!.id, aiRouterTaskKey: issue!.id, aiRouterSelection: selection, aiConnection: { ...runtime!.attribution, identity: runtime!.identity } } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent!.id, status: "failed", runtimeMode: "native", scopeKind: "issue", issueId: issue!.id, nativeIssueId: issue!.id,
+      errorCode: native ? "native_provider_auth_failed" : "acpx_auth_required", responsibleUserId: "alice", startedAt: new Date(), finishedAt: new Date(),
+      contextSnapshot: { issueId: issue!.id, aiRouterTaskKey: issue!.id, aiRouterSelection: selection,
+        aiConnection: { ...runtime!.attribution, identity: runtime!.identity, sessionIdentity: runtime!.sessionIdentity } },
+      ...(native ? { resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
+        category: "authentication", retryability: "requires_action", message: "Authentication required" } } } : {}),
+    }).returning();
     try {
       const intents = connectionIntentService(db);
       if (native) {
@@ -1540,12 +1548,22 @@ describe("durable, authorized connection routing", () => {
           phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1,
           failureDetail: { replacementDenied: "quota_failover_unavailable" },
         });
+        expect(await recordVerifiedRouterQuotaCooldown(db, { companyId, runId: run!.id, agentId: agent!.id,
+          credentialIdentity: runtime!.sessionIdentity, failureKind: "auth", retryNotBefore: null })).toBe(true);
       }
       const card = await intents.requestForRunAuthFailure(run!.id);
       expect(card?.service).toBe("anthropic"); expect(card?.state).toBe("needs_user_action");
       const options = await intents.setupOptions(card!.interactionId!);
       expect(options.aiConnection).toEqual(selection.binding); expect(options.aiConnectionRequiresAdoption).toBeUndefined();
       const [failedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[1]!.binding.grantId)); expect(failedGrant?.status).toBe("needs_reauthorization");
+      if (native) {
+        // Reconnecting replaces the credential epoch. The cooldown belongs to
+        // the rejected credential and must not affect the new one.
+        const credential = failedGrant?.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
+        expect(credential).toBeDefined();
+        await db.update(companySecrets).set({ aiSessionEpoch: sql`${companySecrets.aiSessionEpoch} + 1` })
+          .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, credential!.secretId)));
+      }
       await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, members[1]!.binding.grantId));
       await db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, members[1]!.binding.connectionId));
       expect(await intents.complete(card!.interactionId!, members[1]!.binding.connectionId, "alice")).toMatchObject({ status: "accepted" });
