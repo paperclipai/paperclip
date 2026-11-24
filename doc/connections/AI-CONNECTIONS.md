@@ -219,8 +219,9 @@ identity of the token that the replacement receives.
 
 An exchanged pair that could not be saved to the vault stays in server memory
 until the next credential read saves it. The server reports it as pending local
-work, so an idle shutdown waits for the save. Revoking the grant discards the
-pair.
+work, so an idle shutdown waits for the save. While a pair is pending, the
+server checks at most every 30 seconds whether its grant is still active, and
+drops the pair when the grant was revoked or its connection was removed.
 
 ## Storage and API
 

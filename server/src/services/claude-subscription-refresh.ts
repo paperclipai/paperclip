@@ -19,7 +19,7 @@ type Replacement = PendingClaudeExchange;
 export { hasPendingClaudeExchange };
 // An unsaved pair is the only working refresh token of its sign-in. An idle
 // shutdown must wait for its save.
-registerIdleLocalWorkProbe(() => pendingClaudeExchanges.any() ? "present" : "none");
+registerIdleLocalWorkProbe(() => pendingClaudeExchanges.blocksIdle() ? "present" : "none");
 
 /**
  * An account test or an agent verification holds a token like a run does, but
@@ -112,7 +112,8 @@ export async function refreshClaudeSubscription(
             }
           }
           replacement ??= { value: refreshed, base: current, secretId: secret.id, epoch: secret.aiSessionEpoch, version: secret.latestVersion };
-          pendingClaudeExchanges.set(companyId, grantId, replacement);
+          pendingClaudeExchanges.set(companyId, grantId, replacement, async () => (await db.select({ status: connectionGrants.status })
+            .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId))))[0]?.status === "active");
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,

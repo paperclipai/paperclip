@@ -17,7 +17,6 @@ import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./googl
 import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
-import { pendingClaudeExchanges } from "../../claude-pending-exchanges.js";
 import type { createConnectionCredentialValidation } from "./credential-validation.js";
 import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 import { publishActivity } from "../../activity-log.js";
@@ -615,7 +614,6 @@ replaceConnectionGrantMembers: async (
         return updated;
       });
       if (!grant) throw notFound("Connection grant not found");
-      pendingClaudeExchanges.delete(connection.companyId, grantId);
       const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
       const signIn = signInRemoval ? await signInRemoval.send() : null;
       await db.insert(toolAccessAuditEvents).values({

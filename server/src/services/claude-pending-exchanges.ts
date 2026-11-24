@@ -1,13 +1,33 @@
 export type PendingClaudeExchange = { value: string; base: string; secretId: string; epoch: number; version: number };
+type Entry = { exchange: PendingClaudeExchange; stillWanted: () => Promise<boolean>; checkedAt: number; checking: boolean };
 
-const pending = new Map<string, PendingClaudeExchange>();
+const pending = new Map<string, Entry>();
 const key = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
+const RECHECK_MS = 30_000;
 
 export const pendingClaudeExchanges = {
-  get: (companyId: string, grantId: string) => pending.get(key(companyId, grantId)),
-  set: (companyId: string, grantId: string, exchange: PendingClaudeExchange) => { pending.set(key(companyId, grantId), exchange); },
+  get: (companyId: string, grantId: string) => pending.get(key(companyId, grantId))?.exchange,
+  /** `stillWanted` says whether the grant of this pair can still use it. */
+  set: (companyId: string, grantId: string, exchange: PendingClaudeExchange, stillWanted: () => Promise<boolean>) => {
+    pending.set(key(companyId, grantId), { exchange, stillWanted, checkedAt: Date.now(), checking: false });
+  },
   delete: (companyId: string, grantId: string) => { pending.delete(key(companyId, grantId)); },
-  any: () => pending.size > 0,
+  /**
+   * True while a pair awaits its save. A pair is saved by the next credential
+   * read of its grant. A grant that was revoked or removed gets no further
+   * read, so each call also asks, at most every 30 seconds per pair, whether
+   * the pair is still wanted, and drops it when it is not. That covers each
+   * way a grant can end without a hook in the code that ends it.
+   */
+  blocksIdle: (now = Date.now()) => {
+    for (const [id, entry] of pending) {
+      if (entry.checking || now - entry.checkedAt < RECHECK_MS) continue;
+      entry.checking = true;
+      void entry.stillWanted().then(wanted => { if (!wanted && pending.get(id) === entry) pending.delete(id); }, () => undefined)
+        .finally(() => { entry.checking = false; entry.checkedAt = Date.now(); });
+    }
+    return pending.size > 0;
+  },
 };
 
 export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pending.has(key(companyId, grantId));

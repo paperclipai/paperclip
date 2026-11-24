@@ -174,6 +174,30 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect(await probes()).toBe("none");
   });
 
+  it("stops blocking an idle shutdown for an unsaved pair once its grant is no longer active", async () => {
+    const { service, row, account } = await connect(document(Date.now() - 60_000));
+    const realService = secretModule.secretService;
+    const failingVault = vi.spyOn(secretModule, "secretService").mockImplementation((...args) => ({
+      ...realService(...args), rotate: async () => { throw new Error("vault is temporarily unavailable"); },
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: "pending-access", refresh_token: "pending-refresh", expires_in: 28800 })));
+    const probes = async () => {
+      let state: unknown;
+      await readIdleLocalWork({ diagnostic: (name, value) => { if (name === "local.registered_probes") state = value; } });
+      return state;
+    };
+    await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
+    failingVault.mockRestore();
+    expect(await probes()).toBe("present");
+    // The connection is removed by a path that knows nothing about the pair.
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 31_000);
+      await vi.waitFor(async () => expect(await probes()).toBe("none"), { timeout: 10_000 });
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["40P01", "40001", "55P03"])("reports database contention that outlasts its retries as a temporary wait (%s)", async code => {
     const { service, row } = await connect(document(Date.now() - 60_000));
     vi.spyOn(db, "transaction").mockRejectedValue(Object.assign(new Error("contention"), { code }));
