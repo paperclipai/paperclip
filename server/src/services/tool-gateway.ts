@@ -518,12 +518,13 @@ export function toolResultErrorDetails(result: Record<string, unknown>): { toolC
   const sources = [result, structured, data];
   const content = Array.isArray(result.content) ? result.content : Array.isArray(data.content) ? data.content : [];
   const text = [
+    ...(typeof result.content === "string" ? [result.content] : []),
     ...content.flatMap((item) => typeof object(item).text === "string" ? [object(item).text as string] : []),
     ...(typeof result.error === "string" ? [result.error] : []),
   ].join("\n");
   const firstLine = text.trim().split("\n")[0] ?? "";
   const prefixCode = PREFIX_TOOL_CODE.exec(firstLine)?.[1];
-  const toolCode = [structured.code, data.code].map(explicitToolCode).find(Boolean)
+  const toolCode = [result.code, structured.code, data.code].map(explicitToolCode).find(Boolean)
     ?? explicitToolCode(PLUGIN_TOOL_CODE.exec(text)?.[1])
     ?? [...text.matchAll(JSON_TOOL_CODE)].map((match) => explicitToolCode(match[1])).find(Boolean)
     ?? (prefixCode && /[_.-]/.test(prefixCode) ? explicitToolCode(prefixCode) : undefined);

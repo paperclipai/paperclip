@@ -771,6 +771,8 @@ describe("assigned MCP runner tools", () => {
     expect(toolResultErrorDetails({ data: { code: "read_rate_limit", retryable: true } })).toEqual({ toolCode: "read_rate_limit", retryable: true });
     expect(toolResultErrorDetails({ structuredContent: { code: "Not A Code" } })).toEqual({});
     expect(toolResultErrorDetails({ structuredContent: { code: "timeout" } })).toEqual({ toolCode: "timeout" });
+    expect(toolResultErrorDetails({ content: "Busy now (code: busy, retryable)", error: "Tool failed" })).toEqual({ toolCode: "busy", retryable: true });
+    expect(toolResultErrorDetails({ isError: true, code: "rate_limited" })).toEqual({ toolCode: "rate_limited" });
   });
 
   it("propagates discovery denial", async () => {
