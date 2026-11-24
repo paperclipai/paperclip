@@ -1316,10 +1316,6 @@ export function createPluginWorkerHandle(
       return companyId ? { companyId } : null;
     }
 
-    // Give instance jobs a real invocation id so concurrent scoped work cannot
-    // make their nested calls look like calls that lost their scope. Company
-    // references are resolved against proactiveCompanyScopes below; the empty
-    // company id does not grant arbitrary company access.
     if (method === "runJob") {
       return { companyId: "" };
     }
@@ -2888,15 +2884,6 @@ export function createPluginWorkerHandle(
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
 
-    // For instance-scoped invocations (runJob registers companyId:"" to avoid the
-    // no-id fallback), apply the same proactive company resolution as the no-id
-    // path. This prevents the unrestricted sentinel from silently granting access
-    // to every company the worker happens to name:
-    //   • A company-referencing call to a configured company → succeed with that
-    //     company's explicit scope (same behaviour as a proactive call).
-    //   • A company-referencing call to an unconfigured company → deny.
-    //   • No explicit company → keep the sentinel and let the SDK gate apply
-    //     its existing kind-none, enumeration and required-company rules.
     if (!entry.scope.companyId) {
       const proactiveCompanyId = referencedCompanyId(
         message.method,

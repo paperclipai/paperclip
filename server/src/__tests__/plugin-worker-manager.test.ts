@@ -451,21 +451,6 @@ describe("plugin-worker-manager stderr failure context", () => {
   });
 
   it("registers an unrestricted invocation scope for runJob so nested worker host calls succeed", async () => {
-    // Regression test for #9310: runJob dispatches previously derived no
-    // invocation scope at all (no case in deriveInvocationScope), so a job's
-    // own nested host calls had no invocation id to echo. That made them
-    // indistinguishable from a call that lost track of a scope it should
-    // have had, and contextForWorkerMessage's fallback denied them whenever
-    // any OTHER scoped invocation (performAction/executeTool/onEvent)
-    // happened to be active at the same moment -- intermittent under real
-    // event traffic, invisible on a quiet instance. Jobs are instance-scoped
-    // (a single tick can touch many companies), so the fix registers a real
-    // but unrestricted ({ companyId: "" }) invocation rather than picking one
-    // company to lock to.
-    //
-    // The context passed to the handler now reflects proactive company
-    // resolution: a call to a *configured* company receives that company's
-    // explicit scope rather than the unrestricted "" sentinel.
     const companiesGet = vi.fn(async (
       params: { companyId: string },
       context?: { invocationScope?: { companyId?: string | null } | null },
@@ -482,8 +467,6 @@ describe("plugin-worker-manager stderr failure context", () => {
         hostVersion: "1.0.0",
       },
       apiVersion: 1,
-      // "company-a" is a configured company: proactive resolution resolves
-      // its scope so the SDK gate can admit the call.
       proactiveCompanyScopes: ["company-a"],
       hostHandlers: {
         "companies.get": companiesGet as never,
@@ -548,7 +531,6 @@ describe("plugin-worker-manager stderr failure context", () => {
       let entered!: () => void;
       const started = new Promise<void>((resolve) => { entered = resolve; });
       stateGet.mockImplementation(async () => {
-        // A job must not inherit a concurrent tool's initiating agent.
         expect(currentPluginInteractionOrigin()).toBeUndefined();
         return null;
       });
@@ -579,8 +561,6 @@ describe("plugin-worker-manager stderr failure context", () => {
         await expect(handle.call("runJob", {
           job, params: { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance", stateKey: "job-state" },
         } as never)).resolves.toBeNull();
-        // Unlike kind-none state calls, companies.list checks invalidInvocationScope.
-        // Holding the other invocation open makes the original no-id race deterministic.
         await expect(handle.call("runJob", {
           job, params: { mode: "echo", hostMethod: "companies.list" },
         } as never)).resolves.toEqual([]);
