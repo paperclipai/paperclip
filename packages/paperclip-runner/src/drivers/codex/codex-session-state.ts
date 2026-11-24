@@ -18,7 +18,7 @@ import {
   harnessRuntimeRequestOutcome,
 } from "../../contracts/harness-driver.js";
 import type { CodexTaskEnvelope } from "../../contracts/codex.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { nativeRestartContinuationInFlight, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import {
   validatePrpStructuredRunResult,
   type PrpEvent,
@@ -353,6 +353,10 @@ export abstract class CodexSessionState {
     this.dispositionOnlyRecoveryConsumed =
       dispositionOnlyRecoveryPreviouslyConsumed;
     this.dispositionOnlyRecoveryTurnId = dispositionOnlyRecoveryTurnId;
+    if (this.activeTurnId && dispositionOnlyRecoveryPreviouslyConsumed &&
+        dispositionOnlyRecoveryTurnId === this.activeTurnId && this.result === null &&
+        nativeRestartContinuationInFlight({ activeTurnId: this.activeTurnId, terminalTurns: input.terminalTurns }))
+      this.restartContinuationTurnId = this.activeTurnId;
     for (const turnId of this.terminalTurns.keys()) this.priorGenerationTurns.add(turnId);
     // The checkpoint's active turn (or one the previous controller's runner
     // accepted) also belongs to an earlier generation. isHistoryTurn keeps it

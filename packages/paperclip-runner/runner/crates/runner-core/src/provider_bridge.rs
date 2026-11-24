@@ -324,6 +324,15 @@ impl ProviderBridgeError {
         self.message == TOOL_CALLS_IN_FLIGHT_MESSAGE
     }
 
+    /// Result capacity backpressure is master's retryable in-flight rejection.
+    pub(crate) fn result_backpressure() -> Self {
+        Self::tool_calls_in_flight()
+    }
+
+    pub fn is_result_backpressure(&self) -> bool {
+        self.is_retryable()
+    }
+
     pub fn safe_provider_message(&self) -> Option<&str> {
         self.safe_provider_message.as_deref()
     }
@@ -2166,6 +2175,64 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&bridge).unwrap()).unwrap();
         recovered.validate_recovered().unwrap();
         assert!(recovered.has_completed_call("call-0"));
+    }
+
+    #[test]
+    fn parallel_result_reservation_is_backpressure_not_turn_exhaustion() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read context".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        for index in 0..10 {
+            bridge
+                .begin_call(
+                    format!("parallel-{index}"),
+                    "get_task_context".to_owned(),
+                    json!({}),
+                )
+                .unwrap();
+        }
+        let error = bridge
+            .begin_call(
+                "overflow".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert!(
+            !error.is_active_turn_receipt_limit(),
+            "in-flight result reserves must not interrupt admitted work"
+        );
+        assert!(!bridge.durable_run_receipt_limit_reached());
+        bridge
+            .apply_result(ToolResult {
+                call_id: "parallel-0".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        bridge
+            .begin_call(
+                "overflow".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("retry after an admitted result settles");
+        assert_eq!(bridge.pending_calls().count(), 10);
     }
 
     #[test]
