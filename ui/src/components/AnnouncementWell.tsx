@@ -78,7 +78,7 @@ export function AnnouncementWell({ health, placement = "floating" }: { health?: 
           : "fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)",
       )}
     >
-      <AnnouncementCard key={announcement.id} announcement={announcement} onDismiss={() => dismiss(announcement.id)} />
+      <AnnouncementCard key={announcement.id} announcement={announcement} compact={placement === "floating"} onDismiss={() => dismiss(announcement.id)} />
     </aside>
   );
 }

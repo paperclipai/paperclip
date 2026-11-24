@@ -13,6 +13,7 @@ export interface AnnouncementCardProps {
   imageSrc?: string;
   animationSrc?: string;
   className?: string;
+  compact?: boolean;
 }
 
 function Action({ action, primary, onClick }: { action: AnnouncementAction; primary?: boolean; onClick: () => void }) {
@@ -27,12 +28,12 @@ function Action({ action, primary, onClick }: { action: AnnouncementAction; prim
   );
 }
 
-export function AnnouncementCard({ announcement, onDismiss, imageSrc, animationSrc, className }: AnnouncementCardProps) {
+export function AnnouncementCard({ announcement, onDismiss, imageSrc, animationSrc, className, compact = false }: AnnouncementCardProps) {
   const titleId = useId();
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const src = imageSrc ?? `/api/announcements/${encodeURIComponent(announcement.id)}/image`;
-  const showImage = Boolean(announcement.image && failedImage !== src);
-  const animationDocument = useAnnouncementAnimation(announcement, animationSrc);
+  const showImage = Boolean(!compact && announcement.image && failedImage !== src);
+  const animationDocument = useAnnouncementAnimation(announcement, animationSrc, !compact);
   const showAnimation = Boolean(animationDocument);
   return (
     <Card
@@ -52,12 +53,12 @@ export function AnnouncementCard({ announcement, onDismiss, imageSrc, animationS
       <Button variant="secondary" size="icon" aria-label="Dismiss announcement" onClick={onDismiss} className="absolute right-2 top-2 z-10 size-8 rounded-full shadow-sm">
         <X className="size-4" aria-hidden="true" />
       </Button>
-      <div className={cn("flex flex-col gap-1 px-4 py-4", !showImage && !animationDocument && "pr-12")}>
-        <p className="text-xs text-muted-foreground">{announcement.eyebrow}</p>
+      <div className={cn("flex flex-col gap-1 px-4", compact ? "py-2" : "py-4", !showImage && !animationDocument && "pr-12")}>
+        {!compact && <p className="text-xs text-muted-foreground">{announcement.eyebrow}</p>}
         <h2 id={titleId} className="break-words text-base font-semibold leading-snug">{announcement.title}</h2>
         <p className="break-words text-sm leading-snug text-muted-foreground">{announcement.description}</p>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+      <div className={cn("flex flex-wrap items-center justify-between gap-2 border-t px-3", compact ? "py-1" : "py-2")}>
         {announcement.secondaryLink && <Action action={announcement.secondaryLink} onClick={onDismiss} />}
         <div className="ml-auto min-w-0 max-w-full"><Action action={announcement.primaryAction} primary onClick={onDismiss} /></div>
       </div>

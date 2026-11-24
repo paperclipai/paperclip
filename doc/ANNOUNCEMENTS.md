@@ -95,8 +95,8 @@ Paperclip controls. Add an `animation` alongside the required static `image`:
 
 Replace the placeholders with the files' actual 64-character SHA-256 digests.
 HTML is UTF-8, limited to 128 KiB, and uses a responsive document with zero body
-margin. The hero is about 352 × 136 on desktop and shorter on phones. Use CSS
-keyframes, inline styles, system fonts, and visual HTML (`div`, `span`, `p`,
+margin. The desktop hero is about 352 × 136. Phones show the title, body and actions
+in a compact card. Use CSS keyframes, inline styles, system fonts, and visual HTML (`div`, `span`, `p`,
 `br`, `strong`, `em`, `b`, `i`) or inline SVG shapes/text (`svg`, `g`, `path`,
 `circle`, `ellipse`, `rect`, `line`, `polyline`, `polygon`, `text`, `tspan`,
 `title`, `desc`). No scripts, external libraries, links, forms, iframes, images,
