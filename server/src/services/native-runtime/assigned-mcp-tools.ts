@@ -198,6 +198,11 @@ export function isToolCode(code: unknown): code is string {
     && /[_.-]/.test(code) && !/[_.-]$/.test(code);
 }
 
+function explicitToolCode(code: unknown): string | undefined {
+  if (typeof code !== "string" || code.length > 91 || !/^[a-z][a-z0-9_.-]*$/.test(code) || /[_.-]$/.test(code)) return undefined;
+  return isToolCode(code) ? code : `tool_${code}`;
+}
+
 const RETRYABLE_TEXT = new RegExp(`\\(code: ${TOOL_CODE}, retryable\\)|"retryable"\\s*:\\s*true|"retryability"\\s*:\\s*"later"`);
 
 function record(value: unknown): Record<string, unknown> {
@@ -212,7 +217,7 @@ function toolReportedParts(detail: unknown): { text: string; retryable: boolean;
   const structured = record(value.structuredContent ?? data.structuredContent);
   const texts = content.flatMap((item) => typeof record(item).text === "string" ? [record(item).text as string] : []);
   const structuredCode = [value.code, structured.code, data.code]
-    .find(isToolCode);
+    .map(explicitToolCode).find((code): code is string => code !== undefined);
   const text = [...texts, ...(typeof value.error === "string" ? [value.error] : [])].join("\n");
   const flagged = [value, structured, data].some((source) => source.retryable === true || source.retryability === "later");
   return { text, retryable: flagged || RETRYABLE_TEXT.test(text), ...(structuredCode ? { structuredCode } : {}) };
@@ -222,9 +227,10 @@ export function toolReportedError(detail: unknown): ToolGatewayHttpError {
   const { text, retryable, structuredCode } = toolReportedParts(detail);
   const firstLine = text.trim().split("\n")[0] ?? "";
   const pluginCode = PLUGIN_CODE.exec(text)?.[1];
-  const jsonCode = [...text.matchAll(JSON_CODE)].map((match) => match[1]).find(isToolCode);
+  const jsonCode = [...text.matchAll(JSON_CODE)].map((match) => match[1]).find((code) => explicitToolCode(code) !== undefined);
   const prefixCode = PREFIX_CODE.exec(firstLine)?.[1];
-  const code = structuredCode ?? [pluginCode, jsonCode, prefixCode].find(isToolCode) ?? "assigned_tool_error";
+  const code = structuredCode ?? explicitToolCode(pluginCode) ?? explicitToolCode(jsonCode)
+    ?? (isToolCode(prefixCode) ? prefixCode : undefined) ?? "assigned_tool_error";
   return new ToolGatewayHttpError(retryable ? 429 : 422, `${code}: The connected tool reported an error.`, "tool_error",
     retryable ? { retryable: true } : undefined);
 }

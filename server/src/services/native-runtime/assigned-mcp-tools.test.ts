@@ -744,6 +744,19 @@ describe("assigned MCP runner tools", () => {
     await expect(assigned.execute(call)).rejects.toMatchObject({ status: 429, message: "quota_exceeded: The connected tool reported an error." });
   });
 
+  it.each([
+    [new ToolGatewayHttpError(502, "MCP tool returned an error result", "tool_error", { toolCode: "timeout" }), "tool_timeout", 422],
+    [new ToolGatewayHttpError(502, "Busy now (code: busy, retryable)", "tool_error"), "tool_busy", 429],
+    [new ToolGatewayHttpError(502, '{"object":"error","code":"conflict"}', "tool_error"), "tool_conflict", 422],
+  ])("keeps a single-word tool code in a form the runner keeps: %#", async (error, code, status) => {
+    const f = fixture([descriptor("recall")]);
+    f.executeTool.mockRejectedValue(error);
+    const assigned = await createAssignedMcpTools(f);
+    await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toMatchObject({
+      status, message: `${code}: The connected tool reported an error.`,
+    });
+  });
+
   it("builds gateway tool error messages and details from MCP results", () => {
     expect(toolResultErrorMessage({ isError: true, content: [{ type: "text", text: "(code: validation_error)" }] }))
       .toBe("(code: validation_error)");
@@ -753,6 +766,7 @@ describe("assigned MCP runner tools", () => {
       .toEqual({ toolCode: "quota_exceeded", retryable: true });
     expect(toolResultErrorDetails({ data: { code: "read_rate_limit", retryable: true } })).toEqual({ toolCode: "read_rate_limit", retryable: true });
     expect(toolResultErrorDetails({ structuredContent: { code: "Not A Code" } })).toEqual({});
+    expect(toolResultErrorDetails({ structuredContent: { code: "timeout" } })).toEqual({ toolCode: "timeout" });
   });
 
   it("propagates discovery denial", async () => {
