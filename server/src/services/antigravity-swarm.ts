@@ -1,5 +1,5 @@
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { activityLog, agents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { and, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { activityLog, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-profile.js";
@@ -20,6 +20,8 @@ import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-p
  */
 export const ANTIGRAVITY_SWARM_COMMAND = "swarm" as const;
 export const ANTIGRAVITY_SWARM_UNAVAILABLE = "antigravity_swarm_unavailable";
+/** Automatic wakes (recovery, sweeps) attempt one swarm request at most this often; the user can always ask again. */
+export const ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS = 3;
 
 type Json = Record<string, unknown>;
 const record = (value: unknown): Json =>
@@ -101,11 +103,7 @@ async function pendingSwarmCommentId(db: Db, companyId: string, issueId: string)
     .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
       isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
     .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
-  if (!latest) return null;
-  const [fulfilled] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "succeeded"),
-      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${latest.id}`)).limit(1);
-  return fulfilled ? null : latest.id;
+  return latest?.id ?? null;
 }
 
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {
@@ -130,9 +128,9 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   remote: boolean;
   planning: boolean;
 }): Promise<boolean> {
-  const commentId = requestedAntigravitySwarmCommentId(input.context)
-    ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context)
-    ?? await pendingSwarmCommentId(db, input.companyId, input.issueId);
+  const marked = requestedAntigravitySwarmCommentId(input.context);
+  const explicit = marked ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context);
+  const commentId = explicit ?? await pendingSwarmCommentId(db, input.companyId, input.issueId);
   if (!commentId) return false;
   const [requested] = await db.select({ id: activityLog.id }).from(activityLog)
     .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),
@@ -142,15 +140,39 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
     .limit(1);
   if (!requested) return false;
-  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: input.agent, remote: input.remote, planning: input.planning });
-  if (refusal) throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, refusal);
-  await logActivity(db, {
-    companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,
-    issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
-    details: {
-      commentId,
-      summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
-    },
+  // The user asked for this run: a fresh /swarm comment, or Retry. Everything
+  // else (recovery, sweeps, continuations) is automatic and bounded below.
+  const manual = marked !== null || record(input.context).wakeReason === "task_retry";
+  const refuse = (message: string): never => { throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, message); };
+  return db.transaction(async (tx) => {
+    // One selection at a time per task, so one request starts one swarm.
+    await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
+        sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
+    if (attempts.some(run => run.status === "succeeded")) return false;
+    if (attempts.some(run => ["queued", "running"].includes(run.status))) refuse("A swarm for this request is already running.");
+    if (!manual && attempts.some(run => run.status === "cancelled")) {
+      refuse("The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again.");
+    }
+    if (!manual && attempts.filter(run => ["failed", "timed_out"].includes(run.status)).length >= ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS) {
+      refuse("The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one.");
+    }
+    const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx as unknown as Db), agent: input.agent, remote: input.remote, planning: input.planning });
+    if (refusal) refuse(refusal);
+    // The one stored fact every later decision reads: this run serves this request.
+    await tx.update(heartbeatRuns)
+      .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId })}::jsonb` })
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+    await logActivity(tx as unknown as Db, {
+      companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,
+      issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
+      details: {
+        commentId,
+        summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
+      },
+    });
+    return true;
   });
-  return true;
 }

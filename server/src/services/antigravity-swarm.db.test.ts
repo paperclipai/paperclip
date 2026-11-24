@@ -85,6 +85,7 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
       nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id, retryOfRunId: source!.id } }).returning();
     // A recovery wake carries only the retry link (wakeReason issue_recovery_action_restored), not the marker.
     expect(await resolve(f, { runId: retry!.id, context: { issueId: f.issue.id, retryOfRunId: source!.id, wakeReason: "issue_recovery_action_restored" } })).toBe(true);
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, retry!.id));
     const [second] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", runtimeMode: "native",
       nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id, retryOfRunId: retry!.id } }).returning();
     expect(await resolve(f, { runId: second!.id, context: { issueId: f.issue.id, retryOfRunId: retry!.id } })).toBe(true);
@@ -120,6 +121,59 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     const g = await seed();
     await db.insert(issueComments).values({ companyId: g.company.id, issueId: g.issue.id, authorType: "user", authorUserId: USER, body: "thanks", createdAt: new Date(Date.now() + 1000) });
     expect(await resolve(g, { context: { issueId: g.issue.id, wakeReason: "issue_commented" } })).toBe(false);
+  });
+
+  const setStatus = (id: string, status: string) => db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, id));
+  const automatic = (f: Awaited<ReturnType<typeof seed>>, runId: string, wakeReason = "issue_assigned") =>
+    resolve(f, { runId, context: { issueId: f.issue.id, wakeReason } });
+
+  it("records the request on the run it selects, so a fallback-selected swarm that succeeded is not run again", async () => {
+    const f = await seed();
+    const first = await insertRun(f, {});
+    expect(await automatic(f, first.id)).toBe(true);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first.id)))[0]!.contextSnapshot).toMatchObject({ antigravitySwarmCommentId: f.comment.id });
+    await setStatus(first.id, "succeeded");
+    expect(await automatic(f, (await insertRun(f, {})).id, "issue_blocker_stalled")).toBe(false);
+  });
+
+  it("does not run a swarm again after a retried swarm succeeded", async () => {
+    const f = await seed();
+    const failed = await insertRun(f, {});
+    expect(await resolve(f, { runId: failed.id })).toBe(true);
+    await setStatus(failed.id, "failed");
+    const retry = await insertRun(f, { retryOfRunId: failed.id });
+    expect(await resolve(f, { runId: retry.id, context: { issueId: f.issue.id, wakeReason: "issue_recovery_action_restored" } })).toBe(true);
+    await setStatus(retry.id, "succeeded");
+    expect(await automatic(f, (await insertRun(f, {})).id, "issue_continuation_needed")).toBe(false);
+  });
+
+  it("keeps a failed swarm pending, and refuses plainly after three failed attempts", async () => {
+    const f = await seed();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await insertRun(f, {});
+      expect(await automatic(f, run.id)).toBe(true);
+      await setStatus(run.id, "failed");
+    }
+    await expect(automatic(f, (await insertRun(f, {})).id)).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/three attempts/) });
+  });
+
+  it("starts exactly one swarm for one request when two wakes arrive together", async () => {
+    const f = await seed();
+    const [a, b] = [await insertRun(f, {}), await insertRun(f, {})];
+    const results = await Promise.allSettled([automatic(f, a.id), automatic(f, b.id)]);
+    expect(results.filter(result => result.status === "fulfilled" && result.value === true)).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+  });
+
+  it("after Stop, automatic wakes refuse plainly and a manual Retry runs the swarm again", async () => {
+    const f = await seed();
+    const stopped = await insertRun(f, {});
+    expect(await automatic(f, stopped.id)).toBe(true);
+    await setStatus(stopped.id, "cancelled");
+    await expect(automatic(f, (await insertRun(f, {})).id, "issue_blocker_stalled")).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+    // resumeTaskRetry's wake: reason task_retry, context { issueId, triggeredBy, actorId, responsibleUserId }, no marker or retry link.
+    const retry = await insertRun(f, {});
+    expect(await resolve(f, { runId: retry.id, context: { issueId: f.issue.id, triggeredBy: "board", actorId: USER, responsibleUserId: USER, wakeReason: "task_retry" } })).toBe(true);
   });
 
   it.each([
