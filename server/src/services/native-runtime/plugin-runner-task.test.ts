@@ -799,8 +799,6 @@ describe("plugin Runner relaunch as the claimant run", () => {
   const next = { ...source, runId: "next-run", turnId: "turn-next-run", itemId: "item-next-run" };
   const parked = { version: "0.4.0", digest: `sha256:${"c".repeat(64)}` };
   const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
-  const settledCut = { schema: "paperclip.runner.durable.state.v1", ...source, lifecycle: "ready", nextSourceSeq: 4, ackedSourceSeq: 3,
-    outbox: [], pendingTerminalDelivery: null, processedCommands: {} };
   const base = { taskId: "task", projectIds: ["00000000-0000-4000-8000-000000000001"], projectAuthCheckVersion: 1 as const, harness: "codex", warmTaskVersion: 1 as const, releaseResumeVersion: 1 as const,
     accountIdentity: "selected-account", credentialIdentity: "selected-credential" };
   const relaunchSpec = (): RunnerProcessLaunchSpec => {
@@ -826,7 +824,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
 
   it("starts the stopped Runner again as the claimant run and accepts the reported build", async () => {
     const { owner, task, authority, registration } = await relaunchOwner(
-      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }));
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build }));
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
     expect(owner.driver.adoptExistingRunner).toBeUndefined();
     expect(owner.relaunchMayHaveStarted()).toBe(false);
@@ -850,7 +848,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
 
   it("relaunches through a new owner, as after a Core restart, without submitting or adopting", async () => {
     const { owner, task, authority, registration } = await relaunchOwner(
-      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build }),
       { resumeIdentityVersion: 1, fresh: true });
     expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).toMatchObject({ priorIdentity: source });
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
@@ -876,7 +874,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
     let attempts = 0;
     const { task, registration, owner } = await relaunchOwner(() => {
       if (attempts++ === 0) throw new Error("fixture resume reply lost");
-      return { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut };
+      return { kind: "resume", taskId: "task", outcome: "resumed", runner: build };
     });
     owner.launcher(relaunchSpec());
     registration.activate();
@@ -888,16 +886,6 @@ describe("plugin Runner relaunch as the claimant run", () => {
     } finally { await registration.release("detach"); }
   });
 
-  it("takes the provider's resumed answer without re-checking its archived state", async () => {
-    const { authority, registration, owner } = await relaunchOwner(() => ({ kind: "resume", taskId: "task", outcome: "resumed",
-      runner: build, archivedState: { ...settledCut, outbox: [{ sourceSeq: 4 }] } }));
-    owner.launcher(relaunchSpec());
-    registration.activate();
-    try {
-      await registration.ready();
-      expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
-    } finally { await registration.release("detach"); }
-  });
 
   it("reports an unavailable relaunch for ordinary recovery", async () => {
     const { registration, owner } = await relaunchOwner(() => ({ kind: "resume", taskId: "task", outcome: "unavailable" }));

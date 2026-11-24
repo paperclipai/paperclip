@@ -248,7 +248,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         await waitForCondition("parked Runner stopped", () => handle!.isExitConfirmed?.() === true);
         const identity = { ...operation.identity, ...operation.runner };
         const archived = join(runnerRoot, `archived-${operation.identity.runId}.json`);
-        const archivedState = await state();
+        const parkedState = await state();
         await rename(join(runnerRoot, "runner-state.json"), archived);
         const launch = submittedLaunch!.launch!;
         listenPath = `/api/runner/v1/connect/${identity.runId}`;
@@ -260,8 +260,8 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           ...(harness === "claude" ? { acpxLaunchProfile: { authorityDigest: `sha256:${sha("fixture authority")}`, command: sidecar,
             commandSha256: `sha256:${sha(await readFile(sidecar, "utf8"))}`, sidecarScript,
             sidecarScriptSha256: `sha256:${sha(await readFile(sidecarScript, "utf8"))}` } } : {}) });
-        relaunches.push({ source: operation.identity, runId: identity.runId, archivedRunId: archivedState.runId });
-        return { kind: "resume", taskId, outcome: "resumed", runner: artifact, archivedState };
+        relaunches.push({ source: operation.identity, runId: identity.runId, archivedRunId: parkedState.runId });
+        return { kind: "resume", taskId, outcome: "resumed", runner: artifact };
       }
       if (operation.kind === "resume") {
         expect(relaunch).toBe(false);
