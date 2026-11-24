@@ -142,9 +142,15 @@ async function currentStatEntries(home: string): Promise<StatEntry[]> {
   const topLevel = readdirSync(home).sort();
   if (topLevel.join("/") !== [".agents", MANIFEST_FILE].join("/")) throw integrityFailure();
   const entries: StatEntry[] = [];
-  for (const [index, path] of [...(await regularFiles(home, ".agents")), MANIFEST_FILE].entries()) {
+  const files = await regularFiles(home, ".agents");
+  // Directories too: a chmod or an added or removed entry changes a directory's ctime.
+  const directories = [".", ...new Set(files.flatMap((file) => {
+    const parts = file.split("/");
+    return parts.slice(1, -1).map((_, index) => parts.slice(0, index + 2).join("/"));
+  }).concat(".agents"))].sort();
+  for (const [index, path] of [...directories, ...files, MANIFEST_FILE].entries()) {
     const info = lstatSync(join(home, path), { bigint: true });
-    if (!info.isFile()) throw integrityFailure();
+    if (!(directories.includes(path) ? info.isDirectory() : info.isFile())) throw integrityFailure();
     entries.push([path, String(info.ino), String(info.size), String(info.ctimeNs)]);
     if (index % FILES_PER_SLICE === FILES_PER_SLICE - 1) await yieldToEventLoop();
   }
@@ -171,10 +177,15 @@ async function matchesStatRecord(storeRoot: string, home: string, digest: string
 }
 
 /** True when an existing home may be reused; a content check refreshes a stale stat record. */
-async function reusableCodexSkillHome(storeRoot: string, home: string, digest: string): Promise<boolean> {
+async function reusableCodexSkillHome(
+  storeRoot: string,
+  home: string,
+  digest: string,
+  context: NativeRuntimeContextSnapshot | null,
+): Promise<boolean> {
   if (await matchesStatRecord(storeRoot, home, digest)) return true;
   try {
-    await verifyCodexSkillHome(home);
+    await verifyCodexSkillHome(home, context);
   } catch {
     return false;
   }
@@ -201,7 +212,38 @@ export async function removeCodexSkillHomeTree(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
 }
 
-export async function verifyCodexSkillHome(home: string): Promise<void> {
+/**
+ * The files a home must hold for `context`, derived from the assigned bundles
+ * rather than from the home's own manifest, which a same-user process can edit.
+ */
+async function expectedHomeFiles(context: NativeRuntimeContextSnapshot): Promise<Map<string, ManifestEntry>> {
+  const plugin = Buffer.from(JSON.stringify(CLAUDE_SKILL_PLUGIN));
+  const expected = new Map<string, ManifestEntry>([[".agents/.claude-plugin/plugin.json", {
+    path: ".agents/.claude-plugin/plugin.json", size: plugin.length, sha256: createHash("sha256").update(plugin).digest("hex"),
+  }]]);
+  for (const skill of context.skills) {
+    const root = skill.bundle.rootPath;
+    for (const entry of await hashAll(root, await regularFiles(root, "."))) {
+      const path = `.agents/skills/${skill.runtimeName}/${entry.path.slice(2)}`;
+      expected.set(path, { ...entry, path });
+    }
+  }
+  return expected;
+}
+
+/** A sealed home holds no writable file or directory. */
+async function assertSealed(home: string, files: string[]): Promise<void> {
+  const paths = new Set([".", ".agents", MANIFEST_FILE]);
+  for (const file of files) {
+    const parts = file.split("/");
+    for (let index = 1; index <= parts.length; index++) paths.add(parts.slice(0, index).join("/"));
+  }
+  for (const path of paths) {
+    if ((await lstat(join(home, path))).mode & 0o222) throw integrityFailure();
+  }
+}
+
+export async function verifyCodexSkillHome(home: string, context: NativeRuntimeContextSnapshot | null = null): Promise<void> {
   try {
     const manifestInfo = await lstat(join(home, MANIFEST_FILE));
     if (!manifestInfo.isFile()) throw integrityFailure();
@@ -212,10 +254,19 @@ export async function verifyCodexSkillHome(home: string): Promise<void> {
     if (topLevel.join("/") !== [".agents", MANIFEST_FILE].join("/")) throw integrityFailure();
     const actual = await regularFiles(home, ".agents");
     if (actual.join("\n") !== manifest.files.map((entry) => entry.path).join("\n")) throw integrityFailure();
+    await assertSealed(home, actual);
     const observed = await hashAll(home, actual);
     manifest.files.forEach((entry, index) => {
       if (observed[index]!.size !== entry.size || observed[index]!.sha256 !== entry.sha256) throw integrityFailure();
     });
+    if (context) {
+      const expected = await expectedHomeFiles(context);
+      if (expected.size !== observed.length) throw integrityFailure();
+      for (const entry of observed) {
+        const wanted = expected.get(entry.path);
+        if (!wanted || wanted.size !== entry.size || wanted.sha256 !== entry.sha256) throw integrityFailure();
+      }
+    }
   } catch {
     throw integrityFailure();
   }
@@ -257,7 +308,7 @@ async function publishCodexSkillHome(
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EPERM") throw error;
       // Another launch published the same digest first; its copy is authoritative.
-      if (!(await reusableCodexSkillHome(storeRoot, home, digest))) throw integrityFailure();
+      if (!(await reusableCodexSkillHome(storeRoot, home, digest, context))) throw integrityFailure();
       return false;
     }
     await writeStatRecord(storeRoot, home, digest);
@@ -282,7 +333,7 @@ export async function ensureCodexSkillHome(
   // Another launch may replace a damaged home, or cleanup may remove it, while
   // this one checks it. Quarantine only the exact directory judged damaged.
   for (let attempt = 0; existing && attempt < 2; attempt++) {
-    if (existing.isDirectory() && await reusableCodexSkillHome(input.storeRoot, home, digest)) {
+    if (existing.isDirectory() && await reusableCodexSkillHome(input.storeRoot, home, digest, input.context)) {
       return { home, digest, created: false };
     }
     await dependencies.beforeQuarantine?.();
@@ -397,7 +448,9 @@ export async function resolveRecordedCodexSkillHome(input: {
   if (!digest) throw new NativeProviderStateIncompatibleError("codex_skill_home_unavailable");
   const home = join(input.storeRoot, digest);
   try {
-    if (!(await reusableCodexSkillHome(input.storeRoot, home, digest))) throw integrityFailure();
+    // With a context of another skill set the recorded home is checked against its own manifest only.
+    const sameSkills = input.context && codexSkillHomeDigest(input.context) === digest ? input.context : null;
+    if (!(await reusableCodexSkillHome(input.storeRoot, home, digest, sameSkills))) throw integrityFailure();
     await touchCodexSkillHome(input.storeRoot, digest);
     return home;
   } catch {

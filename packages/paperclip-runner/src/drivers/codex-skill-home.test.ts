@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -47,6 +48,15 @@ async function makeWritable(root: string): Promise<void> {
   } else {
     await chmod(root, 0o600);
   }
+}
+
+/** Seals a tree again the way publication leaves it: files 0444, directories 0555. */
+async function sealTree(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isDirectory()) {
+    for (const name of await readdir(path)) await sealTree(join(path, name));
+    await chmod(path, 0o555);
+  } else if (info.isFile()) await chmod(path, 0o444);
 }
 
 afterEach(async () => {
@@ -235,6 +245,9 @@ describe("Codex skill home store", () => {
     const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
     const record = JSON.parse(await readFile(join(storeRoot, `${first.digest}.stat.json`), "utf8"));
     expect(record.files.map((entry: unknown[]) => entry[0])).toEqual([
+      // Directories too: a chmod or a changed entry list changes their ctime.
+      ".", ".agents", ".agents/.claude-plugin", ".agents/skills", ".agents/skills/alpha", ".agents/skills/alpha/scripts",
+      ".agents/skills/beta", ".agents/skills/beta/scripts",
       ".agents/.claude-plugin/plugin.json", ".agents/skills/alpha/SKILL.md", ".agents/skills/alpha/scripts/run.sh",
       ".agents/skills/beta/SKILL.md", ".agents/skills/beta/scripts/run.sh", "manifest.json",
     ]);
@@ -257,6 +270,33 @@ describe("Codex skill home store", () => {
     const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
     expect(second.created).toBe(true);
     await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
+  });
+
+  it("rejects changed skill bytes whose manifest entry an agent updated to match", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await makeWritable(first.home);
+    const changed = "# alpha, changed by another session\n";
+    await writeFile(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), changed);
+    const manifestPath = join(first.home, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const entry = manifest.files.find((file: { path: string }) => file.path === ".agents/skills/alpha/SKILL.md");
+    entry.sha256 = createHash("sha256").update(changed).digest("hex");
+    entry.size = Buffer.byteLength(changed);
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await sealTree(first.home);
+    const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    expect(second.created).toBe(true);
+    await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
+  });
+
+  it("rejects a home whose files or directories were made writable", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await chmod(join(first.home, ".agents", "skills", "alpha"), 0o755);
+    const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    expect(second.created).toBe(true);
+    expect((await stat(join(second.home, ".agents", "skills", "alpha"))).mode & 0o222).toBe(0);
   });
 
   it("does not quarantine a home another launch replaced after it was judged damaged", async () => {
