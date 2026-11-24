@@ -8,7 +8,7 @@ import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { CLAUDE_ASYNC_TASKS_CAPABILITY } from "./claude-background-tasks.js";
 import { ClaudeProviderCycles } from "./claude-provider-turns.js";
-import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
+import { ANTIGRAVITY_MODEL_UNAVAILABLE, acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -51,8 +51,11 @@ import { createAcpxEffectiveModelGate, type AcpxEffectiveModelGate, type AcpxMod
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
-import { createAntigravityAdmission } from "./antigravity-admission.js";
+import { antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
+import { openAntigravitySwarmRuntime } from "./antigravity-swarm-runtime.js";
+import { isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
 import { acpxElicitationHandler, createAcpxPermissionReplyConfirmations, withReturnedResponseDelivery, type AcpxHostExtensionRequestHandler, type AcpxHostPermissionHandler } from "./interaction-delivery.js";
@@ -223,6 +226,9 @@ export async function openQualifiedAcpxRuntime(
   // tree when Node cannot safely signal a verified provider process group.
   assertVerifiedAcpxProviderPlatform(dependencies.platform ?? process.platform);
   options.signal?.throwIfAborted();
+  // A trusted /swarm turn runs the pinned Antigravity CLI through its own
+  // verified ACP client (antigravity-swarm-runtime.ts), never through ACPX.
+  if (isAntigravitySwarmRoute(options.profile.agent, options.mode)) return openAntigravitySwarmRuntime(options);
   const credentialFenceFds = options.credentialFenceFds;
   if (
     !Array.isArray(credentialFenceFds) ||
@@ -358,6 +364,10 @@ export async function openQualifiedAcpxRuntime(
       .filter((server) => server.runnerOwned)
       .map((server) => server.name),
   );
+  const antigravityPlanPolicy = {
+    paperclipServerOwned: options.mcpServers.some(server => server.runnerOwned && server.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER),
+    paperclipTools: new Set(options.paperclipTools ?? []),
+  };
   const permissionBoundary: {
     active: AbortController | null;
     hasAdmittedTurn: boolean;
@@ -428,6 +438,16 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
+  const mcpBearerVariable = (index: number): string | undefined =>
+    options.profile.agent === "claude" ? `PAPERCLIP_ACPX_MCP_BEARER_${index}` : undefined;
+  const mcpBearerEnvironment = Object.fromEntries(options.mcpServers.flatMap((server, index) => {
+    const name = mcpBearerVariable(index);
+    return name && "url" in server ? [[name, server.bearerToken]] : [];
+  }));
+  const mcpBearerCredential = (index: number, bearerToken: string): string => {
+    const name = mcpBearerVariable(index);
+    return name ? `\${${name}}` : bearerToken;
+  };
   // The agent's complete launch environment. ACPX's own environment handling
   // (credential checks, ACP terminals) keeps reading this process's environment.
   const agentEnvironment = (): Record<string, string> => ({
@@ -444,6 +464,7 @@ export async function openQualifiedAcpxRuntime(
           PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
             (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
           )?.url ?? "",
+          ...mcpBearerEnvironment,
         }
       : {}),
   });
@@ -515,7 +536,7 @@ export async function openQualifiedAcpxRuntime(
         ? [...options.permissionPolicy.escalate]
         : undefined,
     },
-    mcpServers: options.mcpServers.map((server) => "command" in server ? {
+    mcpServers: options.mcpServers.map((server, index) => "command" in server ? {
       name: server.name, command: server.command, args: server.args,
       env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
     } : ({
@@ -523,7 +544,7 @@ export async function openQualifiedAcpxRuntime(
       name: server.name,
       url: server.url,
       headers: [
-        { name: "Authorization", value: `Bearer ${server.bearerToken}` },
+        { name: "Authorization", value: `Bearer ${mcpBearerCredential(index, server.bearerToken)}` },
       ],
     })),
     onPermissionRequest: async (request, context) => {
@@ -550,6 +571,8 @@ export async function openQualifiedAcpxRuntime(
       }
       if (options.profile.agent === "kimi" && options.readOnly === true
         && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
+      if (options.profile.agent === "antigravity" && options.readOnly === true
+        && !antigravityPlanModeAllows(request, antigravityPlanPolicy)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -746,6 +769,10 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
+      // A refused Antigravity reload is saved state this build cannot reopen,
+      // not ACPX's retryable "resume required"; the Runner names its class.
+      const savedState = options.profile.agent === "antigravity" ? antigravitySavedStateIncompatible(error) : null;
+      if (savedState) throw savedState;
       // The closed code below cannot say why the provider session did not
       // start, so every ensure rejection keeps its redacted explanation. An
       // abort reason is Runner cancellation, not a provider explanation.
@@ -2568,7 +2595,7 @@ function definedEnvironment(
 }
 
 /** A typed AIR session failure fails the turn even though ACP reported a normal stop. */
-function typedTerminalTurnResult(
+export function typedTerminalTurnResult(
   result: AcpRuntimeTurnResult,
   onFailure?: (failure: AcpxTerminalSessionFailure) => void,
 ): AcpRuntimeTurnResult {
@@ -2579,6 +2606,15 @@ function typedTerminalTurnResult(
     onFailure?.(failure);
   } catch {
     // Diagnostics cannot change the failed terminal outcome.
+  }
+  const provider = failure.provider;
+  if (provider?.kind === "model_unavailable") {
+    // Permanent: never an accepted result and never retried as capacity. The
+    // server words it from these fields, without provider text.
+    const error = { message: "The selected model is not available for this connection.",
+      code: ANTIGRAVITY_MODEL_UNAVAILABLE, retryable: false,
+      ...(provider.model ? { model: provider.model } : {}), ...(provider.route ? { route: provider.route } : {}) };
+    return { status: "failed", error };
   }
   return { status: "failed", error: { message: `ACP agent reported a terminal ${failure.category} failure.`, code: "RUNTIME" } };
 }

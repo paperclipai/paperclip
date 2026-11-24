@@ -1,5 +1,7 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
+import { createCloudHarnessPolicy } from "@/lib/cloud-harness-policy";
+import { useMemo } from "react";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
 import { GrokBotConnection } from "../../components/GrokBotConnection";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
@@ -83,8 +85,12 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
   managedSandboxOnly,
+  availableHarnesses,
   hideRunnerHarness,
 }: AdapterConfigFieldsProps) {
+  const harnessPolicy = useMemo(() => createCloudHarnessPolicy(availableHarnesses), [availableHarnesses]);
+  const allowedAcpxProfiles = PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => profile.qualified && harnessPolicy.isCloudRunnerProviderAllowed("acpx", profile.value));
+  const defaultAcpxAgent = allowedAcpxProfiles.find(profile => profile.value === "claude")?.value ?? allowedAcpxProfiles[0]?.value ?? "claude";
   const runnerManaged = adapterType === "paperclip_runner";
   // The execution engine picks which binary runs on the execution host, and the
   // ACP sub-fields below name host paths. The platform-managed environment owns
@@ -240,6 +246,7 @@ export function CodexLocalConfigFields({
             value={runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "grok" ? "grok" : runnerProvider}
             onValueChange={(value) => {
               const grok = value === "grok";
+              const acpxAgent = grok ? "grok" : defaultAcpxAgent;
               const provider = grok ? "acpx" : isPaperclipRunnerProvider(value)
                 ? value
                 : "codex";
@@ -254,7 +261,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? grok ? "grok-4.7" : defaultAcpxClaudeModel
+                        ? grok ? "grok-4.7" : acpxAgent === "claude" ? defaultAcpxClaudeModel : ""
                         : provider === "cursor_cloud" ? ""
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
@@ -267,7 +274,7 @@ export function CodexLocalConfigFields({
                     acpxSessionMode: undefined,
                     piThinkingLevel: undefined,
                     ...(provider === "cursor_cloud" ? { ...Object.fromEntries(cloudResetKeys.map(key => [key, undefined])), lifecycleMode: "per_turn" } : {}),
-                    ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
+                    ...(provider === "acpx" ? { acpxAgent, acpxSessionMode: acpxAgent === "cursor" ? "agent" : undefined, piThinkingLevel: acpxAgent === "pi" ? "low" : undefined } : {}),
                   },
                 });
               } else {
@@ -280,7 +287,9 @@ export function CodexLocalConfigFields({
                   for (const key of ["cwd", "env", "instructionsFilePath", "command", "extraArgs", "engine", "modelReasoningEffort", "workspaceStrategy", "workspaceRuntime", "idleTimeoutMs", "acpxAgent", "managedProfileId", "agentCoreProfileId"]) mark("adapterConfig", key, undefined);
                 }
                 if (provider === "acpx") {
-                  mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
+                  mark("adapterConfig", "acpxAgent", acpxAgent);
+                  mark("adapterConfig", "acpxSessionMode", acpxAgent === "cursor" ? "agent" : undefined);
+                  mark("adapterConfig", "piThinkingLevel", acpxAgent === "pi" ? "low" : undefined);
                 }
                 if (provider === "cursor_cloud") {
                   mark("adapterConfig", "lifecycleMode", "per_turn");
@@ -292,7 +301,7 @@ export function CodexLocalConfigFields({
             <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
             <SelectContent>
               {!isPaperclipRunnerProvider(runnerProvider) && <SelectItem value={runnerProvider} disabled>{runnerProvider} (unknown provider)</SelectItem>}
-              {runnerHarnessOptions.map((option) => (
+              {runnerHarnessOptions.filter(option => option.value === "acpx" ? !harnessPolicy.restricted || allowedAcpxProfiles.length > 0 : harnessPolicy.isCloudRunnerProviderAllowed(option.value)).map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   <AdapterMark type={option.adapter} className="size-4" />
                   {option.label}
@@ -357,7 +366,7 @@ export function CodexLocalConfigFields({
             }}>
             <SelectTrigger className="w-full" aria-label="ACP agent"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => (
+              {PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => !harnessPolicy.restricted || (profile.qualified && harnessPolicy.isCloudRunnerProviderAllowed("acpx", profile.value))).map(profile => (
                 <SelectItem key={profile.value} value={profile.value} disabled={!profile.qualified}>
                   <AdapterMark type={profile.value === "cursor" ? "cursor" : `${profile.value}_local`} className="size-4" />
                   {profile.label}{profile.qualified ? "" : " — qualification pending"}

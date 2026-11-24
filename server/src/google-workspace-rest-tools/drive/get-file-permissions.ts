@@ -59,6 +59,7 @@ export async function readPermissions(id: string, http: GoogleHttp): Promise<Res
 export const getFilePermissions = defineTool({
   definition: {
     name: "get_file_permissions",
+    title: "Read file sharing",
     description: "Lists who has access to a Drive file: each person, group, domain or link-sharing entry and its role. Google returns this only when the user may see the file's sharing.",
     inputSchema: {
       type: "object",

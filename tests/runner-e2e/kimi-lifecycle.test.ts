@@ -182,16 +182,17 @@ describe("Kimi native Write lifecycle evidence", () => {
 });
 
 function localFixture() {
-  const timestamp = Date.parse("2026-10-28T00:00:00Z"), distribution = "/private/tmp/paperclip-acpx-native-fixture/distribution";
+  const closureSha256 = "c".repeat(64), timestamp = Date.parse("2026-10-28T00:00:00Z");
+  const launch = "/private/tmp/paperclip-acpx-native-fixture/launch", distribution = `/private/tmp/paperclip-verified-native-501/${closureSha256}/distribution`;
   const bootId = "12345678-1234-1234-1234-123456789abc", loader = "exact compiled guarded loader";
   const proc = (pid: number, ppid: number, executable: string, command: string): KimiLocalProcess => ({ pid, ppid, pgid: pid === 21 ? 21 : 22,
     startUs: String(timestamp * 1000 + pid), executable, executableDev: "1", executableIno: String(pid), command, argv: [executable], cwd: "/workspace", bootId });
   const processes = [proc(21, 1, "/runner", "/runner --run-id run --lifecycle-mode per_turn"),
-    proc(22, 21, "/host-node", `/host-node --eval ${loader} ${distribution} .paperclip-native-entry.cjs 0 0 commonjs [] 0`),
+    proc(22, 21, "/host-node", `/host-node --eval ${loader} ${launch} .paperclip-native-entry.cjs 0 0 commonjs [] 0`),
     proc(23, 22, `${distribution}/node/bin/node`, "kimi-code")];
-  processes[1]!.argv = ["/host-node", "--eval", loader, distribution, ".paperclip-native-entry.cjs", "0", "0", "commonjs", "[]", "0"];
+  processes[1]!.argv = ["/host-node", "--eval", loader, launch, ".paperclip-native-entry.cjs", "0", "0", "commonjs", "[]", "0"];
   const input = { authority: { pid: 21, groupId: 21, startedAt: new Date(timestamp).toISOString(), runId: "run" },
-    journal: processes.map(row => ({ pid: row.pid, parent: row.ppid, start: new Date(timestamp).toISOString() })), processes, workspacePath: "/workspace", guardLoaderSha256: sha(loader) };
+    journal: processes.map(row => ({ pid: row.pid, parent: row.ppid, start: new Date(timestamp).toISOString() })), processes, workspacePath: "/workspace", guardLoaderSha256: sha(loader), closureSha256 };
   return { input, select: () => selectKimiLocalTarget(input) };
 }
 describe("Kimi local native child selector", () => {
@@ -228,8 +229,16 @@ describe("Kimi local native child selector", () => {
       expect(JSON.stringify(rows)).not.toContain("must-never-be-returned");
     } finally { child.kill("SIGTERM"); await closed; }
   });
-  it.each(["root", "foreign-loader", "wrong-entry", "unowned", "wrong-cwd", "boot", "cycle", "ambiguous"])("fails closed for %s", kind => {
+  it("returns the store distribution and the separate launch directory", () => {
+    const selected = localFixture().select();
+    expect(selected.distribution).toBe(`/private/tmp/paperclip-verified-native-501/${"c".repeat(64)}/distribution`);
+    expect(selected.launch).toBe("/private/tmp/paperclip-acpx-native-fixture/launch");
+  });
+  it.each(["root", "foreign-loader", "wrong-entry", "unowned", "wrong-cwd", "boot", "cycle", "ambiguous", "foreign-closure", "old-snapshot-layout", "foreign-launch"])("fails closed for %s", kind => {
     const f = localFixture();
+    if (kind === "foreign-closure") f.input.closureSha256 = "d".repeat(64);
+    if (kind === "old-snapshot-layout") f.input.processes[2]!.executable = "/private/tmp/paperclip-acpx-native-fixture/distribution/node/bin/node";
+    if (kind === "foreign-launch") f.input.processes[1]!.argv[3] = "/private/tmp/elsewhere/launch";
     if (kind === "root") f.input.authority.runId = "other";
     if (kind === "foreign-loader") f.input.processes[1]!.argv[2] = "wrong loader";
     if (kind === "wrong-entry") f.input.processes[1]!.argv[4] = "foreign.cjs";

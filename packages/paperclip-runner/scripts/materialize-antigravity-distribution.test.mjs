@@ -51,7 +51,8 @@ function zip(entries = files) {
   return Buffer.concat([...locals, central, end]);
 }
 
-async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, archive = zip(), patchSuffix = "", baseDirectory = tmpdir(), changeParentDuringPatch = false } = {}) {
+async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, archive = zip(), patchSuffix = "", baseDirectory = tmpdir(), changeParentDuringPatch = false, platform = "darwin", architecture = "arm64" } = {}) {
+  const target = `${platform}-${architecture}`;
   const root = await realpath(await mkdtemp(join(baseDirectory, "paperclip-antigravity-provision-test-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const scripts = join(root, "scripts");
@@ -63,15 +64,15 @@ async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, 
   await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), `
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1';
-export async function patchAntigravityRuntime({source,destination}) {
- await writeFile(${JSON.stringify(join(root, "patch.called"))},'called');
+export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.2';
+export async function patchAntigravityRuntime({source,destination,target,vendorEntries}) {
+ await writeFile(${JSON.stringify(join(root, "patch.called"))},JSON.stringify({target,vendorEntries}));
  await mkdir(destination,{mode:0o700});
  for(const name of ['agy_acp_server.par','localharness_external']) {
   const content=await readFile(join(source,name));
   await writeFile(join(destination,name),name==='agy_acp_server.par'?Buffer.concat([content,Buffer.from(${JSON.stringify(patchSuffix)})]):content,{mode:0o500});
  }
- ${changeParentDuringPatch ? `await chmod(${JSON.stringify(join(root, "home/.paperclip/runtimes/antigravity/darwin-arm64"))},0o777);` : ""}
+ ${changeParentDuringPatch ? `await chmod(${JSON.stringify(join(root, `home/.paperclip/runtimes/antigravity/${target}`))},0o777);` : ""}
  return {version:ANTIGRAVITY_PATCH_VERSION,admissionSourceSha256:${JSON.stringify(admissionSourceSha256)}};
 }
 `);
@@ -81,11 +82,11 @@ export async function patchAntigravityRuntime({source,destination}) {
   // The code is copied into an isolated package so its normal fixed manifest
   // read uses a tiny trusted fixture. Production has no manifest-path override.
   await writeFile(join(root, "antigravity-distributions.json"), JSON.stringify({
-    schema: "paperclip.antigravity_distribution.v1", version: "1.4.3",
-    platforms: { "darwin-arm64": {
-      url: "https://dl.google.com/agy-extensions/releases/macos/fixture.zip",
-      archiveSha256: hash(archive), closureSha256, vendorEntries, vendorClosureSha256: hash(JSON.stringify(vendorEntries)), patchVersion: "1.4.3-paperclip.1", admissionSourceSha256, provisioning: "verified-closure",
-      executable: "agy_acp_server.par", args: [], entries,
+    schema: "paperclip.antigravity_distribution.v1", version: "1.5.2",
+    platforms: { [target]: {
+      url: `https://dl.google.com/agy-extensions/releases/${platform === "darwin" ? "macos" : "linux"}/fixture.zip`,
+      archiveSha256: hash(archive), closureSha256, vendorEntries, vendorClosureSha256: hash(JSON.stringify(vendorEntries)), patchVersion: "1.5.2-paperclip.2", admissionSourceSha256, provisioning: "verified-closure",
+      executable: "agy_acp_server.par", args: platform === "linux" ? ["--uid="] : [], entries,
     } },
   }));
   const archivePath = join(root, "fixture.zip");
@@ -93,18 +94,28 @@ export async function patchAntigravityRuntime({source,destination}) {
   const api = await import(pathToFileURL(join(scripts, "materialize-antigravity-distribution.mjs")));
   const provisioner = await import(pathToFileURL(join(scripts, "provision-antigravity.mjs")));
   const home = join(root, "home");
-  const destination = join(home, ".paperclip/runtimes/antigravity/darwin-arm64", closureSha256);
-  const options = { platform: "darwin", architecture: "arm64", archivePath, destination };
+  const destination = join(home, ".paperclip/runtimes/antigravity", target, closureSha256);
+  const options = { platform, architecture, archivePath, destination };
   const provision = () => provisioner.provisionAntigravityRuntime({ ...options, home, moduleUrl: "file:///consumer/node_modules/@paperclipai/paperclip-runner/dist/cli/provision-antigravity.cjs" });
-  return { root, destination, options, api, provision, distribution: await api.antigravityDistribution("darwin", "arm64") };
+  return { root, destination, options, api, provision, distribution: await api.antigravityDistribution(platform, architecture) };
 }
 
-test("the inspected native mac ARM closure is pinned; other platforms remain inventory-only", async () => {
-  const pin = await antigravityDistribution("darwin", "arm64");
-  assert.equal(pin.version, "1.4.3");
-  assert.deepEqual(pin.entries.map(entry => entry.path), files.map(entry => entry.path));
-  assert.equal(hash(JSON.stringify(pin.entries)), pin.closureSha256);
-  for (const [platform, architecture] of [["darwin", "x64"], ["linux", "x64"], ["linux", "arm64"]]) await assert.rejects(antigravityDistribution(platform, architecture), /inventory-only/);
+test("macOS ARM and both Linux closures are pinned; macOS Intel remains inventory-only", async () => {
+  for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "x64"], ["linux", "arm64"]]) {
+    const pin = await antigravityDistribution(platform, architecture);
+    assert.equal(pin.version, "1.5.2");
+    assert.equal(pin.patchVersion, "1.5.2-paperclip.2");
+    assert.deepEqual(pin.entries.map(entry => entry.path), files.map(entry => entry.path));
+    assert.deepEqual(pin.vendorEntries.map(entry => entry.path), files.map(entry => entry.path));
+    assert.equal(hash(JSON.stringify(pin.entries)), pin.closureSha256);
+    assert.equal(hash(JSON.stringify(pin.vendorEntries)), pin.vendorClosureSha256);
+    assert.equal(pin.entries[1].sha256, pin.vendorEntries[1].sha256, "the helper ships unmodified");
+    assert.notEqual(pin.entries[0].sha256, pin.vendorEntries[0].sha256, "the server carries the owned patch");
+    // Linux keeps the exact file size; macOS replaces the vendor signature with an ad-hoc one.
+    if (platform === "linux") assert.equal(pin.entries[0].size, pin.vendorEntries[0].size, "the patch keeps the embedded archive size");
+    assert.deepEqual(pin.args, platform === "linux" ? ["--uid="] : []);
+  }
+  await assert.rejects(antigravityDistribution("darwin", "x64"), /inventory-only/);
   await assert.rejects(antigravityDistribution("win32", "x64"), /no pinned distribution/);
 });
 
@@ -168,7 +179,7 @@ test("verified vendor bytes are patched and only the separately pinned final clo
   const expectedFiles = files.map((file, index) => ({ ...file, content: index === 0 ? Buffer.concat([file.content, Buffer.from(patchSuffix)]) : file.content }));
   const { api, options, destination, root, distribution } = await fixture(t, { expectedFiles, patchSuffix });
   await api.materializePinnedAntigravityDistribution(options);
-  assert.equal(await readFile(join(root, "patch.called"), "utf8"), "called");
+  assert.deepEqual(JSON.parse(await readFile(join(root, "patch.called"), "utf8")), { target: "darwin-arm64", vendorEntries: distribution.vendorEntries });
   assert.notEqual(distribution.vendorClosureSha256, distribution.closureSha256);
   assert.deepEqual(await readFile(join(destination, files[0].path)), expectedFiles[0].content);
   assert.deepEqual(await readFile(join(destination, files[1].path)), files[1].content);
@@ -321,4 +332,25 @@ test("a parent made replaceable while patching cannot receive a published runtim
     await assert.rejects(lstat(destination), { code: "ENOENT" });
     assert.deepEqual(await readdir(join(destination, "..")), []);
   } finally { await chmod(join(destination, ".."), 0o700); }
+});
+
+test("a Linux closure is patched for its own target and verified like macOS", async t => {
+  for (const architecture of ["x64", "arm64"]) {
+    const patchSuffix = "\nowned native admission patch\n";
+    const expectedFiles = files.map((file, index) => ({ ...file, content: index === 0 ? Buffer.concat([file.content, Buffer.from(patchSuffix)]) : file.content }));
+    const { api, options, destination, root, distribution, provision } = await fixture(t, { expectedFiles, patchSuffix, platform: "linux", architecture });
+    assert.equal(destination.split("/").at(-2), `linux-${architecture}`);
+    await provision();
+    assert.deepEqual(JSON.parse(await readFile(join(root, "patch.called"), "utf8")), { target: `linux-${architecture}`, vendorEntries: distribution.vendorEntries });
+    assert.equal((await api.verifyAntigravityDistribution(destination, distribution)).sha256, distribution.closureSha256);
+    await rm(options.archivePath);
+    await provision();
+    const helper = join(destination, files[1].path);
+    await chmod(helper, 0o700);
+    await writeFile(helper, "tampered native child");
+    await chmod(helper, 0o500);
+    await assert.rejects(provision(), /full execution closure digest mismatch/);
+    await rm(helper);
+    await assert.rejects(provision(), /both native binaries/);
+  }
 });

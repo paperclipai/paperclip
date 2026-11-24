@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, inboxDismissals } from "@paperclipai/db";
 import type { AttentionFeed, AttentionSummary, Issue } from "@paperclipai/shared";
@@ -76,6 +77,11 @@ describeEmbeddedPostgres("review attention through the routes: indexed classific
     // Two companies of the same shapes. Each request reads one of them.
     fixture = await seedReviewAttentionFixture(db, { tasks: 640, agents: 24, prefix: "RAE" });
     other = await seedReviewAttentionFixture(db, { tasks: 320, agents: 12, prefix: "OTH" });
+    await db.execute(sql`ANALYZE agents, issues, heartbeat_runs, issue_relations,
+      issue_thread_interactions, issue_recovery_actions, agent_wakeup_requests,
+      approvals, issue_approvals, chat_endpoints, chat_endpoint_resources,
+      chat_conversations, chat_github_reviews, chat_message_links, chat_deliveries,
+      chat_actions, run_identity_contexts, status_decisions`);
   }, 120_000);
 
   beforeEach(() => {

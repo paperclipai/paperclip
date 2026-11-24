@@ -117,6 +117,33 @@ describeEmbeddedPostgres("reportRunFailure native provider usage limits", () => 
     expect(run).toEqual(before);
   });
 
+  it("keeps a native rate limit that refused the session start on the task", async () => {
+    // The persisted shape of staging PAPERCLIP-BACKEND-8Z once it ends as a usage-limit hold.
+    await reportRunFailure(db, nativeUsageLimitRun({
+      error: "PRP command session.open failed: failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=provider_rate_limit)",
+      resultJson: { providerFailure: { ...limitFailure, phase: "startup", category: "rate_limit", retryability: "unknown",
+        httpStatus: 429, message: "API error: 429 This request would exceed your account's rate limit. Please try again later" } },
+    }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("keeps a startup rate limit on the task when an earlier attempt of the run saved another failure", async () => {
+    // A same-run startup retry keeps the first attempt's providerFailure (here an
+    // overload); the limit that ended the run is saved as providerLimitStartup.
+    const startupLimit = { ...limitFailure, phase: "startup", category: "rate_limit", retryability: "unknown", httpStatus: 429,
+      message: "API error: 429 This request would exceed your account's rate limit. Please try again later" };
+    await reportRunFailure(db, nativeUsageLimitRun({ resultJson: {
+      providerFailure: { ...limitFailure, phase: "startup", category: "overloaded", retryability: "transient", httpStatus: 529 },
+      providerLimitStartup: { failure: startupLimit, observedAt: new Date().toISOString() },
+    } }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    // Without that saved limit the overload alone is still reported.
+    await reportRunFailure(db, nativeUsageLimitRun({ resultJson: {
+      providerFailure: { ...limitFailure, phase: "startup", category: "overloaded", retryability: "transient", httpStatus: 529 },
+    } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { status: "timed_out" }, { signal: "SIGTERM" }, { runtimeMode: "legacy" },
     { errorCode: "native_provider_terminal_failed" }, { errorCode: "native_session_retry_exhausted" },

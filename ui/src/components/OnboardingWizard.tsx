@@ -140,6 +140,7 @@ import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
+import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "@/lib/analytics/onboarding-analytics";
 import {
   ArrowLeft,
   ArrowRight,
@@ -677,6 +678,11 @@ function OnboardingWizardInner({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
       ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
+  const onboardingAnalytics = useOnboardingAnalytics({
+    open: effectiveOnboardingOpen,
+    step,
+    connectOutcome: credentialMode === "api" ? "api_key" : "subscription",
+  });
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -829,6 +835,9 @@ function OnboardingWizardInner({
     if (initialStepRef.current && !resumesRouteDraft) {
       setStep(initialStepRef.current);
       setEntryStep(initialStepRef.current);
+    }
+    if (!previousRequest?.open) {
+      onboardingAnalytics.opened(initialStepRef.current && !resumesRouteDraft ? initialStepRef.current : step, step);
     }
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
@@ -1229,6 +1238,14 @@ function OnboardingWizardInner({
   const sourceSelected =
     sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
 
+  const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
+    (credentialMode !== "api" && managedBindingForStep()));
+  /** Without browser login, show instructions for the selected execution environment. */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+  const browserSignInUnavailable = connectStepHasNoSandbox && !hasSavedSubscription &&
+    localLogin.status !== "ready" && !(canUseLocalLogin && managedProvider);
+
   /**
    * Whether the connect step may advance.
    *
@@ -1249,7 +1266,7 @@ function OnboardingWizardInner({
   const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
     && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType)
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
-  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && connectionModelReady;
+  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && !browserSignInUnavailable && connectionModelReady;
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
@@ -1371,10 +1388,6 @@ function OnboardingWizardInner({
   const loginSubmitsBrowserCode =
     adapterCaps.login?.panelMode === "submitted_browser_code";
 
-  /** Without browser login, show instructions for the selected execution environment. */
-  const connectStepHasNoSandbox =
-    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
-
   /*
     The sequence's derived state. Space and visibility are separate throughout:
     the credential link fades on the first beat but keeps its space until the
@@ -1384,8 +1397,6 @@ function OnboardingWizardInner({
   const connectCollapsed =
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
   const connectProgress = sourceSelected && !setupPrepared && !createdAgentId && !setupError ? "Creating your agent…" : adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
-  const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
-    (credentialMode !== "api" && managedBindingForStep()));
   const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
     connectHasCard &&
@@ -1595,6 +1606,7 @@ function OnboardingWizardInner({
 
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (browserSignInUnavailable) return;
     if (retryLogin) {
       setConnectAuthUrl(null);
       setSubmitLoginCode(null);
@@ -1831,6 +1843,7 @@ function OnboardingWizardInner({
   }
 
   function handleClose() {
+    onboardingAnalytics.dismissed(step);
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -1884,9 +1897,12 @@ function OnboardingWizardInner({
     }
     setLoading(true);
     setError(null);
+    captureOnboardingStepCompleted("review");
     try {
       await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
+      captureOnboardingStepCompleted("launch", "succeeded");
       if (!stillTheSameCompany(createdCompanyId)) return;
+      onboardingAnalytics.finished();
       const prefix = createdCompanyPrefix;
       const agentId = createdAgentId;
       // Route sync preserves this explicit destination over page memory.
@@ -1895,6 +1911,7 @@ function OnboardingWizardInner({
       closeOnboarding();
       navigate(`${prefix ? `/${prefix}` : ""}/chats/${agentId}`);
     } catch (err) {
+      captureOnboardingStepCompleted("launch", "failed");
       setError(err instanceof Error ? err.message : "Failed to open your chat. Please try again.");
     } finally {
       setLoading(false);
@@ -3273,7 +3290,7 @@ function OnboardingWizardInner({
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
                         <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
-                      ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
+                      ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>
 

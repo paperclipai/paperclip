@@ -9,6 +9,7 @@ import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
+import { isProviderQuotaActionRequired } from "../provider-quota-reset.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
   isWorkspaceValidationFailedRun,
@@ -91,6 +92,8 @@ import {
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION } from "../native-runtime/native-sandbox-disk-full.js";
+import { NATIVE_RUN_PAYLOAD_TOO_LARGE, NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION } from "../native-runtime/native-run-payload-too-large.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -509,6 +512,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preserveWakeContext?: boolean;
     },
   ) {
+    if (isProviderQuotaActionRequired(run, opts?.now)) return { outcome: "not_scheduled" as const,
+      reason: "Review the provider account's billing and usage allowance before retrying.",
+      issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     const preparation = parseObject(run.resultJson?.executionRecovery);
     if (typeof preparation.preparationSettledAt === "string" && await isInterruptedNativePreparation(db, run)) {
       const children = await db.select().from(heartbeatRuns).where(and(
@@ -536,6 +542,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_SANDBOX_DISK_FULL) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_SANDBOX_DISK_FULL_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_RUN_PAYLOAD_TOO_LARGE) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,

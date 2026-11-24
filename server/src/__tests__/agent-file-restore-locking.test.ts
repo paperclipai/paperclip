@@ -166,6 +166,21 @@ describe("agent file restore locking", () => {
     expect(await stagingLeftovers()).toEqual([]);
   });
 
+  it.each(["history", "revision"] as const)("a %s read downloads a stale projection without holding the agent row lock", async (operation) => {
+    const service = agentInstructionRevisionService(db);
+    const current = await service.readCurrent(target(), board());
+    await loseLocalProjection();
+    objects.probe = agentRowLocked;
+    if (operation === "history") {
+      await expect(service.history({ ...target(), entryFile }, board())).resolves.toMatchObject({ revisions: expect.any(Array) });
+    } else {
+      await expect(service.readRevision({ ...target(), entryFile, revisionId: current!.revision.id }, board()))
+        .resolves.toMatchObject({ content: "# Policy\n" });
+    }
+    expect(objects.downloads).toEqual([{ objectKey: expect.any(String), agentRowLocked: false }]);
+    expect(await stagingLeftovers()).toEqual([]);
+  });
+
   it("lets a writer commit during the download and then serves the writer's head, not the stale download", async () => {
     await loseLocalProjection();
     let open!: () => void, reached!: () => void;

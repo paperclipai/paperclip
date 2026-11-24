@@ -21,6 +21,15 @@ describe("list_threads request", () => {
     expect(listThreadsQuery({ includeTrash: true })).toEqual({ q: "-in:draft -in:spam", includeSpamTrash: true });
   });
 
+  it("filters by a Gmail search query, combined with labels and the default exclusions", () => {
+    expect(listThreadsToolRequest({ query: "subject:marker-123" }).query).toMatchObject({ q: "(subject:marker-123) -in:draft", labelIds: undefined });
+    expect(listThreadsQuery({ query: "from:sam@example.test", labelIds: ["INBOX"] })).toEqual({ q: "(from:sam@example.test) -in:draft", includeSpamTrash: undefined });
+    expect(listThreadsQuery({ query: "in:draft marker" })).toEqual({ q: "in:draft marker", includeSpamTrash: undefined });
+    expect(listThreadsQuery({ query: "marker", labelIds: ["DRAFT"] })).toEqual({ q: "marker", includeSpamTrash: undefined });
+    expect(listThreadsQuery({ query: "marker", includeTrash: true })).toEqual({ q: "(marker) -in:draft -in:spam", includeSpamTrash: true });
+    expect(listThreadsQuery({ query: "   " })).toEqual({ q: "-in:draft", includeSpamTrash: undefined });
+  });
+
   it("defaults the page size to 20 and caps it at 50", () => {
     expect(listThreadsToolRequest({ pageSize: 500 }).query?.maxResults).toBe(50);
     expect(listThreadsToolRequest({ pageSize: 5, pageToken: "page-2-token" }).query).toMatchObject({ maxResults: 5, pageToken: "page-2-token" });
@@ -48,6 +57,22 @@ describe("list_threads tool", () => {
     const result = await listThreads.call({ pageSize: 1000 }, createGoogleHttp({ accessToken: "t", fetch }));
     expect((result.structuredContent as { threads: unknown[] }).threads).toHaveLength(50);
     expect(calls).toHaveLength(51);
+  });
+
+  it("sends the query to Google as q", async () => {
+    const { fetch, calls } = fakeGoogle(({ url }) => (url.pathname.endsWith("/threads") ? json({ threads: [], resultSizeEstimate: 0 }) : json({}, 404)));
+    const result = await listThreads.call({ query: "x" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBeFalsy();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url.searchParams.get("q")).toBe("(x) -in:draft");
+  });
+
+  it("refuses q, which is not one of its arguments, instead of listing every thread", async () => {
+    const { fetch, calls } = fakeGoogle(() => json({}));
+    const result = await listThreads.call({ q: "marker" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result).toEqual({ isError: true, content: [{ type: "text",
+      text: "Invalid arguments for list_threads: unknown argument \"q\". Accepted arguments: pageSize, pageToken, query, labelIds, includeTrash, view. Nothing was sent to Google." }] });
+    expect(calls).toHaveLength(0);
   });
 
   it("refuses label IDs that are not Gmail IDs and too many labels", async () => {

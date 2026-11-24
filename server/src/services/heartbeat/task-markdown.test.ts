@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { NATIVE_PLAN_REVIEW_DIRECTIVE, buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
 const issue = {
   id: "task-1",
@@ -64,6 +64,15 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("an unanswered question is not consent");
     expect(markdown).toContain("A human-dismissed request is deferred to history");
     expect(markdown).toContain("Do not invent material user intent or success criteria");
+  });
+
+  it("tells a native Plan-mode run that Paperclip opens the one plan review card", () => {
+    const planning = { issue: { ...issue, workMode: "planning" } };
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true })).toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    // Adapters keep their own approval flow, and an accepted plan is executed.
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: false })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true, acceptedPlanContinuation: true,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body: "Do it." } })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
   });
 
   it("preserves execution of a clear accepted plan without imposing clarification", () => {
@@ -161,6 +170,22 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Cases:");
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, casesEnabled: true }))
       .not.toContain("Cases:");
+  });
+  it("points a standing chat at the responsibility tools, or says the feature is off", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, responsibilitiesEnabled: true })!;
+    expect(enabled).toContain("Areas and responsibilities:");
+    expect(enabled).toContain("read them first with list_responsibilities");
+    expect(enabled).toContain("Do not ask the person what their responsibilities are or where they are written down before reading them");
+    expect(enabled).toContain("/RUN/responsibilities");
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/path="responsibilities"/);
+    const off = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, responsibilitiesEnabled: false })!;
+    expect(off).toContain("Areas and responsibilities are turned off on this instance");
+    expect(off).not.toContain("list_responsibilities");
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Areas and responsibilities");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, responsibilitiesEnabled: true }))
+      .not.toContain("Areas and responsibilities");
   });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();

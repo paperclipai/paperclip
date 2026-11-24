@@ -60,12 +60,21 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
   const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
+  if (!optimistic && presentation?.state === "waiting_for_user" && presentation.userAction === "question")
+    return <div role="status" data-testid="task-execution-waiting" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}>
+      <span>Respond to the pending question to continue.</span>
+      {canRetry && presentation.canRetry && <Button variant="outline" size="sm" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
+    </div>;
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     // Saved-work recovery is what the task waits for, so name it over the
     // generic automatic-retry line while keeping the provider explanation.
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
-      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry} data-testid="task-execution-retry">Retry</Button> : undefined}>
+      actions={<>
+        {presentation.userAction === "provider_billing" && <Button variant="outline" size="sm" asChild><Link to="/apps">Review AI account</Link></Button>}
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
+      </>}>
       {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : "Paperclip will retry automatically."}</p>}
+      {presentation.userAction === "provider_billing" && <p>Check your provider account’s billing and usage allowance, then retry.</p>}
       {isBudgetWait(presentation) && <p data-testid="task-execution-waiting">It is waiting for the budget to allow new work. Raise the budget in Costs.</p>}
     </ProviderFailureNotice>;
   }
@@ -115,16 +124,6 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
         className="flex items-center gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
         <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
         <span className="min-w-0 flex-1">{budgetWaitText(presentation)}</span>
-      </div>
-    </div>
-  );
-  if (!optimistic && presentation?.userAction === "unblock") return (
-    <div className={cn("pt-4", className)}>
-      <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
-        className="flex items-center justify-between gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
-        <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="min-w-0 flex-1">The agent stopped and needs your help to continue. Read its last comment, do what it asks, then Retry.</span>
-        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
       </div>
     </div>
   );

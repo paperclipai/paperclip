@@ -21,10 +21,13 @@ import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { hasHumanGateEvidence } from "./recovery/human-gate-evidence.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
@@ -150,7 +153,7 @@ async function personOwnedTaskWait(tx: Db, input: { companyId: string; issue: ty
   if (approval) return "approval_pending";
   const [question] = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issue.id),
-    eq(issueThreadInteractions.status, "pending"))).limit(1);
+    eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())).limit(1);
   if (question) return "question_pending";
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
@@ -293,8 +296,7 @@ async function fenceSourceWorkspace(tx: Db, run: typeof heartbeatRuns.$inferSele
  * gate again.
  */
 export function isHumanGate(hold: Pick<typeof issueRecoveryActions.$inferSelect, "ownerUserId" | "evidence">): boolean {
-  return Boolean(hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation
-    || hold.evidence.executionReconciliation);
+  return Boolean(hold.ownerUserId) || hasHumanGateEvidence(hold.evidence);
 }
 
 const isRestoreHold = (hold: typeof issueRecoveryActions.$inferSelect) =>
@@ -699,6 +701,36 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   logger.info({ runId: run.id, issueId: issue.id, failureCode: run.errorCode, trigger: input.trigger, delivery },
     "Unfinished run continues in a fresh run from saved work");
   return { kind: "continued", recoveryActionId: primaryId, delivery, isolation };
+}
+
+export async function settleHoldIntoAbandonedEpochContinuation(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actionId: string; now?: Date;
+}): Promise<boolean> {
+  const now = input.now ?? new Date();
+  return db.transaction(async raw => {
+    const tx = raw as unknown as Db;
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.id, input.runId)));
+    if (!issue || !run) return false;
+    const [hold] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), eq(issueRecoveryActions.id, input.actionId))).for("update");
+    if (!hold || !["active", "escalated"].includes(hold.status) || isHumanGate(hold) || hold.evidence.runId !== run.id
+      || hold.evidence.workspaceRestoreFailure === "restore_unsafe_archive"
+      || readSystemRecovery(hold.evidence)?.state !== "exhausted") return false;
+    const [prior] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), sql`${issueRecoveryActions.id} <> ${hold.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${run.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'remote_epoch'`,
+      inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, ["pending", "delivered", "delegated", "not_requested"])))
+      .orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1).for("update");
+    if (!prior || !await isAbandonedPreparedRemoteWorkspace(tx, run)) return false;
+    await settleLateHolds(tx, { companyId: input.companyId, issue, run, prior, holds: [hold], now });
+    logger.info({ runId: run.id, issueId: issue.id, recoveryActionId: hold.id, continuationId: prior.id },
+      "Workspace recovery hold settled into the continuation that already moved the task to a new workspace epoch");
+    return true;
+  });
 }
 
 async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect;

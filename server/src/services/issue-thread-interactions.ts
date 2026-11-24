@@ -14,7 +14,7 @@ import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { historicalQuestionCondition } from "./issue-question-context.js";
+import { hasGovernedPayload, historicalQuestionCondition } from "./issue-question-context.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -148,6 +148,7 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -227,6 +228,8 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
+  afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -559,6 +562,7 @@ type IssueResolutionContext = {
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId?: string | null;
   executionPolicy?: unknown;
   executionState?: unknown;
 };
@@ -691,7 +695,7 @@ async function isEquivalentAcceptedReplay(
   if (
     !replayAcceptedInteractionIds.includes(row.id)
     || !isRequestConfirmationLikeKind(row.kind)
-    || ["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => Object.hasOwn(row.payload, key))
+    || hasGovernedPayload(row.payload)
     || row.status !== "accepted"
     || row.result?.outcome !== "accepted"
     || !row.resolvedAt
@@ -2730,6 +2734,7 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
           executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
         })
@@ -2839,6 +2844,15 @@ export function issueThreadInteractionService(
         acceptedPlanTarget?.issueId === issueContext.id &&
         acceptedPlanTarget.key === "plan" &&
         issueContext.workMode === "planning";
+      if (lockedCurrent.kind === "request_confirmation" && acceptedPlanTarget?.issueId === issueContext.id
+        && acceptedPlanTarget.key === "plan") {
+        emitPlanApprovedAfterCommit({
+          companyId: issueContext.companyId,
+          actor: args.actor,
+          startsExecution: acceptedPlanStartsExecution,
+          task: { createdByUserId: issueContext.createdByUserId ?? null, responsibleUserId: issueContext.responsibleUserId ?? null },
+        });
+      }
       if (isNativeCompletionReview(lockedCurrent)) {
         const otherPending = await tx.select({ id: issueThreadInteractions.id })
           .from(issueThreadInteractions).where(and(
@@ -5312,6 +5326,7 @@ export function issueThreadInteractionService(
             })
             .returning();
 
+          await options.afterInsertInTransaction?.(tx as unknown as Db, row);
           if (row.addresseeAgentId || row.addresseeUserId) {
             const [privacyIssue] = await tx.select().from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             await ensureAssignmentIssueAccessGrant(tx, { ...privacyIssue!,

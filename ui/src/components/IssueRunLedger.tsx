@@ -27,6 +27,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { ProviderLimitMessage } from "./ProviderLimitMessage";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
 import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
@@ -1018,7 +1019,7 @@ export function IssueRunLedgerContent({
                       Next action:{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
-                      {nextAction}
+                      <ProviderLimitMessage>{nextAction}</ProviderLimitMessage>
                     </span>
                   </div>
                 ) : null}

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAnnouncement } from "./useAnnouncement";
 import { announcementPreview } from "@/lib/announcement-preview";
 import { announcementStoragePrefix } from "@/lib/announcement-dismissals";
+import { isIntentionalAbortReason } from "@/lib/intentional-abort";
 
 const api = vi.hoisted(() => ({ current: vi.fn(), dismiss: vi.fn() }));
 vi.mock("@/api/announcements", () => ({ announcementsApi: api }));
@@ -137,6 +138,29 @@ describe("announcement lifecycle", () => {
     expect(container.textContent).toBe("");
     await settle();
     expect(container.textContent).toBe("after-return");
+  });
+  it("aborts with an intentional reason when the tab is hidden, a card is dismissed, or the hook unmounts", async () => {
+    api.current.mockReturnValue(new Promise(() => {}));
+    await render();
+    const hidden = api.current.mock.calls[0][0] as AbortSignal;
+    await visibility("hidden");
+    expect(hidden.aborted).toBe(true);
+    expect(isIntentionalAbortReason(hidden.reason)).toBe(true);
+
+    await visibility("visible");
+    const dismissed = api.current.mock.calls[1][0] as AbortSignal;
+    api.dismiss.mockReturnValue(new Promise(() => {}));
+    await act(async () => observed.dismiss(announcementPreview.id));
+    expect(dismissed.aborted).toBe(true);
+    expect(isIntentionalAbortReason(dismissed.reason)).toBe(true);
+
+    const write = api.dismiss.mock.calls[0][2] as AbortSignal;
+    await visibility("hidden"); await visibility("visible");
+    const unmounted = api.current.mock.calls[2][0] as AbortSignal;
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    expect(isIntentionalAbortReason(unmounted.reason)).toBe(true);
+    expect(isIntentionalAbortReason(write.reason)).toBe(true);
   });
   it("keeps failed writes pending and retries on reconnect", async () => {
     api.dismiss.mockRejectedValueOnce(new Error("offline"));

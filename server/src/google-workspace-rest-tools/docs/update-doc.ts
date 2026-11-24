@@ -47,6 +47,7 @@ export function updateDocResult(response: RestBatchUpdateResponse): CallToolResu
 export const updateDoc = defineTool({
   definition: {
     name: "update_doc",
+    title: "Edit a document",
     description: [
       "Edits an existing Google Doc with a list of Docs API batchUpdate requests (for example insertText, deleteContentRange, replaceAllText, updateTextStyle, updateParagraphStyle, createParagraphBullets, insertTable or insertInlineImage), and returns one reply per request.",
       "Requests are applied in the order given, all or none: if any request is invalid, nothing is changed.",

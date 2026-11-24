@@ -40,6 +40,8 @@ import { inspectOnlineWorkspaceSource } from "./online-workspace-source.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { cleanupRemoteWorkspaceAllocation, inspectRemoteWorkspacePersistence } from "./remote-workspace-lifecycle.js";
+import { WORKSPACE_FILES_UNAVAILABLE_MESSAGE } from "./workspace-files-unavailable.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -81,6 +83,99 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     return { companyId, workspaceId, issueId: issue!.id, cwd };
   }
   async function workspace(id: string) { return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!; }
+  async function archivedGitWorkspaceWithoutFiles() {
+    const f = await seed(), repository = path.join(root, "origin-repository"); await fs.mkdir(repository);
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), providerType: "git_worktree",
+      strategyType: "git_worktree", repoUrl: pathToFileURL(repository).href, branchName: "task-branch",
+      metadata: { retainedNote: "keep", gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await fs.rm(f.cwd, { recursive: true });
+    return { ...f, repository };
+  }
+  async function expectFilesUnavailable(f: { companyId: string; workspaceId: string; cwd: string }) {
+    const row = await workspace(f.workspaceId);
+    expect(row).toMatchObject({ status: "archived", providerType: "cloud_sandbox", providerRef: null, cwd: `/workspaces/${f.workspaceId}` });
+    expect(row.metadata).toMatchObject({ retainedNote: "keep", workspaceFilesUnavailable: { reason: "files_missing_at_migration", localPath: f.cwd } });
+    expect(readRemoteWorkspaceAuthority(row.metadata)).toMatchObject({ snapshotId: null, location: null, writerRunId: null, dirty: false });
+    expect(await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, f.workspaceId))).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "workspace.files_unavailable_at_migration")))).toEqual([expect.objectContaining({
+      entityType: "execution_workspace", entityId: f.workspaceId, details: expect.objectContaining({ localPath: f.cwd }) })]);
+    expect(await inspectRemoteWorkspacePersistence(db, row)).toMatchObject({ ready: false, reason: WORKSPACE_FILES_UNAVAILABLE_MESSAGE });
+    expect(await cleanupRemoteWorkspaceAllocation({ db, workspace: row, destroyLease: async () => { throw new Error("no allocation"); } }))
+      .toEqual({ cleaned: true, warnings: [] });
+  }
+  it("moves an archived workspace whose files are already gone online without a snapshot", async () => {
+    const f = await archivedGitWorkspaceWithoutFiles();
+    expect((await inventoryRemoteWorkspaceMigration(db, f)).reasons)
+      .toEqual(expect.arrayContaining(["archived_git_source_unavailable", "local_source_unsafe_or_missing"]));
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true }))
+      .rejects.toThrow(/archived_git_source_unavailable.*local_source_unsafe_or_missing|local_source_unsafe_or_missing.*archived_git_source_unavailable/);
+    await fs.rm(f.repository, { recursive: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, filesUnavailable: true, reasons: [] });
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, filesUnavailable: true });
+    await expectFilesUnavailable(f);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, replayed: true });
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "workspace.files_unavailable_at_migration"))).toHaveLength(1);
+  });
+  it("moves an archived workspace whose files are already gone during offline migration", async () => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const f = await seed();
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await fs.rm(f.cwd, { recursive: true });
+    expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(1);
+    await expectFilesUnavailable(f);
+  });
+  it("moves an archived project task workspace whose repository cache is gone too", async () => {
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const f = await seed(), [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Gone project" }).returning();
+    const managed = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId: project!.id, repoName: "repo" });
+    const cwd = path.join(managed, ".paperclip", "worktrees", "task-branch");
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), providerType: "git_worktree", strategyType: "git_worktree",
+      projectId: project!.id, repoUrl: "https://example.test/acme/repo.git", branchName: "task-branch", cwd, providerRef: cwd,
+      metadata: { retainedNote: "keep", gitBranchOwnershipVersion: 1, createdByRuntime: true } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await fs.rm(f.cwd, { recursive: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, filesUnavailable: true, reasons: [] });
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, filesUnavailable: true });
+    await expectFilesUnavailable({ ...f, cwd });
+  });
+  it("keeps an archived workspace blocked while its repository at a plain local path still exists", async () => {
+    const f = await archivedGitWorkspaceWithoutFiles();
+    await db.update(executionWorkspaces).set({ repoUrl: f.repository }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+    expect(inventory).toMatchObject({ eligible: false });
+    expect(inventory).not.toHaveProperty("filesUnavailable");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("local_source_unsafe_or_missing");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    await fs.rm(f.repository, { recursive: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, filesUnavailable: true, reasons: [] });
+  });
+  it("keeps an archived workspace blocked when it still has a saved file reference", async () => {
+    const f = await archivedGitWorkspaceWithoutFiles(); await fs.rm(f.repository, { recursive: true });
+    for (const metadata of [{ gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2", broken: true } },
+      { isolatedTaskDirectoryRetention: { schema: "unknown" } }]) {
+      await db.update(executionWorkspaces).set({ metadata: { retainedNote: "keep", gitBranchOwnershipVersion: 1, ...metadata } })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+      expect(inventory).toMatchObject({ eligible: false });
+      expect(inventory).not.toHaveProperty("filesUnavailable");
+      expect(inventory.reasons).toContain("local_source_unsafe_or_missing");
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("local_source_unsafe_or_missing");
+    }
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("keeps workspaces blocked when their files may still exist", async () => {
+    const f = await seed(), elsewhere = path.join(root, "elsewhere");
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await fs.rename(f.cwd, elsewhere); await fs.symlink(elsewhere, f.cwd);
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["local_source_unsafe_or_missing"] });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("local_source_unsafe_or_missing");
+    await fs.rm(f.cwd);
+    await db.update(executionWorkspaces).set({ status: "idle", closedAt: null }).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["local_source_unsafe_or_missing"] });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "workspace.files_unavailable_at_migration"))).toHaveLength(0);
+    expect(await fs.readFile(path.join(elsewhere, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
   it("keeps provider-owned Runner task paths out of offline workspace migration", async () => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
@@ -309,6 +404,12 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   }
   it("requires offline maintenance for overlapping physical workspace paths", async () => {
     const { parent, child } = await nestedFixture();
+    expect(await inventoryRemoteWorkspaceMigration(db, child)).toMatchObject({ eligible: false,
+      reasons: ["overlapping_workspace_requires_maintenance"], sourceScopeUnproven: "ordinary_root_unmanaged",
+      details: ["overlapping_workspace_requires_maintenance:enclosing_workspace"] });
+    expect(await inventoryRemoteWorkspaceMigration(db, parent)).toMatchObject({ eligible: false,
+      reasons: ["overlapping_workspace_requires_maintenance"], sourceScopeUnproven: "ordinary_root_unmanaged",
+      details: ["overlapping_workspace_requires_maintenance:nested_workspace"] });
     await expect(migrateRemoteWorkspace({ db, storage, ...child, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
     await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
     expect(await fs.readFile(path.join(child.cwd, "child.txt"), "utf8")).toBe("saved child edits\n");
@@ -376,14 +477,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]).toEqual(run);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
   });
-  it.each([["stranded_assigned_issue", "stranded_assigned_issue"], ["configuration_validation", "configuration_incomplete"],
-    ["missing_disposition", "successful_run_missing_state"], ["deliberate_wait_without_target", "deliberate_wait_without_target"]])("preserves a task-only %s warning through offline file migration", async (kind, cause) => {
+  it.each([["stranded_assigned_issue", "stranded_assigned_issue", "offline"], ["configuration_validation", "configuration_incomplete", "offline"],
+    ["missing_disposition", "successful_run_missing_state", "offline"], ["deliberate_wait_without_target", "deliberate_wait_without_target", "offline"],
+    ["stranded_assigned_issue", "stranded_assigned_issue", "online"], ["configuration_validation", "configuration_incomplete", "online"],
+    ["missing_disposition", "successful_run_missing_state", "online"], ["deliberate_wait_without_target", "deliberate_wait_without_target", "online"],
+  ])("preserves a task-only %s warning (%s) through %s file migration", async (kind, cause, mode) => {
     const f = await seed();
     const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind, cause, fingerprint: randomUUID(), nextAction: "Keep the existing task warning", evidence: { latestRunStatus: "failed" } }).returning();
-    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
-    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
-    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    if (mode === "offline") vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    expect(await inventoryRemoteWorkspaceMigration(db, { ...f, writersStopped: mode === "offline" })).toMatchObject({ eligible: true, reasons: [] });
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, ...(mode === "offline" ? { writersStopped: true } : {}) });
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(action);
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
@@ -413,6 +517,26 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
         .where(eq(issueRecoveryActions.id, action!.id)); return result; };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rechecks a task warning that becomes file recovery during an online upload", async () => {
+    const f = await seed();
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "stranded_assigned_issue", cause: "stranded_assigned_issue", fingerprint: randomUUID(), nextAction: "Assign the task" }).returning();
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
+        .where(eq(issueRecoveryActions.id, action!.id)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["workspace_validation", "active_run_watchdog", "export-cause"])("keeps an online blocker for file or execution recovery without a source proof (%s)", async mode => {
+    const f = await seed();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: mode === "export-cause" ? "configuration_validation" : mode,
+      cause: mode === "export-cause" ? "native_workspace_sync_out_unrecoverable" : mode === "workspace_validation" ? "workspace_validation_failed" : "native_session_interrupted",
+      fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery" });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("detects overlapping folders reached through symlinked parent directories", async () => {
@@ -540,6 +664,77 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         .toMatchObject({ kind: "completed", operation: { id: operationId } });
     }
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+  });
+  it.each(["finalized", "missing-receipt", "leased", "prepared"])("moves online past a settled finalizer that already saved its files, and names the rest (%s)", async mode => {
+    const f = await failedCopybackFixture();
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
+      schemaVersion: "v1", policyVersion: "v1", risk: "low", completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+      contractJson: {}, canonicalSha256: "12".repeat(32), createdByActorType: "system", createdByActorId: "test" });
+    const state = mode === "prepared" ? "prepared" : "finalized";
+    await db.update(heartbeatRuns).set({ status: "succeeded", completionContractId: contractId,
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, state, finalHostSha256: state === "finalized" ? "56".repeat(32) : null } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contractId, serverFingerprint: "saved-result", schemaStatus: "accepted", resultJson: { saved: true }, canonicalSha256: "34".repeat(32) });
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", resultId,
+      ...(mode === "leased" ? { leaseOwner: "live-finalizer", leaseExpiresAt: new Date(Date.now() + 60_000) } : {}) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const operationId = randomUUID();
+    if (mode !== "missing-receipt") await db.insert(workspaceOperations).values({ id: operationId,
+      companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId, issueId: f.issueId,
+      phase: "workspace_finalize", status: "succeeded" });
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+    if (mode !== "finalized") {
+      expect(inventory).toMatchObject({ eligible: false, details: expect.arrayContaining([`execution_finalization_unresolved:${
+        mode === "leased" ? "finalizer_leased" : mode === "prepared" ? "sync_prepared" : "sync_finalized_without_receipt"}`]) });
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow(/execution_finalization_unresolved|remote_copyback_unresolved/);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    } else {
+      expect(inventory).toMatchObject({ eligible: true, reasons: [] });
+      await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+      expect(await attemptNativeWorkspaceFinalization({ db, runId: f.runId }))
+        .toMatchObject({ kind: "completed", operation: { id: operationId } });
+    }
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+  });
+  it("keeps an online move blocked while a settled run still has to save another workspace of the task", async () => {
+    const f = await failedCopybackFixture(), otherId = randomUUID(), cwd = path.join(root, "other-run-workspace"); await fs.mkdir(cwd);
+    await db.insert(executionWorkspaces).values({ id: otherId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Run workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd });
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, workspaceId: otherId, state: "prepared" } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      details: expect.arrayContaining(["execution_finalization_unresolved:sync_other_workspace"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("execution_finalization_unresolved");
+  });
+  it("refuses an online move when the finalizer takes its lease during the upload", async () => {
+    const f = await failedCopybackFixture();
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, state: "finalized", finalHostSha256: "56".repeat(32) } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId,
+      issueId: f.issueId, phase: "workspace_finalize", status: "succeeded" });
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "late-finalizer", leaseExpiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(nativeRunFinalizations.runId, f.runId)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("execution_finalization_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each([["active_run_watchdog", "native_session_interrupted", {}, "active_run_watchdog"],
+    ["stranded_assigned_issue", "native_workspace_sync_out_unrecoverable", {}, "stranded_assigned_issue_export_cause"],
+    ["configuration_validation", "configuration_incomplete", { workspaceRecovery: { schema: "x" } }, "configuration_validation_file_evidence"],
+  ] as const)("names the recovery kind that keeps an online move blocked (%s)", async (kind, cause, evidence, code) => {
+    const f = await seed();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind, cause, fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery", evidence });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["workspace_recovery_unresolved"],
+      details: [`workspace_recovery_unresolved:${code}`] });
   });
   it("migrates historical records without borrowing another workspace's finalizer", async () => {
     const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
@@ -1874,7 +2069,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
-  it.each(["unregistered", "backlink", "pointer", "symlink-backlink"])("refuses a nested Git wrapper with an unproven linked %s", async mode => {
+  it.each([["unregistered", "git_link_unregistered"], ["backlink", "git_links_unreadable"], ["pointer", "git_links_unreadable"],
+    ["symlink-backlink", "git_links_unreadable"], ["stale", "git_link_stale"]])("refuses a nested Git wrapper with an unproven linked %s and names it", async (mode, code) => {
     const { f, nested } = await nestedGitWrapperFixture(), issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Linked wrapper" });
     const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, issueId), alias = path.join(cwd, "nested");
@@ -1885,7 +2081,9 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     if (mode === "backlink") await fs.writeFile(backlink, path.join(alias, "wrong-marker") + "\n");
     if (mode === "pointer") await fs.writeFile(path.join(alias, ".git"), `gitdir: ${path.join(admin, "wrong")}\n`);
     if (mode === "symlink-backlink") { await fs.rename(backlink, backlink + ".real"); await fs.symlink(backlink + ".real", backlink); }
-    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"] });
+    if (mode === "stale") await fs.rm(alias, { recursive: true, force: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"],
+      sourceScopeUnproven: code });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(await db.select().from(workspaceOperations)).toHaveLength(0);
     expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
