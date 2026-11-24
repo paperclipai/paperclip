@@ -380,9 +380,13 @@ describePostgres("heartbeat provider usage limit wait", () => {
         scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(Date.now() + 24 * 60 * 60_000),
         contextSnapshot: { issueId: f.issueId } }).returning();
 
-      // The user picks account B as their default.
-      await aiConnectionService(db).setDefault(f.companyId, userId, personal[1].grantId);
+      // The user picks account B as their default; the route then releases
+      // waits whose limit was on the previous default.
+      const { previousGrantId } = await aiConnectionService(db).setDefault(f.companyId, userId, personal[1].grantId);
+      expect(previousGrantId).toBe(personal[0].grantId);
       expect(await deferAs()).toBe(false);
+      expect(await releaseProviderLimitWaits(db, { companyId: f.companyId, reason: "ai_connection_changed",
+        grantIds: [previousGrantId!] })).toEqual([waiting.id]);
       const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.id));
       expect(released.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
     });
