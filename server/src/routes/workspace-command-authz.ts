@@ -67,6 +67,28 @@ function collectExecutionWorkspaceConfigCommandPaths(raw: unknown, prefix: strin
   return paths;
 }
 
+/**
+ * Adapter-config keys that let a caller steer host execution (host commands,
+ * working directory, environment, sandbox command) or point the server at a
+ * host filesystem path. Agent keys must never set them — on the agent itself
+ * (see assertNoAgentLocalAdapterHostCommandMutation) or through a task's
+ * assigneeAdapterOverrides (see collectIssueWorkspaceCommandPaths). Operators
+ * may still set them: e.g. the agy_local skillsRootPath override
+ * (/srv/agy-skills) is a host path the server-side skill sync writes under
+ * (mkdir/symlink), so an agent key must never be able to point it at an
+ * arbitrary host location.
+ */
+export const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
+  "command",
+  "hermesCommand",
+  "args",
+  "extraArgs",
+  "cwd",
+  "env",
+  "filesystemSandboxCommand",
+  "skillsRootPath",
+] as const;
+
 export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: string[]) {
   if (req.actor.type !== "agent" || paths.length === 0) return;
   throw forbidden(
@@ -146,6 +168,17 @@ export function collectIssueWorkspaceCommandPaths(input: {
           "assigneeAdapterOverrides.adapterConfig.workspaceStrategy",
         ),
       );
+      // Task-level adapter overrides merge into the assignee's adapter config
+      // at run time, so an agent key must not smuggle host-command keys
+      // through them either (e.g. skillsRootPath would let the server-side
+      // agy skill sync mkdir/symlink under an arbitrary host path).
+      // Operators may still set these on a task; the gate above only fires
+      // for agent actors.
+      for (const key of LOCAL_ADAPTER_HOST_COMMAND_KEYS) {
+        if (hasOwn(adapterConfig, key)) {
+          paths.push(`assigneeAdapterOverrides.adapterConfig.${key}`);
+        }
+      }
     }
   }
   return paths;

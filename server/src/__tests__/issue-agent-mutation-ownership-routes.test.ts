@@ -1556,6 +1556,41 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects agent-created issues that set skillsRootPath in task adapter overrides", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Smuggle host skills path",
+        assigneeAdapterOverrides: { adapterConfig: { skillsRootPath: "/tmp/evil-skills" } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("assigneeAdapterOverrides.adapterConfig.skillsRootPath");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent issue updates that set skillsRootPath in task adapter overrides", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: ["issue:comment", "issue:mutate", "issue:read"].includes(input.action),
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test boundary default.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAdapterOverrides: { adapterConfig: { skillsRootPath: "/tmp/evil-skills" } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("assigneeAdapterOverrides.adapterConfig.skillsRootPath");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("strips agent-supplied createdByUserId and derives attribution from the authenticated actor", async () => {
     const app = await createApp(ownerActor());
 

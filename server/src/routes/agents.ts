@@ -154,6 +154,7 @@ import { isLoginCommandSupportedAdapterType } from "../services/login-command.js
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
+  LOCAL_ADAPTER_HOST_COMMAND_KEYS,
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
@@ -2718,21 +2719,6 @@ export function agentRoutes(
     if (req.actor.type !== "agent" || adapterType !== "process" || !mutatesConfiguration) return;
     throw forbidden("Agent keys cannot configure host-executed process adapters.");
   }
-
-  const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
-    "command",
-    "hermesCommand",
-    "args",
-    "extraArgs",
-    "cwd",
-    "env",
-    "filesystemSandboxCommand",
-    // A host filesystem path the server-side skill sync writes under
-    // (mkdir/symlink): an agent key must never be able to point it at an
-    // arbitrary host location. Operators may still set it (see the
-    // agy_local skillsRootPath override, e.g. /srv/agy-skills).
-    "skillsRootPath",
-  ] as const;
 
   const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
     ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
@@ -5936,16 +5922,15 @@ export function agentRoutes(
         delete requestedRuntimeConfig.aiConnection;
         patchData.runtimeConfig = requestedRuntimeConfig;
       }
-    } else if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
-      && !isAgentSetupDraft(existing)) {
-      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
-      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
-        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
-          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
-        requestedRuntimeConfig.aiConnection = existingBinding;
-      }
     } else {
-      const nextAiConfig = aiConfig;
+      // Preserve the existing binding when the caller does not send one,
+      // then fall through to the common validation below: the restored
+      // binding still has to be checked against the new model. The catalog
+      // check is otherwise roster-only (validateModelCatalog follows
+      // runtimeSettings), so a restored binding carries it with it: without
+      // this, a full PATCH with a new model and runtimeConfig lacking a
+      // binding would save a model outside the preserved connection's catalog.
+      let preservedAiBinding = false;
       if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
         && !isAgentSetupDraft(existing)) {
         const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
@@ -5953,6 +5938,7 @@ export function agentRoutes(
           && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
             requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
           requestedRuntimeConfig.aiConnection = existingBinding;
+          preservedAiBinding = true;
         }
       }
       if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
@@ -5988,7 +5974,7 @@ export function agentRoutes(
           const configuringSetup = isAgentSetupDraft(existing);
           await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
             (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
-            !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings));
+            !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings) || preservedAiBinding);
         }
       }
     }
