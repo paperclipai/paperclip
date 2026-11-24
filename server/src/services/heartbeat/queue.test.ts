@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
+import { getNativeReviewAssignmentStatus } from "../native-runtime/native-review-participant.js";
 import type { Db } from "@paperclipai/db";
 import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns, statusDecisions } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
@@ -1710,5 +1711,29 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       .toMatchObject({ id: f.run.id, status: "running" });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0])
       .toMatchObject({ status: "claimed" });
+  });
+
+  it("keeps a queued native review run waiting while its reviewer is not invokable", async () => {
+    const f = await nativeReviewQueuedRunFixture();
+    // A paused reviewer is still assigned: the pre-claim status separates a
+    // dead assignment (settle as gone) from a reviewer that cannot be invoked
+    // right now (keep waiting), so the run is not cancelled with
+    // native_review_assignment_no_longer_available (#22350).
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.reviewer.id));
+    expect(await getNativeReviewAssignmentStatus(db, {
+      companyId: f.company.id, issueId: f.issue.id, agentId: f.reviewer.id,
+      contextSnapshot: f.run.contextSnapshot,
+    })).toEqual({ kind: "agent_uninvokable" });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue({ ...f.reviewer, status: "paused" });
+    deps.getAgentInvokability.mockResolvedValue({ invokable: false, reason: "paused",
+      message: "Agent is paused", details: {}, invalidOrgChain: false });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(f.run)).toBeNull();
+    expect(deps.cancelRunInternal).toHaveBeenCalledWith(f.run.id,
+      expect.stringContaining("paused"));
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+      .toMatchObject({ status: "queued", errorCode: null });
   });
 });
