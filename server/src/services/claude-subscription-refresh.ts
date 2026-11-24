@@ -28,7 +28,16 @@ registerIdleLocalWorkProbe(() => pendingClaudeExchanges.blocksIdle() ? "present"
  * moment it receives the token until it releases the hold.
  */
 export type ClaudeProbeHold = { release?: () => void };
-const probeHolders = new Map<string, number>();
+const probeHolders = new Map<string, Set<{ until: number }>>();
+// A hold protects one token. Once that token has expired the hold protects
+// nothing, so a hold that was never released stops counting then.
+function probeHeld(key: string): boolean {
+  const holds = probeHolders.get(key);
+  if (!holds) return false;
+  for (const hold of holds) if (hold.until <= Date.now()) holds.delete(hold);
+  if (!holds.size) probeHolders.delete(key);
+  return holds.size > 0;
+}
 export type ClaudeRefreshOptions = { currentRunId?: string; probeHold?: ClaudeProbeHold };
 
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
@@ -90,7 +99,7 @@ export async function refreshClaudeSubscription(
                 sql`${heartbeatRuns.contextSnapshot}->>${AI_CREDENTIAL_HOLDER_KEY} = ${grant.id}`),
               ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
             )).limit(1);
-            if (held || probeHolders.get(holdKey)) return { value: current };
+            if (held || probeHeld(holdKey)) return { value: current };
           }
           const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
@@ -172,11 +181,13 @@ export async function refreshClaudeSubscription(
           if (!marked) throw unprocessable("The run that requested this AI credential no longer exists. Retry shortly.", { code: "ai_connection_busy" });
         }
         if (options.probeHold && !options.probeHold.release) {
-          probeHolders.set(holdKey, (probeHolders.get(holdKey) ?? 0) + 1);
+          const hold = { until: credential?.expiresAt ?? Infinity };
+          const holds = probeHolders.get(holdKey) ?? new Set();
+          probeHolders.set(holdKey, holds.add(hold));
           options.probeHold.release = () => {
             options.probeHold!.release = () => undefined;
-            const left = (probeHolders.get(holdKey) ?? 1) - 1;
-            if (left > 0) probeHolders.set(holdKey, left); else probeHolders.delete(holdKey);
+            holds.delete(hold);
+            if (!holds.size && probeHolders.get(holdKey) === holds) probeHolders.delete(holdKey);
           };
         }
         return claudeAccessTokenOf(result.value!);

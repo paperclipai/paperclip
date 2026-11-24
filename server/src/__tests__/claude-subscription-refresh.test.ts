@@ -538,6 +538,30 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).toHaveBeenCalledOnce();
   });
 
+  it("stops counting an account test whose native process never retires once its token has expired", async () => {
+    const { account, owner, service, row } = await connect(document(Date.now() + 3600_000));
+    let renewals = 0;
+    const other = await holdingRun(account.grantId);
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: `renewed-${++renewals}`, refresh_token: `rotated-${renewals}`, expires_in: 3600 })));
+    await expect(withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } }, async () => {
+      throw new NativeEnvironmentProbeCleanupError(new Promise<void>(() => undefined), undefined, []);
+    })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    expect(await service.credential(row)).toBe("old-access");
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // With less than five minutes left the token is renewed whoever holds it.
+      vi.setSystemTime(start + 3600_000 - 60_000);
+      expect(await service.credential(row)).toBe("renewed-1");
+      // The first token still lives, so the hold still counts for its successor.
+      expect(await service.credential(row)).toBe("renewed-1");
+      vi.setSystemTime(start + 3600_000 + 60_000);
+      expect(await service.credential(row)).toBe("renewed-2");
+    } finally { vi.useRealTimers(); }
+    expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
   it("does not renew at cleanup while the run is still running, as when its controller detaches for a restart", async () => {
     const { account, owner, state } = await connect(document(Date.now() + 3600_000));
     const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
