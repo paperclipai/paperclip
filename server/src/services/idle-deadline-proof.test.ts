@@ -28,6 +28,11 @@ describe("domain deadline handoff", () => {
     expect(first.scheduledWake).toMatchObject({ version: 2, kind: "domain_deadlines", catalog: "domain_deadlines_v1", nextWakeAt: routine.nextWakeAt });
     expect(composeIdleDeadlineProof(hold, { ...options, now: now + 1, scheduledWake: routine }, all)).toEqual(first);
   });
+  it("wakes a sleeping instance for the Google Technical Information deadline and refuses to sleep once it is due", () => {
+    const google = { ...fixtures(), google: snapshot(["google"], [now + 200_000]) };
+    expect(composeIdleDeadlineProof(hold, options, google).scheduledWake?.nextWakeAt).toBe(new Date(now + 200_000).toISOString());
+    expect(composeIdleDeadlineProof(hold, options, { ...fixtures(), google: snapshot(["due"], [now]) }).blocked).toBe(true);
+  });
   it("binds passive state, drain owner/expiry and exact plugin worker generation", () => {
     const all = fixtures(), first = composeIdleDeadlineProof(hold, options, all);
     const passive = fixtures(); passive.jobs.state = ["changed-paused-job"];
@@ -133,10 +138,10 @@ it("batches more than128 eligible timers and the old80 run-cap shape within a fi
   const future = await readIdleDeadlineProof(tx, hold, options);
   expect(future.blocked).toBe(false);
   expect(future.scheduledWake?.nextWakeAt).toBe(new Date(now + 3_600_000).toISOString());
-  expect(reads).toBe(5);
+  expect(reads).toBe(6);
   tables.agents = rows.slice(0, 80); reads = 0;
   expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(false);
-  expect(reads).toBe(5);
+  expect(reads).toBe(6);
   rows[0].agent.lastHeartbeatAt = new Date(now - 3_600_000); tables.agents = rows; reads = 0;
   expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(true);
   expect(reads).toBe(2);

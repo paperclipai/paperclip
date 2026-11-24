@@ -246,13 +246,13 @@ export function isGoogleWorkspaceConnectorProfileId(value: string): value is Goo
   return Object.prototype.hasOwnProperty.call(GOOGLE_WORKSPACE_CONNECTOR_PROFILES, value);
 }
 
-const GOOGLE_WORKSPACE_APP_SLUGS: ReadonlySet<string> = new Set(
-  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug),
-);
+export const GOOGLE_WORKSPACE_APP_SLUGS: readonly string[] = Object.freeze([
+  ...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug)),
+]);
 
 export function isGoogleWorkspaceConnectionConfig(config: unknown): boolean {
   const record = config && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : {};
-  if (typeof record.sourceTemplateKey === "string" && GOOGLE_WORKSPACE_APP_SLUGS.has(record.sourceTemplateKey)) return true;
+  if (typeof record.sourceTemplateKey === "string" && GOOGLE_WORKSPACE_APP_SLUGS.includes(record.sourceTemplateKey)) return true;
   const oauth = record.oauth && typeof record.oauth === "object" && !Array.isArray(record.oauth) ? record.oauth as Record<string, unknown> : {};
   return typeof oauth.connectorProfile === "string" && isGoogleWorkspaceConnectorProfileId(oauth.connectorProfile);
 }

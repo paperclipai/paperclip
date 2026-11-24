@@ -30,6 +30,7 @@ import type {
 } from "@paperclipai/shared";
 import { DECISION_TRAINING_RETENTION_POLICY } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+import { interactionCarriesGoogleWorkspaceAction, runsThatUsedGoogleWorkspace } from "./tool-access/connections/google-content-retention.js";
 
 type CaptureInput = {
   companyId: string;
@@ -156,6 +157,29 @@ async function loadSourceDecision(db: Db, input: CaptureInput, capturedAt: Date)
   };
 }
 
+function googleRunStub(run: typeof heartbeatRuns.$inferSelect) {
+  return jsonCopy({
+    id: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    googleWorkspaceContentOmitted: true,
+  });
+}
+
+function withoutToolActionContent(value: Record<string, unknown>): Record<string, unknown> {
+  const record: Record<string, unknown> = { ...value };
+  for (const key of ["payload", "result"]) {
+    const inner = record[key];
+    if (inner && typeof inner === "object") {
+      const { toolAction: _toolAction, detailsMarkdown: _detailsMarkdown, ...rest } = inner as Record<string, unknown>;
+      record[key] = { ...rest, googleWorkspaceContentOmitted: true };
+    }
+  }
+  return record;
+}
+
 export async function captureDecisionSnapshot(
   db: Db,
   input: CaptureInput,
@@ -217,6 +241,10 @@ export async function captureDecisionSnapshot(
     .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.id))
     .limit(1);
 
+  const googleRuns = await runsThatUsedGoogleWorkspace(db, input.companyId, runs.map((run) => run.id));
+  if (input.sourceKind === "interaction" && await interactionCarriesGoogleWorkspaceAction(db, input.companyId, input.sourceId)) {
+    decision.payload = withoutToolActionContent(decision.payload);
+  }
   const exactRun = decision.exactRunId ? runs.find((run) => run.id === decision.exactRunId) ?? null : null;
   const latestRunWithCommit = [...runs].reverse().find((run) => findCommitSha(run.contextSnapshot)) ?? null;
   const exactCommit = exactRun ? findCommitSha(exactRun.contextSnapshot) : null;
@@ -242,7 +270,7 @@ export async function captureDecisionSnapshot(
       },
       issue: jsonCopy(issue),
       comments: comments.map(jsonCopy),
-      runs: runs.map(jsonCopy),
+      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : jsonCopy(run)),
       decision: {
         kind: input.sourceKind,
         payload: decision.payload,

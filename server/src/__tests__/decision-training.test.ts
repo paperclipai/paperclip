@@ -16,6 +16,10 @@ import {
   issueThreadInteractions,
   projectWorkspaces,
   projects,
+  toolActionRequests,
+  toolApplications,
+  toolConnections,
+  toolInvocations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -229,6 +233,54 @@ describeEmbeddedPostgres("decision training", () => {
 
     expect(captured.snapshot.runs.map((run) => run.id)).toEqual([includedRunId]);
     expect(JSON.stringify(captured.snapshot)).not.toContain("written after cutoff");
+  });
+
+  it("leaves what agents read from Google Workspace out of the snapshot", async () => {
+    const seeded = await seedResolvedInteraction();
+    const secret = "Board notes read from Gmail";
+    const [agent] = await db.insert(agents).values({
+      companyId: seeded.companyId, name: "Reader", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+    }).returning();
+    const [googleRun, otherRun] = await db.insert(heartbeatRuns).values([
+      {
+        companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", stdoutExcerpt: secret, resultJson: { summary: secret },
+        startedAt: new Date("2026-07-16T11:00:00.000Z"), finishedAt: new Date("2026-07-16T11:10:00.000Z"),
+        contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:00:00.000Z"), updatedAt: new Date("2026-07-16T11:10:00.000Z"),
+      },
+      {
+        companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: "Other work" },
+        startedAt: new Date("2026-07-16T11:20:00.000Z"), finishedAt: new Date("2026-07-16T11:30:00.000Z"),
+        contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:20:00.000Z"), updatedAt: new Date("2026-07-16T11:30:00.000Z"),
+      },
+    ]).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: seeded.companyId, name: "Google Workspace", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: seeded.companyId, applicationId: application!.id, name: "Google Workspace", uid: randomUUID(), transport: "mcp_remote",
+      status: "active", config: { sourceTemplateKey: "google-workspace" },
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId: seeded.companyId, connectionId: connection!.id, runId: googleRun!.id, toolName: "get_message", status: "succeeded",
+    }).returning();
+    await db.insert(toolActionRequests).values({
+      companyId: seeded.companyId, issueId: seeded.issueId, invocationId: invocation!.id, interactionId: seeded.interactionId,
+      status: "executed", canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { summary: "", sizeBytes: 0, sha256: "hash", redactedFields: [] },
+    });
+    await db.update(issueThreadInteractions).set({
+      payload: { question: "Send?", toolAction: { previewMarkdown: secret } } as never,
+      result: { accepted: true, toolAction: { resultSummary: secret } } as never,
+    }).where(eq(issueThreadInteractions.id, seeded.interactionId));
+
+    const captured = await captureDecisionSnapshot(db, {
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+    }, new Date("2026-07-16T13:00:00.000Z"));
+
+    expect(JSON.stringify(captured.snapshot)).not.toContain(secret);
+    expect(captured.snapshot.runs.find((run) => run.id === googleRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
+    expect(captured.snapshot.runs.find((run) => run.id === otherRun!.id)).toMatchObject({ resultJson: { summary: "Other work" } });
+    expect(captured.snapshot.decision.payload).toMatchObject({ payload: { question: "Send?", googleWorkspaceContentOmitted: true } });
   });
 
   it("labels workspace-only commit evidence accurately", async () => {

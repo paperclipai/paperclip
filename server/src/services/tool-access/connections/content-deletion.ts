@@ -30,6 +30,7 @@ import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
+import { forgetRunCopies, forgetRunInTrainingExamples } from "./run-copies.js";
 
 const BATCH_SIZE = 200;
 const EVENT_BATCH_SIZE = 1000;
@@ -732,6 +733,9 @@ export function createConnectionContentDeletion(db: Db, deps: {
     const [row] = await tx
       .select({
         agentId: heartbeatRuns.agentId,
+        issueId: heartbeatRuns.issueId,
+        createdAt: heartbeatRuns.createdAt,
+        error: heartbeatRuns.error,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
         stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
@@ -743,11 +747,13 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .for("update");
     if (!row) return;
     await forgetRunSessions(tx, companyId, run, row);
+    await forgetRunInTrainingExamples(tx, companyId, run);
+    await forgetRunCopies(tx, companyId, run, row);
     const result = withoutResultText(row.resultJson);
-    if (row.stdoutExcerpt === null && row.stderrExcerpt === null && !result.changed) return;
+    if (row.stdoutExcerpt === null && row.stderrExcerpt === null && row.error === null && !result.changed) return;
     await tx
       .update(heartbeatRuns)
-      .set({ stdoutExcerpt: null, stderrExcerpt: null, resultJson: result.value as Record<string, unknown> | null })
+      .set({ stdoutExcerpt: null, stderrExcerpt: null, error: null, resultJson: result.value as Record<string, unknown> | null })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
     run.changed = true;
   }

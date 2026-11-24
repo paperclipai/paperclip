@@ -207,7 +207,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       createdAt: new Date(now), lastHeartbeatAt: new Date(now) });
     await db.insert(agents).values(scaleIds.slice(0, 80).map(id => scaleAgent(id)));
     expect((await read()).scheduledWake?.nextWakeAt).toBe(new Date(now + 900_000).toISOString());
-    expect(projectionReads).toBe(5);
+    expect(projectionReads).toBe(6);
     await db.insert(agents).values(scaleIds.slice(80).map(id => scaleAgent(id, true)));
     const inactiveIds = [randomUUID(), randomUUID(), randomUUID()];
     await db.insert(agents).values(inactiveIds.map((id, i) => ({ ...scaleAgent(id), status: i === 0 ? "paused" : i === 1 ? "terminated" : "idle",
@@ -215,7 +215,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const scaled = await read();
     expect(scaled.blocked).toBe(false);
     expect(scaled.scheduledWake?.nextWakeAt).toBe(new Date(now + 900_000).toISOString());
-    expect(projectionReads).toBe(6);
+    expect(projectionReads).toBe(7);
     await db.update(agents).set({ lastHeartbeatAt: new Date(now - 900_000) }).where(eq(agents.id, scaleIds[0]));
     expect((await read()).blocked).toBe(true);
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false } } }).where(inArray(agents.id, [...scaleIds, ...inactiveIds]));
