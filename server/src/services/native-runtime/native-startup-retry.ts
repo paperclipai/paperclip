@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { aiConnectionDefaults, connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
+import { aiRuntimeConnectionBindingSchema, readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
@@ -14,7 +14,7 @@ const PROVIDER_LIMIT_ERROR_CODES = ["native_provider_usage_limit", "provider_quo
 const NATIVE_PROVIDER_LIMIT_WINDOW_MS = 24 * 60 * 60_000;
 const LIMIT_EVIDENCE_ROWS = 20;
 
-type ProviderLimitEvidence = { resetAt: number; resetReported: boolean; category: string; sourceRunId: string | null };
+type ProviderLimitEvidence = { resetAt: number; resetReported: boolean; category: string; sourceRunId: string | null; grantId?: string | null };
 
 function limitEvidence(failure: ProviderFailure | null, observedAt: Date, sourceRunId: string | null): ProviderLimitEvidence | null {
   if (!failure || !PROVIDER_LIMIT_CATEGORIES.includes(failure.category)) return null;
@@ -28,6 +28,74 @@ function limitEvidence(failure: ProviderFailure | null, observedAt: Date, source
     : { resetAt: observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: failure.category, sourceRunId };
 }
 
+/**
+ * The AI credential a provider limit is checked against. A limit belongs to
+ * the credential it was reported on, so evidence from another credential, or
+ * from one that was revoked or removed, does not hold work.
+ */
+export type ProviderLimitCredential =
+  /** No managed AI connection: the harness signs in with the host's own account. */
+  | { kind: "host" }
+  /** The managed connection grants the next run may use. */
+  | { kind: "grants"; grantIds: readonly string[] }
+  /** A managed connection whose account is chosen only when the run starts. */
+  | { kind: "unresolved" };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The credential an agent's next run would use, from its saved AI connection. */
+export async function agentProviderLimitCredential(db: Db, input: {
+  companyId: string;
+  binding: unknown;
+  responsibleUserId: string | null;
+}): Promise<ProviderLimitCredential> {
+  if (input.binding === undefined || input.binding === null) return { kind: "host" };
+  const parsed = aiRuntimeConnectionBindingSchema.safeParse(input.binding);
+  if (!parsed.success || parsed.data.mode === "router") return { kind: "unresolved" };
+  const binding = parsed.data;
+  if (binding.mode === "shared" || binding.mode === "delegated") return { kind: "grants", grantIds: [binding.grantId] };
+  if (!input.responsibleUserId) return { kind: "unresolved" };
+  const defaults = await db.select({ grantId: aiConnectionDefaults.grantId }).from(aiConnectionDefaults).where(and(
+    eq(aiConnectionDefaults.companyId, input.companyId),
+    eq(aiConnectionDefaults.userId, input.responsibleUserId),
+    eq(aiConnectionDefaults.provider, binding.provider),
+  ));
+  const grantIds = defaults.flatMap(row => row.grantId ? [row.grantId] : []);
+  return grantIds.length > 0 ? { kind: "grants", grantIds } : { kind: "unresolved" };
+}
+
+/** The credential a run used, from the account it recorded when it started. */
+export function runProviderLimitCredential(contextSnapshot: unknown): ProviderLimitCredential {
+  const grantId = recordedGrantId(contextSnapshot);
+  return grantId ? { kind: "grants", grantIds: [grantId] } : { kind: "host" };
+}
+
+function recordedGrantId(contextSnapshot: unknown): string | null {
+  const snapshot = contextSnapshot && typeof contextSnapshot === "object" ? contextSnapshot as Record<string, unknown> : {};
+  const connection = snapshot.aiConnection && typeof snapshot.aiConnection === "object"
+    ? snapshot.aiConnection as Record<string, unknown> : {};
+  return typeof connection.grantId === "string" && UUID_PATTERN.test(connection.grantId) ? connection.grantId : null;
+}
+
+/**
+ * Whether evidence recorded on `evidenceGrantId` (null: the host's account)
+ * still describes the credential the agent would use now.
+ */
+function evidenceApplies(evidenceGrantId: string | null, credential: ProviderLimitCredential, activeGrantIds: ReadonlySet<string>) {
+  if (evidenceGrantId === null) return credential.kind === "host";
+  if (!activeGrantIds.has(evidenceGrantId)) return false;
+  if (credential.kind === "grants") return credential.grantIds.includes(evidenceGrantId);
+  return credential.kind === "unresolved";
+}
+
+/** Narrows the evidence read to the checked credential, so other accounts never crowd it out. */
+function credentialEvidenceFilter(credential: ProviderLimitCredential) {
+  const recorded = sql`${heartbeatRuns.contextSnapshot} -> 'aiConnection' ->> 'grantId'`;
+  if (credential.kind === "host") return [sql`${recorded} is null`];
+  if (credential.kind === "grants") return [inArray(recorded, [...credential.grantIds])];
+  return [];
+}
+
 export type AgentProviderLimitCooldown = {
   /** When the agent's provider allowance is expected to return. */
   resetAt: Date;
@@ -36,11 +104,15 @@ export type AgentProviderLimitCooldown = {
   category: string;
   /** The run whose failure recorded the latest reset. */
   sourceRunId: string | null;
+  /** The connection grant the limit was reported on; null for the host's own account. */
+  grantId: string | null;
 };
 
 /**
- * The latest known provider limit for this agent, from the current failure or
- * from the agent's recent runs. A later successful run clears older evidence.
+ * The latest known provider limit for this agent's credential, from the
+ * current failure or from the agent's recent runs on that same credential. A
+ * later successful run on the credential clears older evidence. Evidence from
+ * another credential, or from a revoked or removed one, never applies.
  */
 export async function agentProviderLimitCooldown(db: Db, input: {
   companyId: string;
@@ -48,6 +120,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   /** Excluded from the evidence; the caller supplies its own failure. */
   runId?: string;
   failure?: ProviderFailure | null;
+  /** The credential being checked. The caller's failure was reported on it. */
+  credential: ProviderLimitCredential;
   now: Date;
 }): Promise<AgentProviderLimitCooldown | null> {
   if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now)) return null;
@@ -61,6 +135,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       observedAt: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`.mapWith(heartbeatRuns.updatedAt),
       providerFailure: sql<unknown>`${heartbeatRuns.resultJson} -> 'providerFailure'`,
       retryNotBefore: sql<string | null>`${heartbeatRuns.resultJson} ->> 'retryNotBefore'`,
+      contextSnapshot: sql<unknown>`jsonb_build_object('aiConnection', ${heartbeatRuns.contextSnapshot} -> 'aiConnection')`,
     })
     .from(heartbeatRuns)
     .where(and(
@@ -68,6 +143,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       eq(heartbeatRuns.agentId, input.agentId),
       gte(heartbeatRuns.startedAt, new Date(now - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
       ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
+      ...credentialEvidenceFilter(input.credential),
       or(
         eq(heartbeatRuns.status, "succeeded"),
         inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
@@ -76,7 +152,16 @@ export async function agentProviderLimitCooldown(db: Db, input: {
     ))
     .orderBy(desc(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`))
     .limit(LIMIT_EVIDENCE_ROWS);
+  const recordedGrantIds = [...new Set(rows.flatMap(row => recordedGrantId(row.contextSnapshot) ?? []))];
+  const activeGrantIds = new Set(recordedGrantIds.length === 0 ? [] : (await db
+    .select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, input.companyId),
+      inArray(connectionGrants.id, recordedGrantIds),
+      eq(connectionGrants.status, "active"),
+    ))).map(row => row.id));
   for (const row of rows) {
+    // Another credential's outcome says nothing about this one.
+    if (!evidenceApplies(recordedGrantId(row.contextSnapshot), input.credential, activeGrantIds)) continue;
     // The provider accepted work after this point, so its allowance was restored.
     if (row.status === "succeeded") break;
     const failure = readProviderFailure(row.providerFailure);
@@ -89,6 +174,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
         ? { resetAt: reset, resetReported: true, category: "quota_exhausted", sourceRunId: row.id }
         : { resetAt: row.observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: "quota_exhausted", sourceRunId: row.id };
     }
+    if (recorded) recorded.grantId = recordedGrantId(row.contextSnapshot);
     if (recorded && (!latest || recorded.resetAt > latest.resetAt)) latest = recorded;
   }
   if (!latest || latest.resetAt <= now) return null;
@@ -97,6 +183,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
     resetReported: latest.resetReported,
     category: latest.category,
     sourceRunId: latest.sourceRunId,
+    grantId: latest.grantId !== undefined ? latest.grantId
+      : input.credential.kind === "grants" && input.credential.grantIds.length === 1 ? input.credential.grantIds[0] : null,
   };
 }
 
@@ -117,13 +205,18 @@ export async function planNativeStartupRetry(input: {
     return { nextAttemptAt: null, providerCooldownAt: null };
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
-  const providerCooldownAt = await agentProviderLimitCooldown(input.db, {
-    companyId: input.binding.companyId,
-    agentId: input.binding.agentId,
-    runId: input.binding.runId,
-    failure: input.failure,
-    now: input.now,
-  }).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
+  const providerCooldownAt = await input.db
+    .select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, input.binding.runId)))
+    .then(([run]) => agentProviderLimitCooldown(input.db, {
+      companyId: input.binding.companyId,
+      agentId: input.binding.agentId,
+      runId: input.binding.runId,
+      failure: input.failure,
+      // The failure was reported on the account this run started with.
+      credential: runProviderLimitCredential(run?.contextSnapshot),
+      now: input.now,
+    })).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
     logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");
     return null;
   });

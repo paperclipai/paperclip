@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  activityLog, agents, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues,
+  toolApplications, toolConnections,
+} from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { createProviderLimitWait } from "../services/heartbeat/provider-limit-wait.js";
+import { createProviderLimitWait, releaseProviderLimitWaits } from "../services/heartbeat/provider-limit-wait.js";
+import { agentService } from "../services/agents.js";
 import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -232,4 +236,186 @@ describePostgres("heartbeat provider usage limit wait", () => {
       retryability: "unknown", message: "ACP agent reported a terminal limit failure." } } }]);
     expect(dispatched.has((await wake(unrelated)).id)).toBe(true);
   }, 60_000);
+
+  /**
+   * A usage limit belongs to the account it was reported on. Connecting a
+   * different account, or revoking the limited one, ends the hold; the same
+   * account stays held.
+   */
+  describe("account-scoped holds", () => {
+    type Account = { connectionId: string; grantId: string };
+
+    async function accounts(companyId: string, count: number): Promise<Account[]> {
+      const [application] = await db.insert(toolApplications)
+        .values({ companyId, name: `AI accounts ${randomUUID()}`, type: "mcp_http" }).returning();
+      const created: Account[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application.id, uid: randomUUID(),
+          name: `AI account ${index}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "none" }).returning();
+        const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection.id, kind: "organization" }).returning();
+        created.push({ connectionId: connection.id, grantId: grant.id });
+      }
+      return created;
+    }
+
+    const binding = (account: Account) => ({ mode: "shared", provider: "google", method: "subscription", ...account });
+
+    /** A turn on `account` that the provider refused with a quota reset days away. */
+    const quotaOn = (account: Account) => ({
+      status: "failed",
+      startedAt: new Date(Date.now() - 7 * 60_000),
+      finishedAt: new Date(Date.now() - 5 * 60_000),
+      errorCode: "native_provider_usage_limit",
+      contextSnapshot: { aiConnection: { mode: "shared", provider: "google", method: "subscription", ...account } },
+      resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn",
+        category: "quota_exhausted", httpStatus: 429, providerCode: "RESOURCE_EXHAUSTED", retryability: "requires_action",
+        retryAt: new Date(Date.now() + 6 * 24 * 60 * 60_000).toISOString(), message: "Usage limit reached for this account." } },
+    });
+
+    /** An agent bound to `bound`, whose earlier turn hit the quota on `limited`. */
+    async function heldFixture(options: { count?: number } = {}) {
+      const f = await seed([]);
+      const list = await accounts(f.companyId, options.count ?? 2);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: binding(list[0]) } }).where(eq(agents.id, f.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(list[0]) });
+      return { ...f, accounts: list };
+    }
+
+    async function deferDirect(f: { companyId: string; agentId: string; issueId: string }) {
+      const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+        invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId: f.issueId } }).returning();
+      const deps = {
+        setRunStatusIfRunning: vi.fn(async () => ({ updated: true, run: { ...run, status: "cancelled" } })),
+        setWakeupStatus: vi.fn(async () => undefined),
+        appendRunEvent: vi.fn(async () => undefined),
+        scheduleBoundedRetryForRun: vi.fn(async () => ({ outcome: "scheduled" })),
+        releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
+        finalizeAgentStatus: vi.fn(async () => undefined),
+      };
+      const deferred = await createProviderLimitWait(db, deps as never)
+        .deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false });
+      return { deferred, deps };
+    }
+
+    async function scheduledRetry(agentId: string) {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return rows.find(row => row.status === "scheduled_retry") ?? null;
+    }
+
+    it("keeps holding the account that reported the limit, with the plain message", async () => {
+      const f = await heldFixture();
+      const finished = await wake(f);
+      expect(dispatched.has(finished.id)).toBe(false);
+      expect(finished).toMatchObject({ status: "cancelled", errorCode: "provider_limit_wait",
+        resultJson: { providerLimitWait: { resetReported: true, category: "quota_exhausted", grantId: f.accounts[0].grantId } } });
+      expect(finished.error).toMatch(/^This agent's provider usage limit has a reported reset at .+ Work is held/);
+    }, 60_000);
+
+    it("starts a run whose agent now uses a different connected account", async () => {
+      const f = await heldFixture();
+      await db.update(agents).set({ runtimeConfig: { aiConnection: binding(f.accounts[1]) } }).where(eq(agents.id, f.agentId));
+      const { deferred, deps } = await deferDirect(f);
+      expect(deferred).toBe(false);
+      expect(deps.setRunStatusIfRunning).not.toHaveBeenCalled();
+    });
+
+    it("stops holding work once the limited account is revoked", async () => {
+      const f = await heldFixture();
+      expect((await deferDirect(f)).deferred).toBe(true);
+      await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
+        .where(eq(connectionGrants.id, f.accounts[0].grantId));
+      expect((await deferDirect(f)).deferred).toBe(false);
+    });
+
+    it("releases the waiting retry when the agent is moved to another account", async () => {
+      const f = await heldFixture();
+      const held = await wake(f);
+      expect(held.errorCode).toBe("provider_limit_wait");
+      const retry = await scheduledRetry(f.agentId);
+      expect(retry!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+
+      await agentService(db).update(f.agentId, { runtimeConfig: { aiConnection: binding(f.accounts[1]) } });
+      const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
+      expect(released.status).toBe("scheduled_retry");
+      expect(released.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
+      const activity = await db.select().from(activityLog).where(eq(activityLog.runId, retry!.id));
+      expect(activity).toContainEqual(expect.objectContaining({ action: "issue.scheduled_retry_retry_now", entityId: f.issueId,
+        details: expect.objectContaining({ reason: "ai_connection_changed" }) }));
+    }, 60_000);
+
+    it("releases a wait saved before the account was recorded on it when that account is revoked", async () => {
+      const f = await heldFixture();
+      const held = await wake(f);
+      // Waits saved by the previous release name only the run that reported the limit.
+      const { grantId: _recorded, ...previousShape } = (held.resultJson as { providerLimitWait: Record<string, unknown> }).providerLimitWait;
+      await db.update(heartbeatRuns).set({ resultJson: { ...held.resultJson, providerLimitWait: previousShape } })
+        .where(eq(heartbeatRuns.id, held.id));
+      const retry = await scheduledRetry(f.agentId);
+
+      // Another account's revocation leaves the wait alone.
+      expect(await releaseProviderLimitWaits(db, { companyId: f.companyId, reason: "ai_connection_revoked",
+        grantIds: [f.accounts[1].grantId] })).toEqual([]);
+      await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
+        .where(eq(connectionGrants.id, f.accounts[0].grantId));
+      expect(await releaseProviderLimitWaits(db, { companyId: f.companyId, reason: "ai_connection_revoked",
+        grantIds: [f.accounts[0].grantId] })).toEqual([retry!.id]);
+      expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
+    }, 60_000);
+
+    it("keeps holding every agent that still shares the limited account", async () => {
+      const first = await heldFixture();
+      // Two agents in one company share account A; both reported its limit.
+      const sharedCompany = first.companyId;
+      const [secondAgent] = await db.insert(agents).values({ id: randomUUID(), companyId: sharedCompany, name: "Second shared agent",
+        adapterType, status: "idle", adapterConfig: {}, runtimeConfig: { aiConnection: binding(first.accounts[0]) } }).returning();
+      const [secondIssue] = await db.insert(issues).values({ id: randomUUID(), companyId: sharedCompany, title: "Second task",
+        status: "todo", assigneeAgentId: secondAgent.id, issueNumber: 2 }).returning();
+      await db.insert(heartbeatRuns).values({ companyId: sharedCompany, agentId: secondAgent.id, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(first.accounts[0]) });
+      const shared = { companyId: sharedCompany, agentId: secondAgent.id, issueId: secondIssue.id };
+      expect((await wake(first)).errorCode).toBe("provider_limit_wait");
+      expect((await wake(shared)).errorCode).toBe("provider_limit_wait");
+      const sharedRetry = await scheduledRetry(secondAgent.id);
+
+      // Moving one agent to account B leaves the other's account A hold intact.
+      await agentService(db).update(first.agentId, { runtimeConfig: { aiConnection: binding(first.accounts[1]) } });
+      const [stillWaiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sharedRetry!.id));
+      expect(stillWaiting.scheduledRetryAt!.getTime()).toBe(sharedRetry!.scheduledRetryAt!.getTime());
+      expect((await deferDirect(shared)).deferred).toBe(true);
+    }, 60_000);
+
+    it("rechecks the wait at once when the user replies, and holds again while the account is still limited", async () => {
+      const f = await heldFixture();
+      await wake(f);
+      const retry = await scheduledRetry(f.agentId);
+      const userId = `limit-user-${f.companyId}`;
+      const commentId = randomUUID();
+
+      // Another agent's comment keeps the scheduled recheck.
+      await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: randomUUID() }, requestedByActorType: "agent", requestedByActorId: randomUUID(),
+        contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented" } });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime())
+        .toBe(retry!.scheduledRetryAt!.getTime());
+
+      await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId }, requestedByActorType: "user", requestedByActorId: userId,
+        contextSnapshot: { issueId: f.issueId, commentId, wakeCommentId: commentId, wakeReason: "issue_commented" } });
+      const [rechecking] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
+      expect(rechecking.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+
+      const [rechecked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
+      expect(dispatched.has(retry!.id)).toBe(false);
+      expect(rechecked).toMatchObject({ status: "cancelled", errorCode: "provider_limit_wait" });
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry!.id));
+      expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait" });
+      expect(successor.contextSnapshot).toMatchObject({ wakeCommentId: commentId });
+    }, 60_000);
+  });
 });

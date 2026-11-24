@@ -1,9 +1,16 @@
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
-import { agentProviderLimitCooldown } from "../native-runtime/native-startup-retry.js";
+import {
+  agentProviderLimitCooldown, agentProviderLimitCredential, runProviderLimitCredential,
+} from "../native-runtime/native-startup-retry.js";
 import { parseObject } from "../../adapters/utils.js";
+import { logActivity, publishActivity } from "../activity-log.js";
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import type { ActivityPublication } from "../../types/activity-publication.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -46,9 +53,14 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     if (run.invocationSource === "on_demand" && run.triggerDetail === "manual") return false;
     if (parseObject(parseObject(agent.runtimeConfig).aiConnection).mode === "router") return false;
     const now = new Date();
-    const cooldown = await agentProviderLimitCooldown(db, {
-      companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
-    }).catch((err: unknown) => {
+    // The limit belongs to the credential it was reported on. A run that would
+    // use another account, or whose limited account was revoked, is not held.
+    const cooldown = await agentProviderLimitCredential(db, {
+      companyId: run.companyId, binding: parseObject(agent.runtimeConfig).aiConnection,
+      responsibleUserId: run.responsibleUserId,
+    }).then(credential => agentProviderLimitCooldown(db, {
+      companyId: run.companyId, agentId: run.agentId, runId: run.id, credential, now,
+    })).catch((err: unknown) => {
       // Missing evidence must not stop work; the provider still reports its own limit.
       logger.warn({ err, runId: run.id }, "provider limit evidence unavailable before dispatch");
       return null;
@@ -64,7 +76,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
         executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
         providerLimitWait: {
           resetAt, resetReported: cooldown.resetReported, category: cooldown.category,
-          sourceRunId: cooldown.sourceRunId, actionUrl: `/agents/${agent.id}/runtime`,
+          sourceRunId: cooldown.sourceRunId, grantId: cooldown.grantId, actionUrl: `/agents/${agent.id}/runtime`,
         },
         cancellation: {
           source: "control_plane", expected: true, initiator: { type: "system" },
@@ -115,3 +127,114 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
 
   return { deferRunForProviderLimit };
 }
+
+export type ProviderLimitWaitRelease =
+  /** The agent's AI connection changed, so its next run may use another account. */
+  | "ai_connection_changed"
+  /** An account was revoked or removed, so limits reported on it no longer apply. */
+  | "ai_connection_revoked"
+  /** Someone replied on the task; the reply rechecks the wait now. */
+  | "user_reply";
+
+/**
+ * Makes waiting provider limit retries due now, so each rechecks availability
+ * through the normal dispatch path. The recheck reads only saved evidence and
+ * holds the run again, with no provider work, when the same account is still
+ * out of allowance. A user reply also rechecks a connection pool wait.
+ */
+export async function releaseProviderLimitWaits(db: Db, input: {
+  companyId: string;
+  reason: ProviderLimitWaitRelease;
+  agentId?: string;
+  /** A specific waiting retry. */
+  runId?: string;
+  /** Only waits whose limit was reported on one of these grants. */
+  grantIds?: readonly string[];
+  actor?: { actorType: "user" | "agent" | "system" | "plugin"; actorId: string };
+  publications?: ActivityPublication[];
+  now?: Date;
+}): Promise<string[]> {
+  if (input.grantIds && input.grantIds.length === 0) return [];
+  const now = input.now ?? new Date();
+  const waitRun = alias(heartbeatRuns, "provider_limit_wait_run");
+  const candidates = await db
+    .select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+      limitGrantId: sql<string | null>`${waitRun.resultJson} #>> '{providerLimitWait,grantId}'`,
+      sourceRunId: sql<string | null>`${waitRun.resultJson} #>> '{providerLimitWait,sourceRunId}'`,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(waitRun, and(eq(waitRun.id, heartbeatRuns.retryOfRunId), eq(waitRun.companyId, heartbeatRuns.companyId)))
+    .where(and(
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.status, "scheduled_retry"),
+      eq(heartbeatRuns.scheduledRetryReason, AI_CONNECTION_POOL_WAIT_RETRY_REASON),
+      gt(heartbeatRuns.scheduledRetryAt, now),
+      ...(input.agentId ? [eq(heartbeatRuns.agentId, input.agentId)] : []),
+      ...(input.runId ? [eq(heartbeatRuns.id, input.runId)] : []),
+      // A pool wait rechecks only on a reply; an account change cannot free a pool.
+      input.reason === "user_reply"
+        ? inArray(waitRun.errorCode, ["provider_limit_wait", "ai_connection_pool_exhausted"])
+        : eq(waitRun.errorCode, "provider_limit_wait"),
+    ));
+  let released = candidates;
+  if (input.grantIds) {
+    // Waits saved before the grant was recorded on them name their evidence run.
+    const sourceRunIds = candidates.flatMap(row => !row.limitGrantId && row.sourceRunId && UUID.test(row.sourceRunId) ? [row.sourceRunId] : []);
+    const sources = sourceRunIds.length === 0 ? [] : await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, sourceRunIds)));
+    const sourceGrant = new Map(sources.map(source => {
+      const credential = runProviderLimitCredential(source.contextSnapshot);
+      return [source.id, credential.kind === "grants" ? credential.grantIds[0] : null] as const;
+    }));
+    released = candidates.filter(row => {
+      const grantId = row.limitGrantId ?? (row.sourceRunId ? sourceGrant.get(row.sourceRunId) : null);
+      return Boolean(grantId && input.grantIds!.includes(grantId));
+    });
+  }
+  if (released.length === 0) return [];
+  const recheck = { reason: input.reason, requestedAt: now.toISOString() };
+  // Inside a caller's transaction its publications commit with it; otherwise
+  // this release publishes its own after its commit.
+  const publications = input.publications ?? [];
+  const releasedIds = await db.transaction(async tx => {
+    const updated = await tx.update(heartbeatRuns)
+      .set({
+        scheduledRetryAt: now,
+        contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ scheduledRetryAt: now.toISOString(), providerLimitRecheck: recheck })}::jsonb`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        inArray(heartbeatRuns.id, released.map(row => row.id)),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        gt(heartbeatRuns.scheduledRetryAt, now),
+      ))
+      .returning({ id: heartbeatRuns.id });
+    if (updated.length === 0) return [];
+    // The schedule change and its dispatch notice commit together.
+    await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
+    const updatedIds = new Set(updated.map(row => row.id));
+    for (const row of released.filter(candidate => updatedIds.has(candidate.id))) {
+      await logActivity(tx as unknown as Db, {
+        companyId: input.companyId,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? "provider-limit-wait",
+        agentId: row.agentId,
+        runId: row.id,
+        action: "issue.scheduled_retry_retry_now",
+        entityType: row.issueId ? "issue" : "heartbeat_run",
+        entityId: row.issueId ?? row.id,
+        details: { source: "provider_limit_recheck", reason: input.reason },
+      }, publications);
+    }
+    return [...updatedIds];
+  });
+  if (!input.publications) publications.forEach(publishActivity);
+  return releasedIds;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

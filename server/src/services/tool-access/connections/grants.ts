@@ -16,6 +16,8 @@ import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { createConnectionCredentialValidation } from "./credential-validation.js";
+import { logger } from "../../../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 type GrantDependencies = {
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
@@ -609,6 +611,11 @@ replaceConnectionGrantMembers: async (
         reasonCode: "grant_revoked",
         details: { grantId: grant.id, kind: grant.kind, providerRevocation },
       });
+      // Usage limits reported on a revoked account no longer hold work.
+      await releaseProviderLimitWaits(db, {
+        companyId: connection.companyId, reason: "ai_connection_revoked", grantIds: [grant.id],
+        ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+      }).catch((err: unknown) => logger.warn({ err, grantId: grant.id }, "failed to release usage waits for a revoked account"));
       return { ...toConnectionGrant(grant), ...(providerAccess ? { providerAccess } : {}) };
     }
   };

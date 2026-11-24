@@ -21,6 +21,7 @@ import { connectionGrants, connectionTokenIssuances, companySecretBindings, comp
 import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "@paperclipai/shared";
 import { notFound } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
@@ -311,6 +312,12 @@ async function removeConnection(
             grantsToRevoke.map((row) => row.id),
           ),
         );
+      // Usage limits reported on a removed account no longer hold work.
+      await releaseProviderLimitWaits(db, {
+        companyId: connection.companyId, reason: "ai_connection_revoked",
+        grantIds: grantsToRevoke.map((row) => row.id),
+        ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+      }).catch((err: unknown) => logger.warn({ err, connectionId: connection.id }, "failed to release usage waits for a removed account"));
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
