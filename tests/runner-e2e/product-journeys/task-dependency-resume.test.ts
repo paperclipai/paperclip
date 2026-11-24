@@ -20,12 +20,13 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
 interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean;
-  closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
+  laggingAgentReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
 async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
   const blocker = { ...f.created.blocker }, dependent = { ...f.created.dependent };
   const actions: string[] = [], owned: any[] = [], writes: unknown[] = [], reads: string[] = [];
+  let runDetailReads = 0;
   let completed = false, assigned = false, panelOpen = !options.closedPanel;
   const reference = () => /review reference is ([a-f0-9]{32})/.exec(blocker.description)?.[1];
   const output = () => JSON.stringify({ reference: reference(), blockerIdentifier: s.blockerIdentifier });
@@ -98,7 +99,11 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
     if (route === `/api/issues/${s.blockerId}/runs`) return [];
     if (route === `/api/issues/${s.dependentId}/runs`) return runs().map(r => ({ runId: r.id }));
     if (route.includes("/heartbeat-runs?")) return [...runs(), ...structuredClone(priorRuns)];
-    if (route === "/api/heartbeat-runs/run") return runs()[0];
+    if (route === "/api/heartbeat-runs/run") {
+      const run = runs()[0]; runDetailReads++;
+      if (runDetailReads % 2 === 0 && runDetailReads <= (options.laggingAgentReads ?? 0) * 2) run.status = "running";
+      return run;
+    }
     if (route === `/api/issues/${s.blockerId}/activity`) return completed ? structuredClone(f.reopened.activity) : [];
     if (route === `/api/issues/${s.dependentId}/activity`) return activity(options.ownedActivity ?? 0, s.dependentId);
     if (route === `/api/companies/${s.companyId}/activity?agentId=${s.agentId}&limit=500`) {
@@ -206,6 +211,7 @@ describe("dependency browser flow orchestration", () => {
   });
   it.each([
     ["empty history", {}],
+    ["agent detail still running after task detail completed", { laggingAgentReads: 2 }],
     ["completed earlier campaign runs", { priorRuns: 3 }],
     ["more than 100 earlier campaign runs", { priorRuns: 150 }],
     ["more than 500 unrelated company events", { unrelatedActivity: 800 }],
@@ -233,6 +239,20 @@ describe("dependency browser flow orchestration", () => {
       expect(f.reads.some(route => route.startsWith("/api/heartbeat-runs/prior-"))).toBe(false);
       expect(f.reads).toContain("/api/issues/blocker/activity"); expect(f.reads).toContain("/api/issues/dependent/activity");
       expect(f.reads).not.toContain("/api/companies/company/activity?limit=500");
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it("keeps a permanently conflicting agent projection failed at the original deadline", async () => {
+    const f = await fixture(false, { laggingAgentReads: Infinity });
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+    try {
+      const operation = expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 13_000, directory: f.directory })).rejects.toMatchObject({ code: "dependency_resume_deadline" });
+      await vi.advanceTimersByTimeAsync(13_000); await operation;
+      const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
+      expect(saved.finished.dependentRuns[0].status).toBe("succeeded");
+      expect(saved.finished.agentRuns[0].status).toBe("running");
+      expect(f.evidence.checks).toEqual([]);
+      expect(f.writes).toEqual([]);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
   it.each(["properties", "toggle"] as const)("opens a closed properties pane through its %s control before linking", async closedPanel => {

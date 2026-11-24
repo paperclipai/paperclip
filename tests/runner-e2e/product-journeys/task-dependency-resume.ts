@@ -7,7 +7,7 @@ import { HEARTBEAT_RUN_LIST_MAX_LIMIT } from "../../../packages/shared/src/const
 import { createTaskThroughUi } from "../user-actions.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
-import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
+import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, dependencyRunProjectionsAgree, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -194,11 +194,13 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
       const point = await observe(); observations.finished = point;
       if (point.dependent.status === "done" && point.dependentRuns.length === 1 && point.dependentRuns[0]?.status === "succeeded"
         && point.dependentRuns[0]?.nativePhase === "committed" && point.document && point.revision
+        && dependencyRunProjectionsAgree(point, startingRuns)
         && !point.dependent.executionRunId && !point.dependent.checkoutRunId) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     if (!observations.finished || observations.finished.dependent.status !== "done" || observations.finished.dependentRuns[0]?.status !== "succeeded"
-      || observations.finished.dependentRuns[0]?.nativePhase !== "committed" || !observations.finished.document || !observations.finished.revision) {
+      || observations.finished.dependentRuns[0]?.nativePhase !== "committed" || !observations.finished.document || !observations.finished.revision
+      || !dependencyRunProjectionsAgree(observations.finished, startingRuns)) {
       throw new JourneyError("failed", "dependency_resume_deadline");
     }
     stage = "reopen_result";
