@@ -186,7 +186,7 @@ export function githubAutomaticIssueEvent(payload: unknown, deliveryId: string):
   const { repository, sender, issue } = parsed.data;
   return {
     event: "issue_opened", deliveryId,
-    repositoryId: repository.id, repository: repository.full_name.toLowerCase(),
+    repositoryId: repository.id, repository: repository.full_name,
     issueNumber: issue.number, title: issue.title, body: (issue.body ?? "").slice(0, 24000),
     author: { id: issue.user.id, login: issue.user.login, isBot: issue.user.type === "Bot" },
     sender: { id: sender.id, login: sender.login }, labels: issue.labels.map(label => label.name),
@@ -206,7 +206,7 @@ export function githubAutomaticReviewEvent(
     event: data.action,
     deliveryId,
     repositoryId: data.repository.id,
-    repository: data.repository.full_name.toLowerCase(),
+    repository: data.repository.full_name,
     pullNumber: pr.number,
     title: pr.title,
     body: (pr.body ?? "").slice(0, 24000),
