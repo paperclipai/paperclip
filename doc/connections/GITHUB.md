@@ -41,10 +41,10 @@ External contributors additionally need **Allow automatic runs for external cont
 Their restricted guest profile and sponsor requirements are unchanged.
 
 The passing-score number field accepts a whole number from 1 to 5, defaulting to 5.
-Paperclip publishes a successful **Paperclip Review** check only after a complete
-assessment of the current commit meets the threshold; lower scores fail and
-incomplete assessments require action. To block merging, separately require this
-check from the dedicated App in GitHub branch protection or a ruleset. A new head
+Paperclip publishes a successful check, named after the GitHub App, only after a
+complete assessment of the current commit meets the threshold; lower scores fail
+and incomplete assessments require action. To block merging, separately require
+this check in GitHub branch protection or a ruleset. A new head
 commit needs its own check. Report-only mode publishes a neutral conclusion, which
 GitHub can accept for a required check; it does not enforce a score requirement.
 This includes incomplete assessments and failed runs: their checks remain neutral
@@ -54,11 +54,13 @@ contains those optional agent permissions. Scheduling filters, ignored files,
 and inline-comment options have separate disclosures. The header shows the App
 identity, copyable mention, avatar download, and GitHub branding settings.
 
-Published review summaries use the GitHub bot's display name in their heading.
-The check name remains **Paperclip Review**. Multiple bots can review the same
-PR through separate GitHub Apps: each keeps its own task, summary, findings, and
-check. Check updates match both the App ID and the endpoint/PR/commit identity.
-Repository branch rules decide separately which App's check is required to merge.
+Published review summaries and the check use the GitHub App's name. Multiple
+bots can review the same PR through separate GitHub Apps: each keeps its own
+task, summary, findings, and check. GitHub matches required checks by name, so a
+distinct name per App lets branch rules require one bot's check without the
+others satisfying it. Check updates match both the App ID and the
+endpoint/PR/commit identity; a check published under the earlier shared
+**Paperclip Review** name is renamed on its next update.
 
 ## Self-hosted setup
 
