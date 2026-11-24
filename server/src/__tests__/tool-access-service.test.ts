@@ -18954,6 +18954,65 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  it("adds a personal GitHub account to an active app that holds another user's archived connection", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    for (const userId of ["first-owner", "sibling-user", "adding-user"]) {
+      await grantBoardUser(db, company.id, userId, [], "member");
+    }
+    mockToolsList([readTool("get_me", "Read current user")]);
+    const personalKeySetup = (key: string) => ({
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      name: "GitHub",
+      grantKind: "user" as const,
+      credentialValues: { "credentials.authorization": key },
+    });
+    const sessionUser = (userId: string) => ({
+      actorType: "user" as const,
+      actorId: userId,
+      actorSource: "session" as const,
+    });
+    await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, async () => {
+      const first = await service.connectGalleryApp(
+        company.id, personalKeySetup("first-owner-fixture-key"), sessionUser("first-owner"));
+      const sibling = await service.connectGalleryApp(company.id, {
+        ...personalKeySetup("sibling-fixture-key"), applicationId: first.application.id,
+      }, sessionUser("sibling-user"));
+      expect(sibling.application.id).toBe(first.application.id);
+      await service.archiveConnection(first.connectionId, company.id, sessionUser("first-owner"));
+      const archivedConnection = await service.getConnection(first.connectionId, company.id);
+      expect(archivedConnection).toMatchObject({ status: "archived", credentialPolicy: "per_user" });
+      const [sharedApplication] = await db.select().from(toolApplications)
+        .where(eq(toolApplications.id, first.application.id));
+      expect(sharedApplication!.status).not.toBe("archived");
+
+      await expect(service.connectGalleryApp(company.id, {
+        ...personalKeySetup("adding-fixture-key"), reconnectConnectionId: first.connectionId,
+      }, sessionUser("adding-user"))).rejects.toMatchObject({
+        status: 403,
+        message: "Only the existing personal identity can reconnect this connection",
+      });
+
+      const added = await service.connectGalleryApp(company.id, {
+        ...personalKeySetup("adding-fixture-key"), applicationId: first.application.id,
+      }, sessionUser("adding-user"));
+      expect(added.application.id).toBe(first.application.id);
+      expect([first.connectionId, sibling.connectionId]).not.toContain(added.connectionId);
+      expect(await service.getConnection(first.connectionId, company.id)).toEqual(archivedConnection);
+      await expect(db.select().from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, added.connectionId)))
+        .resolves.toEqual([expect.objectContaining({
+          kind: "user", subjectUserId: "adding-user", status: "active",
+        })]);
+
+      const revived = await service.connectGalleryApp(company.id, {
+        ...personalKeySetup("first-owner-new-fixture-key"), applicationId: first.application.id,
+      }, sessionUser("first-owner"));
+      expect(revived.connectionId).toBe(first.connectionId);
+    }, "mcp-key");
+  });
+
   it("reconnects a personal key on the existing user grant without creating an organization credential", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
