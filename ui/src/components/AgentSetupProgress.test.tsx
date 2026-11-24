@@ -169,6 +169,44 @@ describe("agent setup progress", () => {
   const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   const token = () => container.querySelector('[data-testid="token"]')?.textContent;
 
+  it("keeps a finished checklist on screen when the app refreshes every query", async () => {
+    const done: AgentSetupProgress = { ...WAITING, status: "done", summary: "Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1",
+      items: [{ key: "create-role", title: "Create the role", status: "done", detail: null }] };
+    const create = vi.fn().mockResolvedValue(HANDOFF);
+    let status: "waiting" | "done" = "waiting";
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async () => status === "done" ? done : WAITING) };
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    status = "done";
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent set up AWS"));
+    // The live connection reconnects or the tab returns: the app refreshes every query on screen.
+    await act(async () => { await queryClient.invalidateQueries({ type: "active" }); });
+    await flush();
+    expect(create).toHaveBeenCalledOnce();
+    expect(token()).toBe("pcsp_token");
+    expect(container.textContent).toContain("Your agent set up AWS");
+    expect(container.textContent).toContain("Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1");
+  });
+
+  it("still creates a fresh checklist when Start again's first create fails and its retry succeeds", async () => {
+    const failedAttempt: AgentSetupProgress = { ...WAITING, status: "failed", summary: "Stopped: no permission",
+      items: [{ key: "deploy", title: "Create the role", status: "failed", detail: "iam:CreateRole denied" }] };
+    const second: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_after_retry", progress: { ...WAITING, id: "88888888-8888-4888-8888-888888888888" } };
+    const create = vi.fn().mockResolvedValueOnce(HANDOFF).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(second);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === ID ? failedAttempt : second.progress) };
+    // The app's queries retry a failed request; this one retries once, at once.
+    const retrying = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 } } });
+    await act(async () => { root.render(<QueryClientProvider client={retrying}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    await act(async () => { await retrying.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent couldn’t finish setting up AWS"));
+    const startAgain = [...container.querySelectorAll("button")].find((b) => b.textContent === "Start again")!;
+    await act(async () => { startAgain.click(); });
+    await vi.waitFor(() => expect(token()).toBe("pcsp_after_retry"));
+    expect(create).toHaveBeenCalledTimes(3);
+  });
+
   it("offers a fresh checklist after a failed attempt, and opening the step again later starts fresh", async () => {
     const failedAttempt: AgentSetupProgress = { ...WAITING, status: "failed", summary: "Stopped: no permission",
       items: [{ key: "deploy", title: "Create the role", status: "failed", detail: "iam:CreateRole denied" }] };
