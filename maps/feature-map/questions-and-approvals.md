@@ -201,9 +201,10 @@ Governed approvals, unsupported mixed forms, attachments, and oversized requests
 retain the full Paperclip review path. Link clicks navigate without attempting an
 answer. Terminal edits preserve the submitted response in the same authorized
 conversation and remove stale controls. Inspect the saved interaction, exactly
-one continuation, and useful reply independently. See the
-[continuation regressions](../../server/src/services/chat-interaction-continuation.test.ts)
-and [Slack card tests](../../server/src/services/chat-channels/slack/cards.test.ts).
+one continuation, and useful reply independently. See
+[question response delivery](../../server/src/__tests__/question-response-delivery.test.ts)
+and [Slack card tests](../../server/src/services/chat-channels/slack/cards.test.ts)
+(the standalone chat-interaction-continuation soak file was retired).
 Local real-Slack proof for eleven formats, including native validation and public
 link navigation, is recorded with PR #17255. It uses a deterministic protocol
 fixture and does not establish deployed staging or model reliability.

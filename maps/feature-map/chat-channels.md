@@ -51,10 +51,9 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
-Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
-verify the exact originating conversation, rejected forged/mismatched receipts,
-one working publication, no completion for a yielded run, and saved-response
-recovery. In a disposable live thread, request work that needs deferred repository
+Monitor continuation coverage lives in [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts)
+(the standalone monitor-continuation soak file was retired). In a disposable live thread, request work that needs deferred repository
 preparation. Verify a useful continuation explanation, automatic resumption, and
 the final result in that same thread. A successful provider turn alone is insufficient.
 
@@ -121,10 +120,12 @@ while still validating the channel and the source message timestamp.
 For an agent with two linked Slack endpoints, compare assignment preparation and
 tool discovery in the run trace. Endpoint checks may overlap in pairs. Confirm
 that both permitted tool sets remain available, then revoke one linked identity
-and confirm that the next preparation excludes it. The
-[database regression](../../server/src/__tests__/slack-tool-preparation.test.ts)
-uses real PostgreSQL with one connection and controlled credential resolution;
-it does not prove live provider latency or an end-to-end response target.
+and confirm that the next preparation excludes it. Canonical endpoint preparation
+and Slack lifecycle coverage lives in
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts)
+and [Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts)
+(the standalone real-database preparation soak file was retired);
+these do not prove live provider latency or an end-to-end response target.
 
 Catalog discovery rechecks live authority and current credentials without
 computing the unused compatibility fingerprint. Assignment snapshots and
