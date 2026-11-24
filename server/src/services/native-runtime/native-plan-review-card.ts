@@ -1,11 +1,11 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { documentRevisions, documents, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { documentService } from "../documents.js";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
-import { activeIssueInteractionCondition, governedActionPayloadSql, GOVERNED_REVIEW_PAYLOAD_KEYS, hasGovernedPayload } from "../issue-question-context.js";
+import { activeIssueInteractionCondition, hasGovernedPayload } from "../issue-question-context.js";
 import { isConversation } from "../../lib/conversation-wake-policy.js";
 
 /**
@@ -199,14 +199,10 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
       }) as never,
       { agentId: binding.agentId, runId: binding.runId },
       {
-        // Replace the agent's own earlier plan confirmations (an ACPX agent's
-        // card has no target, so the document cleanup above cannot see it)
-        // while its tool, secret, connection and quality-review cards stay
-        // answerable. A plain card made after this revision covers it, so any
-        // sibling left here is about an older plan.
-        supersedeSiblingFilter: sql`not ${governedActionPayloadSql(GOVERNED_REVIEW_PAYLOAD_KEYS)}
-          and coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'issue_document'
-            and ${issueThreadInteractions.payload}->'target'->>'key' = 'plan', ${issueThreadInteractions.payload}->'target' is null)`,
+        // Leave the agent's other pending cards answerable. Only cards bound
+        // to an older plan revision were withdrawn above; an unbound card is
+        // never withdrawn by guess.
+        supersedePendingSiblingInteractions: false,
         // Only the call that inserted the card records it; a concurrent or
         // repeated settle replays the same card and logs nothing.
         afterInsertInTransaction: async (tx, row) => {

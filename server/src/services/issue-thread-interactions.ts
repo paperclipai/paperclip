@@ -38,7 +38,6 @@ import {
   ne,
   or,
   sql,
-  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -48,6 +47,7 @@ import {
   authUsers,
   companySecretProposals,
   companies,
+  documentRevisions,
   documents,
   heartbeatRuns,
   runIdentityContexts,
@@ -229,8 +229,6 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
-  /** Narrows which of the creating agent's pending sibling cards the new card supersedes. */
-  supersedeSiblingFilter?: SQL;
   /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
   afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
@@ -2224,6 +2222,35 @@ async function getIssueAttachmentTargetSnapshot(db: Db | any, args: {
       eq(issueAttachments.id, args.target.attachmentId), eq(assets.id, args.target.assetId), eq(assets.sha256, args.target.sha256)));
   const rows = await (args.lockForUpdate ? query.for("update", { of: [issueAttachments, assets] }) : query);
   return rows[0] ?? null;
+}
+
+/**
+ * A plain confirmation an agent opens in Plan mode after saving the plan is
+ * that plan's review. Bind it to the plan revision it reviews, as Codex and
+ * Claude plan cards are, so a later revision makes it unanswerable by the
+ * existing stale-target check and the server never has to guess afterwards.
+ * Only the assigned agent, only when that agent wrote the current
+ * revision, and never for a governed card.
+ */
+async function planReviewTargetForAgentConfirmation(
+  db: Db,
+  issue: { id: string; companyId: string },
+  actor: InteractionActor,
+): Promise<RequestConfirmationTarget | null> {
+  if (!actor.agentId) return null;
+  const [row] = await db.select({
+    workMode: issues.workMode, assigneeAgentId: issues.assigneeAgentId, documentId: documents.id,
+    revisionId: documents.latestRevisionId, revisionNumber: documents.latestRevisionNumber,
+    revisionAgentId: documentRevisions.createdByAgentId,
+  }).from(issues)
+    .innerJoin(issueDocuments, and(eq(issueDocuments.issueId, issues.id), eq(issueDocuments.companyId, issues.companyId), eq(issueDocuments.key, "plan")))
+    .innerJoin(documents, eq(documents.id, issueDocuments.documentId))
+    .innerJoin(documentRevisions, eq(documentRevisions.id, documents.latestRevisionId))
+    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).limit(1);
+  if (!row?.revisionId || row.workMode !== "planning" || row.assigneeAgentId !== actor.agentId ||
+    row.revisionAgentId !== actor.agentId) return null;
+  return { type: "issue_document", issueId: issue.id, documentId: row.documentId, key: "plan",
+    revisionId: row.revisionId, revisionNumber: row.revisionNumber };
 }
 
 function buildIssueDocumentTargetFromSnapshot(args: {
@@ -4921,6 +4948,10 @@ export function issueThreadInteractionService(
       const data = normalizeCreateInteractionInput(
         createIssueThreadInteractionSchema.parse(input),
       );
+      if (data.kind === "request_confirmation" && !data.payload.target && !hasGovernedPayload(data.payload)) {
+        const planTarget = await planReviewTargetForAgentConfirmation(db, issue, actor);
+        if (planTarget) data.payload.target = planTarget;
+      }
       const qualityItems = data.kind === "request_confirmation" && data.payload.qualityReview
         ? [data.payload] : data.kind === "request_item_verdicts"
           ? data.payload.items.filter(item => item.qualityReview) : [];
@@ -5396,7 +5427,6 @@ export function issueThreadInteractionService(
             sql`${issueThreadInteractions.payload}->'qualityReview' IS NULL`,
             sql`not coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'custom'
               and ${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review', false)`,
-            options.supersedeSiblingFilter,
           );
           if (data.kind === "request_confirmation") {
             // The issue lock above excludes concurrent interaction creation.

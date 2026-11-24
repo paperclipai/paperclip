@@ -261,6 +261,60 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(pending[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
   });
 
+  it("binds the agent's own Plan-mode confirmation to the plan revision it reviews", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    await t.writePlan(runId);
+    const card = await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: "own-plan", sourceRunId: runId, continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve my plan?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
+    } as never, { agentId: t.agentId, runId });
+    const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+    expect(card.payload).toMatchObject({ target: { type: "issue_document", key: "plan", revisionId: plan!.latestRevisionId } });
+  });
+
+  it("leaves an unrelated pending confirmation answerable when the plan card opens", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    // Asked before any plan existed: not a plan review, so never bound or withdrawn.
+    const unrelated = await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: "rename-repo", sourceRunId: runId, continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "May I rename the repository?", acceptLabel: "Yes", rejectLabel: "No" },
+    } as never, { agentId: t.agentId, runId });
+    expect((unrelated.payload as { target?: unknown }).target).toBeUndefined();
+    await t.writePlan(runId);
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({ kind: "created" });
+
+    const cards = await t.cards();
+    expect(cards.find(card => card.id === unrelated.id)?.status).toBe("pending");
+    expect(cards.filter(card => card.status === "pending" &&
+      (card.payload as { target?: { key?: string } }).target?.key === "plan")).toHaveLength(1);
+  });
+
+  it("leaves a card opened before plan binding existed answerable, and still opens the current plan's card", async () => {
+    const t = await seed();
+    const first = await t.newRun();
+    await t.writePlan(first);
+    // A row an older release saved: the agent's plan card with no target.
+    const [legacy] = await db.insert(issueThreadInteractions).values({
+      companyId: t.companyId, issueId: t.issueId, kind: "request_confirmation", status: "pending",
+      continuationPolicy: "wake_assignee_on_accept", sourceRunId: first, createdByAgentId: t.agentId,
+      payload: { version: 1, prompt: "Proceed with plan v1?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
+    }).returning();
+    const second = await t.newRun();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await t.writePlan(second, `${PLAN}\n3. Revised.`);
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "created" });
+
+    const cards = await t.cards();
+    // Not withdrawn by guess; its answer reaches the agent as an ordinary confirmation.
+    expect(cards.find(card => card.id === legacy!.id)?.status).toBe("pending");
+    expect(cards.filter(card => card.status === "pending" &&
+      (card.payload as { target?: { revisionNumber?: number } }).target?.revisionNumber === 2)).toHaveLength(1);
+  });
+
   it("keeps an earlier run's pending card as the gate in a Plan-mode conversation", async () => {
     const t = await seed("planning", { conversation: true });
     const first = await t.newRun();
