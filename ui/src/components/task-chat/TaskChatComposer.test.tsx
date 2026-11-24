@@ -10,6 +10,7 @@ import {
   instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 import { parsePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { planSubmission } from "./composer-commands";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2062,6 +2063,47 @@ describe("TaskChatComposer", () => {
       typeText("/pl");
       await placeCaretAtEnd();
       expect(planOffered()).toBe(false);
+    });
+
+    it("decides a bare /plan the same way for both submit paths", () => {
+      expect(planSubmission("/plan", false)).toEqual({ kind: "switch_mode" });
+      expect(planSubmission("/plan", true)).toEqual({ kind: "send", text: "" });
+      expect(planSubmission("/plan Ship it", false)).toEqual({ kind: "send", text: "Ship it" });
+      expect(planSubmission("Ship it /plan", true)).toEqual({ kind: "none" });
+    });
+
+    it("sends a bare /plan with an attachment as the request in Plan mode", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+      const onAttachImage = vi.fn().mockResolvedValue({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: "spec.txt" });
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange, onAttachImage });
+      typeText("/plan");
+      pasteFiles([new File(["spec"], "spec.txt", { type: "text/plain" })]);
+      await flushAsync();
+      flushSync(() => sendButton().click());
+      await flushAsync();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+      expect(onAdd).toHaveBeenCalledOnce();
+      expect(onAdd.mock.calls[0]?.[0]).not.toContain("/plan");
+      expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
+    });
+
+    it("creates a task from a bare /plan with an image only when the task may have no text", async () => {
+      const image = new File(["png"], "screen.png", { type: "image/png" });
+      const creation = { value: "/plan", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined), submitLabel: "Create",
+        onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn(), images: [{ id: "screen", name: image.name, file: image }] };
+      render(<TaskChatComposer creation={{ ...creation, canSubmitWithoutBody: true }} workMode="standard" onWorkModeChange={vi.fn()} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("", "planning", null);
+      const onWorkModeChange = vi.fn();
+      const bare = { ...creation, onSubmit: vi.fn() };
+      render(<TaskChatComposer creation={bare} workMode="standard" onWorkModeChange={onWorkModeChange} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(bare.onSubmit).not.toHaveBeenCalled();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
     });
 
     it("creates a new task in Plan mode", async () => {

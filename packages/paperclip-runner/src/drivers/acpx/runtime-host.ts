@@ -36,6 +36,7 @@ import {
   releaseMaterializedNativeRuntimeSkills,
 } from "../runtime-context-materializer.js";
 import {
+  canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
   type RunnerToolBridgeOptions,
@@ -224,6 +225,8 @@ export interface AcpxRuntimePortOpenOptions {
   /** Abort provider admission and clean any runtime that resolves too late. */
   signal?: AbortSignal;
   mcpServers: readonly AcpxMcpServerBinding[];
+  /** Canonical names of the tools the runner-owned Paperclip bridge registered. */
+  paperclipTools?: readonly string[];
   onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
   /**
    * Transfer the provider cleanup proof before a failed open settles. The host
@@ -723,6 +726,8 @@ export class AcpxRuntimeHost {
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
             ],
+            ...(toolBridge ? { paperclipTools: (options.semanticTools?.tools ?? []).flatMap(tool =>
+              typeof tool.name === "string" ? [canonicalRunnerToolName(tool.name)] : []) } : {}),
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),

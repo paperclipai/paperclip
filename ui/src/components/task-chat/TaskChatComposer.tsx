@@ -72,7 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
-import { parseLeadingUserCommand } from "@paperclipai/shared";
+import { parseRunnerGoalCommand, planSubmission, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -190,81 +190,8 @@ interface TaskChatComposerProps {
   ) => Promise<void> | void;
 }
 
-export type RunnerGoalComposerCommand =
-  | { action: "focus" }
-  | { action: "create"; objective: string }
-  | { action: "edit" }
-  | { action: "pause" }
-  | { action: "resume" }
-  | { action: "clear" };
-
-export type ParsedRunnerGoalCommand =
-  | { matched: false }
-  | { matched: true; command: RunnerGoalComposerCommand }
-  | { matched: true; error: string };
-
-function normalizeActionCommandText(value: string, command: "goal" | "plan"): string {
-  const trimmed = value.trim();
-  // MDXEditor's link extension can reinterpret a selected action command plus
-  // its subsequently typed argument as one relative autolink. Accept only the
-  // exact whole-document shape it generates so the action still cannot fall
-  // through as a comment. Ordinary Markdown links remain ordinary comments.
-  // The label is any prefix of the command typed before it was selected.
-  const label = command === "goal" ? "(?:go(?:al)?)?" : "(?:p(?:l(?:an?)?)?)?";
-  const relativeAutolink = trimmed.match(
-    new RegExp(`^\\[\\/${label}[ \\t\\u00a0]*\\]\\(<(\\/${command}(?:[ \\t\\u00a0].*)?)>\\)$`, "s"),
-  );
-  if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
-
-  const encodedAutolink = trimmed.match(
-    new RegExp(`^\\[\\/${label}[ \\t\\u00a0]*\\]\\((\\/${command}(?:%20|%C2%A0).*)\\)$`, "s"),
-  );
-  if (encodedAutolink) {
-    try {
-      return decodeURIComponent(encodedAutolink[1]!).replaceAll("\u00a0", " ");
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed.replaceAll("\u00a0", " ");
-}
-
-/**
- * `/plan <request>` is the typed form of the Plan mode control: the request is
- * sent in Plan mode, without the command. This composer submission is the
- * user-authored text `parseLeadingUserCommand` requires; only its leading
- * command counts, and a `/plan` anywhere else stays ordinary text.
- */
-export function parsePlanCommand(value: string): { matched: false } | { matched: true; request: string } {
-  const command = parseLeadingUserCommand(normalizeActionCommandText(value, "plan"), ["plan"]);
-  return command ? { matched: true, request: command.argument } : { matched: false };
-}
-
-export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
-  const trimmed = normalizeActionCommandText(value, "goal");
-  if (!trimmed) return { matched: false };
-  const firstWhitespace = trimmed.search(/\s/);
-  const firstToken =
-    firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
-  if (firstToken !== "/goal") return { matched: false };
-  const remainder =
-    firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
-  if (!remainder) return { matched: true, command: { action: "focus" } };
-  const [subcommand, ...extra] = remainder.split(/\s+/);
-  if (["edit", "pause", "resume", "clear"].includes(subcommand)) {
-    if (extra.length > 0) {
-      return {
-        matched: true,
-        error: `/goal ${subcommand} does not accept extra arguments.`,
-      };
-    }
-    return {
-      matched: true,
-      command: { action: subcommand as "edit" | "pause" | "resume" | "clear" },
-    };
-  }
-  return { matched: true, command: { action: "create", objective: remainder } };
-}
+export { parsePlanCommand, parseRunnerGoalCommand } from "./composer-commands";
+export type { ParsedRunnerGoalCommand, RunnerGoalComposerCommand } from "./composer-commands";
 
 function identityInitials(label: string): string {
   const parts = label.trim().split(/\s+/).filter(Boolean);
@@ -937,8 +864,8 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
-      const plan = parsePlanCommand(bodyRef.current);
-      if (plan.matched && !plan.request && !submittingRef.current) {
+      const plan = planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length));
+      if (plan.kind === "switch_mode" && !submittingRef.current) {
         changeMode("planning");
         creation.onChange("");
         editorRef.current?.clear();
@@ -949,7 +876,7 @@ export function TaskChatComposer({
       setSubmitting(true);
       setActionError(null);
       try {
-        await creation.onSubmit(plan.matched ? plan.request : bodyRef.current, plan.matched ? "planning" : pendingMode, runSettings);
+        await creation.onSubmit(plan.kind === "send" ? plan.text : bodyRef.current, plan.kind === "send" ? "planning" : pendingMode, runSettings);
       } catch (error) {
         setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
@@ -971,9 +898,9 @@ export function TaskChatComposer({
     const submittedModeGeneration = modeChoiceGeneration.current;
     // Plan mode belongs to tasks; a queued edit keeps its exact text.
     const planCommand = queuedEdit || conversationMode || !onWorkModeChange
-      ? ({ matched: false } as const)
-      : parsePlanCommand(submittedBody);
-    if (planCommand.matched && !planCommand.request && attachedRefs.length === 0) {
+      ? ({ kind: "none" } as const)
+      : planSubmission(submittedBody, attachedRefs.length > 0);
+    if (planCommand.kind === "switch_mode") {
       changeMode("planning");
       bodyRef.current = "";
       if (draftKey) clearDraft(draftKey);
@@ -981,8 +908,8 @@ export function TaskChatComposer({
       editorRef.current?.clear();
       return;
     }
-    const sendMode = planCommand.matched ? "planning" : pendingMode;
-    const trimmed = planCommand.matched ? planCommand.request : submittedBody.trim();
+    const sendMode = planCommand.kind === "send" ? "planning" : pendingMode;
+    const trimmed = planCommand.kind === "send" ? planCommand.text : submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);

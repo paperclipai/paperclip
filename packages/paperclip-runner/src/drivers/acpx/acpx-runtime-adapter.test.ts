@@ -284,7 +284,9 @@ describe("Codex ACPX runtime adapter", () => {
     options.profile = resolveQualifiedAcpxProfile("antigravity", "gemini-3.8-flash-low");
     options.permissionMode = "approve-all";
     options.readOnly = readOnly;
-    options.mcpServers = [{ name: "paperclip", url: "http://127.0.0.1:3212/mcp", bearerToken: "bridge-fixture", runnerOwned: true }];
+    options.mcpServers = [{ name: "paperclip", url: "http://127.0.0.1:3212/mcp", bearerToken: "bridge-fixture", runnerOwned: true },
+      { name: "runner_extra", url: "http://127.0.0.1:3213/mcp", bearerToken: "extra-fixture", runnerOwned: true }];
+    options.paperclipTools = ["write_document"];
     vi.mocked(runtime.ensureSession).mockImplementationOnce(async () => {
       created.spawnAgent?.({ command: "ignored", args: [], options: {} });
       const guard = created.protocolGuardFactory!();
@@ -316,6 +318,9 @@ describe("Codex ACPX runtime adapter", () => {
     await expect(ask(command_)).resolves.toEqual({ outcome: refused });
     // Paperclip's own tools stay governed by Paperclip's Plan-mode rules.
     await expect(ask(paperclip)).resolves.toEqual({ outcome: "allow_once" });
+    // Another runner-owned server is not Paperclip's bridge.
+    await expect(ask({ ...paperclip, title: "runner_extra_write_file",
+      _meta: { mcp: { tool: "write_file", server: "runner_extra" }, is_mcp_tool_call: true } })).resolves.toEqual({ outcome: refused });
     pending.settle();
     await turn.result;
     exit();
