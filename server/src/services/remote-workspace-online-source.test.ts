@@ -420,9 +420,25 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     } finally { release(); await owner; }
   });
   it("bounds source-lock closures before reserving a connection", async () => {
-    await expect(withWorkspaceSourceLocks(db, { companyId: randomUUID(), issueIds: Array.from({ length: 129 }, () => randomUUID()) },
+    await expect(withWorkspaceSourceLocks(db, { companyId: randomUUID(), issueIds: Array.from({ length: 513 }, () => randomUUID()) },
       async () => { throw new Error("scope must not be admitted"); })).rejects.toThrow("workspace_source_scope_limit");
+    await expect(withWorkspaceSourceLocks(db, { companyId: randomUUID(), issueIds: Array.from({ length: 511 }, () => randomUUID()),
+      projectIds: [randomUUID()] }, async lock => (await lock.execute(sql`select count(*)::int as held from pg_locks
+        where locktype='advisory' and pid=pg_backend_pid()`))[0]?.held)).resolves.toBe(512);
   });
+  it("moves a Git folder online when its alias closure needs more than 128 source locks", async () => {
+    const f = await fixture(), repoUrl = "https://example.invalid/wide-closure.git";
+    await git(f.cwd, "init", "-q", "-b", "main"); await git(f.cwd, "add", "."); await git(f.cwd, "commit", "-qm", "Saved legacy work");
+    const extra = Array.from({ length: 130 }, () => randomUUID());
+    await db.insert(issues).values(extra.map((id, n) => ({ id, companyId: f.companyId, projectId: f.projectId, title: `Wide alias ${n}` })));
+    await db.insert(executionWorkspaces).values(extra.map((id, n) => ({ companyId: f.companyId, projectId: f.projectId, sourceIssueId: id,
+      name: `Wide alias ${n}`, mode: "shared_workspace" as const, strategyType: "project_primary", providerType: "local_fs", cwd: f.cwd, providerRef: f.cwd })));
+    await db.update(executionWorkspaces).set({ repoUrl, branchName: "main" }).where(eq(executionWorkspaces.companyId, f.companyId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, reasons: [] });
+    expect((await inspectOnlineWorkspaceSource(db, await stored(f.workspaceId)))?.issueIds).toHaveLength(133);
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  }, 120_000);
   it.each(["task", "operation", "foreign", "descendant"] as const)("retains the %s guard across the complete alias closure", async kind => {
     const f = await fixture(), alias = f.aliases[2];
     if (kind === "task") {
