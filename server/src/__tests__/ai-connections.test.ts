@@ -2711,6 +2711,30 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
   });
+  it("records a pending cancellation when a process that a reopen launched does not stop in time", async () => {
+    const owner = "slow-second-stop";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Slow stop", allAgents: false, agentIds: [] as string[] } as const;
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => (++launched === 1 ? { abort: () => {} } : { abort: () => new Promise<void>(() => {}) }) as never);
+    const login = localAiLoginService(db);
+    try {
+      const id = (await login.start(companyId, owner, intent)).sessionId;
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened) { reopened = true; await login.start(companyId, owner, intent); }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await expect(login.cancel(companyId, owner, id)).rejects.toThrow("still stopping"); } finally { spy.mockRestore(); }
+      expect(launched).toBe(2);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(attempt!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  }, 30_000);
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();
