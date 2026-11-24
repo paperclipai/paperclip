@@ -563,6 +563,10 @@ export function attentionCardType(item: Pick<AttentionItem, "sourceKind" | "subj
 
 export interface AttentionProviderLimit {
   episode: string;
+  grouping: "account_window" | "retry_chain";
+  attempts: number;
+  retryAt: string | null;
+  /** A reset reported by the provider. Scheduled rechecks have their own timestamp. */
   resetAt: string | null;
   state: "scheduled" | "retry_requested" | "needs_retry";
   runId: string;
