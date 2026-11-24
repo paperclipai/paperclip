@@ -1,3 +1,4 @@
+import { isRestrictedIncidentRunOutput } from "../agent-auth-jwt.js";
 import type { Db } from "@paperclipai/db";
 import { issues, heartbeatRuns } from "@paperclipai/db";
 import { and, eq, inArray } from "drizzle-orm";
@@ -5,6 +6,7 @@ import { canActorReadExecutionWorkspace, type AuthorizationActor, type Authoriza
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 type RunIssueBinding = {
+  id?: string | null;
   companyId: string;
   scopeKind?: "company" | "issue" | null;
   issueId?: string | null;
@@ -31,6 +33,7 @@ export async function canActorReadHeartbeatRun(
   actor: AuthorizationActor,
   run: RunIssueBinding,
 ): Promise<boolean> {
+  if (isRestrictedIncidentRunOutput(run.companyId, run.id)) return false;
   if (run.scopeKind === "company") return true;
   const issueId = run.issueId;
   if (!issueId) return false;
@@ -69,7 +72,7 @@ export async function getHeartbeatRunReadDecisions(
 ): Promise<boolean[]> {
   const decideReads = access.decideReads;
   if (decideReads) {
-    const bindings = runs.map(run => ({ companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId }));
+    const bindings = runs.map(run => ({ id: run.id, companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId }));
     const key = (companyId: string, issueId: string) => JSON.stringify([companyId, issueId]);
     const issuesByCompany = new Map<string, Set<string>>();
     for (const run of bindings) {
@@ -103,12 +106,12 @@ export async function getHeartbeatRunReadDecisions(
         }
       }
     }
-    return bindings.map(run => run.scopeKind === "company" || Boolean(run.issueId && allowed.get(key(run.companyId, run.issueId))));
+    return bindings.map(run => !isRestrictedIncidentRunOutput(run.companyId, run.id) && (run.scopeKind === "company" || Boolean(run.issueId && allowed.get(key(run.companyId, run.issueId)))));
   }
   const decisions = new Map<string, Promise<boolean>>();
   return Promise.all(runs.map(run => {
-    const binding = { companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId };
-    const key = JSON.stringify([binding.companyId, binding.scopeKind === "company", binding.issueId ?? null]);
+    const binding = { id: run.id, companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId };
+    const key = JSON.stringify([binding.companyId, binding.id ?? null, binding.scopeKind === "company", binding.issueId ?? null]);
     let decision = decisions.get(key);
     if (!decision) {
       decision = canActorReadHeartbeatRun(db, access, actor, binding);
@@ -222,6 +225,7 @@ export async function canActorReadWorkspaceOperation(
   for (const runId of runIds) {
     if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(runId)) return false;
     const [run] = await db.select({
+      id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       scopeKind: heartbeatRuns.scopeKind,
       issueId: heartbeatRuns.issueId,

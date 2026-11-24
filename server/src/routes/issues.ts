@@ -1,3 +1,4 @@
+import { isRestrictedIncidentRunOutput } from "../agent-auth-jwt.js";
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
@@ -4179,6 +4180,7 @@ export function issueRoutes(
     if (!readable.allowed) return null;
     // A recorded origin task stands on its own; the run is shown only when visible.
     const runVisible = run ? await canActorReadHeartbeatRun(db, access, req.actor, {
+      id: run.id,
       companyId: run.companyId,
       scopeKind: run.scopeKind,
       issueId: run.issueId ?? run.nativeIssueId ?? sourceIssue.id,
@@ -8550,7 +8552,7 @@ export function issueRoutes(
       issue: issueCore,
       ...recentCommentsAndFacts,
       recentActivity,
-      recentRuns,
+      recentRuns: recentRuns.filter((run) => !isRestrictedIncidentRunOutput(issue.companyId, run.runId)),
       interactions,
       attachments,
       liveRuns,
@@ -20661,6 +20663,14 @@ export function issueRoutes(
       return;
     }
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (attachment.originatingRunId) {
+      const sourceRun = await heartbeat.getRun(attachment.originatingRunId);
+      if (!sourceRun || sourceRun.companyId !== attachment.companyId ||
+          !(await canActorReadHeartbeatRun(db, access, req.actor, sourceRun))) {
+        res.status(404).json({ error: "Attachment not found" });
+        return;
+      }
+    }
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(

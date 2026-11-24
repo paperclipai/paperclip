@@ -74,15 +74,15 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     if (externalDatabaseUrl) await db.$client.end({ timeout: 1 });
   });
 
-  async function seedFixture() {
-    const companyId = randomUUID();
+  async function seedFixture(binding: { companyId?: string; privateRunId?: string } = {}) {
+    const companyId = binding.companyId ?? randomUUID();
     const ownerAgentId = randomUUID();
     const grantedAgentId = randomUUID();
     const otherAgentId = randomUUID();
     const ownerUserId = `owner-${randomUUID()}`;
     const otherUserId = `other-${randomUUID()}`;
     const issueId = randomUUID();
-    const privateRunId = randomUUID();
+    const privateRunId = binding.privateRunId ?? randomUUID();
     const maintenanceRunId = randomUUID();
     const operationId = randomUUID();
 
@@ -774,6 +774,30 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(await getHeartbeatRunReadDecisions(db, access, { ...actor, agentId: fixture.otherAgentId }, [binding])).toEqual([false]);
   });
 
+  it.each([
+    "0000000b-0000-4000-8000-00000000000b",
+    "0000000c-0000-4000-8000-00000000000c",
+  ])("denies synthetic restricted run %s to otherwise entitled readers", async (privateRunId) => {
+    const fixture = await seedFixture({ companyId: "0000000a-0000-4000-8000-00000000000a", privateRunId });
+    for (const app of [
+      createApp(fixture.companyId, fixture.ownerAgentId),
+      createApp(fixture.companyId, fixture.grantedAgentId),
+      createBoardApp(fixture.companyId, fixture.ownerUserId),
+    ]) {
+      await request(app).get(`/api/heartbeat-runs/${privateRunId}`).expect(404);
+      await request(app).get(`/api/heartbeat-runs/${privateRunId}/events`).expect(404);
+    }
+    const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.grantedAgentId };
+    const access = authorizationService(db);
+    expect(await getHeartbeatRunReadDecisions(db, access, actor, [
+      { id: fixture.maintenanceRunId, companyId: fixture.companyId, scopeKind: "company" },
+      { id: privateRunId, companyId: fixture.companyId, scopeKind: "company" },
+      { id: privateRunId, companyId: fixture.companyId, scopeKind: "issue", issueId: fixture.issueId },
+    ])).toEqual([true, false, false]);
+    const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, fixture.operationId));
+    expect(await canActorReadWorkspaceOperation(db, access, actor, operation)).toBe(false);
+  });
+
   it("keeps event and operation authorization reads narrow for large runs", async () => {
     const fixture = await seedFixture();
     await db.update(heartbeatRuns).set({
@@ -793,7 +817,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(await canActorReadWorkspaceOperation(observedDb, authorizationService(observedDb), {
       type: "agent", companyId: fixture.companyId, agentId: fixture.grantedAgentId,
     }, operation)).toBe(true);
-    expect(queries.some(query => query.startsWith('select "company_id", "scope_kind", "issue_id" from "heartbeat_runs"'))).toBe(true);
+    expect(queries.some(query => query.startsWith('select "id", "company_id", "scope_kind", "issue_id" from "heartbeat_runs"'))).toBe(true);
     expect(queries.filter(query => query.startsWith("select ")).join("\n")).not.toMatch(/"runner_profile_json"|"stdout_excerpt"/);
     await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.subjectId, fixture.grantedAgentId));
     expect((await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/events`)).status).toBe(404);

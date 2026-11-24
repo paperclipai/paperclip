@@ -1950,6 +1950,14 @@ describe("agent live run routes", () => {
   });
 
   it("returns only the redacted inspection view and audits the access", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "succeeded",
+      scopeKind: "company",
+      issueId: null,
+    });
     mockProviderTraceStore.inspect.mockResolvedValue({
       trace: { id: "trace-1", status: "complete" },
       entries: [
@@ -1974,6 +1982,16 @@ describe("agent live run routes", () => {
         details: { traceId: "trace-1", rawPayloadRevealed: false },
       }),
     );
+  });
+
+  it("refuses provider trace inspection without a retained run scope", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"),
+    );
+
+    expect(res.status).toBe(404);
+    expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("lets a board member reproject only retained workspace diffs", async () => {

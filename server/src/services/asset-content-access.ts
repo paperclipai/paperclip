@@ -45,13 +45,20 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
         || (Boolean(actor.userId) && actor.userId === run.responsibleUserId)));
     if (!owns || !run || !(await canActorReadHeartbeatRun(db, access, actor, run))) return false;
   }
-  const attachments = await db.select({ issueId: issueAttachments.issueId }).from(issueAttachments)
+  const attachments = await db.select({ issueId: issueAttachments.issueId, originatingRunId: issueAttachments.originatingRunId }).from(issueAttachments)
     .where(and(eq(issueAttachments.assetId, asset.id), eq(issueAttachments.companyId, asset.companyId)));
   if (isDraft && !attachments.length && !(actor.type === "board"
     ? actor.source === "local_implicit" || actor.isInstanceAdmin || actor.userId === asset.createdByUserId
     : actor.type === "agent" && actor.agentId === asset.createdByAgentId
       && (!asset.createdByUserId || actor.onBehalfOfUserId === asset.createdByUserId))) return false;
   for (const attachment of attachments) {
+    if (attachment.originatingRunId) {
+      const [sourceRun] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, attachment.originatingRunId),
+        eq(heartbeatRuns.companyId, asset.companyId),
+      ));
+      if (!sourceRun || !(await canActorReadHeartbeatRun(db, access, actor, sourceRun))) return false;
+    }
     if (!(await access.decide({ actor, action: "issue:read", resource: {
       type: "issue", companyId: asset.companyId, issueId: attachment.issueId,
     } })).allowed) return false;

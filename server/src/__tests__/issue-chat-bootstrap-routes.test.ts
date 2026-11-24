@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as agentAuthJwt from "../agent-auth-jwt.js";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -138,6 +139,39 @@ describeEmbeddedPostgres("task chat bootstrap", () => {
     expect(res.body.items[1].recentComments.comments).toHaveLength(7);
     expect(res.body.items[1].recentComments.oldestCommentId).toBeDefined();
     expect(res.body.items[0].recentComments).not.toHaveProperty("oldestCommentId");
+  });
+
+  it("omits restricted recent-run output from both bootstrap routes while retaining ordinary runs", async () => {
+    const f = await seedCompanyWithBoardAccess(ctx.db, "Restricted bootstrap");
+    const task = await seedTask(f.companyId, { userId: f.userId });
+    const restrictedRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: restrictedRunId, companyId: f.companyId, agentId: task.agentId, issueId: task.issueId,
+      status: "succeeded", runtimeMode: "native", contextSnapshot: { issueId: task.issueId },
+      resultJson: { stopReason: "synthetic-restricted-output" },
+      startedAt: new Date("2026-11-09T11:59:30.000Z"),
+      finishedAt: new Date("2026-11-09T11:59:31.000Z"),
+    });
+    const originalRestriction = agentAuthJwt.isRestrictedIncidentRunOutput;
+    const restriction = vi.spyOn(agentAuthJwt, "isRestrictedIncidentRunOutput").mockImplementation(
+      (companyId, runId) => (companyId === f.companyId && runId === restrictedRunId) || originalRestriction(companyId, runId),
+    );
+    try {
+      const server = app(f.actor);
+      const direct = await request(server).get(`/api/issues/${task.issueId}/runs?view=recent`).expect(200);
+      expect(direct.body.map((run: { runId: string }) => run.runId)).toEqual([task.runId]);
+      const batch = await request(server).get(url(f.companyId)).query({ ids: task.issueId }).expect(200);
+      const single = await request(server).get(`/api/issues/${task.issueId}/chat-bootstrap`).expect(200);
+      for (const item of [batch.body.items[0], single.body]) {
+        expect(item.recentRuns).toEqual(direct.body);
+        expect(item.recentRuns.map((run: { runId: string }) => run.runId)).toEqual([task.runId]);
+        expect(JSON.stringify(item.recentRuns)).not.toContain("synthetic-restricted-output");
+        expect(item.liveRuns.map((run: { id: string }) => run.id)).toEqual([task.runId]);
+        expect(item.activeRun).toMatchObject({ id: task.runId });
+      }
+    } finally {
+      restriction.mockRestore();
+    }
   });
 
   it("follows request order with mixed UUIDs and identifiers, and reads a task named twice once per ref", async () => {

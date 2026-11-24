@@ -74,8 +74,8 @@ describe("live-event run read boundaries", () => {
     const companyId = randomUUID(), foreignCompanyId = randomUUID();
     const owner = randomUUID(), viewer = randomUUID();
     await db.insert(companies).values([
-      { id: companyId, name: "Run reads", issuePrefix: "RUNREAD" },
-      { id: foreignCompanyId, name: "Other company", issuePrefix: "OTHERREAD" },
+      { id: companyId, name: "Run reads", issuePrefix: `RUN${companyId.replaceAll("-", "").slice(0, 8).toUpperCase()}` },
+      { id: foreignCompanyId, name: "Other company", issuePrefix: `OTH${foreignCompanyId.replaceAll("-", "").slice(0, 8).toUpperCase()}` },
     ]);
     await db.insert(authUsers).values([owner, viewer].map(id => ({
       id, name: "Fixture viewer", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date(),
@@ -172,7 +172,7 @@ describe("live-event run read boundaries", () => {
 
       expect(reads).toHaveLength(deliveries);
       for (const query of reads) {
-        expect(query).toMatch(/^select "heartbeat_runs"\."company_id", "heartbeat_runs"\."scope_kind", "heartbeat_runs"\."issue_id", "issues"\."parent_id" from "heartbeat_runs"/);
+        expect(query).toMatch(/^select "heartbeat_runs"\."id", "heartbeat_runs"\."company_id", "heartbeat_runs"\."scope_kind", "heartbeat_runs"\."issue_id", "issues"\."parent_id" from "heartbeat_runs"/);
         expect(query).not.toMatch(/context_snapshot|runner_profile_json|stdout_excerpt|result_json/);
       }
       expect(JSON.stringify(messages)).not.toMatch(/private-context|private-profile|private-output/);

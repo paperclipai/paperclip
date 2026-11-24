@@ -355,6 +355,7 @@ const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
 type RunReadBinding = {
+  id?: string | null;
   companyId: string;
   scopeKind?: "company" | "issue" | null;
   issueId?: string | null;
@@ -7710,7 +7711,8 @@ export function agentRoutes(
       "Heartbeat run not found",
     );
     if (!run) return;
-    const inspection = await providerTraces.inspect(run.id, run.companyId);
+    if (!(await assertRunReadAllowed(req, res, run))) return;
+      const inspection = await providerTraces.inspect(run.id, run.companyId);
     await logActivity(db, {
       companyId: run.companyId,
       actorType: "user",
@@ -7805,6 +7807,7 @@ export function agentRoutes(
         "Heartbeat run not found",
       );
       if (!run) return;
+      if (!(await assertRunReadAllowed(req, res, run))) return;
       const frame = await providerTraces.revealFrame(
         run.id,
         run.companyId,
@@ -7841,6 +7844,7 @@ export function agentRoutes(
         "Heartbeat run not found",
       );
       if (!run) return;
+      if (!(await assertRunReadAllowed(req, res, run))) return;
       const download = await providerTraces.download(run.id, run.companyId);
       if (!download) throw notFound("Provider trace not found");
       await logActivity(db, {

@@ -342,6 +342,7 @@ export function setupLiveEventsWebSocketServer(
       }
       if (runId) {
         const run = await sharedDeliveryRead(reads, `run:${runId}`, async () => (await db.select({
+          id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,

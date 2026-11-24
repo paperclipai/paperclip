@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { isRestrictedIncidentRunOutput } from "../agent-auth-jwt.js";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
@@ -392,13 +393,14 @@ export function activityRoutes(db: Db) {
         typeof req.query.runIds === "string" ? req.query.runIds.split(",") : null,
       );
       if (!parsed.success) throw badRequest("runIds must contain 1 to 100 UUIDs");
-      res.json(await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data));
+      const runs = await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data);
+      res.json(runs.filter(run => !isRestrictedIncidentRunOutput(issue.companyId, run.runId)));
       return;
     }
     const result = await (req.query.view === "recent"
       ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
       : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));
-    res.json(result);
+    res.json(result.filter(run => !isRestrictedIncidentRunOutput(issue.companyId, run.runId)));
   });
 
   router.get("/issues/:id/context-usage", async (req, res) => {
