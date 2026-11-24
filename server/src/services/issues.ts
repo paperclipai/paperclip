@@ -14366,7 +14366,6 @@ export function issueService(db: Db) {
       }
 
       if (
-        commentCanTriggerTurn &&
         authorType === "user" &&
         actor.userId &&
         actor.userId !== "board-concierge" &&

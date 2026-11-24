@@ -1,3 +1,4 @@
+import type { ActionableCommentIntent } from "@/lib/composer-draft";
 import { createUuid } from "@/lib/uuid";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
@@ -643,6 +644,7 @@ interface IssueChatThreadProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    commentIntent?: ActionableCommentIntent,
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
@@ -6226,13 +6228,14 @@ export function IssueChatThread({
     onRefresh: onRefreshLatestComments,
   });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, commentIntent) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
-        await (runSettings
-          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
+        await (commentIntent
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, commentIntent)
+          : runSettings ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
       } catch (error) {
         rejectSubmission(attempt, error);

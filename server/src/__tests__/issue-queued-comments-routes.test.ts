@@ -192,7 +192,8 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       issueId,
       authorType: "user" as const,
       authorUserId: "queue-owner",
-      body: index === 0 ? "First queued message" : "Second queued message",
+      metadata: {version: 1, sections: [], commentWake: {version: 1, kind: "actionable", companyId: companyId, issueId: issueId, actorType: "user", actorId: "queue-owner", recipientAgentId: agentId, request: "Inspect the queued input"}},
+      body: `[@Worker](agent://${agentId}) ` + (index === 0 ? "First queued message" : "Second queued message"),
       createdAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
       updatedAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
     })));
@@ -330,7 +331,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .toMatchObject({ status: "done" });
   });
 
-  it("delivers a saved Grok interrupt exactly once after remote cleanup, including concurrent restart sweeps", async () => {
+  it("retains a saved blocked Grok interrupt through cleanup and delivers once after authorized unblock", async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: "grok_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
       .where(eq(agents.id, seeded.agentId));
@@ -376,6 +377,16 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }) } }).where(eq(environmentLeases.id, lease.id));
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, seeded.wakeId));
     await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(held.status).toBe("deferred_issue_execution");
+    expect(held.runId).toBeNull();
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).toHaveLength(2);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(2);
+    // Cleanup is not an unblock. Use the existing independently authorized
+    // status operation; the saved interrupt still re-enters ordinary admission.
+    await issueService(db).update(seeded.issueId, { status: "todo", actorUserId: "queue-owner" });
+    await Promise.all([heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId),
+      heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId)]);
     const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
     expect(delivered.status).toBe("coalesced");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
@@ -508,7 +519,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     runningProcesses.set(seeded.runId, { child, graceSec: 1, processGroupId: null });
     const client = app(seeded.companyId);
     await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-      .send({ body: "Keep this message too" }).expect(201);
+      .send({ body: `[@Worker](agent://${seeded.agentId}) Keep this message too`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Keep this message too"} }).expect(201);
     await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
     let wakes = await db.select().from(agentWakeupRequests);
     expect(wakes.find(w => w.id === seeded.wakeId)?.payload).not.toHaveProperty("commentId");
@@ -987,8 +998,18 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         startupPreparationSettledAt: new Date().toISOString() } }).where(eq(heartbeatRuns.id, seeded.runId));
       await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
-      expect(wake.status, JSON.stringify(wake)).toBe("coalesced");
-      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+      if (runtime === "native") {
+        expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0].status).toBe("blocked");
+        expect(wake.status).toBe("deferred_issue_execution");
+        expect(wake.runId).toBeNull();
+        // Native cancellation records a blocked state. An explicit authorized
+        // unblock is separate from saving or interrupting with a comment.
+        await issueService(db).update(seeded.issueId, { status: "todo", actorUserId: "queue-owner" });
+        await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+      }
+      const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(delivered.status, JSON.stringify(delivered)).toBe("coalesced");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
       expect(successor.status).toBe("queued");
       expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
       await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
@@ -2257,7 +2278,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(run.status).toBe("running");
     expect(run.runnerProfileJson).toEqual(originalProfile);
     expect(steerNativeSessionMock).toHaveBeenCalledWith(expect.objectContaining({ runId: seeded.runId,
-      message: "First queued message", correlationId: seeded.commentIds[0] }));
+      message: `[@Worker](agent://${seeded.agentId}) First queued message`, correlationId: seeded.commentIds[0] }));
     expect(run.resultJson).toMatchObject({ concurrentProviderReceipt: "preserve", queuedSteeringAcknowledgements: {
       [seeded.commentIds[0]]: { status: "acknowledged", turnId: "turn-before-model-change" },
     } });
@@ -2444,7 +2465,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       const seeded = await seedDeclinedConnectionReceipt(runState);
       const client = app(seeded.companyId);
       const sent = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Skip Slack for now and continue" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Skip Slack for now and continue`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Skip Slack for now and continue"} }).expect(201);
       await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
       const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
       const next = queue.body.entries.find((entry: any) => entry.comment.id === sent.body.id);
@@ -2468,10 +2489,10 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       const seeded = await seedDeclinedConnectionReceipt(runState);
       const client = app(seeded.companyId);
       const first = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Skip Slack for now" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Skip Slack for now`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Skip Slack for now"} }).expect(201);
       await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
       const second = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Use email updates instead" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Use email updates instead`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Use email updates instead"} }).expect(201);
       await vi.waitFor(async () => {
         const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
         expect(queue.body.entries.map((entry: any) => entry.comment.id)).toEqual([first.body.id, second.body.id]);

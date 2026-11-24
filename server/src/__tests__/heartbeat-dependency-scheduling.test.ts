@@ -903,26 +903,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         wakeReason: "issue_commented",
       },
     });
-    expect(interactionWake).not.toBeNull();
-
-    // This checks dependency interaction semantics, not provider startup speed.
-    // Join the admitted execution before inspecting its persisted outcome.
-    await heartbeat.drainActiveRunExecutions();
-
-    const interactionRun = await db
-      .select({
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, interactionWake!.id))
-      .then((rows) => rows[0] ?? null);
-
-    expect(interactionRun?.status).toBe("succeeded");
-    expect(interactionRun?.contextSnapshot).toMatchObject({
-      dependencyBlockedInteraction: true,
-      unresolvedBlockerIssueIds: [blockerId],
-    });
+    expect(interactionWake).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`)).toHaveLength(0);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0]?.body)
+      .toContain("Explain the current dependency");
 
     let finishReadyRun!: () => void;
     const readyRunCanFinish = new Promise<void>((resolve) => {
@@ -1671,7 +1655,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       companyId,
       issueId: deepDescendantIssueId,
       authorUserId: "board-user",
-      body: "Please respond while this hold is active.",
+      metadata: {version: 1, sections: [], commentWake: {version: 1, kind: "actionable", companyId: companyId, issueId: deepDescendantIssueId, actorType: "user", actorId: "board-user", recipientAgentId: agentId, request: "Inspect the queued input"}},
+      body: `[@Worker](agent://${agentId}) Please respond while this hold is active.`, 
     });
 
     const forgedChildCommentWake = await heartbeat.wakeup(agentId, {
@@ -1770,7 +1755,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       companyId,
       issueId: rootIssueId,
       authorUserId: "board-user",
-      body: "Please respond while this hold is active.",
+      metadata: {version: 1, sections: [], commentWake: {version: 1, kind: "actionable", companyId: companyId, issueId: rootIssueId, actorType: "user", actorId: "board-user", recipientAgentId: agentId, request: "Inspect the queued input"}},
+      body: `[@Worker](agent://${agentId}) Please respond while this hold is active.`, 
     });
 
     const rootCommentWake = await heartbeat.wakeup(agentId, {

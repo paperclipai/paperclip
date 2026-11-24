@@ -99,7 +99,14 @@ export function clearDraft(draftKey: string, attemptId?: string) {
  * that ID and rejects it for different content, so the body must be the one
  * originally sent, not the editor text.
  */
+export interface ActionableCommentIntent {
+  kind: "actionable";
+  recipientAgentId: string;
+  request: string;
+}
+
 export interface ComposerSendRequest {
+  commentIntent?: ActionableCommentIntent;
   body: string;
   reopen?: boolean;
   reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null };
@@ -138,7 +145,7 @@ function isNullableString(value: unknown): value is string | null {
 export function isComposerSendRequest(value: unknown): value is ComposerSendRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings"].includes(key))) return false;
+  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings", "commentIntent"].includes(key))) return false;
   if (typeof row.body !== "string") return false;
   if (row.reopen !== undefined && typeof row.reopen !== "boolean") return false;
   if (row.reassignment !== undefined) {
@@ -157,6 +164,14 @@ export function isComposerSendRequest(value: unknown): value is ComposerSendRequ
     row.runSettings !== undefined &&
     (!row.runSettings || typeof row.runSettings !== "object" || Array.isArray(row.runSettings))
   ) return false;
+  if (row.commentIntent !== undefined) {
+    const intent = row.commentIntent as Record<string, unknown> | null;
+    if (!intent || typeof intent !== "object" || Array.isArray(intent) ||
+      Object.keys(intent).some(key => !["kind", "recipientAgentId", "request"].includes(key)) ||
+      intent.kind !== "actionable" || typeof intent.recipientAgentId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(intent.recipientAgentId) ||
+      typeof intent.request !== "string" || !intent.request.trim() || intent.request.length > 2000) return false;
+  }
   return true;
 }
 

@@ -30,6 +30,7 @@ import {
   settleDraftSubmission,
   type ComposerDraftSubmission,
   type ComposerSendRequest,
+  type ActionableCommentIntent,
 } from "@/lib/composer-draft";
 import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
 import { describeError } from "@/api/errors";
@@ -115,6 +116,7 @@ interface TaskChatComposerProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    commentIntent?: ActionableCommentIntent,
   ) => Promise<void> | void;
   /** New tasks share the editor and controls, but retain their draft until creation succeeds. */
   creation?: {
@@ -307,8 +309,7 @@ function shouldImplicitlyReopenComment(
 ) {
   const resumesToTodo =
     issueStatus === "done" ||
-    issueStatus === "cancelled" ||
-    issueStatus === "blocked";
+    issueStatus === "cancelled";
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
@@ -397,6 +398,8 @@ export function TaskChatComposer({
   const modeChoiceGeneration = useRef(0);
   const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
   const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
+  const [requestAction, setRequestAction] = useState(false);
+  useEffect(() => setRequestAction(false), [draftKey, currentAssigneeValue]);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -990,7 +993,7 @@ export function TaskChatComposer({
       .join("\n");
     // A queued edit must preserve the complete Markdown source. Normal sends
     // keep the longstanding trimmed-body behavior.
-    const fullBody = queuedEdit
+    let fullBody = queuedEdit
       ? submittedBody
       : [trimmed, refLines].filter(Boolean).join("\n\n");
     const hasReassignment =
@@ -998,6 +1001,16 @@ export function TaskChatComposer({
     const reassignment = hasReassignment
       ? parseAssigneeValue(assigneeValue)
       : undefined;
+    let commentIntent: ActionableCommentIntent | undefined;
+    if (requestAction && !queuedEdit) {
+      if (!currentAssigneeValue?.startsWith("agent:") || hasReassignment || !trimmed || trimmed.length > 2000) {
+        setActionError("Request action needs the current agent recipient and a request of 1–2000 characters.");
+        return;
+      }
+      const recipientAgentId = currentAssigneeValue.slice(6);
+      commentIntent = { kind: "actionable", recipientAgentId, request: trimmed };
+      fullBody = `[@Recipient](agent://${recipientAgentId})\n\n${fullBody}`;
+    }
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue)
       ? true
       : undefined;
@@ -1071,6 +1084,7 @@ export function TaskChatComposer({
       // an outage can resend it with the same ID instead of losing it.
       request = {
         body: fullBody,
+        ...(commentIntent ? { commentIntent } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(reassignment ? { reassignment } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
@@ -1083,7 +1097,9 @@ export function TaskChatComposer({
         changeBody(bodyRef.current);
       }
       sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
-      if (runSettings) {
+      if (commentIntent) {
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings ?? undefined, commentIntent);
+      } else if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
@@ -1178,7 +1194,8 @@ export function TaskChatComposer({
       submission.attemptId,
     ] as const;
     try {
-      if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      if (request.commentIntent) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings | undefined, request.commentIntent);
+      else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onAdd(...args);
     } catch (error) {
       if (!isCurrentAccount()) return "pending";
@@ -1532,6 +1549,14 @@ export function TaskChatComposer({
               triggerTestId="task-chat-composer-add"
               menuTestId="task-chat-composer-add-menu"
             />
+            {!creation && !queuedEdit && currentAssigneeValue?.startsWith("agent:") ? (
+              <label className="flex items-center gap-1 px-1 text-xs">
+                <input type="checkbox" aria-label="Request action" checked={requestAction}
+                  disabled={disabled || submitting || !!uncertainSubmission || assigneeValue !== currentAssigneeValue}
+                  onChange={event => setRequestAction(event.target.checked)} />
+                Request action
+              </label>
+            ) : null}
             {creation?.privacy?.private ? <ComposerPrivacyChip inherited={creation.privacy.inherited} onRemove={() => creation.privacy!.onChange(false)} disabled={disabled} /> : null}
             {queuedEdit ? (
               <span className="px-1 text-xs font-medium text-muted-foreground">

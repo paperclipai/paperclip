@@ -458,6 +458,31 @@ describe("durable Dot Runner integration", () => {
     } finally { await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop(); }
   });
 
+  it("retains an unannotated mentioned comment without admitting a Dot wake", async () => {
+    const f = await fixture(), { run, assignment } = await offeredWork(f);
+    const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Silent Dot input",
+      status: "in_progress", assigneeAgentId: f.agent.id, executionRunId: run.id, checkoutRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: task!.id, issueId: task!.id, status: "running",
+      runtimeMode: "native", nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(dotRunnerAssignments).set({ status: "accepted" }).where(eq(dotRunnerAssignments.id, assignment.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: task!.id,
+      authorUserId: f.userId, body: `[@Worker](agent://${f.agent.id}) Status only` }).returning();
+    try {
+      const admitted = await heartbeatService(db).wakeup(f.agent.id, { source: "assignment", triggerDetail: "system",
+        reason: "issue_commented", payload: { issueId: task!.id, commentId: comment!.id },
+        requestedByActorType: "user", requestedByActorId: f.userId,
+        contextSnapshot: { issueId: task!.id, wakeCommentId: comment!.id, wakeReason: "issue_commented" } });
+      expect(admitted).toBeNull();
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(1);
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, comment!.id)))[0]?.body).toContain("Status only");
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+      await db.update(dotRunnerAssignments).set({ status: "fenced" }).where(eq(dotRunnerAssignments.id, assignment.id));
+      await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
+    }
+  }, 30000);
+
   it("coalesces a normal comment wake into the accepted Dot mailbox without a second run", async () => {
     const f = await fixture(), { run, assignment } = await offeredWork(f);
     const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Active Dot comment",
@@ -466,7 +491,7 @@ describe("durable Dot Runner integration", () => {
       runtimeMode: "native", nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
     await db.update(dotRunnerAssignments).set({ status: "accepted" }).where(eq(dotRunnerAssignments.id, assignment.id));
     const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: task!.id,
-      authorUserId: f.userId, body: "Continue the same assignment" }).returning();
+      authorUserId: f.userId, metadata: { version: 1, sections: [], commentWake: {version: 1, kind: "actionable", companyId: f.company.id, issueId: task!.id, actorType: "user", actorId: f.userId, recipientAgentId: f.agent.id, request: "Continue the same assignment"} }, body: `[@Worker](agent://${f.agent.id}) Continue the same assignment` }).returning();
     try {
       const admitted = await heartbeatService(db).wakeup(f.agent.id, { source: "assignment", triggerDetail: "system",
         reason: "issue_commented", payload: { issueId: task!.id, commentId: comment!.id },
@@ -510,7 +535,7 @@ describe("durable Dot Runner integration", () => {
         contextSnapshot: { issueId: task!.id }, runtimeMode: "native", nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
       await db.update(dotRunnerAssignments).set({ status: "accepted" }).where(eq(dotRunnerAssignments.id, assignment.id));
       const comments = await db.insert(issueComments).values([1, 2].map(index => ({ companyId: f.company.id,
-        issueId: task!.id, authorUserId: f.userId, body: "Input " + index }))).returning();
+        issueId: task!.id, authorUserId: f.userId, metadata: { version: 1, sections: [], commentWake: {version: 1, kind: "actionable", companyId: f.company.id, issueId: task!.id, actorType: "user", actorId: f.userId, recipientAgentId: f.agent.id, request: "Continue the same assignment"} }, body: `[@Worker](agent://${f.agent.id}) Input ${index}` }))).returning();
       const [history] = await db.insert(dotRunnerOperations).values({ companyId: f.company.id,
         assignmentId: assignment.id, requestId: randomUUID(), digest: "history", status: "completed",
         command: { action: "tool", input: { name: "get_task_history", arguments: {} } },

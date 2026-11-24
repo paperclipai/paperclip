@@ -284,6 +284,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(stop).toBeVisible({ timeout: 30_000 });
       const editor = page.getByRole("textbox", { name: "editable markdown" });
       await editor.fill("Please check mobile too.");
+      await page.getByRole("checkbox", { name: "Request action", exact: true }).check();
       await expect(stop).toHaveCount(0);
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await expect(stop).toBeVisible();

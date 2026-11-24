@@ -1,3 +1,4 @@
+import type { ActionableCommentIntent } from "@/lib/composer-draft";
 import type { IssueInboxArchiveFilter, SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
 import type { RunForIssue } from "./activity";
@@ -734,10 +735,12 @@ export const issuesApi = {
     interrupt?: boolean,
     attachmentIds?: string[],
     clientRequestId?: string,
+    commentIntent?: ActionableCommentIntent,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(commentIntent ? { commentIntent } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
