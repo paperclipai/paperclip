@@ -1265,12 +1265,7 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(issueComments.createdByRunId, run.id),
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const existingComment = findHeartbeatRunCompletionComment(comments, run.resultJson);
-        // An external-chat task's final answer takes precedence over an earlier
-        // run comment such as a progress note. A saved copy of that same answer,
-        // including a deleted one, is reused so recovery never posts it again.
-        const externalChatReply = externalChatBlockedReply || (externalChatTaskReply && Boolean(finalAgentMessage) &&
-          existingComment?.body.trim() !== finalAgentMessage?.text.trim());
-        const resolved = resolveHeartbeatRunResponse({
+        const responseInput = {
           resultJson: { ...record(run.resultJson), nativeResult: result },
           nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
@@ -1280,7 +1275,18 @@ async function recoverCommittedNativeChatResponseInScope(
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment,
           finalAgentMessage,
-          preferFinalResponseOverExistingComment: externalChatReply,
+        };
+        // An external-chat reply presents its final answer, as on the live
+        // path, over an earlier run comment such as a progress note. A saved
+        // copy of the text that answer resolves to, including a deleted one, is
+        // reused instead, so recovery never posts the same reply twice.
+        const preferredText = externalChatTaskReply || externalChatBlockedReply
+          ? resolveHeartbeatRunResponse({ ...responseInput, existingComment: null, preferFinalResponseOverExistingComment: true }).text
+          : null;
+        const resolved = resolveHeartbeatRunResponse({
+          ...responseInput,
+          preferFinalResponseOverExistingComment: Boolean(preferredText) &&
+            existingComment?.body.trim() !== preferredText?.trim(),
         });
         if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
           // The reply is already on the task (for example, the live path wrote

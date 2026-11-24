@@ -769,6 +769,19 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(saved).toHaveLength(2);
     expect(saved).toEqual(expect.arrayContaining([progress, expect.objectContaining({ body: f.reply, deletedAt: null })]));
   });
+  it("reuses the summary the live path saved when the final message is a structured result", async () => {
+    const summary = "A completed hire, with its final message preserved separately.";
+    const reply = JSON.stringify({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary });
+    const f = await fixture(false, { reply });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:github" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [saved] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: summary }).returning();
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toEqual([saved]);
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).toMatchObject({ presentationDecision: { commentAction: "reuse", commentId: saved.id } });
+  });
   it("recovers a deferred review reply once without resolving the review or rerunning work", async () => {
     const f = await fixture(false, { disposition: "needs_review" });
     const before = await issue(f.issueId);
