@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 1577,
-    "withSetup": 1577,
-    "inventory": 2142
+    "measured": 2137,
+    "withSetup": 2137,
+    "inventory": 2137
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
