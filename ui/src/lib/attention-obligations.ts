@@ -48,8 +48,23 @@ export function attentionObligationEvidence(
 }
 
 /** The task rows a provider-limit card represents in the inbox toolbar. */
-export function inboxCardMembers(folded: FoldedAttentionObligations, item: AttentionItem) {
+function inboxCardMembers(folded: FoldedAttentionObligations, item: AttentionItem) {
   return item.providerLimit ? [item, ...attentionObligationEvidence(folded, item)] : [item];
+}
+
+export function inboxProjectOptions(folded: FoldedAttentionObligations, cards: readonly AttentionItem[],
+  receipts: readonly { projectId: string | null; projectName: string | null }[]) {
+  const projects = new Map<string, string>();
+  for (const card of cards) {
+    for (const member of inboxCardMembers(folded, card)) {
+      const project = member.project;
+      if (project) projects.set(project.id, project.name);
+    }
+  }
+  for (const receipt of receipts) {
+    if (receipt.projectId) projects.set(receipt.projectId, receipt.projectName ?? "Unnamed project");
+  }
+  return [...projects.entries()];
 }
 
 export function inboxCardMatchesFilters(folded: FoldedAttentionObligations, item: AttentionItem,

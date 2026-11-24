@@ -21,7 +21,7 @@ import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DEC
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
-import { attentionObligationEvidence, foldAttentionObligations, inboxCardMatchesFilters, inboxCardMembers } from "@/lib/attention-obligations";
+import { attentionObligationEvidence, foldAttentionObligations, inboxCardMatchesFilters, inboxProjectOptions } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
@@ -235,10 +235,8 @@ export function CoordinatorNeedsYou() {
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
   }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
-  const projects = useMemo(() => [...new Map([
-    ...pendingItems.flatMap(item => inboxCardMembers(obligations, item)).flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
-    ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
-  ]).entries()], [pendingItems, obligations, recentItems]);
+  const projects = useMemo(() => inboxProjectOptions(obligations, pendingItems, recentItems),
+    [obligations, pendingItems, recentItems]);
   // Assigned to you, everyone the viewer may see, one person, no owner yet, or company alerts.
   const assigneeOptions = useMemo(() => {
     const people = [...userLabelMap].filter(([id]) => id !== userId).sort(([, a], [, b]) => a.localeCompare(b));

@@ -6,6 +6,7 @@ import {
   attentionObligationEvidence,
   foldAttentionObligations,
   inboxCardMatchesFilters,
+  inboxProjectOptions,
   isAttentionObligationEvidence,
 } from "./attention-obligations";
 
@@ -64,6 +65,35 @@ describe("one card for each obligation (PAP-749 task 2d)", () => {
     expect(matches("two-2", "Reviewer", "Launch")).toBe(true);
     expect(matches("reviewer", "", "")).toBe(true);
     expect(matches("two-2", "Editor", "Design")).toBe(false);
+  });
+
+  it("bounds project and search work for a large inbox with a shared quota window", () => {
+    const size = 800;
+    const grouped = size / 2;
+    let reads = 0;
+    const items = Array.from({ length: size }, (_, index) => {
+      const id = `TASK-${index}`;
+      const projectId = `project-${index % 4}`;
+      const member = item(id, {
+        relatedIssue: { ...review.subject, identifier: id },
+        project: { id: projectId, name: projectId, urlKey: projectId, color: null, icon: null },
+        obligationLeadId: index < grouped ? "TASK-0" : id,
+        providerLimit: { episode: index < grouped ? "shared" : id, grouping: "account_window", attempts: 1,
+          retryAt: null, resetAt: null, state: "scheduled", runId: id, agentId: "agent", agentName: "Editor" },
+      });
+      return new Proxy(member, { get(target, property, receiver) {
+        if (++reads > size * 36) throw Error("Inbox toolbar exceeded its linear property-read budget");
+        return Reflect.get(target, property, receiver);
+      } });
+    });
+    const folded = foldAttentionObligations(items);
+    const projects = inboxProjectOptions(folded, folded.cards, []);
+    expect(projects).toHaveLength(4);
+    const matches = folded.cards.filter(card => inboxCardMatchesFilters(folded, card, {
+      query: "task-399", agentId: "agent", projectId: "project-3",
+    }));
+    expect(matches.map(card => card.id)).toEqual(["TASK-0"]);
+    expect(reads).toBeGreaterThan(size);
   });
 
   it("names what each evidence card is to its lead", () => {
