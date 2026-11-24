@@ -3,7 +3,8 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, type BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { blocksAgentCreate } from "@/components/OnboardingWizard";
 import {
   captureProductAnalyticsEvent,
   resetProductAnalyticsForTest,
@@ -15,6 +16,7 @@ import {
   captureAgentChatMessageSent,
   captureOnboardingStepCompleted,
   captureOnboardingStepFailed,
+  isReportableAdapterLoginFailure,
   useOnboardingAnalytics,
 } from "./onboarding-analytics";
 
@@ -296,5 +298,45 @@ describe("onboarding funnel events", () => {
       ["agent_chat_message_sent", { surface: "onboarding_chat" }],
       ["agent_chat_message_sent", { surface: "agent_chat" }],
     ]);
+  });
+
+  it("blocksAgentCreate flags fail results and warn/pass results with missing-auth checks", () => {
+    const base = {
+      adapterType: "codex_local",
+      testedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(blocksAgentCreate({ ...base, status: "fail", checks: [] })).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "warn",
+        checks: [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "warn", message: "Auth required" }],
+      }),
+    ).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "pass",
+        checks: [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "warn", message: "Auth required" }],
+      }),
+    ).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "warn",
+        checks: [{ code: "other_warning", level: "warn", message: "Non-blocking warning" }],
+      }),
+    ).toBe(false);
+    expect(blocksAgentCreate({ ...base, status: "pass", checks: [] })).toBe(false);
+  });
+
+  it("isReportableAdapterLoginFailure covers start/poll/timeout failures and excludes cancellation and retries", () => {
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "failed", hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "timed_out", hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: undefined, hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "cancelled", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: true, status: "failed", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: false, retrying: false, status: "failed", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "pending", hasFailure: false })).toBe(false);
   });
 });

@@ -177,7 +177,7 @@ function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unkn
  * still lets the hire proceed. The wizard widened the gate for missing
  * authentication only, not for every other warning.
  */
-function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+export function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
   if (result.status === "fail") return true;
   return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 }
@@ -2197,6 +2197,12 @@ function OnboardingWizardInner({
           managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
         } catch {
           if (!testIsCurrent()) return null;
+          captureOnboardingStepFailed({
+            step: "connect_model",
+            reason: "environment_test_failed",
+            provider: managedProvider ?? adapterType,
+            method: credentialMode === "api" ? "api_key" : "subscription",
+          });
           setAdapterEnvError(
             "Could not load environment settings to determine which environment to test in. Retry the test.",
           );
@@ -2287,7 +2293,7 @@ function OnboardingWizardInner({
           { signal },
         );
         if (!testIsCurrent()) return null;
-        if (result.status === "fail") {
+        if (blocksAgentCreate(result)) {
           captureOnboardingStepFailed({
             step: "connect_model",
             reason: "environment_test_failed",
@@ -3272,12 +3278,6 @@ function OnboardingWizardInner({
                           // the address Back had cleared, so its sign-in could
                           // not even be pressed.
                           if (connectPhase !== "connecting") return;
-                          captureOnboardingStepFailed({
-                            step: "connect_model",
-                            reason: "subscription_login_failed",
-                            provider: managedProvider ?? adapterType,
-                            method: "subscription",
-                          });
                           // Refused, failed or timed out — the card says which.
                           // The button goes back to what it was offering rather
                           // than spinning on a login that is not coming.
@@ -3286,6 +3286,14 @@ function OnboardingWizardInner({
                           setConnectPhase(
                             phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
                           );
+                        }}
+                        onLoginFailed={() => {
+                          captureOnboardingStepFailed({
+                            step: "connect_model",
+                            reason: "subscription_login_failed",
+                            provider: managedProvider ?? adapterType,
+                            method: "subscription",
+                          });
                         }}
                         onConnected={(sessionId) => {
                           if (managedSubscriptionProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedSubscriptionProvider, method: "subscription", mode: "responsible_user" }, sessionId };

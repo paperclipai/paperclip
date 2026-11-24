@@ -64,6 +64,20 @@ export function captureAgentChatMessageSent(surface: AgentChatSurface) {
   captureProductAnalyticsEvent(ONBOARDING_ANALYTICS_EVENTS.chatMessageSent, { surface });
 }
 
+/**
+ * Pure predicate deciding whether an adapter sign-in panel is in a reportable
+ * failure state (excluding inactive panels, in-flight retries, and user
+ * cancellations). Shared by both displayed-code and submitted-code login panels.
+ */
+export function isReportableAdapterLoginFailure(input: {
+  active: boolean;
+  retrying: boolean;
+  status: string | null | undefined;
+  hasFailure: boolean;
+}): boolean {
+  return input.active && !input.retrying && input.status !== "cancelled" && input.hasFailure;
+}
+
 export function useOnboardingAnalytics(input: {
   open: boolean;
   step: number;
