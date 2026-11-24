@@ -485,6 +485,53 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
+export function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string): string {
+  const content = Array.isArray(result.content)
+    ? result.content.map((item) => (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+      ? (item as { text: string }).text : "")).filter(Boolean).join("\n")
+    : result.content;
+  const error = typeof result.error === "string" ? result.error : "";
+  const message = (typeof content === "string" && content) || error || "The tool returned an error.";
+  return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
+}
+
+
+const TOOL_CODE = "[a-z][a-z0-9_.-]{0,90}";
+const PLUGIN_TOOL_CODE = new RegExp(`\\(code: (${TOOL_CODE})[,)]`);
+const JSON_TOOL_CODE = new RegExp(`"code"\\s*:\\s*"(${TOOL_CODE})"`, "g");
+const PREFIX_TOOL_CODE = new RegExp(`^(${TOOL_CODE}):`);
+const RETRYABLE_TOOL_TEXT = new RegExp(`\\(code: ${TOOL_CODE}, retryable\\)|"retryable"\\s*:\\s*true|"retryability"\\s*:\\s*"later"`);
+
+function explicitToolCode(code: unknown): string | undefined {
+  return typeof code === "string" && code.length <= 91 && /^[a-z][a-z0-9_.-]*$/.test(code) && !/[_.-]$/.test(code) ? code : undefined;
+}
+
+/**
+ * A connected tool's own stable error code and retryability, normalized once for
+ * every caller. Structured fields win; then the plugin marker, a JSON "code", and
+ * a first-line prefix that contains a separator, so prose labels are never codes.
+ */
+export function toolResultErrorDetails(result: Record<string, unknown>): { toolCode?: string; retryable?: true } {
+  const object = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const data = object(result.data);
+  const structured = object(result.structuredContent ?? data.structuredContent);
+  const sources = [result, structured, data];
+  const content = Array.isArray(result.content) ? result.content : Array.isArray(data.content) ? data.content : [];
+  const text = [
+    ...(typeof result.content === "string" ? [result.content] : []),
+    ...content.flatMap((item) => typeof object(item).text === "string" ? [object(item).text as string] : []),
+    ...(typeof result.error === "string" ? [result.error] : []),
+  ].join("\n");
+  const firstLine = text.trim().split("\n")[0] ?? "";
+  const prefixCode = PREFIX_TOOL_CODE.exec(firstLine)?.[1];
+  const toolCode = [result.code, structured.code, data.code].map(explicitToolCode).find(Boolean)
+    ?? explicitToolCode(PLUGIN_TOOL_CODE.exec(text)?.[1])
+    ?? [...text.matchAll(JSON_TOOL_CODE)].map((match) => explicitToolCode(match[1])).find(Boolean)
+    ?? (prefixCode && /[_.-]/.test(prefixCode) ? explicitToolCode(prefixCode) : undefined);
+  const retryable = sources.some((source) => source.retryable === true || source.retryability === "later") || RETRYABLE_TOOL_TEXT.test(text);
+  return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
+}
+
 export class ToolGatewayHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -7493,11 +7540,6 @@ export function createToolGatewayService(
     return normalized;
   }
 
-  function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string) {
-    const message = String(result.content || result.error);
-    return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
-  }
-
   // ── MCP Tasks (io.modelcontextprotocol/tasks) ─────────────────────────────
   // A provider may answer tools/call with a durable task. The live call waits
   // on it up to the normal tool timeout; past that the row keeps it, background
@@ -10214,7 +10256,8 @@ export function createToolGatewayService(
       if (providerResult?.error) {
         throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
-          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error", { execution: connectedMcpExecution.execution });
+          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
+          { execution: connectedMcpExecution.execution, ...toolResultErrorDetails(providerResult) });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -11101,6 +11144,7 @@ export function createToolGatewayService(
           resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(resultRecord, connectedMcpExecution?.failureInstructions),
           resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
+          toolResultErrorDetails(resultRecord),
         );
       const now = new Date();
       await db
@@ -14116,7 +14160,7 @@ export function createToolGatewayService(
             validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             toolResultErrorMessage(validatedMcpResult, connectedMcpExecution?.failureInstructions),
             validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-            { execution: connectedMcpExecution?.execution },
+            { execution: connectedMcpExecution?.execution, ...toolResultErrorDetails(validatedMcpResult) },
           );
         }
         await db

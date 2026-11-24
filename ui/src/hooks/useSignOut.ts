@@ -4,6 +4,7 @@ import { navigateTopLevel } from "@/lib/browserNavigation";
 import { queryKeys } from "@/lib/queryKeys";
 import { invalidateAccountScope } from "@/lib/account-scope";
 import { clearPersistedQueryCache } from "@/lib/persisted-query-cache";
+import { clearAgentSetupHandoffs } from "@/lib/agent-setup-handoff-storage";
 import { resetProductAnalyticsIdentity } from "@/lib/analytics/product-analytics";
 import { useCloudInstance } from "./useCloudInstance";
 
@@ -54,6 +55,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
       resetProductAnalyticsIdentity();
       if (cloud) {
         clearPersistedQueryCache(queryClient);
+        clearAgentSetupHandoffs();
         invalidateAccountScope(queryClient);
         onSignedOut?.();
         navigateTopLevel(CLOUD_SIGN_OUT_PATH);
@@ -67,6 +69,8 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
       if (target === "cloud") return;
 
       clearPersistedQueryCache(queryClient);
+      // A stored agent setup token is a write credential for one checklist: never leave it for the next account.
+      clearAgentSetupHandoffs();
       invalidateAccountScope(queryClient);
       onSignedOut?.();
 

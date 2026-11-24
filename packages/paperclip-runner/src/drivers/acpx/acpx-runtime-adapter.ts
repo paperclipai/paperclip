@@ -52,6 +52,7 @@ import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-po
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 import { antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
@@ -358,6 +359,10 @@ export async function openQualifiedAcpxRuntime(
       .filter((server) => server.runnerOwned)
       .map((server) => server.name),
   );
+  const antigravityPlanPolicy = {
+    paperclipServerOwned: options.mcpServers.some(server => server.runnerOwned && server.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER),
+    paperclipTools: new Set(options.paperclipTools ?? []),
+  };
   const permissionBoundary: {
     active: AbortController | null;
     hasAdmittedTurn: boolean;
@@ -561,6 +566,8 @@ export async function openQualifiedAcpxRuntime(
       }
       if (options.profile.agent === "kimi" && options.readOnly === true
         && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
+      if (options.profile.agent === "antigravity" && options.readOnly === true
+        && !antigravityPlanModeAllows(request, antigravityPlanPolicy)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,

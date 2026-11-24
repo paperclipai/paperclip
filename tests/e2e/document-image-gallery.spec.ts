@@ -14,9 +14,11 @@ for (const mode of ["desktop", "mobile", "classic"] as const) {
     await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
       userId: "local-board", coordinatorWorkspaceEnabled: mode !== "classic", updatedAt: null,
     } }));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...settings, enableClassicTaskInterface: mode === "classic",
+    } }));
+    const company = await json(await request.post("/api/companies", { data: { name: `Document gallery ${randomUUID()}` } }));
     try {
-      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: mode === "classic" } }));
-      const company = await json(await request.post("/api/companies", { data: { name: `Document gallery ${randomUUID()}` } }));
       const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
         data: { title: "Review the design document", status: "backlog" },
       }));
@@ -140,7 +142,7 @@ for (const mode of ["desktop", "mobile", "classic"] as const) {
         await expect(gallery).toContainText("1 / 3");
       }
     } finally {
-      await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: settings.enableClassicTaskInterface } });
+      await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
     }
   });
 }

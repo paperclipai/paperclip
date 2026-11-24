@@ -36,10 +36,16 @@ test("cleanup restores agent chat experiments when cancellation fails", async ({
       enableClassicTaskInterface: original.enableClassicTaskInterface,
     });
   } finally {
-    await json(await request.patch("/api/instance/settings/experimental", { data: {
-      enableAgentChat: original.enableAgentChat,
-      enableClassicTaskInterface: original.enableClassicTaskInterface,
-    } }));
+    const current = await json(await request.get("/api/instance/settings/experimental"));
+    if (
+      current.enableAgentChat !== original.enableAgentChat ||
+      current.enableClassicTaskInterface !== original.enableClassicTaskInterface
+    ) {
+      await json(await request.patch("/api/instance/settings/experimental", { data: {
+        enableAgentChat: original.enableAgentChat,
+        enableClassicTaskInterface: original.enableClassicTaskInterface,
+      } }));
+    }
   }
 });
 

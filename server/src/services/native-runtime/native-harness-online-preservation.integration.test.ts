@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
-import { agentTaskSessions, createDb, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { activityLog, agentTaskSessions, createDb, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -10,7 +10,7 @@ import { createStorageService } from "../../storage/service.js";
 import { buildNativeHarnessBackupManifest } from "./native-session-executor.js";
 import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
-import { prestageNativeHarnessBackups } from "./native-harness-backup-migration.js";
+import { migrateNativeHarnessBackups, prestageNativeHarnessBackups } from "./native-harness-backup-migration.js";
 import { persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
@@ -160,6 +160,71 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     expect(absent.deferred.source_run_active).toBeUndefined();
     expect(absent.deferred.selected_source_absent).toBe((present.deferred.selected_source_absent ?? 0) + 1);
     expect(absent).toMatchObject({ inspected: 0, published: 0 });
+  });
+  it.each(["online", "offline"])("records a settled selected session whose backup source is gone and moves %s", async path => {
+    const f = await fixture(), signal = AbortSignal.timeout(15_000);
+    await f.db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+    await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    const baseline = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+    await f.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    await rm(join(f.base, f.scopeDigest), { recursive: true });
+    if (path === "online") {
+      const outcomes: string[] = [];
+      const result = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal, onOutcome: outcome => outcomes.push(outcome) });
+      expect(result.sourceGone).toBe(1);
+      expect(result.deferred.selected_source_absent).toBe(baseline.deferred.selected_source_absent);
+      expect(outcomes.filter(outcome => outcome === "source_gone_recorded")).toHaveLength(1);
+    } else await migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal });
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.status).toBe("failed");
+    expect(run.runnerProfileJson?.nativeHarnessBackupSourceAbsent).toMatchObject({
+      scopes: { [f.scopeDigest]: { manifestSha256s: [f.stamp.manifestSha256] } } });
+    expect(await f.db.select().from(activityLog).where(and(eq(activityLog.runId, f.runId),
+      eq(activityLog.action, "native_harness_backup_source_gone_recorded")))).toHaveLength(1);
+    expect(await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.lastRunId, f.runId))).toHaveLength(1);
+    expect((await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal })).sourceGone).toBeUndefined();
+    const newer = `sha256:${"e".repeat(64)}`;
+    await f.db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+      providerLeaseId: randomUUID(), status: "expired", metadata: { nativeHarnessBackup: { ...f.stamp, manifestSha256: newer } } });
+    expect((await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal })).sourceGone).toBe(1);
+    const [again] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(again.runnerProfileJson?.nativeHarnessBackupSourceAbsent).toMatchObject({
+      scopes: { [f.scopeDigest]: { manifestSha256s: [f.stamp.manifestSha256, newer].sort() } } });
+  });
+  it.each([
+    ["active", "selected_source_absent"],
+    ["retiring", "selected_source_retiring"],
+    ["previous", "selected_source_unsettled"],
+  ])("keeps a gone backup source blocked while the session is %s", async (kind, outcome) => {
+    const f = await fixture(), signal = AbortSignal.timeout(15_000);
+    const baseline = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+    await f.db.delete(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    await rm(join(f.base, f.scopeDigest), { recursive: true });
+    if (kind === "active") await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    else await mkdir(join(f.base, f.scopeDigest, "failover-backups", kind === "previous" ? "previous" : `.retiring-${randomUUID()}`), { recursive: true });
+    const result = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+    expect(result.deferred[outcome]).toBe((baseline.deferred[outcome] ?? 0) + 1);
+    expect(result.sourceGone).toBeUndefined();
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.runnerProfileJson?.nativeHarnessBackupSourceAbsent).toBeUndefined();
+  });
+  it("names a gone backup source whose run row is busy and records it on the next pass", async () => {
+    const f = await fixture(), signal = AbortSignal.timeout(15_000);
+    const baseline = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+    await f.db.delete(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    await rm(join(f.base, f.scopeDigest), { recursive: true });
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    const holder = f.db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)).for("update"); entered(); await gate;
+    });
+    try {
+      await ready;
+      const busy = await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal });
+      expect(busy.deferred.selected_source_busy).toBe((baseline.deferred.selected_source_busy ?? 0) + 1);
+    } finally { release(); await holder; }
+    expect((await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal })).sourceGone).toBe(1);
   });
   it("stops the selected-source scan once the pass is cancelled", async () => {
     const f = await fixture(), controller = new AbortController();

@@ -94,22 +94,26 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
 
 function ordinaryMemberUnproven(row: { cwd: string | null; providerRef: string | null; providerType: string; repoUrl: string | null;
   branchName: string | null; sourceIssueId: string | null; strategyType: string; mode: string; status: string;
-  metadata: Record<string, unknown> | null }, root: string, isolatedIssueId: string | null) {
-  if (row.cwd?.startsWith(`${root}/`)) return "ordinary_member_nested";
-  if (row.cwd !== root || row.providerRef && row.providerRef !== root) return "ordinary_member_locator_mismatch";
-  if (row.providerType !== "local_fs" || row.repoUrl || row.branchName) return "ordinary_member_git";
+  metadata: Record<string, unknown> | null }, physical: string[], root: string, isolatedIssueId: string | null) {
+  if (physical.some(cwd => cwd.startsWith(`${root}/`))) return "ordinary_member_nested";
+  if (physical.some(cwd => root.startsWith(`${cwd}/`))) return "ordinary_member_encloses_root";
+  if (!row.cwd || physical.some(cwd => cwd !== root)) return "ordinary_member_locator_mismatch";
+  if (row.providerType !== "local_fs") return "ordinary_member_git";
   if (!row.sourceIssueId || isolatedIssueId && row.sourceIssueId !== isolatedIssueId) return "ordinary_member_task_binding";
   if (row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)) return "ordinary_member_strategy_unsupported";
   if (!["active", "idle", "in_review", "archived"].includes(row.status)) return "member_status_unsupported";
   if (row.metadata?.remoteWorkspace) return "member_already_remote";
   if (row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return "ordinary_member_restoration_pending";
+  if (row.metadata?.gitCacheExpiration) return "member_git_expiration_pending";
   return null;
 }
 
 export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OrdinarySource | { unproven: string } | null> {
   const unproven = (code: string) => ({ unproven: code });
-  if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
+  if (!workspace.cwd || workspace.providerType !== "local_fs") return null;
   const root = await physicalPath(workspace.cwd);
+  if ((workspace.repoUrl || workspace.branchName) && await fs.lstat(path.join(root, ".git")).then(() => true,
+    (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; })) return null;
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
   const parts = path.relative(instance, root).split(path.sep);
   const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode)
@@ -129,6 +133,8 @@ export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspa
     strategyType: executionWorkspaces.strategyType, mode: executionWorkspaces.mode, status: executionWorkspaces.status,
     metadata: sql<Record<string, unknown>>`jsonb_build_object(
       'gitCacheRestoration', ${executionWorkspaces.metadata}->'gitCacheRestoration',
+      'gitCacheExpiration', case when ${executionWorkspaces.metadata}->'gitCacheExpiration'->>'schema' = 'paperclip.git-cache-expiration.v1'
+        and coalesce(${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed', 'false') <> 'true' then true end,
       'nestedCloneMigrationPending', ${executionWorkspaces.metadata}->'nestedCloneMigrationPending',
       'remoteWorkspace', ${executionWorkspaces.metadata}->'remoteWorkspace')`,
   };
@@ -142,7 +148,7 @@ export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspa
     let physical: string[];
     try { physical = await Promise.all(paths.map(physicalPath)); } catch { return unproven("member_unreadable"); }
     if (!physical.some(cwd => overlaps(root, cwd))) continue;
-    const member = ordinaryMemberUnproven(row, root, isolated ? workspace.sourceIssueId : null);
+    const member = ordinaryMemberUnproven(row, physical, root, isolated ? workspace.sourceIssueId : null);
     if (member) return unproven(member);
     aliases.push(row);
   }
@@ -245,8 +251,13 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
 
 /** Only the maintenance entry point can acknowledge that every old deployment
  * has stopped. A task-level migration hold cannot fence other path aliases. */
-export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false, onlineSource?: WorkspaceSourceScope) {
-  if (writersStopped) return offlineWorkspaceMigrationBlockers(db);
+export type WorkspaceLayoutBlocker = { reason: string; state?: string };
+const overlapState = (root: string, physical: string) =>
+  physical === root ? "same_directory" : physical.startsWith(`${root}/`) ? "nested_workspace" : "enclosing_workspace";
+
+export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false,
+  onlineSource?: WorkspaceSourceScope): Promise<WorkspaceLayoutBlocker[]> {
+  if (writersStopped) return (await offlineWorkspaceMigrationBlockers(db)).map(reason => ({ reason }));
   const cwd = rootOf(workspace);
   if (!cwd) return [];
   const local = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd,
@@ -260,9 +271,10 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
       const physical = await physicalPath(cwd);
       if (onlineSource?.gitSourceRoots && physical.startsWith(`${root}/.paperclip/worktrees/`)) {
         const entry = await fs.lstat(physical).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
-        if (entry) return ["nested_workspace_import_required"];
+        if (entry) return [{ reason: "nested_workspace_import_required" }];
       }
-      if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
+      if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical))
+        return [{ reason: "overlapping_workspace_requires_maintenance", state: overlapState(root, physical) }];
     }
   }
   const migrated = await db.select({ id: workspaceOperations.id, cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
@@ -274,7 +286,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
     const sourcePath = await physicalPath(row.cwd);
     if (sourcePath.startsWith(`${root}/.paperclip/worktrees/`)
       && !(onlineSource?.gitSourceRoots && onlineSource.importedChildren?.some(child => child.operationId === row.id && child.sourcePath === sourcePath)))
-      return ["overlapping_workspace_requires_maintenance"];
+      return [{ reason: "overlapping_workspace_requires_maintenance", state: "imported_child_unrecorded" }];
   }
   return [];
 }

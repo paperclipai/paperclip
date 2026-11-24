@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
-import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { deduplicateToolDescriptors, ToolGatewayHttpError, toolResultErrorDetails, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
 type WorkMode = "standard" | "planning" | "ask" | "skill_test";
 type ToolDefinition = Record<string, unknown>;
@@ -186,6 +186,16 @@ function deepFreeze<T>(value: T): T {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function runnerToolCode(code: string | undefined): string {
+  if (!code) return "assigned_tool_error";
+  return /[_.-]/.test(code) ? code : `tool_${code}`;
+}
+
+export function toolReportedError(details: { toolCode?: string; retryable?: boolean }): ToolGatewayHttpError {
+  return new ToolGatewayHttpError(details.retryable ? 429 : 422, `${runnerToolCode(details.toolCode)}: The connected tool reported an error.`,
+    "tool_error", details.retryable ? { retryable: true } : undefined);
 }
 
 async function buildAssignedCatalog(identity: string, listing: readonly AssignedListingEntry[]): Promise<AssignedCatalog> {
@@ -447,19 +457,27 @@ export async function createAssignedMcpTools(input: {
       if (!permits(descriptor) || !permits(descriptor, currentWorkMode)) throw new Error("paperclip_runner_tool_mode_denied");
       // Reauthorize through the existing gateway on every call. Discovery is
       // not a grant: revocation, policy, approval, and audit remain server-owned.
-      const result = await input.gateway.executeTool({
-        gatewayPublicId: input.gatewayPublicId,
-        sessionToken: input.bearerToken,
-        tool: descriptor.name,
-        parameters,
-      });
+      let result: Awaited<ReturnType<ToolGatewayService["executeTool"]>>;
+      try {
+        result = await input.gateway.executeTool({
+          gatewayPublicId: input.gatewayPublicId,
+          sessionToken: input.bearerToken,
+          tool: descriptor.name,
+          parameters,
+        });
+      } catch (error) {
+        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") {
+          throw toolReportedError({ toolCode: typeof error.details.toolCode === "string" ? error.details.toolCode : undefined, retryable: error.details.retryable === true });
+        }
+        throw error;
+      }
       if (result.status !== "completed" && result.status !== "replayed") {
         throw new Error("assigned_mcp_tool_execution_incomplete");
       }
       // The gateway normally throws provider errors. Keep a malformed or older
       // provider response from being reported as successful through PRP.
       if (result.result && typeof result.result === "object" && "isError" in result.result && result.result.isError === true) {
-        throw new ToolGatewayHttpError(502, "The assigned tool returned an error.", "tool_error");
+        throw toolReportedError(toolResultErrorDetails(result.result as Record<string, unknown>));
       }
       return result.result;
     },

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { ANTIGRAVITY_NATIVE_COMMANDS, antigravityNativeCommands, neutralizeAntigravityNativeCommands } from "./antigravity-native-commands.js";
 import { createAntigravityQuestionBridge } from "./antigravity-questions.js";
 import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
 
@@ -27,11 +28,6 @@ export function antigravityInstructionBinding(content: string) {
     throw new AntigravityAdmissionError("instructions exceed their size limit or contain NUL");
   }
   return { digest: `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`, byteLength: Buffer.byteLength(content) };
-}
-
-export function assertAntigravityPromptPolicy(content: string): void {
-  // Native slash commands can alter account/configuration before inference.
-  if (content.split(/\r\n|\r|\n/u).some(line => line.trimStart().startsWith("/"))) throw new AntigravityAdmissionError("native slash commands are unavailable in a managed task");
 }
 
 /** No saved ACPX record can substitute for this actual connection's receipt. */
@@ -94,7 +90,11 @@ export function createAntigravityAdmission(content: string, model: string) {
               assertReady();
               if (params.sessionId !== state.sessionId || !Array.isArray(params.prompt)
                 || params.prompt.some(value => record(value).type !== "text" || typeof record(value).text !== "string")) fail("prompt is outside the admitted text session");
-              assertAntigravityPromptPolicy((params.prompt as unknown[]).map(value => record(value).text).join("\n"));
+              const blocks = (params.prompt as unknown[]).map(record);
+              const texts = neutralizeAntigravityNativeCommands(blocks.map(block => block.text as string));
+              if (antigravityNativeCommands(texts).length > 0) fail("the task text could not be sent as plain text");
+              params.prompt = blocks.map((block, index) => ({ ...block, text: texts[index] }));
+              message.params = params;
             } else if (!["initialize", "session/cancel", "session/close"].includes(method)) {
               fail("native control is unavailable in a managed task");
             }
@@ -156,6 +156,10 @@ export function createAntigravityAdmission(content: string, model: string) {
                 if (nativeSelection.get(id) !== value) fail("provider changed the admitted model, thinking level, or permission mode");
               }
               projectConcreteModel(update, model);
+            }
+            if (update.sessionUpdate === "available_commands_update" && Array.isArray(update.availableCommands)
+              && update.availableCommands.some(command => !ANTIGRAVITY_NATIVE_COMMANDS.includes(String(record(command).name)))) {
+              fail("the runtime offers a native command this version cannot keep out of task text");
             }
             if (update.sessionUpdate === "current_mode_update" && update.currentModeId !== "default") fail("provider changed the admitted permission mode");
           }

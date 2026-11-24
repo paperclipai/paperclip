@@ -18,6 +18,8 @@ import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => true }));
+
 const gmailCatalog = (write: boolean) => ["docs__read_doc", ...googleWorkspaceServiceToolNames("gmail")
   .filter((name) => write || name !== "create_draft").map((name) => `gmail__${name}`)].sort();
 
@@ -620,6 +622,38 @@ const support = await getEmbeddedPostgresTestSupport();
         writeControl: { requiredRevisionId: "rev-1" } })).resolves.toMatchObject({ status: "completed" });
       expect(f.restRequests.map((request) => `${request.method} ${request.path}`)).toEqual(["GET /v1/documents/doc1", "POST /v1/documents/doc1:batchUpdate"]);
       expect(f.mcpRequests).toHaveLength(refreshesBefore);
+    });
+
+    it("gives a connection saved with older definitions the closed schemas and list_threads' query at once, and refuses unknown arguments", async () => {
+      const f = await connectWorkspace({ permissions: DEFAULT_PERMISSIONS });
+      const saved = f.catalog.find((entry) => entry.toolName === "gmail__list_threads")!;
+      const current = restDispatch.listGoogleWorkspaceRest("gmail").find((tool) => tool.name === "list_threads")!.inputSchema;
+      const { query: _query, ...olderProperties } = current.properties as Record<string, unknown>;
+      await db.update(toolCatalogEntries).set({ inputSchema: { type: "object", properties: olderProperties } }).where(eq(toolCatalogEntries.id, saved.id));
+      const requestsBefore = f.restRequests.length;
+
+      const listed = await f.toolNamed("gmail__list_threads");
+      expect(listed.parametersSchema).toEqual(current);
+      expect(listed.parametersSchema).toMatchObject({ additionalProperties: false, properties: { query: { type: "string" } } });
+      for (const tool of (await f.gateway.listToolsForSession(f.session.token)).filter((item) => item.connectionId === f.connectionId)) {
+        expect(tool.parametersSchema, String(tool.upstreamToolName)).toMatchObject({ additionalProperties: false });
+      }
+      expect(f.restRequests).toHaveLength(requestsBefore);
+
+      const queries: Array<string | null> = [];
+      f.setGoogle((url) => { if (url.pathname === "/gmail/v1/users/me/threads") queries.push(url.searchParams.get("q")); return undefined; });
+      await expect(f.call("gmail__list_threads", { query: "subject:marker-123" })).resolves.toMatchObject({ status: "completed" });
+      expect(queries).toEqual(["(subject:marker-123) -in:draft"]);
+
+      f.restRequests.length = 0;
+      const refusal = "Invalid arguments for list_threads: unknown argument \"q\". Accepted arguments: pageSize, pageToken, query, labelIds, includeTrash, view. Nothing was sent to Google.";
+      await expect(f.call("gmail__list_threads", { q: "subject:marker-123" })).rejects.toMatchObject({ status: 502, reasonCode: "tool_error", message: expect.stringContaining(refusal) });
+      expect(f.restRequests).toEqual([]);
+      const failed = (await f.invocations()).filter((invocation) => invocation.status === "failed");
+      expect(failed).toEqual([expect.objectContaining({ errorCode: "tool_error", errorMessage: expect.stringContaining(refusal) })]);
+      const audit = await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, f.company.id), eq(toolAccessAuditEvents.action, "call_failed")));
+      expect(audit).toHaveLength(1);
+      expect(JSON.stringify(audit[0])).toContain("unknown argument");
     });
 
     it("on the first refresh after the switch, releases actions held for review and keeps Off and Ask first", async () => {

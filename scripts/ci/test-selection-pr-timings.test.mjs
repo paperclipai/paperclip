@@ -237,10 +237,10 @@ test("collection skips unmerged, absent, stale-head and incomplete runs, and sam
 });
 
 test("general server weights come from complete full-width PR shard sets that cover the lane", async () => {
-  assert.equal(generalServerShardCount(), 12);
-  assert.deepEqual(generalServerJob("ci / General tests (server (3/12))", 12), { index: 3, count: 12 });
-  for (const name of ["ci / General tests (server (1/3))", "ci / General tests (chat (1/3))", "ci / Serialized tests (1/9)"]) {
-    assert.equal(generalServerJob(name, 12), null);
+  assert.equal(generalServerShardCount(), 20);
+  assert.deepEqual(generalServerJob("ci / General tests (server (3/20))", 20), { index: 3, count: 20 });
+  for (const name of ["ci / General tests (server (1/3))", "ci / General tests (chat (1/5))", "ci / Serialized tests (1/9)"]) {
+    assert.equal(generalServerJob(name, 20), null);
   }
   const api = "/repos/paperclipai/paperclip";
   const timing = (file, ms) => `2026-11-13T00:00:00.0000000Z ${timingPrefix}${JSON.stringify({ version: 1, file, durationMs: ms })}`;
