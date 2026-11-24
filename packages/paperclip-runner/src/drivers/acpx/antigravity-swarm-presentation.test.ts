@@ -10,7 +10,7 @@ describe("Antigravity swarm activity, in plain language", () => {
     const event = antigravitySwarmEvent(tool("swarm", { action: "add", name: "writer-a", workspace: "inherit",
       brief: `Write a.txt containing exactly 'A' in ${WORKSPACE}. Once done, post to the board: '@verifier [done] a.txt written'.` }), WORKSPACE);
     expect(event).toMatchObject({ type: "tool_call", title: "Started helper writer-a: Write a.txt containing exactly 'A' in the task folder" });
-    expect(event?.title).not.toMatch(/call_|@verifier/);
+    expect((event as { title?: string } | null)?.title).not.toMatch(/call_|@verifier/);
     expect(event).not.toHaveProperty("rawInput");
     expect(antigravitySwarmEvent(tool("swarm", { action: "add", name: "monitor", brief: "You are this swarm's stall monitor. Load the swarm_monitor skill." }), WORKSPACE))
       .toMatchObject({ title: "Started a helper that watches for stalls" });

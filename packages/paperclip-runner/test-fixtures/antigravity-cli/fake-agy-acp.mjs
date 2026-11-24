@@ -70,7 +70,7 @@ async function prompt(id, params) {
   update(state.sessionId, { sessionUpdate: "session_info_update", title: "Swarm" });
   if (scenario === "refusal") { say("\n⚠ agent executor error: Error 402 Your prepayment credits are depleted. Status: RESOURCE_EXHAUSTED\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   if (scenario === "quota") { say("\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
-  if (scenario === "escape") { await tool("swarm", { action: "add", name: "writer-a", workspace: "branch", brief: "Write a.txt." }); await sleep(5000); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
+  if (scenario === "escape") { await tool("swarm", { action: "add", name: "writer-a", workspace: "branch", brief: "Write a.txt." }); if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   await addWriters();
   say("I have configured and launched the swarm.\n\nRun /swarm board (default shortcut alt+s) to open the live board.");
   if (scenario === "cancel" || scenario === "die") {
@@ -78,7 +78,8 @@ async function prompt(id, params) {
     state.worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     if (process.env.FAKE_AGY_WORKER_PID_FILE) writeFileSync(process.env.FAKE_AGY_WORKER_PID_FILE, String(state.worker.pid));
     if (scenario === "die") { await sleep(50); process.exit(3); }
-    await new Promise(resolve => { state.cancel = resolve; });
+    if (state.cancelled) return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+    if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
     return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }
   if (scenario === "live-helpers" || scenario === "hang-helpers") return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } });
@@ -144,6 +145,6 @@ async function handle(message) {
     return update(state.sessionId, { sessionUpdate: "config_option_update", configOptions: configOptions() });
   }
   if (method === "session/prompt") return prompt(id, params);
-  if (method === "session/cancel") { state.worker?.kill("SIGTERM"); state.cancel?.(); return; }
+  if (method === "session/cancel") { state.cancelled = true; state.worker?.kill("SIGTERM"); state.cancel?.(); return; }
   if (id !== undefined) write({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
 }

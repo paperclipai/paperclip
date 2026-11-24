@@ -54,6 +54,8 @@ import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 import { antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
 import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
+import { openAntigravitySwarmRuntime } from "./antigravity-swarm-runtime.js";
+import { isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
 import { acpxElicitationHandler, createAcpxPermissionReplyConfirmations, withReturnedResponseDelivery, type AcpxHostExtensionRequestHandler, type AcpxHostPermissionHandler } from "./interaction-delivery.js";
@@ -224,6 +226,9 @@ export async function openQualifiedAcpxRuntime(
   // tree when Node cannot safely signal a verified provider process group.
   assertVerifiedAcpxProviderPlatform(dependencies.platform ?? process.platform);
   options.signal?.throwIfAborted();
+  // A trusted /swarm turn runs the pinned Antigravity CLI through its own
+  // verified ACP client (antigravity-swarm-runtime.ts), never through ACPX.
+  if (isAntigravitySwarmRoute(options.profile.agent, options.mode)) return openAntigravitySwarmRuntime(options);
   const credentialFenceFds = options.credentialFenceFds;
   if (
     !Array.isArray(credentialFenceFds) ||

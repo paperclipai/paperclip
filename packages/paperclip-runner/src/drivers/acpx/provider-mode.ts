@@ -1,5 +1,6 @@
 import { parseProviderMode } from "../../contracts/provider-mode.js";
 import { createCursorModeAdmission, resolveCursorSessionMode } from "./cursor-mode.js";
+import { ANTIGRAVITY_SWARM_MODE } from "./antigravity-swarm-guard.js";
 
 interface ModeAdmission {
   assertReady(): void;
@@ -8,7 +9,7 @@ interface ModeAdmission {
 }
 
 interface ProviderModeAdapter {
-  resolve(mode: unknown): string;
+  resolve(mode: unknown): string | undefined;
   admit(mode: string): ModeAdmission;
   configKey: string;
 }
@@ -19,6 +20,18 @@ const adapters: Readonly<Record<string, ProviderModeAdapter | undefined>> = {
   cursor: {
     resolve: resolveCursorSessionMode,
     admit: mode => createCursorModeAdmission(resolveCursorSessionMode(mode)),
+    configKey: "mode",
+  },
+  // `swarm` is set by Paperclip only for a turn the signed-in user started with
+  // a trusted /swarm. It selects the Antigravity CLI route, whose own runtime
+  // sets and verifies the native mode (antigravity-swarm-runtime.ts).
+  antigravity: {
+    resolve: mode => {
+      if (mode === undefined) return undefined;
+      if (mode !== ANTIGRAVITY_SWARM_MODE) throw new Error("ACPX antigravity supports only the swarm provider mode");
+      return mode;
+    },
+    admit: () => { throw new Error("The Antigravity swarm route does not run through ACPX mode admission"); },
     configKey: "mode",
   },
 };
