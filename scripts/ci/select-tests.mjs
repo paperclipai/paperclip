@@ -44,7 +44,6 @@ export async function createTestSelection(plan, head) {
   for (const job of ["general_tests", "verify_serialized_server"]) {
     if (plan.jobs[job].run) for (const entry of plan.jobs[job].matrix.include) groups.add(entry.group ?? "serialized");
   }
-  groups.delete("general-chat"); // Keep its line sharding and DB ownership intact.
   const owners = {}, projects = new Set(), inventories = new Map();
   const inventoryFor = group => {
     if (!inventories.has(group)) inventories.set(group, runnerInventory(group));
@@ -52,9 +51,12 @@ export async function createTestSelection(plan, head) {
   };
   for (const group of groups) {
     const inventory = inventoryFor(group);
-    if (group === "serialized" || group === "general-server-without-chat") {
+    if (group === "serialized" || group === "general-server-without-chat" || group === "general-chat") {
       owners[group] = { "@paperclipai/server": group === "serialized"
-        ? inventory.selectedSerializedSuites : inventory.selectedGeneralServerSuites };
+        ? inventory.selectedSerializedSuites
+        : group === "general-chat"
+          ? inventory.selectedChatSuites
+          : inventory.selectedGeneralServerSuites };
       projects.add("@paperclipai/server");
     } else {
       owners[group] = Object.fromEntries(inventory.workspaceProjects.map((project) => [project, null]));
@@ -74,8 +76,9 @@ export async function createTestSelection(plan, head) {
   if (server) {
     const general = inventoryFor("general-server-without-chat");
     const native = inventoryFor("general-server-native-runner");
+    const chat = inventoryFor("general-chat");
     assert.deepEqual([...general.selectedGeneralServerSuites, ...general.selectedSerializedSuites,
-      ...native.selectedGeneralServerSuites, "server/src/__tests__/chat-channels.integration.test.ts"].sort(),
+      ...native.selectedGeneralServerSuites, ...chat.selectedChatSuites].sort(),
     server.inventory, "Server inventory must be completely covered by existing lane ownership");
   }
   const excludedSuites = activeNightlySuitesForEnv();

@@ -68,7 +68,7 @@ Capability ID: `plugins/installation`.
 Scope: ui
 Storybook: Mount PluginManager trusted package and bundled-local choices, pending install, validation/recoverable error and installed status.
 Production: POST /plugins/install on a disposable package; enforce instance install authority, trusted path/package validation and correct version. Package and local install are distinct.
-Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-install-guard.ts](../../server/src/services/plugin-install-guard.ts). Tests: [plugin-install-route-security.test.ts](../../server/src/__tests__/plugin-install-route-security.test.ts), [plugin-install-autobuild.test.ts](../../server/src/__tests__/plugin-install-autobuild.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
+Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-install-guard.ts](../../server/src/services/plugin-install-guard.ts). Tests: [plugin-install-route-security.test.ts](../../server/src/__tests__/plugin-install-route-security.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
 
 #### `configuration`
 
