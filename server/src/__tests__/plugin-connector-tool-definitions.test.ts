@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, toolConnections } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { pluginAppSlug, pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -67,7 +67,7 @@ const support = await getEmbeddedPostgresTestSupport();
       enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] } }, actor);
     const buildReport = async () => (await gateway.listToolsForSession(session.token))
       .find(tool => tool.providerType === "paperclip_plugin_connection" && tool.upstreamToolName === "build_report")!;
-    return { connectionId: connected.connectionId, buildReport };
+    return { connectionId: connected.connectionId, buildReport, service };
   }
 
   async function upgradePlugin() {
@@ -83,13 +83,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(current.description).toContain("newest first");
   });
 
-  it("keeps the reviewed schema while the connection holds changed tools for review", async () => {
+  it("keeps the reviewed schema while changed tools await review, and the catalog refresh quarantines them", async () => {
     const reports = await connectedReports();
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, reports.connectionId));
     await db.update(toolConnections).set({ config: { ...connection.config, quarantineNewEntries: true } })
       .where(eq(toolConnections.id, reports.connectionId));
     await upgradePlugin();
     expect((await reports.buildReport()).parametersSchema).toEqual({ type: "object" });
+    await reports.service.refreshCatalog(reports.connectionId, actor);
+    const [entry] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, reports.connectionId));
+    expect(entry.status).toBe("quarantined");
+    expect(await reports.buildReport()).toBeUndefined();
   });
 
   it("never treats a plugin's tools as Paperclip-trusted for catalog review", async () => {

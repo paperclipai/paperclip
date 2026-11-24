@@ -1,5 +1,7 @@
 import { googleWorkspaceRestToolDefinition } from "../google-workspace-rest-dispatch.js";
+import type { toolConnections } from "@paperclipai/db";
 import { pluginConnectionMethod, pluginConnectionToolDefinition } from "../plugin-connector-runtime.js";
+import { shouldQuarantineNewEntries } from "../tool-access/catalog/descriptors.js";
 
 export interface PaperclipDefinedToolDefinition {
   name: string;
@@ -23,10 +25,10 @@ export function paperclipDefinedTool(connection: Connection, toolName: string): 
   return PAPERCLIP_DEFINED_TOOL_SOURCES.find((source) => source.matches(connection))?.definition(toolName) ?? null;
 }
 
-export function currentConnectionToolDefinition(connection: Connection, toolName: string): PaperclipDefinedToolDefinition | null {
+export function currentConnectionToolDefinition(connection: typeof toolConnections.$inferSelect, toolName: string): PaperclipDefinedToolDefinition | null {
   const trusted = paperclipDefinedTool(connection, toolName);
   if (trusted) return trusted;
-  if (connection.config.quarantineNewEntries === true) return null;
+  if (shouldQuarantineNewEntries(connection)) return null;
   if (pluginConnectionMethod(connection)?.method.tools?.kind !== "static") return null;
   return pluginConnectionToolDefinition(connection, toolName);
 }
