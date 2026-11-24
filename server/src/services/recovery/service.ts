@@ -1,4 +1,5 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
+import { readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
@@ -6166,6 +6167,8 @@ export function recoveryService(
       healed: 0,
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
+      failedWakeBackoffSkipped: 0,
+      failedWakeLimitSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -6174,6 +6177,7 @@ export function recoveryService(
       deferredOrFailed: 0,
       enqueueFailed: 0,
       issueIds: [] as string[],
+      failedWakeLimitIssueIds: [] as string[],
     };
 
     const source = opts?.source ?? "issue_graph_liveness.backstop";
@@ -6367,6 +6371,26 @@ export function recoveryService(
           continue;
         }
 
+        // A woken run that fails can leave the task blocked again, which starts a
+        // new blocked cycle and a new idempotency key. Without this breaker a
+        // deterministic failure re-woke the task on every sweep, forever.
+        const circuit = await readDependencyWakeCircuit(db, {
+          companyId,
+          issueId: candidate.id,
+          agentId,
+          blockerIssueIds: readiness.blockerIssueIds,
+        });
+        if (circuit.state === "backoff") {
+          result.failedWakeBackoffSkipped += 1;
+          opts?.onDeferredDeadline?.(circuit.retryAt);
+          continue;
+        }
+        if (circuit.state === "open") {
+          result.failedWakeLimitSkipped += 1;
+          result.failedWakeLimitIssueIds.push(candidate.id);
+          continue;
+        }
+
         try {
           const wake = await deps.enqueueWakeup(agentId, {
             source: "automation",
@@ -6438,6 +6462,15 @@ export function recoveryService(
           blockerIssueId: opts?.blockerIssueId ?? null,
         },
         "issue graph liveness backstop healed resolved blocked dependency wakes",
+      );
+    }
+    if (result.failedWakeLimitSkipped > 0) {
+      logger.warn(
+        {
+          issueIds: result.failedWakeLimitIssueIds,
+          source,
+        },
+        "issue graph liveness backstop stopped re-waking blocked tasks whose resolved-dependency runs keep failing",
       );
     }
 
