@@ -15201,11 +15201,15 @@ describe("native warm session supervision", () => {
           const resumeFrom = releasedUnavailable ? vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockResolvedValue("target-task") : undefined;
           const pluginTaskDescription = { kind: "description", taskId: "target-task", warmTaskVersion: 1,
             launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1,
+            ...(releasedUnavailable ? { executionContextVersion: 1 as const } : {}),
             runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } } as const;
           const portableTarget = { ...target, runner: undefined, leaseId: "target-lease",
             sandboxLeaseAcquisition: { outcome: path === "legacy-plugin" || releasedUnavailable ? "resumed" : "created", providerLeaseId: "target-task" },
-            runnerTask: vi.fn(async (operation: { kind: string }) => {
-              if (releasedUnavailable && operation.kind === "describe") return { ...pluginTaskDescription, taskId: "fresh-task" };
+            runnerTask: vi.fn(async (operation: { kind: string }, options?: { executionContext?: unknown }) => {
+              if (releasedUnavailable && operation.kind === "describe") {
+                if (options?.executionContext) throw new Error("fixture replacement bound to the old task context");
+                return { ...pluginTaskDescription, taskId: "fresh-task" };
+              }
               if (path === "legacy-plugin") {
                 expect(recoveredSession.close).toHaveBeenCalledOnce();
                 expect(operation.kind).toBe("describe");
