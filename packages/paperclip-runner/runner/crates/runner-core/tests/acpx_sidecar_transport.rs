@@ -376,8 +376,10 @@ fn session_open_rejection_keeps_the_sidecar_code_and_reason_outside_the_error_te
     assert_eq!(error.provider_failure(), Some(cause));
     assert_eq!(
         error.sidecar_rejection(),
-        Some(json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE",
-            "message": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" }))
+        Some(
+            json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE",
+            "message": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" })
+        )
     );
     sidecar.shutdown().unwrap();
     // A code outside the closed identifier shape fails the frame contract and is never echoed.

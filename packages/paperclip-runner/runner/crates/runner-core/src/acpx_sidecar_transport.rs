@@ -1311,8 +1311,13 @@ fn sidecar_rejection_detail(command: &str, error: &ResponseError) -> Value {
         "invalid_code"
     };
     let mut detail = json!({ "command": command, "code": code });
-    let cause_message = validated_provider_failure(error.provider_failure.clone())
-        .and_then(|cause| cause.get("message").and_then(Value::as_str).map(str::to_owned));
+    let cause_message =
+        validated_provider_failure(error.provider_failure.clone()).and_then(|cause| {
+            cause
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
     if cause_message.as_deref() != Some(error.message.as_str()) {
         let message: String = crate::durable::redact_sensitive_text_values(&error.message)
             .chars()
