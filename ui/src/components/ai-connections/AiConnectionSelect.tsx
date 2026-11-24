@@ -2,7 +2,6 @@ import { useId } from "react";
 import { Plus, UserRound } from "lucide-react";
 import {
   aiConnectionCatalogSlug,
-  isAiConnectionCompatible,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import {
@@ -14,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { Button } from "@/components/ui/button";
-import { aiConnectionDisplayLabel, aiConnectionProblem, personalAiDefault } from "./model";
+import { aiConnectionDisplayLabel, aiConnectionProblem, isAiConnectionCompatibleForSelection, personalAiDefault } from "./model";
 import type { AiConnectionPickerProps } from "./AiConnectionPicker";
 import type { AiConnectionSummary } from "./model";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
@@ -44,25 +43,24 @@ export function AiConnectionSelect({
   onChange,
   adapterType,
   model,
-}: AiConnectionPickerProps & { adapterType: string; model?: string }) {
+  onUseHarnessAuth,
+}: AiConnectionPickerProps & { adapterType: string; model?: string; onUseHarnessAuth?: () => void }) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
   const selected =
     value?.mode === "responsible_user"
       ? personal
       : connections.find(
-          (c) => c.id === value?.connectionId && c.grantId === value?.grantId,
+          (c) => c.companyId === requirement.companyId && c.id === value?.connectionId && c.grantId === value?.grantId,
         );
-  const compatibilityModel = (provider: string) => adapterType === "pi_local"
-    ? model || `${provider}/` : provider === "openrouter" ? "openrouter/" : undefined;
   const compatible = connections
     .filter(
       (c) =>
         c.companyId === requirement.companyId &&
-        isAiConnectionCompatible(
+        isAiConnectionCompatibleForSelection(
           c,
           adapterType,
-          compatibilityModel(c.provider),
+          model,
         ),
     )
     .sort(
@@ -78,27 +76,28 @@ export function AiConnectionSelect({
       !loading &&
       !error,
   );
-  const canUseDefault = isAiConnectionCompatible(
-    {
+  const canUseDefault = isAiConnectionCompatibleForSelection(
+    personal ?? {
       provider: requirement.provider,
       method: "api_key",
       mode: "responsible_user",
     },
     adapterType,
-    compatibilityModel(requirement.provider),
+    model,
   );
   const incompatible =
     selected && !compatible.some((c) => c.id === selected.id);
   const change = (id: string) => {
     if (id === "connect") return onConnect();
-    if (id === "responsible_user")
+    if (id === "harness_auth") return onUseHarnessAuth?.();
+    if (id === "responsible_user" && canUseDefault)
       return onChange({
         provider: requirement.provider,
         method: personal?.method ?? "api_key",
         mode: "responsible_user",
       });
     const connection = compatible.find((c) => c.id === id);
-    if (!connection) return;
+    if (!connection || aiConnectionProblem(connection)) return;
     onChange({
       provider: connection.provider,
       method: connection.method,
@@ -116,7 +115,7 @@ export function AiConnectionSelect({
         value={
           value?.mode === "responsible_user"
             ? "responsible_user"
-            : (value?.connectionId ?? "")
+            : (value?.connectionId ?? (onUseHarnessAuth ? "harness_auth" : ""))
         }
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
@@ -131,13 +130,14 @@ export function AiConnectionSelect({
               ? <ConnectionLabel connection={selected} label={value?.mode === "responsible_user" ? "Responsible user’s default" : undefined} />
               : value?.mode === "responsible_user"
                 ? "Responsible user’s default"
-                : value ? "Unavailable connection" : undefined}
+                : value ? "Unavailable connection" : onUseHarnessAuth ? "Use harness sign-in" : undefined}
           </SelectValue>
         </SelectTrigger>
         <SelectContent className={ANALYTICS_MASK_CLASS}>
+          {onUseHarnessAuth && <SelectItem value="harness_auth">Use harness sign-in</SelectItem>}
           {incompatible && selected && (
             <SelectItem value={selected.id} disabled>
-              <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible`} wrap />
+              <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible with this harness and model`} wrap />
             </SelectItem>
           )}
           {compatible.map((c) => (
@@ -153,6 +153,7 @@ export function AiConnectionSelect({
             <SelectItem value="responsible_user" disabled={!canUseDefault}>
               <span className="flex size-5 shrink-0 items-center justify-center"><UserRound className="size-4" /></span>
               Responsible user’s default
+              {!canUseDefault && " · Incompatible with this harness and model"}
             </SelectItem>
           )}
           <SelectItem value="connect">
@@ -176,7 +177,9 @@ export function AiConnectionSelect({
       )}
       {value?.mode === "responsible_user" && !personal && !loading && !error ? (
         <p role="alert" className="text-sm text-destructive">
-          You have no default account for this provider. Connect an account or choose another connection.
+          You have no default account for this provider.{" "}
+          {!readOnly && <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={onConnect}>Connect an account</Button>}
+          {readOnly ? " Connect an account or choose another connection." : " or choose another connection."}
         </p>
       ) : unavailable ? (
         <p role="alert" className="text-sm text-destructive">

@@ -26,6 +26,7 @@ export function getFileMetadataResult(file: RestFile, rich: boolean): CallToolRe
 export const getFileMetadata = defineTool({
   definition: {
     name: "get_file_metadata",
+    title: "Read file details",
     description: "Gets a Drive file's metadata: title, type, size, parent folder, owner, times and link. Returns no content snippet; use read_file_content for the text. If the file is not found, find it with search_files.",
     inputSchema: {
       type: "object",

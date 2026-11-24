@@ -1569,7 +1569,13 @@ sizes and hashes stay. A step that cannot confirm its deletion fails, and the
 request stays pending and retries; it completes only when every step succeeded.
 A `tool_connection_content_deletions` row is the durable request; the
 `tool-connection-content-deletion` delivery queue resumes it after a restart.
-Runs that are still working are skipped and counted. The user-facing help is
+Runs that are still working are skipped and counted. Deleting a task queues an
+`issue_connection_content_deletions` row that runs the same steps for the
+task's runs and waits, for up to a day, for runs and approvals still open. Deleting a company queues its run
+logs and files in `stored_object_deletions`, which outlives the company. A new
+store that keeps connection content must be covered by all three paths;
+`tool-connection-content-deletion-canary.test.ts` scans every text column and
+every storage copy after each one. The user-facing help is
 `docs/guides/board-operator/deleting-connection-data.md`.
 
 Responses may contain secret IDs, version selectors, header names, prefixes,
@@ -2171,7 +2177,17 @@ registers a client on the fly and stores it on the connection:
   client.
 - Env-registered clients always win: when
   `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID/_SECRET` are configured, the
-  broker uses them (`customer` ownership) and skips registration. List both
+  broker uses them (`customer` ownership) and skips registration. The broker
+  sends an env client only to the method's `defaults.tokenEndpoint`, or, when
+  the method has none, to a token endpoint on the exact host of its fixed
+  `serverUrl`, `discoveryUrl`, `metadataUrl` or `authorizationEndpoint`. Set
+  `defaults.tokenEndpoint` when the vendor's token endpoint is on another host.
+  The method must list `customer` ownership. Box, Notion, PostHog, Sentry and
+  Xero rely on the same-host rule today: if their discovery returns a token
+  endpoint on another host, a deployment-wide client is refused until the
+  endpoint is pinned, and a client added to the connection always works.
+  `client-settings.test.ts` fails when a new customer method neither pins its
+  token endpoint nor joins that named list. List both
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 

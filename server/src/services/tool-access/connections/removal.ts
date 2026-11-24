@@ -45,7 +45,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 const CONNECTION_OWNED_SECRET_KEY_PREFIX = "tool_app.";
 
 /** Token fields a legacy row may have inlined into `config.oauth`. */
-const INLINE_OAUTH_TOKEN_FIELDS = [
+export const INLINE_OAUTH_TOKEN_FIELDS = [
   "access_token",
   "refresh_token",
   "accessToken",

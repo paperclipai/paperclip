@@ -1,16 +1,74 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::generated_acpx_profiles::{acpx_release_profile, kimi_native_closure};
+use crate::generated_acpx_profiles::{
+    acpx_release_profile, antigravity_native_closure, kimi_native_closure, AcpxReleaseProfile,
+};
 use crate::local_runner::LocalRunnerError;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 const SCHEMA: &str = "paperclip.acpx-candidate-admission.v1";
 const MAX_LIFETIME_MS: u64 = 24 * 60 * 60 * 1_000;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const DISTRIBUTIONS: &str = include_str!("../../../../antigravity-distributions.json");
+
+/// The record names Node's platform/architecture; the host check uses Rust's.
+fn native_host_matches(platform: &str, architecture: &str, os: &str, host_arch: &str) -> bool {
+    matches!(
+        (platform, architecture, os, host_arch),
+        ("darwin", "arm64", "macos", "aarch64")
+            | ("linux", "x64", "linux", "x86_64")
+            | ("linux", "arm64", "linux", "aarch64")
+    )
+}
+
+/// The generated release profile that runtime qualification gates read.
+///
+/// Every gate that depends on `qualification_pending` reads it here, so tests
+/// can exercise the released state of a still-pending profile exactly as the
+/// declaration change at qualification would produce it.
+pub(crate) fn release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
+    #[allow(unused_mut)]
+    let mut profile = acpx_release_profile(agent)?;
+    #[cfg(test)]
+    if released_for_test::contains(agent) {
+        profile.qualification_pending = false;
+    }
+    Some(profile)
+}
+
+/// Test-only simulation of a profile flipped to released on this thread.
+#[cfg(test)]
+pub(crate) mod released_for_test {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static RELEASED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn contains(agent: &str) -> bool {
+        RELEASED.with(|released| released.borrow().iter().any(|name| name == agent))
+    }
+
+    /// Treats `agent` as released until the guard drops.
+    pub(crate) fn release(agent: &str) -> Guard {
+        RELEASED.with(|released| released.borrow_mut().push(agent.to_owned()));
+        Guard(agent.to_owned())
+    }
+
+    pub(crate) struct Guard(String);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RELEASED.with(|released| {
+                let mut released = released.borrow_mut();
+                if let Some(index) = released.iter().position(|name| *name == self.0) {
+                    released.remove(index);
+                }
+            });
+        }
+    }
+}
 
 /// Operator authority supplied only through trusted process startup. Company
 /// membership is authorized by the server; an agent descriptor cannot mint it.
@@ -63,39 +121,32 @@ impl AcpxCandidateAdmission {
     }
 
     fn validate_at(&self, now: u64, os: &str, architecture: &str) -> Result<(), LocalRunnerError> {
-        let profile = acpx_release_profile(&self.agent).ok_or_else(invalid)?;
-        let (closure, host_matches) = match self.agent.as_str() {
-            "antigravity" => {
-                let manifest: Value = serde_json::from_str(DISTRIBUTIONS).map_err(|_| invalid())?;
-                let closure = manifest
-                    .pointer("/platforms/darwin-arm64/closureSha256")
-                    .and_then(Value::as_str)
-                    .ok_or_else(invalid)?
-                    .to_owned();
-                (
-                    closure,
-                    self.platform == "darwin"
-                        && self.architecture == "arm64"
-                        && os == "macos"
-                        && architecture == "aarch64",
-                )
+        let profile = release_profile(&self.agent).ok_or_else(invalid)?;
+        self.validate_against_profile(&profile, now, os, architecture)
+    }
+
+    /// A candidate grant authorizes only a profile whose generated declaration
+    /// is still pending qualification. Releasing a profile is therefore a
+    /// declaration change: every candidate grant for that agent stops working.
+    fn validate_against_profile(
+        &self,
+        profile: &AcpxReleaseProfile,
+        now: u64,
+        os: &str,
+        architecture: &str,
+    ) -> Result<(), LocalRunnerError> {
+        let closure = match self.agent.as_str() {
+            "antigravity" if profile.qualification_pending => {
+                antigravity_native_closure(&self.platform, &self.architecture)
             }
             "kimi" if profile.qualification_pending => {
-                let closure =
-                    kimi_native_closure(&self.platform, &self.architecture).ok_or_else(invalid)?;
-                let host_matches = matches!(
-                    (
-                        self.platform.as_str(),
-                        self.architecture.as_str(),
-                        os,
-                        architecture
-                    ),
-                    ("darwin", "arm64", "macos", "aarch64") | ("linux", "x64", "linux", "x86_64")
-                );
-                (closure.to_owned(), host_matches)
+                kimi_native_closure(&self.platform, &self.architecture)
             }
-            _ => return Err(invalid()),
-        };
+            _ => None,
+        }
+        .ok_or_else(invalid)?;
+        let host_matches =
+            native_host_matches(&self.platform, &self.architecture, os, architecture);
         if self.schema != SCHEMA
             || !is_stable_id(&self.company_id, DURABLE_STABLE_ID_CHARS)
             || self.model.trim().is_empty()
@@ -157,9 +208,21 @@ impl AcpxCandidateAdmission {
     }
 }
 
+/// The verified Antigravity target of the test host, or macOS ARM elsewhere.
+#[cfg(test)]
+pub(crate) fn test_target() -> (&'static str, &'static str) {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        ("linux", "x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        ("linux", "arm64")
+    } else {
+        ("darwin", "arm64")
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_admission(run_id: &str, session_id: &str) -> AcpxCandidateAdmission {
-    let manifest: Value = serde_json::from_str(DISTRIBUTIONS).unwrap();
+    let (platform, architecture) = test_target();
     AcpxCandidateAdmission {
         schema: SCHEMA.to_owned(),
         company_id: "company-1".to_owned(),
@@ -171,12 +234,10 @@ pub(crate) fn test_admission(run_id: &str, session_id: &str) -> AcpxCandidateAdm
             .to_owned(),
         native_closure_digest: format!(
             "sha256:{}",
-            manifest["platforms"]["darwin-arm64"]["closureSha256"]
-                .as_str()
-                .unwrap()
+            antigravity_native_closure(platform, architecture).unwrap()
         ),
-        platform: "darwin".to_owned(),
-        architecture: "arm64".to_owned(),
+        platform: platform.to_owned(),
+        architecture: architecture.to_owned(),
         expires_at: current_time_ms().unwrap() + 60_000,
         run_id: run_id.to_owned(),
         normalized_session_id: session_id.to_owned(),
@@ -188,44 +249,80 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn antigravity_admission(platform: &str, architecture: &str) -> AcpxCandidateAdmission {
+        AcpxCandidateAdmission {
+            native_closure_digest: format!(
+                "sha256:{}",
+                antigravity_native_closure(platform, architecture).unwrap()
+            ),
+            platform: platform.to_owned(),
+            architecture: architecture.to_owned(),
+            ..test_admission("run-1", "session-1")
+        }
+    }
+
+    const ANTIGRAVITY_HOSTS: [(&str, &str, &str, &str); 3] = [
+        ("darwin", "arm64", "macos", "aarch64"),
+        ("linux", "x64", "linux", "x86_64"),
+        ("linux", "arm64", "linux", "aarch64"),
+    ];
+
     #[test]
     fn candidate_record_is_strict_and_pinned_to_native_host_and_time() {
+        assert!(antigravity_native_closure("darwin", "x64").is_none());
+        for (platform, architecture, os, host_arch) in ANTIGRAVITY_HOSTS {
+            let candidate = antigravity_admission(platform, architecture);
+            let now = candidate.expires_at - 1;
+            candidate.validate_at(now, os, host_arch).unwrap();
+            for (other_os, other_arch) in [
+                ("macos", "aarch64"),
+                ("macos", "x86_64"),
+                ("linux", "x86_64"),
+                ("linux", "aarch64"),
+                ("windows", "x86_64"),
+            ] {
+                if (other_os, other_arch) != (os, host_arch) {
+                    assert!(candidate.validate_at(now, other_os, other_arch).is_err());
+                }
+            }
+            assert!(candidate
+                .validate_at(candidate.expires_at, os, host_arch)
+                .is_err());
+            assert!(candidate
+                .validate_at(candidate.expires_at - MAX_LIFETIME_MS - 1, os, host_arch)
+                .is_err());
+            let other_platform = if platform == "linux" {
+                "darwin"
+            } else {
+                "linux"
+            };
+            let other_architecture = if architecture == "x64" {
+                "arm64"
+            } else {
+                "x64"
+            };
+            for (field, value) in [
+                ("schema", json!("unknown")),
+                ("companyId", json!("bad company")),
+                ("agent", json!("copilot")),
+                ("model", json!("auto")),
+                ("profileDigest", json!("sha256:wrong")),
+                ("nativeClosureDigest", json!("sha256:wrong")),
+                ("platform", json!(other_platform)),
+                ("architecture", json!(other_architecture)),
+                ("runId", json!("bad/run")),
+                ("normalizedSessionId", json!("bad/session")),
+            ] {
+                let mut changed = serde_json::to_value(&candidate).unwrap();
+                changed[field] = value;
+                let changed: AcpxCandidateAdmission = serde_json::from_value(changed).unwrap();
+                assert!(
+                    changed.validate_at(now, os, host_arch).is_err(),
+                    "{platform}-{architecture}: {field}"
+                );
+            }
+        }
         let candidate = test_admission("run-1", "session-1");
-        let now = candidate.expires_at - 1;
-        candidate.validate_at(now, "macos", "aarch64").unwrap();
-        for (os, architecture) in [("linux", "aarch64"), ("macos", "x86_64")] {
-            assert!(candidate.validate_at(now, os, architecture).is_err());
-        }
-        assert!(candidate
-            .validate_at(candidate.expires_at, "macos", "aarch64")
-            .is_err());
-        assert!(candidate
-            .validate_at(
-                candidate.expires_at - MAX_LIFETIME_MS - 1,
-                "macos",
-                "aarch64"
-            )
-            .is_err());
-        for (field, value) in [
-            ("schema", json!("unknown")),
-            ("companyId", json!("bad company")),
-            ("agent", json!("copilot")),
-            ("model", json!("auto")),
-            ("profileDigest", json!("sha256:wrong")),
-            ("nativeClosureDigest", json!("sha256:wrong")),
-            ("platform", json!("linux")),
-            ("architecture", json!("x64")),
-            ("runId", json!("bad/run")),
-            ("normalizedSessionId", json!("bad/session")),
-        ] {
-            let mut changed = serde_json::to_value(&candidate).unwrap();
-            changed[field] = value;
-            let changed: AcpxCandidateAdmission = serde_json::from_value(changed).unwrap();
-            assert!(
-                changed.validate_at(now, "macos", "aarch64").is_err(),
-                "{field}"
-            );
-        }
         let mut value = serde_json::to_value(&candidate).unwrap();
         value["extra"] = json!(true);
         assert!(serde_json::from_value::<AcpxCandidateAdmission>(value).is_err());
@@ -233,7 +330,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_binds_actual_launch_and_does_not_echo_bad_input() {
         let candidate = test_admission("run-1", "session-1");
         candidate
@@ -251,6 +354,66 @@ mod tests {
         }
         let error = AcpxCandidateAdmission::parse_json("private malformed input").unwrap_err();
         assert!(!error.to_string().contains("private"));
+    }
+
+    /// The generated Antigravity profile with its qualification flipped to
+    /// released, exactly as the declaration change at qualification would.
+    pub(crate) fn released_antigravity_profile() -> AcpxReleaseProfile {
+        AcpxReleaseProfile {
+            qualification_pending: false,
+            ..acpx_release_profile("antigravity").unwrap()
+        }
+    }
+
+    #[test]
+    fn released_antigravity_rejects_candidate_records_on_every_native_platform() {
+        let pending = acpx_release_profile("antigravity").unwrap();
+        assert!(pending.qualification_pending);
+        let released = released_antigravity_profile();
+        for (platform, architecture, os, host_arch) in ANTIGRAVITY_HOSTS {
+            let candidate = antigravity_admission(platform, architecture);
+            let now = candidate.expires_at - 1;
+            candidate
+                .validate_against_profile(&pending, now, os, host_arch)
+                .unwrap();
+            assert!(
+                candidate
+                    .validate_against_profile(&released, now, os, host_arch)
+                    .is_err(),
+                "{platform}-{architecture}"
+            );
+            let mut next = candidate.clone();
+            next.run_id = "run-2".to_owned();
+            assert!(next
+                .validate_against_profile(&released, now, os, host_arch)
+                .is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_rejects_startup_and_binding_records() {
+        let current = test_admission("run-1", "session-1");
+        current.validate().unwrap();
+        let _released = released_for_test::release("antigravity");
+        assert!(
+            !release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
+        assert!(current.validate().is_err());
+        assert!(current
+            .validate_binding("antigravity", "explicit-model", "run-1", "session-1")
+            .is_err());
+        assert!(
+            AcpxCandidateAdmission::parse_json(&serde_json::to_string(&current).unwrap()).is_err()
+        );
     }
 
     fn kimi_admission(platform: &str, architecture: &str) -> AcpxCandidateAdmission {

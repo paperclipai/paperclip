@@ -7,6 +7,9 @@ import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 import { routineSuggestionAgentGuidance } from "@paperclipai/shared";
 import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
 
+export const NATIVE_PLAN_REVIEW_DIRECTIVE =
+  "Paperclip asks the user to approve the plan once it is saved as this task's Plan document (key \"plan\"), so do not open your own approval or confirmation card for it.";
+
 export function buildPaperclipTaskMarkdown(input: {
   companyPrefix?: string | null;
   onboardingChat?: boolean;
@@ -319,6 +322,11 @@ export function buildPaperclipTaskMarkdown(input: {
       if (acceptedPlanContinuation) {
         directive =
           "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
+      }
+      if (!acceptedPlanContinuation && input.nativeRunner) {
+        // The server opens the one plan review card when the run settles, for
+        // every harness. An agent-opened card would be a second card.
+        directive += ` ${NATIVE_PLAN_REVIEW_DIRECTIVE}`;
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
