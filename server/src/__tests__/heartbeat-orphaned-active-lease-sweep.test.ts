@@ -413,12 +413,13 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
   it("test_defers_a_guarded_lease_instead_of_leaving_it_at_the_front_of_the_page", async () => {
     const { companyId, environmentId } = await seedCompanyAgentAndEnvironment();
     const sharedProviderLeaseId = "sandbox://fake/shared-resource";
-    // A run-less (login/probe) lease still pages by idle age.
+    // A run-less (login/probe) lease is guarded by a second live owner.
+    const originalUpdatedAt = oldEnough();
     const orphanedLeaseId = await insertActiveLease({
       companyId,
       environmentId,
       heartbeatRunId: null,
-      updatedAt: oldEnough(),
+      updatedAt: originalUpdatedAt,
       providerLeaseId: sharedProviderLeaseId,
     });
     await insertActiveLease({
@@ -435,10 +436,10 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
 
     const row = await leaseRow(orphanedLeaseId);
     expect(row?.status).toBe("active");
-    // The guard moved the row's `updatedAt` forward, so a fresh backoff
-    // cutoff no longer selects it. The exact value is not the point; only
-    // that it moved out of the stale range the sweep reads by.
-    expect(row!.updatedAt.getTime()).toBeGreaterThan(oldEnough().getTime());
+    // The sweep advances with a cursor instead of rewriting the row, so a
+    // guarded lease keeps its real `updatedAt` and can still age past the
+    // backoff cutoff once the guard is gone.
+    expect(row!.updatedAt.getTime()).toBe(originalUpdatedAt.getTime());
   });
 
   it("test_a_full_page_of_guarded_leases_does_not_starve_a_later_eligible_orphan", async () => {
