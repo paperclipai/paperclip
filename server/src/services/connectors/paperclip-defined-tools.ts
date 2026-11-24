@@ -1,4 +1,4 @@
-import { googleWorkspaceRestToolDefinition } from "../google-workspace-rest-dispatch.js";
+import { googleWorkspaceRestFallbackDefinition, googleWorkspaceRestToolDefinition } from "../google-workspace-rest-dispatch.js";
 import type { toolConnections } from "@paperclipai/db";
 import { pluginConnectionMethod, pluginConnectionToolDefinition } from "../plugin-connector-runtime.js";
 import { shouldQuarantineNewEntries } from "../tool-access/catalog/descriptors.js";
@@ -17,12 +17,21 @@ type Connection = { config: Record<string, unknown> };
 const PAPERCLIP_DEFINED_TOOL_SOURCES: ReadonlyArray<{
   matches: (connection: Connection) => boolean;
   definition: (toolName: string) => PaperclipDefinedToolDefinition | null;
+  formerDefinition: (toolName: string) => PaperclipDefinedToolDefinition | null;
 }> = [
-  { matches: (connection) => connection.config.sourceTemplateKey === "google-workspace", definition: googleWorkspaceRestToolDefinition },
+  {
+    matches: (connection) => connection.config.sourceTemplateKey === "google-workspace",
+    definition: googleWorkspaceRestToolDefinition,
+    formerDefinition: googleWorkspaceRestFallbackDefinition,
+  },
 ];
 
 export function paperclipDefinedTool(connection: Connection, toolName: string): PaperclipDefinedToolDefinition | null {
   return PAPERCLIP_DEFINED_TOOL_SOURCES.find((source) => source.matches(connection))?.definition(toolName) ?? null;
+}
+
+export function formerPaperclipDefinedTool(connection: Connection, toolName: string): PaperclipDefinedToolDefinition | null {
+  return PAPERCLIP_DEFINED_TOOL_SOURCES.find((source) => source.matches(connection))?.formerDefinition(toolName) ?? null;
 }
 
 export function currentConnectionToolDefinition(connection: typeof toolConnections.$inferSelect, toolName: string): PaperclipDefinedToolDefinition | null {
