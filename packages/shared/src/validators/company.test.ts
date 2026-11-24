@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { INTERACTION_RESOLVER_GOVERNANCE_KINDS } from "../constants.js";
 import {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "./company.js";
@@ -68,19 +70,33 @@ describe("interaction resolver governance schema", () => {
     });
   });
 
-  it("accepts governance for every kind in ISSUE_THREAD_INTERACTION_KINDS", () => {
+  it("accepts governance for every kind the settings panel offers", () => {
+    const governance = Object.fromEntries(
+      INTERACTION_RESOLVER_GOVERNANCE_KINDS.map((kind) => [
+        kind,
+        { defaultPolicy: "anyone", cap: "human_only" },
+      ]),
+    );
+
+    const parsed = updateCompanySchema.parse({ interactionResolverGovernance: governance });
+
+    expect(parsed.interactionResolverGovernance).toEqual(governance);
+  });
+
+  it("declares exactly the governable interaction kinds", () => {
+    expect(Object.keys(interactionResolverGovernanceSchema.unwrap().shape).sort()).toEqual(
+      [...INTERACTION_RESOLVER_GOVERNANCE_KINDS].sort(),
+    );
+  });
+
+  it("rejects governance for a server-authored interaction kind", () => {
     const result = updateCompanySchema.safeParse({
       interactionResolverGovernance: {
-        suggest_tasks: { defaultPolicy: "anyone" },
-        ask_user_questions: { defaultPolicy: "not_creator" },
-        request_confirmation: { cap: "human_only" },
-        request_checkbox_confirmation: { cap: "human_only" },
-        request_item_verdicts: { defaultPolicy: "anyone", cap: "human_only" },
-        connection_intent: { defaultPolicy: "human_only", cap: "human_only" },
+        suggest_routine: { cap: "human_only" },
       },
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it("still rejects an unknown interaction kind", () => {

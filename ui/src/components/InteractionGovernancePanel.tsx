@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import {
-  ISSUE_THREAD_INTERACTION_KINDS,
+  INTERACTION_RESOLVER_GOVERNANCE_KINDS,
   normalizeIssueThreadInteractionResolverPolicy,
   type InteractionResolverGovernance,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -273,8 +273,7 @@ export function InteractionGovernancePanel({
           <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
             Cap
           </div>
-          {ISSUE_THREAD_INTERACTION_KINDS.filter((kind) => kind !== "suggest_routine" && kind !== "propose_responsibility_bar" && kind !== "propose_automation" && kind !== "propose_dashboard_changes").map((kind) => {
-            // Routine offers and proposed bars are always answered by a person; there is no audience to govern.
+          {INTERACTION_RESOLVER_GOVERNANCE_KINDS.map((kind) => {
             const entry = governance[kind] ?? {};
             const kindLabel = INTERACTION_KIND_LABELS[kind];
             return (
