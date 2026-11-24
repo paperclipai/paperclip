@@ -19,6 +19,18 @@ export interface ContainerTextOffset {
   selectedText: string;
 }
 
+function* annotationTextNodes(container: HTMLElement): Generator<Text | HTMLImageElement> {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node instanceof Text || node instanceof HTMLImageElement) yield node;
+  }
+}
+
+function annotationText(container: HTMLElement): string {
+  if (!container.querySelector("img[alt]")) return container.textContent ?? "";
+  return Array.from(annotationTextNodes(container), node => node instanceof Text ? node.data : node.alt).join("");
+}
+
 export function getContainerTextOffset(
   container: HTMLElement,
   range: Range,
@@ -29,14 +41,19 @@ export function getContainerTextOffset(
   const preRange = document.createRange();
   preRange.selectNodeContents(container);
   preRange.setEnd(range.startContainer, range.startOffset);
-  const startOffset = preRange.toString().length;
+  let startOffset = preRange.toString().length;
   preRange.setEnd(range.endContainer, range.endOffset);
-  const endOffset = preRange.toString().length;
+  let endOffset = preRange.toString().length;
   if (endOffset <= startOffset) return null;
+  for (const image of container.querySelectorAll<HTMLImageElement>("img[alt]")) {
+    const relativePosition = range.comparePoint(image, 0);
+    if (relativePosition < 0) startOffset += image.alt.length;
+    if (relativePosition <= 0) endOffset += image.alt.length;
+  }
   return {
     startOffset,
     endOffset,
-    containerText: container.textContent ?? "",
+    containerText: annotationText(container),
     selectedText: range.toString(),
   };
 }
@@ -52,18 +69,19 @@ export function buildAnchorFromContainerSelection(input: {
   containerOffset: ContainerTextOffset;
 }): SelectionAnchorResult | null {
   const projection = projectMarkdownToText(input.markdown);
-  const needle = normalizeAnchorText(input.containerOffset.selectedText);
+  const { containerText, selectedText, startOffset } = input.containerOffset;
+  const needle = normalizeAnchorText(selectedText);
   if (!needle) return null;
 
-  const occurrences = findAllOccurrences(projection.text, needle);
-  if (occurrences.length === 0) return null;
-
-  const renderedTextLength = Math.max(1, normalizeAnchorText(input.containerOffset.containerText).length);
-  const renderedRatio = input.containerOffset.startOffset / renderedTextLength;
-  const projectionLength = Math.max(1, projection.text.length);
-  const expectedNormalized = Math.round(renderedRatio * projectionLength);
-
-  const best = pickClosestOccurrence(occurrences, expectedNormalized);
+  const leadingWhitespace = selectedText.length - selectedText.trimStart().length;
+  const renderedText = normalizeAnchorText(containerText);
+  const renderedStart = rawOffsetToNormalized(containerText, startOffset + leadingWhitespace);
+  const best = mapOccurrenceBetweenTexts({
+    fromText: renderedText,
+    fromOffset: renderedStart,
+    toText: projection.text,
+    needle,
+  });
   if (best == null) return null;
 
   const normalizedStart = best;
@@ -102,20 +120,65 @@ function pickClosestOccurrence(occurrences: number[], expected: number): number 
   return best;
 }
 
-/**
- * Walk text nodes inside `container` and return a list of `Range`s that cover the
- * normalized-text span `[normalizedStart, normalizedEnd)`. Each Range can be
- * rectangle-projected to draw a highlight overlay.
- */
+function mapOccurrenceBetweenTexts(input: {
+  fromText: string;
+  fromOffset: number;
+  toText: string;
+  needle: string;
+}): number | null {
+  const toOccurrences = findAllOccurrences(input.toText, input.needle);
+  if (toOccurrences.length === 0) return null;
+  if (toOccurrences.length === 1) return toOccurrences[0] ?? null;
+
+  const fromOccurrences = findAllOccurrences(input.fromText, input.needle);
+  if (fromOccurrences.length === toOccurrences.length) {
+    const fromMatch = pickClosestOccurrence(fromOccurrences, input.fromOffset);
+    const ordinal = fromMatch == null ? -1 : fromOccurrences.indexOf(fromMatch);
+    if (ordinal >= 0) return toOccurrences[ordinal] ?? null;
+  }
+
+  const ratio = input.fromOffset / Math.max(1, input.fromText.length);
+  return pickClosestOccurrence(toOccurrences, Math.round(ratio * input.toText.length));
+}
+
+function rawOffsetToNormalized(rawText: string, rawOffset: number): number {
+  let normalizedCursor = 0;
+  let lastWasWhitespace = true;
+  const end = Math.min(rawOffset, rawText.length);
+  for (let index = 0; index < end; index += 1) {
+    if (/\s/.test(rawText[index] ?? "")) {
+      if (!lastWasWhitespace) {
+        normalizedCursor += 1;
+        lastWasWhitespace = true;
+      }
+      continue;
+    }
+    normalizedCursor += 1;
+    lastWasWhitespace = false;
+  }
+  return normalizedCursor;
+}
+
 export function rangesForNormalizedSpan(input: {
   container: HTMLElement;
   selectedText: string;
+  projectionText?: string;
+  normalizedStart?: number;
 }): Range[] {
   const normalizedNeedle = normalizeAnchorText(input.selectedText);
   if (!normalizedNeedle) return [];
-  const containerText = input.container.textContent ?? "";
+  const { normalizedStart, projectionText } = input;
+  const includeAlt = normalizedStart !== undefined && projectionText !== undefined;
+  const containerText = includeAlt ? annotationText(input.container) : input.container.textContent ?? "";
   const normalizedContainerText = normalizeAnchorText(containerText);
-  const containerOccurrenceIndex = normalizedContainerText.indexOf(normalizedNeedle);
+  const containerOccurrenceIndex = includeAlt
+    ? mapOccurrenceBetweenTexts({
+      fromText: projectionText,
+      fromOffset: normalizedStart,
+      toText: normalizedContainerText,
+      needle: normalizedNeedle,
+    }) ?? -1
+    : normalizedContainerText.indexOf(normalizedNeedle);
   if (containerOccurrenceIndex === -1) return [];
 
   // Convert from normalized container offset back to raw container offset
@@ -131,7 +194,7 @@ export function rangesForNormalizedSpan(input: {
 
   const rawStart = rawIndex;
   const rawEnd = rawIndex + rawNeedleLength;
-  return buildRangesForRawSpan(input.container, rawStart, rawEnd);
+  return buildRangesForRawSpan(input.container, rawStart, rawEnd, includeAlt);
 }
 
 function mapNormalizedOffsetToRaw(rawText: string, normalizedOffset: number): number {
@@ -174,13 +237,14 @@ function matchRawLengthForNormalized(rawTail: string, normalizedLength: number):
   return rawTail.length;
 }
 
-function buildRangesForRawSpan(container: HTMLElement, rawStart: number, rawEnd: number): Range[] {
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+function buildRangesForRawSpan(container: HTMLElement, rawStart: number, rawEnd: number, includeAlt: boolean): Range[] {
   const ranges: Range[] = [];
   let cursor = 0;
-  let node: Node | null = walker.nextNode();
-  while (node) {
-    const textNode = node as Text;
+  for (const textNode of annotationTextNodes(container)) {
+    if (textNode instanceof HTMLImageElement) {
+      if (includeAlt) cursor += textNode.alt.length;
+      continue;
+    }
     const length = textNode.data.length;
     const nodeStart = cursor;
     const nodeEnd = cursor + length;
@@ -196,7 +260,6 @@ function buildRangesForRawSpan(container: HTMLElement, rawStart: number, rawEnd:
     }
     cursor = nodeEnd;
     if (cursor >= rawEnd) break;
-    node = walker.nextNode();
   }
   return ranges;
 }
