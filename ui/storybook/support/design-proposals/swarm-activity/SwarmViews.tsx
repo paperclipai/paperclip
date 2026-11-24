@@ -242,6 +242,7 @@ export function SwarmNotes({ view }: { view: SwarmView }) {
 
 function subagentStatus(helper: SwarmHelper, view: SwarmView): TaskChatSubagentStatus {
   if (helper.state === "done") return "completed";
+  if (helper.state === "blocked") return "failed";
   if (helper.state === "stopped" || view.status === "stopped" || view.status === "failed") return "cancelled";
   return "running";
 }
@@ -254,7 +255,7 @@ function toSubagent(helper: SwarmHelper, view: SwarmView): TaskChatSubagent {
     prompt: helper.brief,
     model: helper.model,
     status: subagentStatus(helper, view),
-    description: helper.state === "blocked" ? `Blocked · ${helper.task}` : helper.task,
+    description: helper.task,
     progressSummary: helper.state === "in_review" ? "Waiting for the verifier" : helper.state === "waiting" ? `Standing by${helper.action ? ` · ${helper.action}` : ""}` : helper.action,
     activity: [],
     result: lastPost ? plainPost(lastPost.text) : undefined,
@@ -309,13 +310,20 @@ export function ProgressBlock({ view, annotate }: { view: SwarmView; annotate?: 
 
 export function InlineDirection({ view, annotate = true }: { view: SwarmView; annotate?: boolean }) {
   const memory = useMemo(() => new Map<string, boolean>(), []);
-  const subagents = view.helpers.filter((helper) => helper.role !== "monitor").map((helper) => toSubagent(helper, view));
+  const blocked = view.helpers.filter((helper) => helper.state === "blocked");
+  const subagents = view.helpers.filter((helper) => helper.role !== "monitor" && helper.state !== "blocked").map((helper) => toSubagent(helper, view));
   const messages = view.posts.filter((post) => post.kind !== "brief");
   return (
     <TaskChatExpansionState.Provider value={memory}>
       <SwarmTurn view={view}>
         <GoalBlock view={view} annotate={annotate} />
         <ProgressBlock view={view} annotate={annotate} />
+        {blocked.length ? (
+          <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-destructive/35 bg-destructive/5 px-3 py-1" data-testid="swarm-blocked-helpers">
+            <SectionTitle source="files" annotate={annotate}>Needs attention</SectionTitle>
+            <ul className="flex min-w-0 flex-col divide-y divide-border">{blocked.map((helper) => <HelperRow key={helper.name} helper={helper} />)}</ul>
+          </div>
+        ) : null}
         {subagents.length ? (
           <div className="flex min-w-0 flex-col gap-1">
             <SectionTitle source="files" annotate={annotate}>Helpers, their current step and state</SectionTitle>

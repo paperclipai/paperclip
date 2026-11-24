@@ -232,7 +232,8 @@ export function deriveSwarm(fixture: SwarmFixture, atSeq: number, status: SwarmS
     const seen = (worker?.actions ?? []).filter((action) => Date.parse(action.at) <= until);
     const last = seen[seen.length - 1];
     const own = posts.filter((post) => post.author === name);
-    const blocked = own.filter((post) => post.kind === "blocked").pop();
+    const latest = own.filter((post) => post.kind === "blocked" || post.kind === "done").pop();
+    const blocked = latest?.kind === "blocked" ? latest : undefined;
     const posted = own.some((post) => post.kind === "done");
     let state: HelperState = seen.length ? "working" : "starting";
     if (role === "monitor") state = "waiting";

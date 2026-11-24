@@ -55,6 +55,15 @@ describe("swarm fixture derivation", () => {
     expect(helper?.action).toBe("Blocked: tried to change ../shared/units.json, outside the task folder");
   });
 
+  it("clears the blocked state when the helper later reports done", () => {
+    const at = FIXTURE.board.find((post) => post.seq === 8)!.time;
+    const block = { seq: 7.5, agent: "logic-writer", text: FIXTURE.recordedBlock.text, time: at };
+    const board = [...FIXTURE.board.filter((post) => post.seq <= 7), block, ...FIXTURE.board.filter((post) => post.seq > 7)];
+    const view = deriveSwarm({ ...FIXTURE, board }, 12, "completed");
+    expect(view.helpers.find((helper) => helper.name === "logic-writer")?.state).toBe("done");
+    expect(progressLine(view)).toBe("5 of 5 done · 0 threads open");
+  });
+
   it("classifies board posts", () => {
     expect(postKind("monitor", "@coordinator [stall] nobody is working")).toBe("stall");
     expect(postKind("css-writer", "@verifier [done] style.css created")).toBe("done");
