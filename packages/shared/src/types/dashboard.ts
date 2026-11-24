@@ -42,8 +42,8 @@ export interface DashboardSummary {
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
-    /** This month's usage at pay-per-token API prices; comparison only. */
     monthApiEquivalentCents?: number;
+    monthApiEquivalentUnpricedTokens?: number;
   };
   pendingApprovals: number;
   budgets: {

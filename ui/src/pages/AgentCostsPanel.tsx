@@ -4,7 +4,7 @@ import { Coins, DollarSign, PlayCircle, ReceiptText } from "lucide-react";
 import type { CostByAgent, CostByAgentModel } from "@paperclipai/shared";
 import { costsApi } from "../api/costs";
 import { CostAmount } from "../components/CostAmount";
-import { API_EQUIVALENT_TOOLTIP } from "../components/ApiEquivalentAmount";
+import { API_EQUIVALENT_TOOLTIP, formatApiEquivalent, unpricedTokensNote } from "../components/ApiEquivalentAmount";
 import { EmptyState } from "../components/EmptyState";
 import { MetricCard } from "../components/MetricCard";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -76,8 +76,8 @@ export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: st
             <MetricCard appearance="card" icon={ReceiptText} value={formatCents(row.costCents)} label="Spend" description={`${row.eventCount} ledger events`} />
             <MetricCard appearance="card" icon={Coins} value={formatTokens(totalTokens)} label="Tokens" description={`in ${formatTokens(row.inputTokens + row.cachedInputTokens)} (${formatTokens(row.cachedInputTokens)} cached) · out ${formatTokens(row.outputTokens)}`} />
             <MetricCard appearance="card" icon={PlayCircle} value={row.apiRunCount + row.subscriptionRunCount} label="Runs" description={`${row.apiRunCount} api · ${row.subscriptionRunCount} subscription`} />
-            <MetricCard appearance="card" icon={DollarSign} value={row.apiEquivalent ? formatCents(row.apiEquivalent.cents) : "—"} label="API-equivalent"
-              description={<span title={API_EQUIVALENT_TOOLTIP}>Estimated at API prices{row.apiEquivalent?.unpricedTokens ? ` · ${formatTokens(row.apiEquivalent.unpricedTokens)} tokens not priced` : ""}</span>} />
+            <MetricCard appearance="card" icon={DollarSign} value={formatApiEquivalent(row.apiEquivalent)} label="API-equivalent"
+              description={<span title={API_EQUIVALENT_TOOLTIP}>Estimated at API prices{row.apiEquivalent?.unpricedTokens ? ` · ${unpricedTokensNote(row.apiEquivalent.unpricedTokens)}` : ""}</span>} />
           </div>
           <section className="space-y-3" aria-labelledby="agent-cost-models-heading">
             <h3 id="agent-cost-models-heading" className="text-sm font-medium text-foreground">By model</h3>

@@ -4,7 +4,7 @@ import { SubscriptionCostCard, SubscriptionTokenUsage } from "../components/Subs
 import { subscriptionsApi } from "../api/subscriptions";
 import { useSearchParams } from "@/lib/router";
 import { CostEstimateLabel } from "../components/CostEstimateLabel";
-import { ApiEquivalentAmount, API_EQUIVALENT_TOOLTIP } from "../components/ApiEquivalentAmount";
+import { ApiEquivalentAmount, API_EQUIVALENT_TOOLTIP, formatApiEquivalent, unpricedTokensNote } from "../components/ApiEquivalentAmount";
 import { CostAmount } from "../components/CostAmount";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { CostDataQualityNotice } from "../components/CostDataQualityNotice";
@@ -704,10 +704,10 @@ export function Costs({
             />
             <MetricTile
               label="API-equivalent"
-              value={spendData?.summary.apiEquivalent ? formatCents(spendData.summary.apiEquivalent.cents) : "—"}
+              value={formatApiEquivalent(spendData?.summary.apiEquivalent)}
               subtitle={spendData?.summary.apiEquivalent ? <span title={API_EQUIVALENT_TOOLTIP}>
                 Estimated cost of all usage at API prices{spendData.summary.apiEquivalent.unpricedTokens > 0
-                  ? ` · ${formatTokens(spendData.summary.apiEquivalent.unpricedTokens)} tokens not priced` : ""}
+                  ? ` · ${unpricedTokensNote(spendData.summary.apiEquivalent.unpricedTokens)}` : ""}
               </span> : spendData ? "Not available" : "Cost data is loading"}
               icon={DollarSign}
             />

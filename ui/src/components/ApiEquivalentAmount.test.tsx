@@ -28,6 +28,12 @@ describe("ApiEquivalentAmount", () => {
     expect(container.textContent).toContain("not priced");
   });
 
+  it("does not show a fully unpriced estimate as $0", () => {
+    act(() => root.render(<ApiEquivalentAmount value={value({ cents: 0, reportedCents: 0, unpricedTokens: 1000 })} />));
+    expect(container.textContent).toContain("Not priced");
+    expect(container.textContent).not.toContain("$0.00");
+  });
+
   it("renders a dash without a value", () => {
     act(() => root.render(<ApiEquivalentAmount />));
     expect(container.textContent).toBe("—");

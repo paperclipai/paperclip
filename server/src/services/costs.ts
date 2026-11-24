@@ -416,7 +416,7 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
       return { activeUserCount, rows };
     }),
 
-    byAgent: async (companyId: string, range?: CostDateRange) => {
+    byAgent: async (companyId: string, range?: CostDateRange) => withAccountingReadSnapshot(db, companyId, async (db) => {
       range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
@@ -458,7 +458,7 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         return { ...row, agentAppearance: appearance, avatarUrl: appearance ? agentAvatarUrl(appearance, 512) : undefined,
           apiEquivalent: apiEquivalents.get(row.agentId) ?? emptyApiEquivalent() };
       });
-    },
+    }),
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
       range = resolveCostDateRange(range);

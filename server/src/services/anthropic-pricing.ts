@@ -1,9 +1,10 @@
 import { centsToUsd, unitsToCents, usdToUnits } from "@paperclipai/shared";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
+import { MODEL_LIST_PRICES } from "./model-list-prices.js";
 
 const RATE_CARDS: Record<string, { rates: readonly string[]; version: string }> = {
-  "claude-sonnet-5": { rates: ["2", "0.2", "4", "10"], version: "anthropic-standard-2026-10-07" },
-  "claude-opus-5-5": { rates: ["4", "0.2", "8", "20"], version: "anthropic-standard-2026-10-12" },
+  "claude-sonnet-5": { rates: MODEL_LIST_PRICES["claude-sonnet-5"], version: "anthropic-standard-2026-10-07" },
+  "claude-opus-5-5": { rates: MODEL_LIST_PRICES["claude-opus-5-5"], version: "anthropic-standard-2026-10-12" },
 };
 
 /** A complete token receipt can receive an explicit estimate, never an invoice

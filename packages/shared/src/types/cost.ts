@@ -43,21 +43,13 @@ export interface CostSummary {
   spendCentsExact?: string;
   budgetCents: number;
   utilizationPercent: number;
-  /** What this usage would cost at pay-per-token API prices; never part of spend. */
   apiEquivalent?: ApiEquivalent;
 }
 
-/**
- * Estimated cost of usage at pay-per-token API list prices. Subscription usage
- * uses the API price the provider reported for the run when available
- * (`reportedCents`), else the list-price table (`listPriceCents`); other
- * billing keeps its ledger cost. Comparison only: never spend or budget.
- */
 export interface ApiEquivalent {
   cents: number;
   reportedCents: number;
   listPriceCents: number;
-  /** Tokens on models missing from the list-price table; not included in cents. */
   unpricedTokens: number;
   unpricedModels: string[];
 }

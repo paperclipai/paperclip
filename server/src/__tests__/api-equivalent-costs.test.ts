@@ -117,6 +117,23 @@ describeEmbeddedPostgres("API-equivalent cost", () => {
     expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ reportedCents: 0, listPriceCents: 2000 });
   });
 
+  it("accepts every decimal format the receipt contract stores", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsdExact: "+1.5e0" });
+    await db.insert(costEvents).values(event(companyId, agentId, { heartbeatRunId, outputTokens: MTOK }));
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)?.reportedCents).toBe(150);
+  });
+
+  it("keeps the final receipt's reported price regardless of other events on the run", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsd: 2 });
+    await db.insert(costEvents).values([
+      event(companyId, agentId, { heartbeatRunId }),
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: "external-receipt", outputTokens: MTOK }),
+    ]);
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ reportedCents: 200, listPriceCents: 2000 });
+  });
+
   it("reports tokens on unknown models as unpriced instead of zero cost", async () => {
     const { companyId, agentId } = await seed();
     await db.insert(costEvents).values(event(companyId, agentId, { model: "mystery-model", inputTokens: 600, outputTokens: 400 }));
