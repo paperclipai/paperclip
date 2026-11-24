@@ -240,6 +240,57 @@ describe("Kubernetes acquire refusal diagnostics", () => {
   });
 });
 
+describe("Kubernetes acquire cleanup deadline", () => {
+  it.each(["delete", "workload status", "pod lookup"] as const)(
+    "returns the original refusal by two seconds when %s stalls",
+    async (step) => {
+      const tenant = readyTenant();
+      const absent = absentJob();
+      const error = new ApiException(503, "Secret creation refused", {}, {});
+      const finishStalledRequests: Array<() => void> = [];
+      const stall = vi.fn(() => new Promise<never>((_resolve, reject) => {
+        finishStalledRequests.push(() => reject(new ApiException(403, "Cleanup call ended", {}, {})));
+      }));
+      const delayedDelete = vi.fn(() => new Promise<object>((resolve) => {
+        setTimeout(() => resolve({}), 750);
+      }));
+      h.clients = {
+        ...tenant,
+        core: {
+          ...tenant.core,
+          createNamespacedSecret: vi.fn().mockRejectedValue(error),
+          listNamespacedPod: step === "pod lookup" ? stall : absent.listNamespacedPod,
+        },
+        batch: {
+          createNamespacedJob: vi.fn().mockResolvedValue({ metadata: { uid: "job-uid" } }),
+          deleteNamespacedJob: step === "delete" ? stall : delayedDelete,
+          readNamespacedJobStatus: step === "workload status" ? stall : absent.readNamespacedJobStatus,
+        },
+      };
+
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      let refusal: JsonRpcCallError | undefined;
+      let unexpectedError: unknown;
+      const completion = acquire().then(
+        (result) => { refusal = result; },
+        (failure: unknown) => { unexpectedError = failure; },
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(stall).toHaveBeenCalledOnce();
+        expect(unexpectedError).toBeUndefined();
+        expect(refusal, "the worker must return the original refusal by the cleanup deadline")
+          .toMatchObject({ code: 503, message: error.message });
+        expect(readEnvironmentAcquireErrorDiagnostic(refusal)).toBeNull();
+      } finally {
+        for (const finish of finishStalledRequests) finish();
+        await completion;
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
 describe.each(["job", "sandbox-cr"] as const)("%s acquire cleanup", (backend) => {
   describe.each(["Secret creation", "pod lookup"] as const)("after %s fails", (step) => {
     it.each([

@@ -419,14 +419,13 @@ const plugin = definePlugin({
           imagePullSecrets: config.imagePullSecrets,
         });
 
-    const releaseWorkload = async () => {
+    const confirmWorkloadRemoval = async (deadline: number, timedOut: Error) => {
       try {
         await orchestrator.release(clients, namespace, jobName);
       } catch (error) {
         if (!isKubernetesHttpError(error) || error.code !== 404) throw error;
       }
 
-      const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
         const workloadAbsent = await orchestrator.getStatus(clients, namespace, jobName).then(
           () => false,
@@ -435,7 +434,7 @@ const plugin = definePlugin({
             return true;
           },
         );
-        if (workloadAbsent) {
+        if (workloadAbsent && Date.now() < deadline) {
           const pod = isSandboxCrBackend
             ? await findSandboxPodWithoutStatus(clients, namespace, jobName)
             : await orchestrator.findPod(clients, namespace, jobName);
@@ -444,7 +443,23 @@ const plugin = definePlugin({
         const delay = Math.min(100, deadline - Date.now());
         if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
       }
-      throw new Error(`Kubernetes workload ${namespace}/${jobName} is still present after its delete request`);
+      throw timedOut;
+    };
+    const releaseWorkload = async () => {
+      const timeoutMs = 2_000;
+      const deadline = Date.now() + timeoutMs;
+      const timedOut = new Error("Kubernetes workload cleanup did not finish within its deadline");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(timedOut), timeoutMs);
+          }),
+          confirmWorkloadRemoval(deadline, timedOut),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     };
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest).catch((error: unknown) => {
       if (isKubernetesHttpError(error) && error.code >= 500) return throwAfterWorkloadRelease(error, releaseWorkload);
