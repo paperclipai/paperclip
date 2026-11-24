@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { classifyContinuationFailure } from "./recovery/service.js";
 import { antigravitySwarmRefusal, isAntigravitySwarmExecution, requestedAntigravitySwarmCommentId } from "./antigravity-swarm.js";
 
 const antigravity = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } };
@@ -26,5 +27,10 @@ describe("trusted /swarm for Google Antigravity", () => {
     expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "antigravity", mode: "swarm" } })).toBe(true);
     expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "antigravity" } })).toBe(false);
     expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "cursor", mode: "swarm" } })).toBe(false);
+  });
+
+  it("does not automatically replay a refused /swarm (the user sends /swarm again or presses Retry)", () => {
+    expect(classifyContinuationFailure({ errorCode: "antigravity_swarm_unavailable", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
 });
