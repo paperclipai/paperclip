@@ -498,7 +498,7 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
       await t.writePlan(runId);
       const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
       const resolved = status !== "pending";
-      const [card] = await db.insert(issueThreadInteractions).values({
+      const [card] = await db.insert(issueThreadInteractions).values(<typeof issueThreadInteractions.$inferInsert>{
         companyId: t.companyId, issueId: t.issueId, kind: "request_confirmation", status: status as never,
         continuationPolicy: "wake_assignee", sourceRunId: runId, createdByAgentId: t.agentId,
         idempotencyKey: planReviewCardIdempotencyKey(plan!.latestRevisionId!),
@@ -522,4 +522,22 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
       else expect(pending).toHaveLength(1);
       if (outcome === "created") expect(pending[0]!.id).not.toBe(card!.id);
     });
+  it("opens exactly one card for the current revision when settles race across a revision change", async () => {
+    for (let round = 0; round < 15; round += 1) {
+      const t = await seed();
+      const first = await t.newRun();
+      await t.writePlan(first);
+      await ensureNativePlanReviewCard(db, t.binding(first));
+      const second = await t.newRun();
+      await t.writePlan(second, `${PLAN}\n3. Round ${round}.`);
+      const runs = await Promise.all([t.newRun(), t.newRun(), t.newRun()]);
+
+      await Promise.all([second, ...runs].map(runId => ensureNativePlanReviewCard(db, t.binding(runId))));
+
+      const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+      const pending = (await t.cards()).filter(card => card.status === "pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.payload).toMatchObject({ target: { revisionId: plan!.latestRevisionId } });
+    }
+  });
 });

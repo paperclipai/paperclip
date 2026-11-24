@@ -103,6 +103,7 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string }, 
     createdAt: issueThreadInteractions.createdAt,
     resolvedByUserId: issueThreadInteractions.resolvedByUserId,
     resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+    result: issueThreadInteractions.result,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, binding.companyId),
     eq(issueThreadInteractions.issueId, binding.issueId),
@@ -134,7 +135,10 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string }, 
   //   review this revision. Do not reopen it; the agent is asked to revise.
   // - cancelled by an agent or the system, expired (superseded, stale, task
   //   closed) or failed: no one reviewed it. The revision gets a fresh card.
-  const bound = cards.filter(card => card.kind === "request_confirmation" && covers(card));
+  // A card withdrawn as a stale target was for an older revision, even though
+  // the withdrawal records the current revision on it.
+  const bound = cards.filter(card => card.kind === "request_confirmation" && covers(card) &&
+    record(card.result).outcome !== "stale_target");
   const decided = bound.find(card => ["accepted", "rejected"].includes(card.status) ||
     (card.status === "cancelled" && card.resolvedByUserId && !card.resolvedByAgentId));
   if (decided) return { kind: "reviewed" as const, revisionId: revision.id };
@@ -144,113 +148,105 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string }, 
 }
 
 export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Promise<NativePlanReviewCardOutcome> {
-  const [issue] = await db.select({
-    workMode: issues.workMode, status: issues.status, assigneeAgentId: issues.assigneeAgentId,
-    assigneeUserId: issues.assigneeUserId, hiddenAt: issues.hiddenAt,
-    conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
-  }).from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).limit(1);
-  if (!issue || issue.workMode !== "planning" || issue.hiddenAt || issue.assigneeUserId ||
-    issue.assigneeAgentId !== binding.agentId || ["done", "cancelled"].includes(issue.status)) {
-    return { kind: "not_applicable" };
-  }
-  const plan = await documentService(db).getIssueDocumentByKey(binding.issueId, "plan");
-  if (!plan?.latestRevisionId) return { kind: "no_plan" };
-  const [revision] = await db.select({
-    id: documentRevisions.id, revisionNumber: documentRevisions.revisionNumber,
-    createdAt: documentRevisions.createdAt, createdByAgentId: documentRevisions.createdByAgentId,
-  }).from(documentRevisions).where(and(
-    eq(documentRevisions.id, plan.latestRevisionId), eq(documentRevisions.companyId, binding.companyId),
-  )).limit(1);
-  if (!revision) return { kind: "no_plan" };
-  const conversationMode = isConversation(issue);
-  const existing = await coveringCard(db, binding, revision, conversationMode);
-  if (existing && existing.kind !== "reopen") return existing;
-  // A card for this revision that no one reviewed keeps its key; the fresh
-  // card's key names the one it follows, so concurrent settles still agree.
-  const idempotencyKey = existing?.kind === "reopen"
-    ? `${planReviewCardIdempotencyKey(revision.id)}:after:${existing.afterInteractionId}`
-    : planReviewCardIdempotencyKey(revision.id);
-  // Only the assigned agent's own proposal is put up for review. A revision a
-  // person wrote is theirs already.
-  if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" };
-
-  // Withdraw review cards bound to an older plan revision, judged against
-  // the locked current document: a delayed settle for an older revision must
-  // never withdraw the card of a newer one. Answering a stale card is already
-  // refused, so this only tidies the thread and is best effort.
-  let superseded = false;
-  await db.transaction(async (tx) => {
-    // Issue before document: the same lock order as card creation.
-    await tx.select({ id: issues.id }).from(issues)
-      .where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).for("update");
+  const publications: Parameters<typeof publishActivity>[0][] = [];
+  // One decision per task at a time: reading the current revision and its
+  // cards, withdrawing older cards, choosing the key and inserting all happen
+  // under the task row lock, so two settles can never both open a card for
+  // one plan. Card creation takes the same lock first, so the order matches.
+  const outcome = await db.transaction(async (transaction) => {
+    const tx = transaction as unknown as Db;
+    const [issue] = await tx.select({
+      workMode: issues.workMode, status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId, hiddenAt: issues.hiddenAt,
+      conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+    }).from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).limit(1).for("update");
+    if (!issue || issue.workMode !== "planning" || issue.hiddenAt || issue.assigneeUserId ||
+      issue.assigneeAgentId !== binding.agentId || ["done", "cancelled"].includes(issue.status)) {
+      return { kind: "not_applicable" } as const;
+    }
+    const plan = await documentService(tx).getIssueDocumentByKey(binding.issueId, "plan");
+    if (!plan?.latestRevisionId) return { kind: "no_plan" } as const;
+    const [revision] = await tx.select({
+      id: documentRevisions.id, revisionNumber: documentRevisions.revisionNumber,
+      createdByAgentId: documentRevisions.createdByAgentId,
+    }).from(documentRevisions).where(and(
+      eq(documentRevisions.id, plan.latestRevisionId), eq(documentRevisions.companyId, binding.companyId),
+    )).limit(1);
+    if (!revision) return { kind: "no_plan" } as const;
+    // A delayed settle that read an older revision must not act on it.
     const [current] = await tx.select({ latestRevisionId: documents.latestRevisionId, latestRevisionNumber: documents.latestRevisionNumber })
       .from(documents).where(and(eq(documents.id, plan.id), eq(documents.companyId, binding.companyId))).for("update");
-    if (current?.latestRevisionId !== revision.id) {
-      superseded = true;
-      return;
-    }
-    await issueThreadInteractionService(tx as unknown as Db).expireStaleRequestConfirmationsForIssueDocument(
-      { id: binding.issueId, companyId: binding.companyId },
-      { id: plan.id, key: "plan", latestRevisionId: current.latestRevisionId, latestRevisionNumber: current.latestRevisionNumber },
-      { agentId: binding.agentId, runId: binding.runId });
-  }).catch((error: unknown) => logger.warn({ issueId: binding.issueId, error }, "Could not withdraw stale plan review cards"));
-  // A newer revision was written meanwhile; its own settle opens its card.
-  if (superseded) return { kind: "not_applicable" };
-  const interactions = issueThreadInteractionService(db);
-  let inserted = false;
-  const publications: Parameters<typeof publishActivity>[0][] = [];
-  let interactionId: string;
-  try {
-    const interaction = await interactions.create(
-      { id: binding.issueId, companyId: binding.companyId },
-      planReviewConfirmationInput({
-        issueId: binding.issueId, documentId: plan.id, revisionId: revision.id, revisionNumber: revision.revisionNumber,
-        sourceRunId: binding.runId, source: "plan_document",
-        // One card per revision, whichever run, retry or reconcile opens it.
-        idempotencyKey,
-      }) as never,
-      { agentId: binding.agentId, runId: binding.runId },
-      {
-        // Leave the agent's other pending cards answerable. Only cards bound
-        // to an older plan revision were withdrawn above; an unbound card is
-        // never withdrawn by guess.
-        supersedePendingSiblingInteractions: false,
-        // Only the call that inserted the card records it; a concurrent or
-        // repeated settle replays the same card and logs nothing.
-        afterInsertInTransaction: async (tx, row) => {
-          inserted = true;
-          await logActivity(tx, {
-            companyId: binding.companyId,
-            actorType: "system",
-            actorId: "native-plan-review",
-            agentId: binding.agentId,
-            runId: binding.runId,
-            issueId: binding.issueId,
-            action: "issue.thread_interaction_created",
-            entityType: "issue",
-            entityId: binding.issueId,
-            details: {
-              interactionId: row.id,
-              interactionKind: "request_confirmation",
-              source: "plan_mode_settle",
-              planRevisionId: revision.id,
-              planRevisionNumber: revision.revisionNumber,
-            },
-          }, publications);
+    if (current?.latestRevisionId !== revision.id) return { kind: "not_applicable" } as const;
+    const conversationMode = isConversation(issue);
+    const existing = await coveringCard(tx, binding, revision, conversationMode);
+    if (existing && existing.kind !== "reopen") return existing;
+    // Only the assigned agent's own proposal is put up for review. A revision
+    // a person wrote is theirs already.
+    if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" } as const;
+    // A card for this revision that no one reviewed keeps its key; the fresh
+    // card's key names the one it follows.
+    const idempotencyKey = existing?.kind === "reopen"
+      ? `${planReviewCardIdempotencyKey(revision.id)}:after:${existing.afterInteractionId}`
+      : planReviewCardIdempotencyKey(revision.id);
+    // Withdraw cards bound to an older revision. Answering one is already
+    // refused as a stale target, so this only tidies the thread: a row it
+    // cannot read must not stop the current card from opening.
+    await tx.transaction(async (savepoint) => {
+      await issueThreadInteractionService(savepoint as unknown as Db).expireStaleRequestConfirmationsForIssueDocument(
+        { id: binding.issueId, companyId: binding.companyId },
+        { id: plan.id, key: "plan", latestRevisionId: current.latestRevisionId, latestRevisionNumber: current.latestRevisionNumber },
+        { agentId: binding.agentId, runId: binding.runId });
+    }).catch((error: unknown) => logger.warn({ issueId: binding.issueId, error }, "Could not withdraw stale plan review cards"));
+    let inserted = false;
+    try {
+      const interaction = await issueThreadInteractionService(tx).create(
+        { id: binding.issueId, companyId: binding.companyId },
+        planReviewConfirmationInput({
+          issueId: binding.issueId, documentId: plan.id, revisionId: revision.id, revisionNumber: revision.revisionNumber,
+          sourceRunId: binding.runId, source: "plan_document", idempotencyKey,
+        }) as never,
+        { agentId: binding.agentId, runId: binding.runId },
+        {
+          // Leave the agent's other pending cards answerable. Only cards bound
+          // to an older plan revision were withdrawn above; an unbound card is
+          // never withdrawn by guess.
+          supersedePendingSiblingInteractions: false,
+          // Only the call that inserted the card records it.
+          afterInsertInTransaction: async (insertTx, row) => {
+            inserted = true;
+            await logActivity(insertTx, {
+              companyId: binding.companyId,
+              actorType: "system",
+              actorId: "native-plan-review",
+              agentId: binding.agentId,
+              runId: binding.runId,
+              issueId: binding.issueId,
+              action: "issue.thread_interaction_created",
+              entityType: "issue",
+              entityId: binding.issueId,
+              details: {
+                interactionId: row.id,
+                interactionKind: "request_confirmation",
+                source: "plan_mode_settle",
+                planRevisionId: revision.id,
+                planRevisionNumber: revision.revisionNumber,
+              },
+            }, publications);
+          },
         },
-      },
-    );
-    interactionId = interaction.id;
-  } catch (error) {
-    // A concurrent settle opened it first (same key, other run), the plan
-    // moved on, the task closed, or the agent may no longer write here.
-    // Whatever now covers the revision wins; a refused card must not fail the
-    // run's settlement. Database errors still surface, so finalization retries.
-    if (!(error instanceof HttpError) || error.status >= 500) throw error;
-    const current = await coveringCard(db, binding, revision, conversationMode);
-    return current && current.kind !== "reopen" ? current : { kind: "not_applicable" };
-  }
+      );
+      return inserted
+        ? { kind: "created", interactionId: interaction.id, revisionId: revision.id } as const
+        : { kind: "pending", interactionId: interaction.id } as const;
+    } catch (error) {
+      // The task closed or the agent may no longer write here. A refused card
+      // must not fail the run's settlement; database errors still surface so
+      // finalization (or the recovery pass) retries.
+      if (!(error instanceof HttpError) || error.status >= 500) throw error;
+      const covered = await coveringCard(tx, binding, revision, conversationMode);
+      return covered && covered.kind !== "reopen" ? covered : { kind: "not_applicable" } as const;
+    }
+  });
   for (const publication of publications) publishActivity(publication);
-  if (!inserted) return { kind: "pending", interactionId };
-  return { kind: "created", interactionId, revisionId: revision.id };
+  return outcome;
 }
