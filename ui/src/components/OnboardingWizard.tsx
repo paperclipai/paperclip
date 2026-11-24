@@ -140,7 +140,11 @@ import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
-import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "@/lib/analytics/onboarding-analytics";
+import {
+  captureOnboardingStepCompleted,
+  captureOnboardingStepFailed,
+  useOnboardingAnalytics,
+} from "@/lib/analytics/onboarding-analytics";
 import {
   ArrowLeft,
   ArrowRight,
@@ -1912,6 +1916,7 @@ function OnboardingWizardInner({
       navigate(`${prefix ? `/${prefix}` : ""}/chats/${agentId}`);
     } catch (err) {
       captureOnboardingStepCompleted("launch", "failed");
+      captureOnboardingStepFailed({ step: "launch", reason: "launch_failed" });
       setError(err instanceof Error ? err.message : "Failed to open your chat. Please try again.");
     } finally {
       setLoading(false);
@@ -1958,11 +1963,19 @@ function OnboardingWizardInner({
       apiKeySecretRef.current = { key, companyId, envKey, binding: legacyStored.binding };
       return true;
     } catch (err) {
-      if (isCurrent()) setError(
-        err instanceof Error
-          ? `Could not store the API key: ${describeError(err).body}`
-          : "Could not store the API key.",
-      );
+      if (isCurrent()) {
+        captureOnboardingStepFailed({
+          step: "connect_model",
+          reason: "api_key_save_failed",
+          provider: managedProvider ?? adapterType,
+          method: "api_key",
+        });
+        setError(
+          err instanceof Error
+            ? `Could not store the API key: ${describeError(err).body}`
+            : "Could not store the API key.",
+        );
+      }
       return false;
     }
   }
@@ -2274,12 +2287,26 @@ function OnboardingWizardInner({
           { signal },
         );
         if (!testIsCurrent()) return null;
+        if (result.status === "fail") {
+          captureOnboardingStepFailed({
+            step: "connect_model",
+            reason: "environment_test_failed",
+            provider: managedProvider ?? adapterType,
+            method: credentialMode === "api" ? "api_key" : "subscription",
+          });
+        }
         setAdapterEnvResult(result);
         adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
         return result;
       });
     } catch (err) {
       if (!selectionIsCurrent()) return null;
+      captureOnboardingStepFailed({
+        step: "connect_model",
+        reason: "environment_test_failed",
+        provider: managedProvider ?? adapterType,
+        method: credentialMode === "api" ? "api_key" : "subscription",
+      });
       adapterEnvErrorSelectionRef.current = selection || null;
       setAdapterEnvError(
         err instanceof Error ? err.message : "Adapter environment test failed"
@@ -2600,6 +2627,12 @@ function OnboardingWizardInner({
       setStep(5);
     } catch (err) {
       if (!isCurrent()) return;
+      captureOnboardingStepFailed({
+        step: "connect_model",
+        reason: "agent_create_failed",
+        provider: managedProvider ?? adapterType,
+        method: credentialMode === "api" ? "api_key" : "subscription",
+      });
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
       if (hiringAgentRef.current === attempt) hiringAgentRef.current = null;
@@ -3239,6 +3272,12 @@ function OnboardingWizardInner({
                           // the address Back had cleared, so its sign-in could
                           // not even be pressed.
                           if (connectPhase !== "connecting") return;
+                          captureOnboardingStepFailed({
+                            step: "connect_model",
+                            reason: "subscription_login_failed",
+                            provider: managedProvider ?? adapterType,
+                            method: "subscription",
+                          });
                           // Refused, failed or timed out — the card says which.
                           // The button goes back to what it was offering rather
                           // than spinning on a login that is not coming.

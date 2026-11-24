@@ -11,7 +11,12 @@ import {
   syncProductAnalytics,
   type ProductAnalyticsClient,
 } from "./product-analytics";
-import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "./onboarding-analytics";
+import {
+  captureAgentChatMessageSent,
+  captureOnboardingStepCompleted,
+  captureOnboardingStepFailed,
+  useOnboardingAnalytics,
+} from "./onboarding-analytics";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -256,5 +261,40 @@ describe("onboarding funnel events", () => {
     wizard.rerender({ open: true, step: 4, connectOutcome: "subscription" });
     act(() => wizard.result.current.dismissed(4));
     expect(client.capture).not.toHaveBeenCalled();
+  });
+
+  it("captures structured onboarding failures and drops unsafe provider strings", async () => {
+    await startAnalytics();
+    captureOnboardingStepFailed({
+      step: "connect_model",
+      reason: "api_key_save_failed",
+      provider: "Anthropic",
+      method: "api_key",
+    });
+    captureOnboardingStepFailed({
+      step: "connect_model",
+      reason: "subscription_login_failed",
+      provider: "secret token=sk-123",
+      method: "subscription",
+    });
+    captureOnboardingStepFailed({
+      step: "launch",
+      reason: "greeting_failed",
+    });
+    expect(captured()).toEqual([
+      ["onboarding_step_failed", { step: "connect_model", reason: "api_key_save_failed", provider: "anthropic", method: "api_key" }],
+      ["onboarding_step_failed", { step: "connect_model", reason: "subscription_login_failed", method: "subscription" }],
+      ["onboarding_step_failed", { step: "launch", reason: "greeting_failed" }],
+    ]);
+  });
+
+  it("captures agent chat messages with onboarding_chat vs agent_chat surface only", async () => {
+    await startAnalytics();
+    captureAgentChatMessageSent("onboarding_chat");
+    captureAgentChatMessageSent("agent_chat");
+    expect(captured()).toEqual([
+      ["agent_chat_message_sent", { surface: "onboarding_chat" }],
+      ["agent_chat_message_sent", { surface: "agent_chat" }],
+    ]);
   });
 });
