@@ -61,6 +61,7 @@ export async function apiEquivalentByAgent(db: Db, companyId: string, range?: Co
   const rows = await db.execute<Row>(sql`
     with ev as (
       select e.agent_id, e.model, e.billing_type, e.cost_status, e.cost_cents, e.heartbeat_run_id,
+        e.idempotency_key like ('heartbeat:' || e.heartbeat_run_id::text || ':%') as run_receipt,
         case when e.receipt_hash is null and e.provider = 'openai' and e.model not like 'openai/_%'
           then greatest(0, e.input_tokens - e.cached_input_tokens) else e.input_tokens end as input_tokens,
         e.cached_input_tokens, e.output_tokens
@@ -68,13 +69,22 @@ export async function apiEquivalentByAgent(db: Db, companyId: string, range?: Co
       where e.company_id = ${companyId} ${from} ${to}
     ),
     run_events as (
+      -- Only the run's own receipts (as accounting-integrity counts them), across all dates.
       select heartbeat_run_id, count(*) as n from cost_events
       where company_id = ${companyId} and heartbeat_run_id in (select heartbeat_run_id from ev where heartbeat_run_id is not null)
+        and idempotency_key like ('heartbeat:' || heartbeat_run_id::text || ':%')
       group by heartbeat_run_id
     ),
     priced as (
       select ev.*,
-        case when re.n = 1 then coalesce(r.usage_json->>'costUsdExact', r.usage_json->>'costUsd') end as reported_usd,
+        case
+          when not coalesce(ev.run_receipt, false) then null
+          when re.n = 1 then coalesce(r.usage_json->>'cacheAdjustedCostUsd', r.usage_json->>'costUsdExact', r.usage_json->>'costUsd')
+          -- A run split per model carries each model's reported price.
+          else (select part->>'costUsd' from jsonb_array_elements(
+              case when jsonb_typeof(r.usage_json->'usageByModel') = 'array' then r.usage_json->'usageByModel' else '[]'::jsonb end) part
+            where part->>'model' = ev.model limit 1)
+        end as reported_usd,
         case when re.n = 1 and (r.usage_json->>'cacheWriteTokens') ~ '^[0-9]+$'
           then (r.usage_json->>'cacheWriteTokens')::numeric else 0 end as cache_write_tokens
       from ev
@@ -85,7 +95,7 @@ export async function apiEquivalentByAgent(db: Db, companyId: string, range?: Co
       select *,
         case
           when billing_type in ('subscription_included', 'subscription_overage')
-            and reported_usd ~ '^[0-9]+(\\.[0-9]+)?$' then 'reported'
+            and reported_usd ~ '^[0-9]+(\\.[0-9]+)?$' and reported_usd::numeric > 0 then 'reported'
           when billing_type in ('subscription_included', 'subscription_overage') or cost_status = 'unpriced' then 'table'
           else 'ledger'
         end as source

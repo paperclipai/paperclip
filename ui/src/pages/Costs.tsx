@@ -708,7 +708,7 @@ export function Costs({
               subtitle={spendData?.summary.apiEquivalent ? <span title={API_EQUIVALENT_TOOLTIP}>
                 Estimated cost of all usage at API prices{spendData.summary.apiEquivalent.unpricedTokens > 0
                   ? ` · ${formatTokens(spendData.summary.apiEquivalent.unpricedTokens)} tokens not priced` : ""}
-              </span> : "Cost data is loading"}
+              </span> : spendData ? "Not available" : "Cost data is loading"}
               icon={DollarSign}
             />
             <MetricTile

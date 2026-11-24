@@ -38,7 +38,8 @@ const ALIASES: Record<string, string> = {
 };
 
 export function resolveListPriceModel(model: string): string | null {
-  const name = model.trim().toLowerCase().replace(/^(anthropic|openai)\//, "");
+  // Claude Code reports dated snapshots and context markers, e.g. `claude-haiku-4-5-20251001`, `claude-opus-5-5[1m]`.
+  const name = model.trim().toLowerCase().replace(/^(anthropic|openai)\//, "").replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
   if (!name) return null;
   const resolved = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
   return Object.hasOwn(LIST_PRICES, resolved) ? resolved : null;
