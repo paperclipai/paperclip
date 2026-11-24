@@ -45,6 +45,18 @@ test("findUnbudgetedSleeps flags real-clock sleeps >1000ms (including inline cal
       { rule: "sleep-over-1s", line: 8 },
     ],
   );
+
+  // Cancellable deadline timers and fake-timer suites must not produce false positives.
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      "const timer = setTimeout(() => reject(new Error('timeout')), 60_000);\nclearTimeout(timer);",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps("vi.useFakeTimers();\nsetTimeout(() => done(), 10_000);"),
+    [],
+  );
 });
 
 test("checkTestFileBudget enforces migration, prose-guidance, and tiny embedded-PG rules on new files", () => {

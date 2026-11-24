@@ -49,8 +49,10 @@ if (SKIP_UI_BUILD && !fs.existsSync(UI_DIST_INDEX)) {
 // `scripts/e2e-shard.mjs` — `scripts/__tests__/e2e-shard.test.mjs` fails if
 // the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects.spec.ts",
   "agent-chat-sessions.spec.ts",
   "agent-configuration.spec.ts",
+  "ai-personal-connection-recovery.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
   "composer-stop.spec.ts",
@@ -134,6 +136,7 @@ export default defineConfig({
   // intentionally not part of the default local_trusted e2e run.
   testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
+  expect: { timeout: 10_000 },
   retries: 0,
   // Parallel-safe shards run concurrently across multiple workers; shards or
   // runs that include any spec in SERIAL_SPECS (or unfiltered full runs) fall

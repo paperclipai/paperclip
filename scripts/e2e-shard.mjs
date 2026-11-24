@@ -20,8 +20,10 @@ export const IGNORED_SPECS = ["in-feed-native/**", "multi-user.spec.ts", "multi-
 // with `SERIAL_SPECS` in tests/e2e/playwright.config.ts —
 // `scripts/__tests__/e2e-shard.test.mjs` fails if the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects.spec.ts",
   "agent-chat-sessions.spec.ts",
   "agent-configuration.spec.ts",
+  "ai-personal-connection-recovery.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
   "composer-stop.spec.ts",

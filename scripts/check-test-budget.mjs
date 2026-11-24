@@ -112,6 +112,10 @@ function hasProseSourceRead(source) {
 export function findUnbudgetedSleeps(source, { onlyLineNumbers = null } = {}) {
   const violations = [];
   const lines = source.split(/\r?\n/);
+  const usesFakeTimers = /\b(?:vi|jest)\.useFakeTimers\s*\(/.test(source);
+  const clearedHandles = new Set(
+    [...source.matchAll(/\bclearTimeout\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((m) => m[1]),
+  );
   SLEEP_CALL_START_PATTERN.lastIndex = 0;
   let match;
   while ((match = SLEEP_CALL_START_PATTERN.exec(source)) !== null) {
@@ -142,6 +146,15 @@ export function findUnbudgetedSleeps(source, { onlyLineNumbers = null } = {}) {
     if (allowed) continue;
 
     const callee = match[1];
+    if (callee === "setTimeout") {
+      if (usesFakeTimers) continue;
+      // Ignore cancellable deadline timers (e.g. `const timer = setTimeout(...); ... clearTimeout(timer)`).
+      const beforeOnLine = source.slice(Math.max(0, match.index - 80), match.index);
+      const assignedVar = beforeOnLine.match(/([A-Za-z_$][\w$]*)\s*=\s*$/);
+      if (assignedVar && clearedHandles.has(assignedVar[1])) {
+        continue;
+      }
+    }
     const delayArg = callee === "setTimeout" ? call.args[1] ?? "" : call.args[0] ?? "";
     const ms = evaluateDurationExprMs(delayArg);
     if (ms > MAX_PR_SLEEP_MS) {
