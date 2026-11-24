@@ -241,4 +241,26 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it("builds the heartbeat_runs wakeup request index concurrently and replays over an existing one", async () => {
+    const connectionString = await createTempDatabase();
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+    const indexName = "heartbeat_runs_wakeup_request_id_idx";
+
+    const [built] = await sql`SELECT indisvalid, indisunique, pg_get_indexdef(indexrelid) definition
+      FROM pg_index WHERE indexrelid=${indexName}::regclass`;
+    expect(built!.indisvalid).toBe(true);
+    expect(built!.indisunique).toBe(false);
+    expect(built!.definition).toContain("ON public.heartbeat_runs USING btree (wakeup_request_id)");
+
+    const hash = await migrationHash("0506_heartbeat_runs_wakeup_request_index.sql");
+    await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash=${hash}`;
+    await applyPendingMigrations(connectionString);
+    const [history] = await sql`SELECT count(*)::int count FROM drizzle.__drizzle_migrations WHERE hash=${hash}`;
+    expect(history!.count).toBe(1);
+
+    const [kept] = await sql`SELECT indisvalid FROM pg_index WHERE indexrelid=${indexName}::regclass`;
+    expect(kept!.indisvalid).toBe(true);
+  }, 120_000);
 });
