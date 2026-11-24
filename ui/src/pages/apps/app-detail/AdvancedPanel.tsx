@@ -483,7 +483,7 @@ export function DangerZone({
     ? connection.enabled === false || connection.status === "disabled"
     : false;
   const methodUnavailable = connection ? connectionMethodUnavailable(connection, galleryEntry) : false;
-  const googleWorkspace = isGoogleWorkspaceConnectionConfig(connection?.config);
+  const googleWorkspace = isGoogleWorkspaceConnectionConfig(connection?.config, connection?.transportConfig);
 
   return (
     <Collapsible

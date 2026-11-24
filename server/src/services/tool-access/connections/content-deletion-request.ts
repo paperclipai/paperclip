@@ -12,6 +12,7 @@ const PHASES: Phase[] = ["invocations", "events", "auditEvents", "appViews", "de
 const OPEN_WORK_WAIT_MS = 60_000;
 const OPEN_WORK_WAIT_MAX_MS = 5 * 60_000;
 const OPEN_WORK_WAIT_LIMIT_MS = 24 * 60 * 60_000;
+const OPEN_WORK_LONG_WAIT_MS = 60 * 60_000;
 
 export type RunInProgress = { id: string; eventAfterId: number; changed: boolean; stage?: "events" | "log" };
 
@@ -61,9 +62,10 @@ export function initialContentDeletionProgress(): Progress {
   return { phase: "invocations", waiting: false, cursor: null, runCursor: null, currentRun: null, pendingRuns: [], counts: emptyContentDeletionCounts() };
 }
 
-export function openWorkWaitMs(row: { requestedAt: Date }, open: number) {
+export function openWorkWaitMs(row: { requestedAt: Date }, open: number, untilSettled = false) {
   const waitedMs = Date.now() - row.requestedAt.getTime();
-  if (waitedMs >= OPEN_WORK_WAIT_LIMIT_MS || open === 0) return null;
+  if (open === 0) return null;
+  if (waitedMs >= OPEN_WORK_WAIT_LIMIT_MS) return untilSettled ? OPEN_WORK_LONG_WAIT_MS : null;
   return Math.min(Math.max(OPEN_WORK_WAIT_MS, waitedMs / 10), OPEN_WORK_WAIT_MAX_MS);
 }
 

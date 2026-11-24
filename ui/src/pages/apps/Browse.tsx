@@ -1366,7 +1366,7 @@ export function ConnectorCard({
                     onRequestRemove({
                       id: connection.id,
                       pool: Boolean(aiConnectionRouterPluginKey(connection)),
-                      googleWorkspace: isGoogleWorkspaceConnectionConfig(connection.config),
+                      googleWorkspace: isGoogleWorkspaceConnectionConfig(connection.config, connection.transportConfig),
                       accountName,
                       providerName: row.name,
                       remainingConnectionCount: row.connections.filter(

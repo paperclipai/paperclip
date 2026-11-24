@@ -1,7 +1,13 @@
-import type { Db } from "@paperclipai/db";
-import { isGoogleWorkspaceConnectionConfig, type ToolConnectionContentDeletionReason } from "@paperclipai/shared";
+import { and, eq, sql } from "drizzle-orm";
+import { toolApplications, toolConnections, type Db } from "@paperclipai/db";
+import {
+  isGoogleWorkspaceConnectorProfileId,
+  isGoogleWorkspaceSourceTemplateKey,
+  type ToolConnectionContentDeletionReason,
+} from "@paperclipai/shared";
 import { logActivity } from "../../activity-log.js";
 import type { ActorInfo } from "../types.js";
+import { toolSourceTemplateKeySql } from "../source-template-key.js";
 import { requestConnectionContentDeletion, type ContentDeletionActor } from "./content-deletion.js";
 
 export type GoogleAccessEndReason = Exclude<ToolConnectionContentDeletionReason, "requested">;
@@ -13,17 +19,23 @@ export function contentDeletionActor(actor: ActorInfo | undefined): ContentDelet
   return SYSTEM_ACTOR;
 }
 
-export function isGoogleWorkspaceConnection(connection: { config: unknown }): boolean {
-  return isGoogleWorkspaceConnectionConfig(connection.config);
+export async function isGoogleWorkspaceConnection(db: Pick<Db, "select">, connection: { id: string; companyId: string }): Promise<boolean> {
+  const [row] = await db
+    .select({ key: toolSourceTemplateKeySql, profile: sql<string | null>`${toolConnections.config}->'oauth'->>'connectorProfile'` })
+    .from(toolConnections)
+    .innerJoin(toolApplications, and(eq(toolApplications.id, toolConnections.applicationId), eq(toolApplications.companyId, toolConnections.companyId)))
+    .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)));
+  if (!row) return false;
+  return isGoogleWorkspaceSourceTemplateKey(row.key) || (typeof row.profile === "string" && isGoogleWorkspaceConnectorProfileId(row.profile));
 }
 
 export async function deleteGoogleContentWhenAccessEnds(
   db: Db,
-  connection: { id: string; companyId: string; config: unknown },
+  connection: { id: string; companyId: string },
   reason: GoogleAccessEndReason,
   actor: ContentDeletionActor = SYSTEM_ACTOR,
 ) {
-  if (!isGoogleWorkspaceConnection(connection)) return null;
+  if (!(await isGoogleWorkspaceConnection(db, connection))) return null;
   const { deletion } = await requestConnectionContentDeletion(db, connection, actor, reason);
   await logActivity(db, {
     companyId: connection.companyId,

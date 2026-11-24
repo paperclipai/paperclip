@@ -458,8 +458,8 @@ Technical Information and closes the training and export findings below.
 
 The connection's content deletion ("Delete data") now starts on its own,
 saved in the same database transaction that ends the access, for a Google
-connection (`isGoogleWorkspaceConnectionConfig`: a Google app template or a
-Google broker profile). The job row records why (`reason`):
+connection (its app template, read with the canonical source-template
+precedence, is a Google app, or its broker profile is a Google profile). The job row records why (`reason`):
 
 | Event | `reason` | Where |
 | --- | --- | --- |
@@ -479,11 +479,12 @@ unchanged.
   every person who used the connection. Calls do not record which grant made
   them, so one person's disconnect deletes the whole connection's saved
   content. Recording the grant on each call would let this narrow later.
-- Window: starts at once. Work still running keeps its content until it
-  settles; the job then deletes it. It waits for running work up to 24 hours
-  (rechecks every 1 to 5 minutes), then runs every step once more and
-  finishes. A failed step is retried until it succeeds, across restarts
-  (the existing durable job, plus `not_before`).
+- Window: starts at once and normally finishes within minutes. Work still
+  running keeps its content until it settles; the job then deletes it. It
+  rechecks running work every 1 to 5 minutes, and hourly after the first day,
+  until none is left, then runs every step once more and finishes. A failed
+  step is retried until it succeeds, across restarts (the existing durable
+  job, plus `not_before`). A task deletion keeps its 24-hour wait limit.
 - An access end while a manual deletion is pending moves that job's cutoff to
   the access end and restarts it.
 - Reconnect: only calls made after the access end are kept. Late records of

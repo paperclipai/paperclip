@@ -26,6 +26,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createConnectionContentDeletion, requestConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { deleteGoogleContentWhenAccessEnds } from "../services/tool-access/connections/google-content-retention.js";
 import type { RunLogHandle, RunLogStore } from "../services/run-log-store.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -375,6 +376,45 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(kept!.resultSummary?.summary).toBe(SECRET);
     const [old] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, seed.settledCall.id));
     expect(old!.resultSummary?.summary).toBe("");
+  });
+
+  it("keeps waiting for work that is still running after a day, then rechecks hourly", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const { deletion } = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "member_removed");
+    const dayAgo = new Date(Date.now() - 26 * 60 * 60_000);
+    await db.update(toolInvocations).set({ createdAt: dayAgo }).where(eq(toolInvocations.companyId, seed.company.id));
+    await db.update(toolCallEvents).set({ createdAt: dayAgo }).where(eq(toolCallEvents.companyId, seed.company.id));
+    await db.update(toolConnectionContentDeletions).set({ requestedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+
+    const [waiting] = await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    expect(waiting!.status).toBe("pending");
+    expect(waiting!.notBefore!.getTime()).toBeGreaterThan(Date.now() + 30 * 60_000);
+    expect(runLogs.logs.get(seed.liveRun.logRef!)).toBe(SECRET);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    await db.update(toolConnectionContentDeletions).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+    expect(runLogs.logs.has(seed.liveRun.logRef!)).toBe(false);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "completed" });
+  });
+
+  it.each([
+    ["its app template", { config: { sourceTemplateKey: "google-workspace" } }, {}, true],
+    ["its transport settings", { transportConfig: { sourceTemplateKey: "gmail" } }, {}, true],
+    ["the app's source", {}, { source: "google-drive" }, true],
+    ["its Google broker profile", { config: { oauth: { connectorProfile: "calendar.read" } } }, {}, true],
+    ["another app", { config: { sourceTemplateKey: "slack" } }, { source: "slack" }, false],
+  ] as const)("recognises a Google connection by %s", async (_label, connectionFields, metadata, google) => {
+    const [company] = await db.insert(companies).values({ name: `Shape ${randomUUID()}`, issuePrefix: `SH${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company!.id, name: "App", type: "mcp_http", metadata }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id, applicationId: application!.id, name: "App", uid: randomUUID(), transport: "mcp_remote", status: "active", ...connectionFields,
+    }).returning();
+    const started = await db.transaction(async (tx) => deleteGoogleContentWhenAccessEnds(tx as never, connection!, "connection_removed"));
+    expect(Boolean(started)).toBe(google);
   });
 
   it("returns the pending deletion instead of starting a second one", async () => {

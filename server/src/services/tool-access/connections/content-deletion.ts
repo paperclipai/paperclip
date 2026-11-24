@@ -700,7 +700,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
   const connectionJobs: JobStore<DeletionRow> = {
     load: async (id) => (await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, id)))[0],
     scope: (row) => connectionScope({ id: row.connectionId, companyId: row.companyId }, row.requestedAt),
-    waitMs: (row, open) => row.reason === "requested" ? null : openWorkWaitMs(row, open),
+    waitMs: (row, open) => row.reason === "requested" ? null : openWorkWaitMs(row, open, true),
     save: async (tx, row, progress, waitMs) => (await tx
       .update(toolConnectionContentDeletions)
       .set({
