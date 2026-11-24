@@ -1,8 +1,3 @@
-// Shared fixture for the local-verify tests. The tests are split across
-// local-verify*.test.mjs so node --test runs them in parallel processes: each
-// test spawns real `pnpm verify` runs and they were ~200s in one file, the
-// whole wall time of `test:release-registry` in the Typecheck + Release
-// Registry job.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
