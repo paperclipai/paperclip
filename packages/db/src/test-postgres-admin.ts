@@ -31,20 +31,32 @@ export async function startTestPostgresDatabase(adminUrl: string): Promise<{
   if (template && !/^paperclip_test_template_[a-f0-9]+$/.test(template)) {
     throw new Error("Invalid disposable test template name");
   }
-  const admin = postgres(adminUrl, { max: 1, connect_timeout: 5, onnotice() {} });
   const url = new URL(adminUrl);
   url.pathname = `/${name}`;
   const connectionString = url.toString();
   let cleaning: Promise<void> | null = null;
   const cleanup = () => cleaning ??= (async () => {
+    const dropAdmin = postgres(adminUrl, { max: 1, connect_timeout: 5, onnotice() {} });
     try {
       await closeRegisteredClients(connectionString, { scope: "database" });
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    } finally { await admin.end({ timeout: 1 }); }
+      await dropAdmin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    } finally {
+      await dropAdmin.end({ timeout: 1 });
+    }
   })();
+  const setupAdmin = postgres(adminUrl, { max: 1, connect_timeout: 5, onnotice() {} });
+  let created = false;
   try {
-    await admin.unsafe(`CREATE DATABASE "${name}"${template ? ` TEMPLATE "${template}"` : ""}`);
-    await admin.unsafe(QUIET_TEST_DATABASE_SQL(name));
+    await setupAdmin.unsafe(`CREATE DATABASE "${name}"${template ? ` TEMPLATE "${template}"` : ""}`);
+    created = true;
+    await setupAdmin.unsafe(QUIET_TEST_DATABASE_SQL(name));
+  } catch (error) {
+    await setupAdmin.end({ timeout: 1 }).catch(() => {});
+    if (created) await cleanup();
+    throw error;
+  }
+  await setupAdmin.end({ timeout: 1 });
+  try {
     await applyPendingMigrations(connectionString);
     return { connectionString, cleanup };
   } catch (error) {

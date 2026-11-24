@@ -3,6 +3,7 @@ import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import { dashboardConversationReadable, type DashboardConversationFields } from "../services/responsibility-privacy.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
@@ -315,7 +316,7 @@ export function hasCompanyAccess(req: Request, companyId: string): boolean {
  * Routes with bespoke not-found behavior (legacy `200 []` contracts,
  * audit-logged denials) should still compose `hasCompanyAccess` directly.
  */
-export async function getAccessibleResource<T extends { companyId: string }>(
+export async function getAccessibleResource<T extends { companyId: string } & DashboardConversationFields>(
   req: Request,
   res: Response,
   resource: T | null | undefined | Promise<T | null | undefined>,
@@ -323,7 +324,7 @@ export async function getAccessibleResource<T extends { companyId: string }>(
   notFoundBody: Record<string, unknown> = { error: notFoundMessage },
 ): Promise<T | null> {
   const resolved = await resource;
-  if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+  if (!resolved || !hasCompanyAccess(req, resolved.companyId) || !dashboardConversationReadable(req.actor, resolved)) {
     res.status(404).json(notFoundBody);
     return null;
   }

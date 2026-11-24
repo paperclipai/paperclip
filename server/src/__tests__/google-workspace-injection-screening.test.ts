@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, companies, companyMemberships, agents, issues, heartbeatRuns, toolApplications, toolConnections, connectionGrants,
   toolCatalogEntries, toolConnectionInstalls, toolPolicies, toolInvocations, toolActionRequests, toolProfiles, toolProfileEntries,
   promptInjectionInvocations } from "@paperclipai/db";
-import { PROMPT_INJECTION_DEFAULT_MODEL } from "@paperclipai/shared";
+import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, PROMPT_INJECTION_DEFAULT_MODEL } from "@paperclipai/shared";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
@@ -37,11 +37,13 @@ function googleResult(body: string) {
 }
 
 const support = await getEmbeddedPostgresTestSupport();
-(support.supported ? describe : describe.skip)("Google Workspace results pass the prompt-injection guard", () => {
+(support.supported ? describe : describe.skip)("Google Workspace results from Google's MCP servers pass the prompt-injection guard", () => {
   let db: ReturnType<typeof createDb>;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let home: string;
+  const savedTransport = { ...GOOGLE_WORKSPACE_TOOL_TRANSPORT };
   beforeAll(async () => {
+    for (const service of Object.keys(GOOGLE_WORKSPACE_TOOL_TRANSPORT) as Array<keyof typeof GOOGLE_WORKSPACE_TOOL_TRANSPORT>) GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] = "google_mcp";
     home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-google-guard-")));
     vi.stubEnv("PAPERCLIP_HOME", home);
     database = await startEmbeddedPostgresTestDatabase("paperclip-google-guard-db-");
@@ -49,6 +51,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await instanceSettingsService(db).updateExperimental({ enableGoogleWorkspaceConnector: true });
   }, 90_000);
   afterAll(async () => {
+    Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
     await database?.cleanup();
     vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });

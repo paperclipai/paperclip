@@ -1,4 +1,5 @@
 import { agentRuntimeSettingsHarness, aiRuntimeConnectionBindingSchema, type Agent, type AiConnectionBinding, type AiConnectionList, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
+import { unrestrictedCloudHarnessPolicy, type CloudHarnessPolicy } from "./cloud-harness-policy";
 
 export const bulkAgentHarness = (agent: Agent) => agentRuntimeSettingsHarness(agent.adapterType, agent.adapterConfig);
 export const agentDefaultModel = (agent: Agent) => typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model.trim() || null : null;
@@ -8,7 +9,8 @@ export const sameBinding = (a: AiRuntimeConnectionBinding | undefined, b: AiRunt
   return canonical(a) === canonical(b);
 };
 
-export function bulkAgentDisabledReason(agent: Agent): string | undefined {
+export function bulkAgentDisabledReason(agent: Agent, cloud = false, harnessPolicy: CloudHarnessPolicy = unrestrictedCloudHarnessPolicy): string | undefined {
+  if (cloud && !harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig)) return "This harness is not available on Paperclip Cloud";
   if (["terminated", "pending_approval"].includes(agent.status)) return "This agent is not available for bulk edits";
   if (agentConnection(agent)?.mode === "router") return "Edit connection pool members on the agent's configuration page";
   if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "antigravity_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return "Connection and model are managed externally";

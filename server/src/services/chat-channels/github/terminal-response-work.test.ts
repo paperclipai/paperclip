@@ -8,7 +8,8 @@ import { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.j
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../../task-admission.js";
 import { registerGitHubAcknowledgementWork } from "./acknowledgement-work.js";
-import { registerGitHubTerminalResponseWork } from "./terminal-response-work.js";
+import { GITHUB_TERMINAL_RESPONSE_DECISION_VERSION, registerGitHubTerminalResponseWork } from "./terminal-response-work.js";
+import { readGitHubResponseRuns } from "./response-run-state.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -131,7 +132,8 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     const sweep = statements.filter(query => /"chat_actions"|heartbeat_runs|run_identity_contexts|chat_message_links/.test(query));
     return {
       statements: sweep.length,
-      provenance: sweep.filter(query => /from "run_identity_contexts"/.test(query)).length,
+      // Requester provenance reads, not the page read that names identity contexts in a subquery.
+      provenance: sweep.filter(query => /from "run_identity_contexts"/.test(query) && !/github_response_request/.test(query)).length,
     };
   }
   const finals = async (actionIds: string[]) => (await db.select({ result: chatActions.result }).from(chatActions)
@@ -165,6 +167,116 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     // Per page: the page, its latest runs, the batched context and link reads, and the wait keys.
     expect(first.provenance).toBeLessThanOrEqual(2);
     expect(first.statements).toBeLessThanOrEqual(2 * 5);
+  }, 300_000);
+
+  it("settles requests whose own run finished before another request's run, with a batched page read", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const base = Date.UTC(2026, 9, 28);
+    // Each waiting request's own run finished just before the newest request's
+    // run started. Half are linked by a wake comment, half only by an accepted
+    // identity context for the request's comment.
+    for (const [index, request] of f.stale.entries()) {
+      const issueNumber = f.runs.findIndex(run => run.issueId === request.issueId) + 1;
+      const runId = randomUUID(), contextId = randomUUID(), byIdentity = index % 2 === 1;
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+        nativeIssueId: request.issueId, issueId: request.issueId, scopeKind: "issue", status: "succeeded",
+        responsibleUserId: "requester", activeIdentityContextId: byIdentity ? contextId : null,
+        contextSnapshot: byIdentity ? { issueId: request.issueId } : { issueId: request.issueId, wakeCommentId: request.commentId },
+        createdAt: new Date(base + issueNumber * 3_600_000 - (index + 1) * 1_000) });
+      if (byIdentity) await db.insert(runIdentityContexts).values({ id: contextId, companyId: f.companyId, runId, revision: 1,
+        responsibleUserId: "requester", messageId: request.commentId, cause: "chat_request", correlationId: runId, status: "accepted" });
+    }
+    const inputs = f.stale.map(request => ({ companyId: f.companyId, endpointId: f.endpointId, agentId: f.agentId,
+      issueId: request.issueId, deliveryId: request.deliveryId, sourceMessageId: request.commentId }));
+    let reads: Awaited<ReturnType<typeof readGitHubResponseRuns>> = [];
+    const read = await observe(async () => { reads = await readGitHubResponseRuns(db, inputs); });
+    // The latest runs, their requester provenance, and the earlier runs: each one statement for the page.
+    expect(read.statements).toBeLessThanOrEqual(4);
+    expect(reads.every(state => !("forbidden" in state) && !state.ownsLatestRequest && state.finishedRequestRun)).toBe(true);
+    // One earlier run is still publishing its reply: that request waits.
+    const publishing = f.stale[0]!;
+    const [publishingRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId), sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${publishing.commentId}`));
+    const [conversation] = await db.select({ conversationId: chatActions.conversationId }).from(chatActions)
+      .where(eq(chatActions.id, publishing.actionId));
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: conversation!.conversationId, kind: "github_review_publication",
+      providerActionId: `github_publication:${randomUUID()}`, status: "processing",
+      payload: { operation: "comment", session: { companyId: f.companyId, issueId: publishing.issueId,
+        runId: publishingRun!.id, agentId: f.agentId } } });
+    await start(); await advance(31_000);
+    const settled = f.stale.filter(request => request !== publishing);
+    expect(new Set(acknowledged)).toEqual(new Set(settled.map(request => request.deliveryId)));
+    expect(await finals(settled.map(request => request.actionId))).toBe(settled.length);
+    const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, publishing.actionId));
+    expect(waiting).toMatchObject({ status: "processed" });
+    expect(waiting!.result?.final).not.toBe(true);
+  }, 300_000);
+
+  it("reads requests parked by an older decision once after a deploy", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const base = Date.UTC(2026, 9, 28);
+    for (const [index, request] of f.stale.entries()) {
+      const issueNumber = f.runs.findIndex(run => run.issueId === request.issueId) + 1;
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        nativeIssueId: request.issueId, issueId: request.issueId, scopeKind: "issue", status: "succeeded",
+        contextSnapshot: { issueId: request.issueId, wakeCommentId: request.commentId },
+        createdAt: new Date(base + issueNumber * 3_600_000 - (index + 1) * 1_000) });
+    }
+    const previous = `v${Number(GITHUB_TERMINAL_RESPONSE_DECISION_VERSION.slice(1)) - 1}|`;
+    const versioned = new Set(f.stale.filter((_, index) => index % 2 === 0).map(request => request.actionId));
+    await db.execute(sql`update ${chatActions} a set result = coalesce(a.result, '{}'::jsonb) || jsonb_build_object('terminalWaitKey',
+      (case when a.id in (${sql.join([...versioned].map(id => sql`${id}::uuid`), sql`, `)}) then ${previous} else '' end) || (select r.id::text || ':' || r.status || ':' || extract(epoch from r.updated_at)::text from ${heartbeatRuns} r
+        where r.company_id = a.company_id and r.native_issue_id = c.issue_id order by r.created_at desc, r.id desc limit 1)
+      || '|' || i.status || '|' || extract(epoch from a.updated_at)::text)
+      from chat_conversations c, issues i
+      where c.id = a.conversation_id and i.id = c.issue_id and a.id in (${sql.join(f.stale.map(request => sql`${request.actionId}::uuid`), sql`, `)})`);
+    await start(); await advance(31_000);
+    expect(new Set(acknowledged)).toEqual(new Set(f.stale.map(request => request.deliveryId)));
+  }, 300_000);
+
+  it("reads a waiting inline request again once a reply is published, without a hint", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const client = db.$client, issueId = f.runs[0]!.issueId;
+    const [{ main, resource }] = await client.unsafe(`select id as main, resource_id as resource from chat_conversations
+      where issue_id = $1 and external_thread_id = 'github:paperclipai/paperclip:1'`, [issueId]);
+    const [{ conversation }] = await client.unsafe(`insert into chat_conversations (company_id, endpoint_id, issue_id, resource_id,
+        external_conversation_id, external_label, external_thread_id)
+      values ($1, $2, $3, $4, 'github:paperclipai/paperclip:1:rc:5001', 'thread', 'github:paperclipai/paperclip:1:rc:5001')
+      returning id as conversation`, [f.companyId, f.endpointId, issueId, resource]);
+    const [{ delivery }] = await client.unsafe(`insert into chat_deliveries (company_id, endpoint_id, provider_event_id,
+        deduplication_key, event_kind, normalized_event, conversation_id, state)
+      values ($1, $2, 'inline-wait', 'inline-wait', 'message', '{}', $3, 'processed') returning id as delivery`,
+    [f.companyId, f.endpointId, conversation]);
+    const [{ comment }] = await client.unsafe(`insert into issue_comments (company_id, issue_id, body)
+      values ($1, $2, 'Fixed') returning id as comment`, [f.companyId, issueId]);
+    await client.unsafe(`insert into chat_message_links (company_id, endpoint_id, conversation_id, delivery_id, comment_id,
+        provider_message_id, direction) values ($1, $2, $3, $4, $5, 'inline-wait-in', 'inbound')`,
+    [f.companyId, f.endpointId, conversation, delivery, comment]);
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: conversation,
+      deliveryId: delivery, kind: "github_response_comment", providerActionId: `github_response:${delivery}`,
+      payload: { agentId: f.agentId }, status: "processed",
+      result: { id: "9001", url: "https://github.com/paperclipai/paperclip/pull/1#discussion_r9001", final: false,
+        versionAt: new Date(Date.UTC(2026, 9, 28)).toISOString() } });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, nativeIssueId: issueId, issueId,
+      scopeKind: "issue", status: "succeeded", runtimeMode: "native", nativePhase: "committed",
+      contextSnapshot: { issueId, wakeCommentId: comment }, createdAt: new Date(Date.UTC(2026, 9, 28) + 3_000_000),
+      resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+          continuation: { kind: "response_wake", idempotencyKey: "inline-wait" } },
+        presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none",
+          commentAction: "none", reasonCodes: ["yielded_control_plane_wait"] } } });
+    await start(); await advance(5_000);
+    expect(acknowledged).not.toContain(delivery);
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: main,
+      kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+      payload: { operation: "comment", session: { companyId: f.companyId, issueId, runId: f.runs[0]!.runId } },
+      result: { id: "9002", url: "https://github.com/paperclipai/paperclip/pull/1#issuecomment-9002" } });
+    await companyHint(f.companyId); await advance(31_000);
+    expect(acknowledged).toContain(delivery);
   }, 300_000);
 
   it("acknowledges every owed request of a page when one run's requester provenance changed", async () => {

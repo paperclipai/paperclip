@@ -1,3 +1,4 @@
+import { dashboardActivityCondition, dashboardAuditConversationCondition } from "./responsibility-privacy.js";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
@@ -22,6 +23,7 @@ export interface AgentActionAuditFilters {
   cursor?: string;
   limit: number;
   caseReadCondition?: SQL<boolean>;
+  dashboardUserId?: string | null;
 }
 
 type CursorValue = { createdAt: string; id: string };
@@ -57,6 +59,7 @@ export function agentActionAuditService(db: Db) {
       if (filters.cursor && !cursor) throw badRequest("Invalid audit cursor");
       const effectiveResponsibleUserId = sql<string | null>`coalesce(${activityLog.responsibleUserId}, ${heartbeatRuns.responsibleUserId})`;
       const conditions = [eq(activityLog.companyId, filters.companyId),
+        dashboardActivityCondition(filters.dashboardUserId), dashboardAuditConversationCondition(filters.dashboardUserId),
         filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       // Preserve the historical agent-audit query unless the caller opts into
       // the unified all-actors feed explicitly.

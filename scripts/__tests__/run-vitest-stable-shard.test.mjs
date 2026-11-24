@@ -15,6 +15,7 @@ import {
 import { assertManifestSource } from "../ci/pr-run-durations.mjs";
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
 import { chatManifestData, entryDurations } from "../ci/refresh-chat-shard-durations.mjs";
+import { defaultServerParallelWorkers } from "../ci/vitest-workers.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -31,8 +32,18 @@ const serializedDurationsManifest = path.join(
 // themselves run inside a workflow on CI.
 function workflowEnv(envOverrides = {}) {
   const env = { ...process.env, ...envOverrides };
-  if (!("GITHUB_WORKFLOW" in envOverrides)) {
-    delete env.GITHUB_WORKFLOW;
+  for (const key of [
+    "GITHUB_WORKFLOW",
+    "PAPERCLIP_CI_FULL",
+    "PAPERCLIP_CI_EXCLUDE_NIGHTLY",
+    "PAPERCLIP_CI_NIGHTLY_SUITES_FILE",
+    "PAPERCLIP_VITEST_MAX_WORKERS",
+    "PAPERCLIP_VITEST_CPU_COUNT",
+    "PAPERCLIP_TEST_POSTGRES_ADMIN_URL",
+  ]) {
+    if (!(key in envOverrides)) {
+      delete env[key];
+    }
   }
   return env;
 }
@@ -92,12 +103,10 @@ test("general shards retain scripts and route-named suites outside the serialize
   ]) assert.ok(general.selectedGeneralServerSuites.includes(file), `missing configured server suite: ${file}`);
 });
 
-for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
-  test(`shard flags are rejected for the ${group} group`, () => {
-    const result = dryRun(["--mode", "general", "--group", group, "--shard-index", "0", "--shard-count", "3"]);
-    assert.notEqual(result.status, 0, `${group} must not accept shard flags`);
-  });
-}
+test("shard flags are rejected for the general-workspaces-c group", () => {
+  const result = dryRun(["--mode", "general", "--group", "general-workspaces-c", "--shard-index", "0", "--shard-count", "3"]);
+  assert.notEqual(result.status, 0, "general-workspaces-c must not accept shard flags");
+});
 
 test("workspace lanes cover every non-server project in the root Vitest configuration", () => {
   const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
@@ -174,11 +183,19 @@ test("workspaces-c runs the db project alone and workspaces-b no longer carries 
     const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
     assert.ok(sharded.length > 0 && sharded.every(entry => entry.keys.includes("shard_index") && entry.keys.includes("shard_count")),
       `${workflow} must carry the sharded workspaces-a entries`);
-    for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
-      const matching = entries.filter(entry => entry.group === group);
-      assert.equal(matching.length, 1, `${workflow} must run ${group} exactly once`);
-      assert.ok(matching[0].keys.includes("group_label"), `${workflow} must label the ${group} job`);
-      assert.deepEqual(matching[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} must run ${group} unsharded`);
+    const workspacesCEntries = entries.filter(entry => entry.group === "general-workspaces-c");
+    assert.equal(workspacesCEntries.length, 1, `${workflow} must run general-workspaces-c exactly once`);
+    assert.ok(workspacesCEntries[0].keys.includes("group_label"), `${workflow} must label the general-workspaces-c job`);
+    assert.deepEqual(workspacesCEntries[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} must run general-workspaces-c unsharded`);
+
+    const workspacesBEntries = entries.filter(entry => entry.group === "general-workspaces-b");
+    assert.ok(workspacesBEntries.length >= 1, `${workflow} must run general-workspaces-b`);
+    assert.ok(workspacesBEntries.every(entry => entry.keys.includes("group_label")), `${workflow} must label every general-workspaces-b job`);
+    if (workspacesBEntries.length === 1) {
+      assert.deepEqual(workspacesBEntries[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} single general-workspaces-b entry must be unsharded`);
+    } else {
+      assert.ok(workspacesBEntries.every(entry => entry.keys.includes("shard_index") && entry.keys.includes("shard_count")),
+        `${workflow} multi-shard general-workspaces-b entries must declare shard_index and shard_count`);
     }
   }
 });
@@ -383,7 +400,11 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(pluginWarmOwnerSuitePath));
   assert.ok(!files.includes(pluginReleaseResumeSuitePath));
   assert.ok(!files.includes(pluginEvictionSuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  const excludedNightly = shards[0].excludedNightlySuites ?? [];
+  for (const shard of shards) {
+    assert.deepEqual(shard.excludedNightlySuites ?? [], excludedNightly, "nightly exclusions must agree across shards");
+  }
+  assert.deepEqual([...files, ...excludedNightly, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -468,7 +489,11 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   const vitestLanes = matrix.verify_paperclip_runner.filter((entry) => entry.command.startsWith("test:typescript:vitest"));
   for (const entry of vitestLanes) {
     assert.match(entry.command, /^test:typescript:vitest (--package-lane=\d+\/\d+|--native-server)$/, entry.lane_label);
-    assert.equal(entry.task, "ci:runner-vitest", entry.lane_label);
+    assert.equal(
+      entry.task,
+      entry.command.endsWith("--native-server") ? "ci:runner-vitest" : "ci:runner-package",
+      entry.lane_label,
+    );
   }
   const lanes = vitestLanes
     .map((entry) => /--package-lane=(\d+)\/(\d+)$/.exec(entry.command))
@@ -769,7 +794,8 @@ function defaultLauncher({ shared = false, failureIndex = null } = {}) {
     const result = spawnSync(process.execPath, [script, "--mode", "general"], {
       cwd: repoRoot, encoding: "utf8", timeout: 30_000,
       env: workflowEnv({ GITHUB_WORKFLOW: "PR", PATH: `${directory}${path.delimiter}${process.env.PATH}`,
-        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false" }),
+        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0" }),
     });
     const events = existsSync(receipt) ? readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
     return { result, events, lines };
@@ -857,7 +883,7 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
       "--shard-index", "0", "--shard-count", "3"], {
       cwd: repoRoot, encoding: "utf8", timeout: 30_000,
       env: { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`,
-        PAPERCLIP_TEST_DATABASE_URL: "", PAPERCLIP_CI_PROFILE: "false" },
+        PAPERCLIP_TEST_DATABASE_URL: "", PAPERCLIP_CI_PROFILE: "false", PAPERCLIP_TEST_POSTGRES_SHARED: "0" },
     });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stderr, /failed \(7\)/);
@@ -867,10 +893,12 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   }
 });
 
-for (const [group, parallelWorkers, shardArgs] of [
-  ["general-server-native-runner", 4, []],
-  ["general-server-without-chat-or-native-runner", 3, ["--shard-index", "0", "--shard-count", "12"]],
-]) test(`${group} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
+for (const [label, modeArgs, lane] of [
+  ["general-server-native-runner", ["--mode", "general", "--group", "general-server-native-runner"], "general"],
+  ["general-server-without-chat-or-native-runner", ["--mode", "general", "--group", "general-server-without-chat-or-native-runner", "--shard-index", "0", "--shard-count", "12"], "general"],
+  ["serialized", ["--mode", "serialized", "--shard-index", "4", "--shard-count", "9"], "serialized"],
+]) test(`${label} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
+  const parallelWorkers = defaultServerParallelWorkers(lane);
   const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
   const receipt = path.join(directory, "args.json");
   const fakePnpm = path.join(directory, "pnpm");
@@ -882,19 +910,24 @@ for (const [group, parallelWorkers, shardArgs] of [
       [{ PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test" }, 1],
       [{ PAPERCLIP_ISSUE_RECOVERY_TEST_DATABASE_URL: "postgresql://shared/recovery_test" }, 1],
       [{ PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgresql://owned/postgres" }, parallelWorkers],
+      [{ PAPERCLIP_VITEST_MAX_WORKERS: "2" }, 2],
     ]) {
-      const env = workflowEnv({ PATH: `${directory}${path.delimiter}${process.env.PATH}`, PAPERCLIP_CI_PROFILE: "false" });
+      const env = workflowEnv({
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        PAPERCLIP_CI_PROFILE: "false",
+        PAPERCLIP_TEST_POSTGRES_SHARED: "0",
+      });
       for (const key of Object.keys(env)) if (key.endsWith("_TEST_DATABASE_URL")) delete env[key];
       Object.assign(env, databaseEnv);
-      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", group, ...shardArgs], {
+      const result = spawnSync(process.execPath, [script, ...modeArgs], {
         cwd: repoRoot, encoding: "utf8", env,
       });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const args = JSON.parse(readFileSync(receipt, "utf8"));
-      assert.ok(args.includes(`--maxWorkers=${workers}`));
+      assert.ok(args.includes(`--maxWorkers=${workers}`), `expected --maxWorkers=${workers} in ${args.join(" ")}`);
       assert.ok(args.includes(workers > 1 ? "--fileParallelism" : "--no-file-parallelism"));
       if (workers > 1) assert.ok(args.includes("--pool=forks") && args.includes("--isolate"));
-      if (group === "general-server-native-runner") {
+      if (label === "general-server-native-runner") {
         for (const file of [restartRecoverySuitePath, ...restartWaitSuites]) assert.ok(args.includes(file));
       }
     }

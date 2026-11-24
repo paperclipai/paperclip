@@ -21,6 +21,7 @@ import { connectionGrants, connectionTokenIssuances, companySecretBindings, comp
 import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "@paperclipai/shared";
 import { notFound } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
@@ -45,7 +46,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 const CONNECTION_OWNED_SECRET_KEY_PREFIX = "tool_app.";
 
 /** Token fields a legacy row may have inlined into `config.oauth`. */
-const INLINE_OAUTH_TOKEN_FIELDS = [
+export const INLINE_OAUTH_TOKEN_FIELDS = [
   "access_token",
   "refresh_token",
   "accessToken",
@@ -312,6 +313,15 @@ async function removeConnection(
           ),
         );
     }
+    // Usage limits reported on a removed account no longer hold work. This
+    // runs before any provider call and covers grants an earlier attempt
+    // already revoked, so a failed release fails the removal and its retry
+    // releases them.
+    await releaseProviderLimitWaits(db, {
+      companyId: connection.companyId, reason: "ai_connection_revoked",
+      grantIds: grantRows.map((row) => row.id),
+      ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+    });
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
     if (

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { NATIVE_PLAN_REVIEW_DIRECTIVE, buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
 const issue = {
   id: "task-1",
@@ -64,6 +64,15 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("an unanswered question is not consent");
     expect(markdown).toContain("A human-dismissed request is deferred to history");
     expect(markdown).toContain("Do not invent material user intent or success criteria");
+  });
+
+  it("tells a native Plan-mode run that Paperclip opens the one plan review card", () => {
+    const planning = { issue: { ...issue, workMode: "planning" } };
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true })).toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    // Adapters keep their own approval flow, and an accepted plan is executed.
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: false })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true, acceptedPlanContinuation: true,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body: "Do it." } })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
   });
 
   it("preserves execution of a clear accepted plan without imposing clarification", () => {

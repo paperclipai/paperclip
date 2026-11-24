@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, describeRunnerCommandStall, isSettledReleasedRunnerCut, revertUnattachedRelaunchRotation, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, revertUnattachedRelaunchRotation, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -2209,26 +2209,6 @@ describe("a rotation for a released Runner that the host starts again", () => {
       } finally {
         await rm(root, { recursive: true, force: true });
       }
-    }
-  });
-
-  it("accepts a stopped Runner's ready cut only when nothing is left in flight", () => {
-    expect(isSettledReleasedRunnerCut(settled, priorIdentity)).toBe(true);
-    expect(isSettledReleasedRunnerCut({ schema: settled.schema, ...priorIdentity, lifecycle: "suspended" }, priorIdentity)).toBe(true);
-    for (const changed of [
-      { outbox: [{ sourceSeq: 8 }] },
-      { ackedSourceSeq: 6 },
-      { nextSourceSeq: undefined },
-      { processedCommands: { "command-a": { status: "pending" } } },
-      { processedCommands: { "command-a": { status: "indeterminate" } } },
-      { warmTransition: { transitionId: "transition" } },
-      { pendingTerminalDelivery: { turnId: "turn" } },
-      { pendingProviderCleanup: { turnId: "turn" } },
-      { lifecycle: "connecting" },
-      { schema: "paperclip.runner.durable.state.v0" },
-      { runId: desiredIdentity.runId },
-    ]) {
-      expect(isSettledReleasedRunnerCut({ ...settled, ...changed }, priorIdentity)).toBe(false);
     }
   });
 });

@@ -2,12 +2,17 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   GOOGLE_WORKSPACE_TOOL_TRANSPORT,
   googleWorkspaceServiceToolNames,
+  googleWorkspaceToolName,
+  googleWorkspaceToolTarget,
+  googleWorkspaceToolTitle,
   type GoogleWorkspaceService,
   type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import {
   GoogleWorkspaceAuthError,
   callGoogleWorkspaceRestTool,
+  googleCalendarSeriesRefusal,
+  googleWorkspaceArgumentRefusal,
   isGoogleWorkspaceRestService,
   listGoogleWorkspaceRestTools,
   probeGoogleWorkspaceRestService,
@@ -39,6 +44,73 @@ export function googleWorkspaceRestAuditEndpoint(service: GoogleWorkspaceService
 
 export function listGoogleWorkspaceRest(service: GoogleWorkspaceService): Tool[] {
   return listGoogleWorkspaceRestTools(restService(service));
+}
+
+export interface GoogleWorkspaceRestToolDefinition {
+  name: string;
+  title: string | null;
+  description: string | null;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown> | null;
+  annotations: Record<string, unknown>;
+}
+
+export function googleWorkspaceRestToolDefinition(toolName: string): GoogleWorkspaceRestToolDefinition | null {
+  return googleWorkspaceTransport(toolName) === "paperclip_rest" ? googleWorkspaceRestFallbackDefinition(toolName) : null;
+}
+
+export function googleWorkspaceRestFallbackDefinition(toolName: string): GoogleWorkspaceRestToolDefinition | null {
+  const target = googleWorkspaceToolTarget(toolName);
+  if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
+  const tool = listGoogleWorkspaceRestTools(target.service).find((candidate) => candidate.name === target.leaf);
+  return tool ? {
+    name: tool.name,
+    title: googleWorkspaceCatalogToolTitle("google-workspace", toolName, tool.title),
+    description: tool.description ?? null,
+    inputSchema: { ...tool.inputSchema },
+    outputSchema: tool.outputSchema ? { ...tool.outputSchema } : null,
+    annotations: { ...tool.annotations },
+  } : null;
+}
+
+function googleWorkspaceTransport(toolName: string): GoogleWorkspaceToolTransport | null {
+  return googleWorkspaceToolTarget(toolName)?.transport ?? null;
+}
+
+export function googleWorkspaceCatalogToolTitle(
+  sourceTemplateKey: unknown,
+  name: string,
+  title: string | null | undefined,
+): string | null {
+  if (sourceTemplateKey !== "google-workspace") return title ?? null;
+  const target = googleWorkspaceToolTarget(name);
+  const restTitle = target && isGoogleWorkspaceRestService(target.service)
+    ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
+    : undefined;
+  return googleWorkspaceToolTitle(name, restTitle ?? title);
+}
+
+export interface GoogleWorkspaceMcpPreflight {
+  toolName: string;
+  arguments: unknown;
+  inputSchema: unknown;
+  callTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown | null>;
+}
+
+export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceMcpPreflight): Promise<string | null> {
+  const target = googleWorkspaceToolTarget(input.toolName);
+  if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
+  const refusal = googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: input.arguments, inputSchema: input.inputSchema });
+  if (refusal || target.service !== "calendar" || target.leaf !== "delete_event") return refusal;
+  const args = (input.arguments ?? {}) as Record<string, unknown>;
+  const lookup = Object.fromEntries(["calendarId", "eventId"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+  const result = await input.callTool(googleWorkspaceToolName("calendar", "get_event"), lookup);
+  const record = (result && typeof result === "object" ? result : {}) as { content?: unknown; data?: { isError?: unknown; structuredContent?: unknown } };
+  return googleCalendarSeriesRefusal({
+    isError: record.data?.isError === true,
+    structuredContent: record.data?.structuredContent ?? null,
+    text: typeof record.content === "string" ? record.content : null,
+  });
 }
 
 export async function callGoogleWorkspaceRest(

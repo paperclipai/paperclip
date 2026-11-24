@@ -62,6 +62,7 @@ import { materializeAsset } from "./runtime-context.js";
 import { createRunnerTestTlsTunnel, dockerCommandRunner } from "../../__tests__/helpers/docker-command-runner.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { nativeSha256 } from "./canonical.js";
 import {
   closeIdleWarmNativeSessionsForRestart,
   detachNativeSessionsForRestart,
@@ -4491,6 +4492,53 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(issue).toMatchObject({ assigneeAgentId: agentId, executionRunId: null });
     expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
   });
+
+  it.each([
+    { scenario: "usage-limit", category: "quota_exhausted", laterTurn: false, reported: false },
+    { scenario: "rate-limit", category: "rate_limit", laterTurn: false, reported: false },
+    { scenario: "other-failure", category: "unknown", laterTurn: false, reported: true },
+    { scenario: "later-turn", category: "quota_exhausted", laterTurn: true, reported: true },
+  ])("reports a failed checkpoint a restart ended only when its last turn was not a provider usage limit ($scenario)",
+    async ({ scenario, category, laterTurn, reported }) => {
+      // Staging run 3f4a9403: the ACP turn failed on a weekly allowance, and a
+      // deploy restarted the server while the run settled. Normal settlement
+      // keeps that expected failure out of Sentry; restart recovery must too.
+      const fixture = await seedRun(`FAILED-CHECKPOINT-LIMIT-${scenario}`);
+      await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
+        terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+        providerSessionId: "limited-provider-session",
+      } } }).where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const runnerEvent = (sourceSeq: number, eventType: string, turnId: string, payload: Record<string, unknown>) => ({
+        schema: "paperclip.prp.event.v1", runId: fixture.runId, normalizedSessionId: fixture.native.normalizedSessionId,
+        turnId, sourceInstanceId: fixture.native.runnerInstanceId,
+        sourceEventId: `${fixture.native.runnerInstanceId}:${fixture.runId}:${sourceSeq}`, sourceSeq,
+        sourceKind: "runner", eventType, schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(), payload,
+      });
+      const events = [runnerEvent(12, "turn.failed", "limited-turn", { status: "failed", error: {
+        code: "RUNTIME", message: "ACP agent reported a terminal limit failure.",
+        providerFailure: { schema: "paperclip.provider-failure.v1", phase: "turn", provider: "anthropic", category,
+          retryability: "requires_action", message: "ACP agent reported a terminal limit failure." },
+      } })];
+      if (laterTurn) events.push(runnerEvent(13, "turn.started", "later-turn", { status: "inProgress" }));
+      for (const [index, event] of events.entries()) {
+        await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 900 + index,
+          stream: "system", level: "info", eventType: event.eventType, payload: { prpEvent: event },
+          sourceInstanceId: event.sourceInstanceId, sourceEventId: event.sourceEventId, sourceSeq: event.sourceSeq,
+          sourcePayloadSha256: nativeSha256(event) });
+      }
+      const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+      expect(await claimNativeRestartRecoveries({
+        db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+      })).toEqual([{ kind: "blocked", runId: fixture.runId, reason: "provider_checkpoint_permanently_failed" }]);
+      await waitForPendingRunFailureReports();
+
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked",
+        error: "provider_checkpoint_permanently_failed" });
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(reported ? 1 : 0);
+    });
 
   it("reports one event when it blocks a failed run that was an unreported pending retry", async () => {
     const fixture = await seedRun("PENDING-RETRY-BLOCKED");

@@ -31,24 +31,33 @@ demo.
 Decisions and the details behind them are kept in the
 [working memory](../memory/google-connector-memory.md).
 
-- [x] **Launch transport** (Nov 17): our own tools over Google's REST APIs,
-      built so we can switch to Google's MCP servers later.
+- [x] **Launch transport** (Nov 24): Google's hosted MCP servers for Gmail,
+      Drive, Docs, Sheets, Slides and Calendar, because Google's Workspace AI
+      Tools Addendum requires a Google MCP for a tool that is or is driven by
+      an AI agent. Paperclip's REST tool set stays in the code as the
+      fallback. This replaces the Nov 17 decision to launch on REST.
 - [x] **Owner** (Nov 17): Dotta owns submission, security, privacy and release.
 - [x] **Engineering test instance** (Nov 17): create
       `googletester.staging.paperclip.app`.
-- [ ] What we send to the reviewers (the staging tester or something else),
-      including the custom reviewer password.
+- [x] What we send to the reviewers: the staging tester (Nov 23). Its review
+      code is created but not yet handed over.
 - [ ] Privacy policy edits approved.
-- [ ] Security lab and budget.
-- [ ] Email the Developer Preview team asking for permission to offer the MCP
-      integration publicly (optional now, still cheap).
+- [ ] Security lab and budget. (Nov 23: TAC Security recommended; quote and
+      budget not confirmed)
+- [x] Permission to offer the MCP integration publicly: not needed. Google
+      made the Workspace MCP servers generally available on November 24.
 
 ## 1. Baseline (needs the Google project owner's sign-in)
 
 - [ ] Verification Center: is the case pending, waiting on us, or closed?
 - [ ] Record the scopes declared in the Console and compare with the 14.
-- [ ] Every OAuth client that calls Workspace MCP is marked as an AI-agent
-      client; note any that missed the November cutoff and need replacing.
+- [ ] Every OAuth client that calls Workspace MCP is marked "Use this client
+      for an AI-powered agent" in the Google Console (Google's MCP servers
+      reject other clients). Note any that missed the November cutoff and need
+      replacing. Required before the switch back to MCP works on the staging
+      tester and in production.
+- [ ] The six Workspace MCP APIs are enabled in each Google project that
+      calls them (the REST APIs stay enabled for the fallback).
 - [ ] Separate QA project is External and In Production, with user count noted.
 - [ ] Reviewer callback URL is registered on the QA client.
 - [ ] Branding preflight: homepage, privacy policy on the app domain and on the
@@ -58,8 +67,12 @@ Decisions and the details behind them are kept in the
 
 ## 2. Product and code (see the code-fix plan)
 
-- [x] Data-use disclosure shown in the picker immediately before Google consent
-      (Nov 17, [#21998](https://github.com/paperclipai/paperclip/pull/21998)).
+- [ ] Data-use disclosure in the picker immediately before Google consent.
+      Added Nov 17 ([#21998](https://github.com/paperclipai/paperclip/pull/21998)),
+      then removed on Nov 24 by owner decision. The picker now shows only the
+      service rows and a link to the privacy policy and its Limited Use
+      statement. If a Google reviewer asks for an in-product disclosure,
+      restore a short statement above the link.
 - [ ] Limited Use statement published and linked from the picker.
 - [x] Help page: how to disconnect and how to delete stored Google data
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010):
@@ -73,14 +86,18 @@ Decisions and the details behind them are kept in the
 - [x] Prompt-injection screening confirmed on every Google tool result
       (Nov 17, [#21999](https://github.com/paperclipai/paperclip/pull/21999)).
 - [ ] Disconnecting the last Google connection revokes the grant at Google.
+      Seen at Google on November 23 on the MCP build before the REST switch.
+      Revocation does not depend on the transport; test it again on the
+      current MCP build before this is ticked.
 - [x] Retention and deletion of Google content in tasks, runs and files audited
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
       store inventory; summary in the working memory's "Where Google content
       is kept"). Users can now delete it per connection. Content agents wrote
-      into tasks stays, and task or company deletion does not yet run the same
-      cleanup.
-- [x] REST-backed tool set for all 36 actions exists but is not switched on
-      (Nov 17): Gmail 9
+      into tasks stays until the task is deleted. Task and company deletion
+      run the same cleanup, including run logs and saved files in storage.
+- [x] REST-backed tool set for all 36 actions exists (Nov 17) and is switched
+      on (Nov 23,
+      [#22634](https://github.com/paperclipai/paperclip/pull/22634)): Gmail 9
       ([#22000](https://github.com/paperclipai/paperclip/pull/22000),
       [#22014](https://github.com/paperclipai/paperclip/pull/22014)),
       Calendar 9 ([#22017](https://github.com/paperclipai/paperclip/pull/22017)),
@@ -90,7 +107,21 @@ Decisions and the details behind them are kept in the
       ([#22028](https://github.com/paperclipai/paperclip/pull/22028)). The
       per-service switch exists
       ([#22016](https://github.com/paperclipai/paperclip/pull/22016)).
-- [ ] Each service switched to REST after a live test on the staging tester.
+- [x] Each service switched to REST and tested live on the staging tester
+      (Nov 23). All six were switched together, then tested: 36 actions
+      passed against Google after two fixes
+      ([#22706](https://github.com/paperclipai/paperclip/pull/22706),
+      [#22714](https://github.com/paperclipai/paperclip/pull/22714)).
+- [x] All six services switched back to Google's MCP servers (Nov 24), with
+      the REST argument checks that need no request to Google applied before
+      each MCP call, and Google's confirmation questions routed to the task's
+      question card. Tested with fakes only.
+- [ ] The six services tested live on Google's MCP servers on the staging
+      tester: all 36 actions, the agent-client OAuth setting, and one
+      confirmation question from Google answered and one declined.
+- [ ] Owner decision: the AI Tools Addendum forbids keeping Google user data
+      after the user disconnects. Paperclip keeps task and run content until
+      "Delete data". See the working memory's "Google AI Tools Addendum".
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [x] `googletester.staging.paperclip.app` created (Nov 18).

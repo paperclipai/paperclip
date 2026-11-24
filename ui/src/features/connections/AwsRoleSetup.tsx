@@ -5,6 +5,13 @@ import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { describeError } from "@/api/errors";
 import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
+import {
+  AgentSetupProgressPanel,
+  agentSetupProgressInstructions,
+  useAgentSetupProgress,
+  type AgentSetupProgressClient,
+  type AgentSetupStep,
+} from "@/components/AgentSetupProgress";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -56,7 +63,20 @@ export interface AwsRoleSetupProps {
   onTest: (roleArn: string) => void;
   /** Shown above the footer, such as who gets access to the connection. */
   beforeFooter?: React.ReactNode;
+  /** The company, for the agent's live progress checklist; without it the prompt has no progress reporting. */
+  companyId?: string | null;
+  progressClient?: AgentSetupProgressClient;
+  /** The signed-in account for the checklist; stories and tests pass it, the app reads the session. */
+  progressAccountId?: string;
 }
+
+/** The steps the agent is asked to report; it may adjust them. */
+export const AWS_AGENT_SETUP_STEPS: AgentSetupStep[] = [
+  { key: "check-account", title: "Check the AWS account" },
+  { key: "check-provider", title: "Check the identity provider" },
+  { key: "deploy-stack", title: "Create the role with CloudFormation" },
+  { key: "report-role", title: "Report the role ARN" },
+];
 
 /**
  * The app definition's role ARN rule (a server test keeps it equal to the server's), so this
@@ -82,8 +102,20 @@ export function AwsRoleSetup({
   onBack,
   onTest,
   beforeFooter,
+  companyId,
+  progressClient,
+  progressAccountId,
 }: AwsRoleSetupProps) {
   const [setup, setSetup] = useState<AwsConnectionSetup | null>(null);
+  const agentProgress = useAgentSetupProgress({
+    companyId, purpose: "aws_connection", subjectId: connectionId,
+    // Only when the role method is available: otherwise there is no prompt to carry the checklist.
+    enabled: setup?.available === true,
+    ...(progressClient ? { client: progressClient } : {}),
+    ...(progressAccountId ? { accountId: progressAccountId } : {}),
+  });
+  // The prompt waits for the checklist (or its failure), so a copied prompt always carries progress reporting when it can.
+  const promptReady = !companyId || Boolean(agentProgress.handoff) || Boolean(agentProgress.error);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [roleArn, setRoleArn] = useState("");
 
@@ -135,24 +167,43 @@ export function AwsRoleSetup({
 
       {ready ? (
         <>
-          <ol className="list-decimal space-y-4 pl-5 text-sm text-muted-foreground">
-            <li className="space-y-2">
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
               <span className="text-foreground">Give this prompt to an agent on a computer signed in to your AWS account.</span>{" "}
-              {ready.savedRoleArn
-                ? "It updates the existing role with the AWS CLI and tells you the role ARN."
-                : "It creates the role with the AWS CLI and tells you the role ARN."}
-              <div>
-                <AgentSetupPrompt
-                  prompt={awsAgentSetupPrompt(ready)}
-                  label="Set it up with your agent"
-                  title="Set up AWS with your agent"
-                  description="Paste this into an agent such as Claude Code or Codex, on a computer signed in to the AWS account agents should use."
-                  side="bottom"
-                />
-              </div>
-            </li>
-            <li className="space-y-2">
-              <label htmlFor="aws-role-arn" className="text-foreground">Paste the role ARN your agent reports.</label>
+              {ready.savedRoleArn ? "It updates the existing role" : "It creates the role"} with the AWS CLI
+              {agentProgress.handoff ? ", shows its progress here," : ""} and tells you the role ARN to paste below.
+            </p>
+            {agentProgress.error ? (
+              <InlineBanner tone="warning" title="Live progress isn’t available">
+                {agentProgress.error} The prompt still works; your agent just won’t show its steps here.{" "}
+                <Button type="button" variant="outline" size="sm" className="ml-1" onClick={agentProgress.renew}>Try again</Button>
+              </InlineBanner>
+            ) : null}
+            {promptReady ? (
+              <AgentSetupPrompt
+                prompt={awsAgentSetupPrompt(ready, agentProgress.handoff ? agentSetupProgressInstructions(agentProgress.handoff, AWS_AGENT_SETUP_STEPS) : null)}
+                label="Set it up with your agent"
+                title="Set up AWS with your agent"
+                description="Paste this into your own agent, such as Claude Code or Codex, on a computer signed in to the AWS account agents should use. It includes a short-lived link for this setup, so don’t share it."
+                side="bottom"
+              />
+            ) : (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Preparing the prompt…
+              </p>
+            )}
+            {agentProgress.handoff ? (
+              <AgentSetupProgressPanel
+                progress={agentProgress.progress}
+                subject="AWS"
+                expired={agentProgress.expired}
+                onRenew={agentProgress.renew}
+                refreshError={agentProgress.refreshError}
+                onRetryRefresh={agentProgress.retryRefresh}
+              />
+            ) : null}
+            <div className="space-y-2">
+              <label htmlFor="aws-role-arn" className="text-sm font-medium text-foreground">Role ARN</label>
               <Input
                 id="aws-role-arn"
                 value={roleArn}
@@ -166,8 +217,8 @@ export function AwsRoleSetup({
               {arnInvalid ? (
                 <p className="text-xs text-destructive">Use the full role ARN, like arn:aws:iam::123456789012:role/{ready.roleName}.</p>
               ) : null}
-            </li>
-          </ol>
+            </div>
+          </div>
 
           <Collapsible>
             <CollapsibleTrigger className="group flex items-center gap-1 text-sm font-medium text-foreground">
@@ -282,10 +333,12 @@ export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: t
 
 /**
  * A prompt for the user's own agent (on a machine already signed in to AWS) to
- * deploy this connection's template and report the role ARN. It holds no
- * secrets: AWS trusts the connection's signed identity, so it is safe to paste anywhere.
+ * deploy this connection's template and report the role ARN. It holds no AWS
+ * credential (AWS trusts the connection's signed identity). With progress
+ * instructions it carries a short-lived token that can update this setup's
+ * checklist, so it is for the person's own agent, not for sharing.
  */
-export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>): string {
+export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>, progressInstructions: string | null = null): string {
   // One stack per connection, like the role, so two connections never share (and replace) a stack.
   const stack = setup.roleName;
   const policyStep = setup.accessLevel === "read_only"
@@ -295,6 +348,7 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
     setup.savedRoleArn
       ? `Update the AWS IAM role ${setup.savedRoleArn} so Paperclip can connect to my AWS account again. Use the AWS CLI on this computer.`
       : "Set up an AWS IAM role so Paperclip can connect to my AWS account. Use the AWS CLI on this computer.",
+    ...(progressInstructions ? ["", progressInstructions] : []),
     "",
     "Steps:",
     setup.savedRoleArn
@@ -305,7 +359,7 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
     "4. Save the CloudFormation template below to a file and deploy it. This creates the stack, or updates it if it already exists:",
     `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
     `   If it fails because the role ${setup.roleName} already exists outside this stack, do not delete it. Instead update its trust policy with \`aws iam update-assume-role-policy\` to the trust policy in the template (with this account's ID and the identity provider's ARN), make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached, and use that role's ARN in step 5.`,
-    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.`,
+    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.${progressInstructions ? " Also put it in your finish summary, as \"Role ARN: <arn>\"." : ""}`,
     "",
     "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
     `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,

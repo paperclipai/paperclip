@@ -406,6 +406,7 @@ import {
 import {
   addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
+  conversationInteractionResponderAllowed,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -3120,6 +3121,9 @@ function toCompactIssue(issue: any): CompactIssue {
       : {}),
     ...(issue.isUnreadForMe !== undefined
       ? { isUnreadForMe: issue.isUnreadForMe }
+      : {}),
+    ...(issue.isArchivedForMe !== undefined
+      ? { isArchivedForMe: issue.isArchivedForMe }
       : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     interruption: issue.interruption ?? null,
@@ -6423,7 +6427,7 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+    if (req.actor.type === "board" && !conversationInteractionResponderAllowed(issue, req.actor.userId)) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
     // Actor-only gates deliberately precede the interaction lookup. An actor
@@ -8816,6 +8820,15 @@ export function issueRoutes(
       res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
       return;
     }
+    const inboxArchive = req.query.inboxArchive;
+    if (inboxArchive !== undefined && ((inboxArchive !== "include" && inboxArchive !== "archived") || attention)) {
+      res.status(400).json({ error: "inboxArchive must be include or archived and cannot be used with attention" });
+      return;
+    }
+    if (inboxArchive && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "inboxArchive requires board authentication" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8983,6 +8996,9 @@ export function issueRoutes(
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
+      inboxArchive: inboxArchive && req.actor.type === "board" && req.actor.userId
+        ? { mode: inboxArchive, userId: req.actor.userId }
+        : undefined,
       unreadForUserId,
       readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
@@ -9040,7 +9056,7 @@ export function issueRoutes(
       requestKey,
       // The new collection projections must reflect read/archive/undo mutations
       // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
-      allowTtlCache: view === "compact",
+      allowTtlCache: view === "compact" && !inboxArchive,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
@@ -14077,6 +14093,40 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    const waitingRetry = issue.monitorNextCheckAt
+      ? null
+      : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
+    if (waitingRetry?.status === "scheduled_retry") {
+      // The banner also shows "Check now" for a scheduled retry, such as a
+      // usage wait. With no monitor, the check is that retry: it starts now
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      const retry = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id,
+        actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: retry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: retry.scheduledRetry?.runId ?? null,
+        details: { outcome: retry.outcome, message: retry.message, source: "monitor_check_now" },
+      });
+      if (retry.outcome === "no_scheduled_retry") {
+        throw conflict("Nothing is waiting to be checked on this task anymore. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "no_scheduled_check" });
+      }
+      if (retry.outcome === "gate_suppressed") {
+        throw conflict("The check could not start because the task changed. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "gate_suppressed" });
+      }
+      res.json({ ok: true, outcome: retry.outcome, message: retry.message });
+      return;
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -16482,7 +16532,7 @@ export function issueRoutes(
                 }
               : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
-            ...(hasFieldChanges ? { updated: true } : {}),
+            ...(hasFieldChanges ? { updated: true, changes: issueChanges } : {}),
             ...summarizeIssueReferenceActivityDetails({
               addedReferencedIssues:
                 commentReferenceDiff.addedReferencedIssues.map(
@@ -17342,17 +17392,18 @@ export function issueRoutes(
       });
     }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 7 }),
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
-      hasMore: recent.length > 4,
+      hasMore: recent.slice(4).some((comment) => !included.has(comment.id)),
     });
   }
 

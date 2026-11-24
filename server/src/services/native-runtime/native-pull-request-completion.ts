@@ -2,6 +2,8 @@ import { and, eq, ne } from "drizzle-orm";
 import { heartbeatRuns, issues, issueWorkProducts, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isConversation } from "../agent-conversations.js";
 import { createPullRequestMergeStateResolver, extractGitHubPullRequestReferences } from "../github-pull-request-merge.js";
+import { GIT_CREDENTIAL_TOKEN_ENV_KEY, resolveGitHubApiCredential, type GitHubApiCredential } from "../git-credentials.js";
+import { resolveGitHubCompletionCredentials } from "../github-operation-credentials.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 
 export class NativePullRequestCompletionError extends Error {}
@@ -60,6 +62,18 @@ export function nativePullRequestCompletionKey(reference: { owner: string; repo:
   return `${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
 }
 
+async function resolveCompletionCredential(db: Db, binding: Binding): Promise<GitHubApiCredential | null> {
+  const credential = await resolveGitHubCompletionCredentials(db, binding);
+  if (credential.status !== "absent") {
+    const token = credential.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]?.trim();
+    if (credential.status !== "available" || !token) {
+      throw new NativePullRequestCompletionError("The run's GitHub connection is unavailable.");
+    }
+    return { token, source: "managed_connection", secretName: null };
+  }
+  return resolveGitHubApiCredential(db, binding.companyId);
+}
+
 export async function verifyNativePullRequestCompletion(db: Db, binding: Binding, result?: unknown): Promise<ReadonlySet<string>> {
   if (result === undefined) {
     const [saved] = await db.select({ envelope: nativeRunResults.resultJson }).from(nativeRunFinalizations)
@@ -73,7 +87,10 @@ export async function verifyNativePullRequestCompletion(db: Db, binding: Binding
   }
   const references = await nativePullRequestCompletionReferences(db, binding, result);
   if (references.length === 0) return new Set();
-  const resolve = createPullRequestMergeStateResolver(db);
+  let credential: Promise<GitHubApiCredential | null> | undefined;
+  const resolve = createPullRequestMergeStateResolver(db, {
+    credentialProvider: () => credential ??= resolveCompletionCredential(db, binding),
+  });
   const signal = AbortSignal.timeout(10_000);
   const states = await Promise.all(references.map(async reference => {
     try { return await resolve(binding.companyId, reference, signal); } catch { return "unknown"; }

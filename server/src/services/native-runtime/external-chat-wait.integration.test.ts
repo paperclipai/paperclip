@@ -731,11 +731,17 @@ describe("native external-chat response wait", () => {
     };
   }
 
-  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github", oversized = false) {
+  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github", oversized = false, nativeSlackForm = false) {
     const fixture = await seedWaitTurn(provider);
     if (provider === "slack") {
       await db.update(chatEndpointResources).set({ type: "channel" }).where(eq(chatEndpointResources.id, fixture.resourceId));
       await db.update(chatConversations).set({ isDirectMessage: false }).where(eq(chatConversations.id, fixture.conversationId));
+    }
+    if (nativeSlackForm) {
+      const [endpoint] = await db.select({ capabilities: chatEndpoints.capabilities }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, fixture.endpointId));
+      await db.update(chatEndpoints).set({ capabilities: { ...endpoint!.capabilities, cards: true, actions: true, modals: true } })
+        .where(eq(chatEndpoints.id, fixture.endpointId));
     }
     const gate = await seedPriorCompletionReview(fixture);
     const [current] = await db
@@ -785,7 +791,13 @@ describe("native external-chat response wait", () => {
           kind: "ask_user_questions",
           sourceRunId,
           continuationPolicy: "wake_assignee",
-          payload: {
+          payload: nativeSlackForm ? {
+            version: 1,
+            questionSet: {
+              schema: "paperclip.question_set.v1",
+              questions: [{ id: "color", prompt: "Name a color", required: true, answerMode: "text" }],
+            },
+          } : {
             version: 1,
             questions: [
               {
@@ -827,7 +839,7 @@ describe("native external-chat response wait", () => {
     await interactionSvc.answerQuestions(
       { id: fixture.issueId, companyId: fixture.companyId },
       interaction.id,
-      { answers: [{ questionId: "color", optionIds: ["cobalt"] }] },
+      { answers: [nativeSlackForm ? { questionId: "color", optionIds: [], otherText: "cobalt" } : { questionId: "color", optionIds: ["cobalt"] }] },
       { userId: fixture.userId },
     );
     const [delivery] = await db
@@ -955,6 +967,26 @@ describe("native external-chat response wait", () => {
     expect(JSON.stringify(responses)).toContain("cobalt");
   });
 
+  it("attests a Slack question answered in Paperclip after its native form was published", async () => {
+    const fixture = await seedBoardAnsweredTurn(true, "slack", false, true);
+    const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, fixture.publicationId));
+    expect(publication!.payload.card?.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "callback" }),
+    ]));
+    const tokens = await db.select().from(chatActions).where(eq(chatActions.companyId, fixture.companyId));
+    expect(tokens.map(token => token.kind)).toEqual(expect.arrayContaining(["question_form_submit"]));
+    expect(tokens.some(token => token.status === "processed")).toBe(false);
+    const denials: string[] = [];
+    await attestReviewedExternalChatRun({ db, ...fixture, contextSnapshot: { ...fixture.context }, onDenied: reason => denials.push(reason) });
+    expect(denials).toEqual([]);
+    expect(await resolveExternalChatQuestionResponse(db, fixture, fixture.context, "read", true)).not.toBeNull();
+    await attestAnswer(fixture);
+    await db.update(heartbeatRuns).set({ contextSnapshot: fixture.context }).where(eq(heartbeatRuns.id, fixture.runId));
+    const responses = await materializeExternalChatQuestionResponseInput({ db, binding: fixture, contextSnapshot: fixture.context });
+    expect(responses).toHaveLength(1);
+    expect(JSON.stringify(responses)).toContain("cobalt");
+  });
+
   it.each((["github", "slack"] as const).flatMap(provider => [true, false].map(withLink => ({ provider, withLink }))))(
     "attests a native $provider question answered in Board without inventing a provider action (link: $withLink)",
     async ({ provider, withLink }) => {
@@ -1020,7 +1052,7 @@ describe("native external-chat response wait", () => {
     },
   );
 
-  it.each((["github", "slack"] as const).flatMap(provider => ([
+  it.each((["github", "slack", "slack_native_form"] as const).flatMap(variant => ([
     "different_user",
     "viewer",
     "membership_revoked",
@@ -1035,10 +1067,32 @@ describe("native external-chat response wait", () => {
     "endpoint_paused",
     "resource_revoked",
     "answer_hash",
-  ] as const).filter(change => provider === "github" || (change !== "generation" && change !== "missing_runtime")).map(change => ({ provider, change }))))(
-    "rejects $provider Board answer authority after $change",
-    async ({ provider, change }) => {
-      const fixture = await seedBoardAnsweredTurn(true, provider);
+    "unsuperseded_token",
+    "foreign_callback",
+  ] as const).filter(change => variant === "github"
+    ? change !== "unsuperseded_token" && change !== "foreign_callback"
+    : change !== "generation" && change !== "missing_runtime"
+      && (variant === "slack_native_form" || (change !== "unsuperseded_token" && change !== "foreign_callback")))
+    .map(change => ({ variant, provider: variant === "github" ? "github" as const : "slack" as const, change }))))(
+    "rejects $variant Board answer authority after $change",
+    async ({ variant, provider, change }) => {
+      const fixture = await seedBoardAnsweredTurn(true, provider, false, variant === "slack_native_form");
+      if (change === "unsuperseded_token")
+        await db
+          .update(chatActions)
+          .set({ status: "issued", result: null })
+          .where(and(eq(chatActions.companyId, fixture.companyId), eq(chatActions.kind, "question_form_submit")));
+      if (change === "foreign_callback") {
+        const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, fixture.publicationId));
+        const card = publication!.payload.card!;
+        await db
+          .update(chatPublications)
+          .set({ payload: { ...publication!.payload, card: { ...card, actions: [
+            ...(card.actions ?? []),
+            { type: "callback", actionId: `pcf:${randomUUID()}`, label: "Other" },
+          ] } } })
+          .where(eq(chatPublications.id, fixture.publicationId));
+      }
       if (change === "different_user") {
         const otherUser = `other-${randomUUID()}`;
         await db

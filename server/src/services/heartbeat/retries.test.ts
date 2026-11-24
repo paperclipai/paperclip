@@ -86,6 +86,18 @@ describe("heartbeat retry module callbacks", () => {
     for (const callback of Object.values(deps.runDispatch)) expect(callback).not.toHaveBeenCalled();
   });
 
+  it("does not schedule provider work for a quota that needs account repair", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = { ...unitRun(), errorCode: "provider_quota", resultJson: { errorFamily: "provider_quota",
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "Check billing", retryability: "requires_action" } } } as Run;
+    const result = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, {} as Agent);
+    expect(result).toMatchObject({ outcome: "not_scheduled", issueId: "issue" });
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+  });
+
   it.each(["missing_run", "missing_agent"] as const)("keeps %s lookup behavior and requests the full source result", async (outcome) => {
     const database = guardedDatabase();
     const deps = callbacks();
