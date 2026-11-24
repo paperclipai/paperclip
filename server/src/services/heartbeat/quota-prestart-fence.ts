@@ -11,7 +11,7 @@ import { isConversation } from "../../lib/conversation-wake-policy.js";
 import { aiConnectionRouterService, samePoolSelection } from "../ai-connection-router.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
-import { legacyRunHasUnsettledActions } from "../legacy-action-outcomes.js";
+import { legacyRunHasUnsettledActions, nativeRunHasUnsettledActions } from "../legacy-action-outcomes.js";
 import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "../pre-dispatch-execution-evidence.js";
 import { hasRequiredWorkspaceRecovery } from "../workspace-restore-recovery-state.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -155,7 +155,8 @@ async function historicalClaudeTurnSettled(tx: Db, run: Run): Promise<boolean> {
       return typeof receipt.operationId !== "string" || !Object.hasOwn(receipt, "result");
     })) return false;
   } else return false;
-  return !await hasPendingRunCleanup(tx, run.companyId, run.id) && !await legacyRunHasUnsettledActions(tx, run);
+  return !await hasPendingRunCleanup(tx, run.companyId, run.id) &&
+    !await (run.runtimeMode === "native" ? nativeRunHasUnsettledActions(tx, run) : legacyRunHasUnsettledActions(tx, run));
 }
 
 /** The caller owns the issue and the held run locks and will bind the new

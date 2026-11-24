@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { and, eq } from "drizzle-orm";
 import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, completionContracts, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, issueThreadInteractions, nativeRunFinalizations, nativeRunResults, toolInvocations, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
+import { createPrpSemanticToolInputEnvelope, createPrpSemanticToolResultEnvelope } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { secretService } from "../secrets.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -587,6 +588,38 @@ describe("legacy quota prestart retry", () => {
       summary: null, exposeLowTrustRaw: false });
     expect(tampered.completedWork).toBeNull();
   }, 30_000);
+
+  it.each(["succeeded", "missing", "failed", "different_turn"] as const)(
+    "requires a same-turn successful native PRP tool receipt before switching (%s)", async outcome => {
+      const f = await historicalWait("native");
+      const sourceInstanceId = randomUUID();
+      const correlation = { runId: f.predecessor.id, normalizedSessionId: f.predecessor.nativeSessionId!,
+        turnId: "prior-turn", itemId: "read-item" };
+      const call = { callId: "get-issue-call", operationId: "paperclip_get_issue", correlation, content: { issueId: f.issue.id } };
+      const append = async (eventType: "semantic_tool.input" | "semantic_tool.result", sourceSeq: number,
+        semanticTool: ReturnType<typeof createPrpSemanticToolInputEnvelope>) => {
+        const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId,
+          sourceEventId: `semantic-${sourceSeq}`, sourceSeq, runId: correlation.runId,
+          normalizedSessionId: correlation.normalizedSessionId, turnId: semanticTool.correlation.turnId,
+          itemId: correlation.itemId, eventType, priority: 0, emittedAt: new Date().toISOString(),
+          payload: { semantic_tool: semanticTool } };
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.predecessor.id, agentId: f.agent.id, eventType,
+          payload: { prpEvent: event },
+          nativeSource: { sourceInstanceId, sourceEventId: event.sourceEventId, sourceSeq, protocolSchemaVersion: 1,
+            canonicalPayload: event } });
+      };
+      await append("semantic_tool.input", 1, createPrpSemanticToolInputEnvelope(call));
+      if (outcome !== "missing") {
+        await append("semantic_tool.result", 2, createPrpSemanticToolResultEnvelope({ ...call,
+          correlation: outcome === "different_turn" ? { ...correlation, turnId: "different-turn" } : correlation,
+          outcome: outcome === "failed" ? "failed" : "succeeded", code: "fixture_result",
+          authorizationBoundary: "active_task", retryable: false,
+        }));
+      }
+      expect((await f.schedule()).outcome).toBe("scheduled");
+      const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+      expect(pin.selection.memberId).toBe(f.members[outcome === "succeeded" ? 1 : 0].id);
+    }, 30_000);
 
   it.each(["queued", "scheduled_retry"] as const)("reconsiders an already persisted %s quota wait", async status => {
     const f = await historicalWait();
