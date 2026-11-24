@@ -1,3 +1,4 @@
+import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { promises as fs } from "node:fs";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import { createServer } from "node:http";
@@ -1129,6 +1130,16 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("settles a refused /swarm as its own failure that nothing retries automatically", async () => {
+    const f = await fixture();
+    const refusal = new PaperclipRunnerProviderProfileError("antigravity_swarm_unavailable",
+      "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one.");
+    await f.completion.failRun(f.failure(refusal));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: refusal.message });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("names a full sandbox disk that the sandbox provider reported during setup", async () => {

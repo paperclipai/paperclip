@@ -20,7 +20,8 @@ import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-p
  * never run as an ordinary request.
  */
 export const ANTIGRAVITY_SWARM_COMMAND = "swarm" as const;
-export const ANTIGRAVITY_SWARM_UNAVAILABLE = "antigravity_swarm_unavailable";
+export { ANTIGRAVITY_SWARM_UNAVAILABLE } from "./antigravity-swarm-refusal.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "./antigravity-swarm-refusal.js";
 /** Automatic wakes (recovery, sweeps) attempt one swarm request at most this often; the user can always ask again. */
 export const ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS = 3;
 

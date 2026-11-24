@@ -15,6 +15,8 @@ import { settledResponsePublicationSql } from "../native-runtime/native-response
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
+import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
@@ -189,6 +191,7 @@ export interface FailHeartbeatRunSetupInput {
 
 function nonRetryablePreflightFailureCode(error: unknown): string | null {
   if (error instanceof ProjectAccessDeniedError) return PROJECT_ACCESS_DENIED;
+  if (error instanceof PaperclipRunnerProviderProfileError && error.code === ANTIGRAVITY_SWARM_UNAVAILABLE) return ANTIGRAVITY_SWARM_UNAVAILABLE;
   if (error instanceof ChatControlRecoveryUnresolvedError)
     return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
   if (

@@ -23,6 +23,10 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyContinuationFailure({ errorCode: "agent_interaction_delivery_denied", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
+  it("does not automatically replay a refused /swarm (the user sends /swarm again or presses Retry)", () => {
+    expect(classifyContinuationFailure({ errorCode: "antigravity_swarm_unavailable", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("does not automatically replay a project access denial", () => {
     expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
