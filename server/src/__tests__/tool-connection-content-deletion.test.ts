@@ -308,6 +308,15 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       companyId: seed.company.id, connectionId: seed.connection.id, runId: seed.liveRun.id, invocationId: seed.liveCall.id,
       eventType: "call_completed", resultSummary: { summary: SECRET, sizeBytes: 42, sha256: "hash-42", redactedFields: [] },
     }).returning();
+    const [lateAudit] = await db.insert(toolAccessAuditEvents).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, action: "tool_access.policy_decision", outcome: "success",
+      details: { invocationId: seed.liveCall.id, argumentsSummary: { summary: SECRET, sizeBytes: 42, sha256: "hash-42" } },
+    }).returning();
+    const [lateView] = await db.insert(toolMcpAppViews).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, runId: seed.liveRun.id, invocationId: seed.liveCall.id,
+      applicationName: "Docs", toolName: "read_doc", upstreamToolName: "read_doc", resourceUri: "ui://docs/view",
+      toolInput: { id: "doc-1" }, toolResult: { text: SECRET },
+    }).returning();
     await drain(service);
 
     const [waiting] = await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, deletion.id));
@@ -337,6 +346,9 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(liveCall!.resultSummary?.summary).toBe("");
     const [late] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.id, lateEvent!.id));
     expect(late!.resultSummary?.summary).toBe("");
+    const [audited] = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.id, lateAudit!.id));
+    expect(JSON.stringify(audited!.details)).not.toContain(SECRET);
+    expect(await db.select().from(toolMcpAppViews).where(eq(toolMcpAppViews.id, lateView!.id))).toEqual([]);
     const finished = await restarted.storedContent(seed.connection);
     expect(finished.stored).toEqual({ toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 });
     expect(finished.deletion).toMatchObject({ id: deletion.id, status: "completed", reason: "access_revoked" });
