@@ -336,12 +336,25 @@ describe("session replay text masking", () => {
     ["an env assignment", "DATABASE_PASSWORD=hunter2", "hunter2"],
     ["a JSON field", "\"apiKey\": \"abc123secret\"", "abc123secret"],
     ["a YAML field", "client_secret: s3cr3t-value", "s3cr3t-value"],
+    ["a quoted password with spaces", "password=\"correct horse battery staple\"", "correct horse battery staple"],
+    ["a single-quoted secret with punctuation", "secret: 'p@ss, word; 42!'", "p@ss, word; 42!"],
+    ["an unquoted YAML password with spaces", "password: correct horse battery staple", "correct horse battery staple"],
+    ["a quoted value with an escaped quote", "\"token\": \"ab\\\"cd ef\"", "ab\\\"cd ef"],
     ["a bearer header", "Authorization: Bearer abcdef123456", "abcdef123456"],
     ["URL credentials", "postgres://admin:pa55word@db.internal:5432/app", "admin:pa55word"],
     ["a random token", "value Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC", "Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC"],
     ["a private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----"],
   ])("redactReplaySecrets masks %s", (_label, input, secret) => {
     expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
+  });
+
+  it("masks only the secret value in JSON, leaving the next field", () => {
+    expect(redactReplaySecrets("{\"password\": \"correct horse\", \"title\": \"Q3 plan\"}"))
+      .toBe("{\"password\": \"******* *****\", \"title\": \"Q3 plan\"}");
+  });
+
+  it("masks an unclosed quoted secret to the end of its line", () => {
+    expect(redactReplaySecrets("password=\"correct horse\nnext line")).toBe("password=\"******* *****\nnext line");
   });
 
   it("redacts a large text node quickly", () => {

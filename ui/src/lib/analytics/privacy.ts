@@ -74,9 +74,16 @@ function maskCharacters(text: string): string {
  */
 const SECRET_NAME = String.raw`(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,40}(?:api[-_]?key|access[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|secret|passw(?:or)?d|passwd|pwd|credentials?|private[-_]?key|client[-_]?secret|session[-_]?id|cookie|connection[-_]?string|dsn|jwt|bearer)[A-Za-z0-9_.-]{0,40}`;
 
-/** `name: value` / `name=value` / `"name": "value"`: the value is masked. */
+/**
+ * `name: value` / `name=value` / `"name": "value"`: the whole value is masked.
+ * A quoted value runs to its closing quote (escaped quotes included) or the
+ * end of the line, so `password="correct horse battery staple"` and a JSON
+ * value with spaces mask in full while the next JSON field shows. An unquoted
+ * value runs to the end of the line, as in YAML.
+ */
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`(${SECRET_NAME}["']?[ \t]{0,8}(?::=|=>|[:=])[ \t]{0,8}["'\x60]?)([^\s"'\x60,;]+)`,
+  String.raw`(${SECRET_NAME}["']?[ \t]{0,8}(?::=|=>|[:=])[ \t]{0,8})` +
+    String.raw`(?:(["'\x60])((?:\\.|[^\\\r\n]){0,2048}?)(?:\2|(?=[\r\n]|$))|([^\r\n]{1,2048}))`,
   "gi",
 );
 
@@ -124,7 +131,14 @@ function looksRandom(token: string): boolean {
 export function redactReplaySecrets(text: string): string {
   return text
     .replace(KNOWN_TOKEN, maskCharacters)
-    .replace(SECRET_ASSIGNMENT, (_match, name: string, value: string) => `${name}${maskCharacters(value)}`)
+    .replace(
+      SECRET_ASSIGNMENT,
+      (match: string, name: string, quote: string | undefined, quoted: string | undefined, bare: string | undefined) => {
+        if (bare !== undefined) return `${name}${maskCharacters(bare)}`;
+        const closed = match.length > name.length + 1 + (quoted?.length ?? 0);
+        return `${name}${quote}${maskCharacters(quoted ?? "")}${closed ? quote : ""}`;
+      },
+    )
     .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
     .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
     .replace(RANDOM_TOKEN, (token) => (looksRandom(token) ? maskCharacters(token) : token));
