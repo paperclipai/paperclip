@@ -522,6 +522,13 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("accepts the optional comment wake control and defaults to absent", () => {
+    expect(addIssueCommentSchema.parse({ body: "x" }).wake).toBeUndefined();
+    expect(addIssueCommentSchema.parse({ body: "x", wake: "none" }).wake).toBe("none");
+    expect(addIssueCommentSchema.parse({ body: "x", wake: "assignee" }).wake).toBe("assignee");
+    expect(addIssueCommentSchema.safeParse({ body: "x", wake: "everyone" }).success).toBe(false);
+  });
+
   it("rejects arbitrary issue comment metadata", () => {
     const parsed = addIssueCommentSchema.safeParse({
       body: "Hidden details",

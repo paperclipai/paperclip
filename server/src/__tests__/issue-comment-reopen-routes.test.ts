@@ -1552,6 +1552,39 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it("does not wake the assignee when the POST comment sets wake to none", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-wake-none",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "FYI only",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "FYI only", wake: "none" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a POST comment that combines wake none with reopen", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen quietly", wake: "none", reopen: true });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

@@ -19444,6 +19444,10 @@ export function issueRoutes(
       const reopenRequested = req.body.reopen === true;
       const resumeRequested = req.body.resume === true;
       const interruptRequested = req.body.interrupt === true;
+      if (req.body.wake === "none" && (reopenRequested || resumeRequested)) {
+        // A reopen or resume needs a run, so it cannot opt out of the wake.
+        throw badRequest('wake "none" cannot be combined with reopen or resume');
+      }
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
       const crossIssueCommentOnlyGrant =
@@ -20174,6 +20178,7 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          wake: req.body.wake,
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {

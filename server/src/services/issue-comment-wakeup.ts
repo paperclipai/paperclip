@@ -8,7 +8,10 @@ export function shouldWakeAssigneeForIssueComment(input: {
   };
   reopened: boolean;
   currentStatus: string | null | undefined;
+  /** "none" suppresses the wake entirely; absent or "assignee" keeps the default. */
+  wake?: "assignee" | "none" | null;
 }) {
+  if (input.wake === "none") return false;
   const sourceRunId = input.commentCreatedByRunId;
   const commentIsFromCurrentIssueRun = Boolean(
     sourceRunId &&

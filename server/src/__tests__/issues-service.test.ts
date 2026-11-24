@@ -3136,6 +3136,104 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.getWakeableParentAfterChildCompletion blocked parents", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-wakeable-parent-blocked-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed(blockerStatus: string | null) {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "blocked", priority: "medium", assigneeAgentId },
+      { id: childId, companyId, parentId, title: "Child", status: "done", priority: "medium", issueNumber: 1 },
+      ...(blockerStatus
+        ? [{ id: blockerId, companyId, title: "Other blocker", status: blockerStatus, priority: "medium", issueNumber: 2 }]
+        : []),
+    ]);
+    if (blockerStatus) {
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: parentId,
+        type: "blocks",
+      });
+    }
+    return { parentId, childId, assigneeAgentId };
+  }
+
+  it("skips a parent that still has an unresolved blocker other than the completed child", async () => {
+    const { parentId, childId } = await seed("in_progress");
+    expect(
+      await svc.getWakeableParentAfterChildCompletion(parentId, { issueId: childId, summary: null }),
+    ).toBeNull();
+  });
+
+  it("skips a parent whose other blocker is cancelled, because a cancelled blocker stays unresolved", async () => {
+    const { parentId, childId } = await seed("cancelled");
+    expect(
+      await svc.getWakeableParentAfterChildCompletion(parentId, { issueId: childId, summary: null }),
+    ).toBeNull();
+  });
+
+  it("wakes a parent whose other blocker is done", async () => {
+    const { parentId, childId, assigneeAgentId } = await seed("done");
+    expect(
+      await svc.getWakeableParentAfterChildCompletion(parentId, { issueId: childId, summary: null }),
+    ).toMatchObject({ id: parentId, assigneeAgentId });
+  });
+
+  it("wakes a parent with no blockers and ignores the completed child as its own blocker", async () => {
+    const { parentId, childId, assigneeAgentId } = await seed(null);
+    await db.insert(issueRelations).values({
+      companyId: (await db.select({ c: issues.companyId }).from(issues).where(eq(issues.id, parentId)))[0]!.c,
+      issueId: childId,
+      relatedIssueId: parentId,
+      type: "blocks",
+    });
+    expect(
+      await svc.getWakeableParentAfterChildCompletion(parentId, { issueId: childId, summary: null }),
+    ).toMatchObject({ id: parentId, assigneeAgentId });
+  });
+});
+
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

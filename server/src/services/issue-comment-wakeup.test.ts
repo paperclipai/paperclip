@@ -61,4 +61,17 @@ describe("shouldWakeAssigneeForIssueComment", () => {
       true,
     );
   });
+
+  it("never wakes when the comment opted out with wake none", () => {
+    const base = {
+      selfComment: false,
+      resumeRequested: false,
+      issueAtCommentStart: {},
+      reopened: false,
+      currentStatus: "in_progress",
+    };
+    expect(shouldWakeAssigneeForIssueComment({ ...base, wake: "none" })).toBe(false);
+    expect(shouldWakeAssigneeForIssueComment({ ...base, wake: "assignee" })).toBe(true);
+    expect(shouldWakeAssigneeForIssueComment(base)).toBe(true);
+  });
 });
