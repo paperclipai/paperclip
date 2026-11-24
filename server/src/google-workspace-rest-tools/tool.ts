@@ -60,7 +60,7 @@ export function defineTool<Args>(spec: RestToolSpec<Args>): RestTool {
   };
 }
 
-type JsonSchemaNode = Record<string, unknown>;
+export type JsonSchemaNode = Record<string, unknown>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -98,12 +98,14 @@ export function closedObjectSchema(schema: unknown): unknown {
   return copy;
 }
 
-function unknownArgumentProblems(value: unknown, schema: unknown, path: string): string[] {
+export type ClosedObjectTest = (schema: JsonSchemaNode, path: string) => schema is JsonSchemaNode & { properties: Record<string, JsonSchemaNode> };
+
+export function unknownArgumentProblems(value: unknown, schema: unknown, path: string, closed: ClosedObjectTest = isClosedObjectSchema): string[] {
   if (!isRecord(schema)) return [];
   if (Array.isArray(value)) {
-    return isRecord(schema.items) ? value.flatMap((item, index) => unknownArgumentProblems(item, schema.items, `${path}[${index}]`)) : [];
+    return isRecord(schema.items) ? value.flatMap((item, index) => unknownArgumentProblems(item, schema.items, `${path}[${index}]`, closed)) : [];
   }
-  if (!isRecord(value) || !isClosedObjectSchema(schema)) return [];
+  if (!isRecord(value) || !closed(schema, path)) return [];
   const accepted = Object.keys(schema.properties);
   const unknown = Object.keys(value).filter((key) => value[key] !== undefined && !Object.hasOwn(schema.properties, key));
   const problems: string[] = [];
@@ -114,7 +116,7 @@ function unknownArgumentProblems(value: unknown, schema: unknown, path: string):
     problems.push(`unknown ${unknown.length === 1 ? "argument" : "arguments"} ${names}${where}. ${path ? `Accepted in ${path}` : "Accepted arguments"}: ${list}.`);
   }
   for (const key of accepted) {
-    if (value[key] !== undefined) problems.push(...unknownArgumentProblems(value[key], schema.properties[key], path ? `${path}.${key}` : key));
+    if (value[key] !== undefined) problems.push(...unknownArgumentProblems(value[key], schema.properties[key], path ? `${path}.${key}` : key, closed));
   }
   return problems;
 }

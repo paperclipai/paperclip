@@ -12,14 +12,14 @@ Related: [production checklist](../plans/2026-11-17-google-workspace-production-
 [code-fix plan](../plans/2026-11-17-google-workspace-code-fixes.md),
 [connector doc](../connections/GOOGLE-WORKSPACE.md).
 
-Last updated: November 23, 2026 (evening).
+Last updated: November 24, 2026.
 
 ## Decisions
 
 | Date | Decision | Detail |
 | --- | --- | --- |
 | Nov 17 | **Owner for everything is Dotta** | Submission, security, privacy and release. |
-| Nov 17 | **Launch on our own tools over Google's REST APIs** | Google's hosted Workspace MCP servers are still Developer Preview and cannot be offered to the public. We build our own tool set for agents that have this connector. |
+| Nov 17 | **Launch on our own tools over Google's REST APIs** | Replaced on Nov 24 (see below). Google's hosted Workspace MCP servers were still Developer Preview and could not be offered to the public. We built our own tool set for agents that have this connector. |
 | Nov 17 | **The REST tool set must be swappable for Google's MCP later** | Same tool names, inputs and results as Google's MCP tools, so switching back is a change of endpoint, not a rewrite. |
 | Nov 17 | **The REST tool set lives in its own folder** | Nothing Google-REST-specific leaks into shared code; removing it later means deleting the folder and flipping one registration. Follow the boundary-discipline principle and `rules/module-boundaries.mdc`. |
 | Nov 17 | **No new npm packages** | The REST tool set is a folder inside the server, `server/src/google-workspace-rest-tools/`, not a new package. The server is published, so a new package in its dependencies would also have to be published. |
@@ -40,7 +40,7 @@ Last updated: November 23, 2026 (evening).
 | Nov 17 | **Deleting a whole recurring series is refused** | Same rule as the `delete_event` decision above. |
 | Nov 17 | **A service is switched to REST only after a live test on the staging tester** | One service at a time. |
 | Nov 17 | **The gateway sets the REST result size limit** | The REST tools enforce the number the gateway passes: the gateway's MCP response limit less framing, 999,885 bytes. A result Google's MCP server could deliver is also delivered over REST. See the folder README's "Result size". |
-| Nov 23 | **All six launch services switched to REST now** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `paperclip_rest`. This replaces the Nov 17 "one service at a time after a live test" rule: live testing happens on the staging tester right after the switch deploys, and problems are fixed forward. Chat, People and Search stay on `google_mcp`. |
+| Nov 23 | **All six launch services switched to REST now** | Replaced on Nov 24 (see below). Gmail, Drive, Docs, Sheets, Slides and Calendar were `paperclip_rest`. This replaces the Nov 17 "one service at a time after a live test" rule: live testing happens on the staging tester right after the switch deploys, and problems are fixed forward. Chat, People and Search stay on `google_mcp`. |
 | Nov 23 | **Write actions default to "Allowed"** | No approval step by default, including actions labelled destructive. Operators can still set Ask first per action. |
 | Nov 23 | **Images by public web address are allowed in Docs and Slides** | `insertInlineImage`, `replaceImage`, `createImage` and `replaceAllShapesWithImage` may use any public link. Links to Drive or Docs files stay refused (Nov 17 rule). Accepted risk: Google, not Paperclip, fetches the address, and Paperclip's own requests still go only to the allowed Google hosts. What remains is that an agent could put data in the address it chooses. Owner decision; do not restrict it. |
 | Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (Cloud broker change, November 23). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
@@ -49,6 +49,9 @@ Last updated: November 23, 2026 (evening).
 | Nov 23 | **Security lab: TAC Security (recommended, not yet engaged)** | Google's discounted Tier 2 partner. Plan about $2,000 for year one including a retest. Confirm with a quote; Google assigns the tier. |
 | Nov 23 | **A tool refuses an argument it does not know** | All 36 tools fail before any request to Google and name the accepted arguments. Found live: `list_threads` ignored a filter and returned unfiltered mail. |
 | Nov 23 | **A cancelled or abandoned first sign-in leaves no connection** | Cancel removes the draft; a closed tab leaves a hidden draft that the next attempt reuses. Applies to every sign-in connector. |
+| Nov 24 | **Back to Google's MCP servers for all six services, before the demo video and the submission** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `google_mcp` again. Reason: Google's Workspace AI Tools Addendum (published Nov 24, see "Google AI Tools Addendum") says a tool that is, or is driven by, an AI agent must use a Google MCP and not the REST APIs, and forbids hiding that classification. Google made its Workspace MCP servers generally available the same day. |
+| Nov 24 | **The REST tool set stays as the fallback** | `server/src/google-workspace-rest-tools/` and the `GOOGLE_WORKSPACE_TOOL_TRANSPORT` switch stay in the code. Do not delete them. The REST argument checks that need no request to Google also run before each call to Google's MCP servers. |
+| Nov 24 | **Every OAuth client that calls Google's MCP servers is an agent client** | Google's MCP servers reject an OAuth client that is not marked "Use this client for an AI-powered agent" in the Google Console. The coordinator changes the Console setting; there is no code for it. |
 | Nov 24 | **The service picker shows no explanatory text, only the privacy policy link** | Owner decision. This removes the in-product data-use disclosure added on Nov 17 ([#21998](https://github.com/paperclipai/paperclip/pull/21998)). Risk noted by the coordinator: Google's user data policy may expect an in-product disclosure before consent; if a reviewer asks, restore a short statement above the link. |
 
 ## What has shipped
@@ -69,25 +72,61 @@ Last updated: November 23, 2026 (evening).
 | [#22029](https://github.com/paperclipai/paperclip/pull/22029) | Docs and Slides tools in the REST tool set (Docs 2 of 2, Slides 2 of 2). Also marks Calendar `update_event` destructive. | `f61b919701` |
 | [#22028](https://github.com/paperclipai/paperclip/pull/22028) | Eight Drive tools in the REST tool set (Drive 8 of 8). Also limits the Gmail host to its API path prefix (before, any path was accepted there) and requires a path prefix for every allowed host. | `ceaf574421` |
 
-The REST tool set covers all 36 actions, and all six services are switched to it.
+The REST tool set covers all 36 actions. All six services ran on it from Nov 23 to Nov 24 and are back on Google's MCP servers since Nov 24; the REST tool set is the fallback.
 
 ### REST tools status
 
 | Service | Implemented | Switched on |
 | --- | --- | --- |
-| Gmail | 9 of 9 | Yes (Nov 23) |
-| Calendar | 9 of 9 | Yes (Nov 23) |
-| Drive | 8 of 8 | Yes (Nov 23) |
-| Docs | 2 of 2 | Yes (Nov 23) |
-| Sheets | 6 of 6 | Yes (Nov 23) |
-| Slides | 2 of 2 | Yes (Nov 23) |
+| Gmail | 9 of 9 | No. On REST Nov 23 to Nov 24 |
+| Calendar | 9 of 9 | No. On REST Nov 23 to Nov 24 |
+| Drive | 8 of 8 | No. On REST Nov 23 to Nov 24 |
+| Docs | 2 of 2 | No. On REST Nov 23 to Nov 24 |
+| Sheets | 6 of 6 | No. On REST Nov 23 to Nov 24 |
+| Slides | 2 of 2 | No. On REST Nov 23 to Nov 24 |
 
 "Switched on" means the service is `paperclip_rest` in
-`GOOGLE_WORKSPACE_TOOL_TRANSPORT`. Chat, People and Search stay `google_mcp`.
+`GOOGLE_WORKSPACE_TOOL_TRANSPORT`. Since Nov 24 every service is
+`google_mcp`.
+
+### On Google's MCP servers (since Nov 24)
+
+What Paperclip still does before it sends a call to Google's MCP server:
+
+- Offers only the actions on the allowlist (`toolScopes` in
+  `packages/shared/src/google-workspace-connectors.ts`) that the grant
+  covers. A tool that Google's server lists and the allowlist does not (Gmail
+  send, Drive delete or sharing, Gmail archive, Chat, People, Search) never
+  reaches an agent.
+- Refuses an argument that the action's saved schema does not list (top
+  level always; inside an object only when the schema closes that object).
+- Requires one file ID (no link, no list) in `fileId`, `parentId`,
+  `documentId`, `spreadsheetId` and `presentationId`.
+- Docs and Slides edits: the closed list of request kinds, including the
+  refusal of kinds that read another file and of images from Drive or Docs
+  links.
+- Off, Ask first, approval, readable action names, audit, invocation records
+  and prompt-injection screening run as on REST.
+- A confirmation question from Google (MCP elicitation) goes on the task's
+  question card for a person. Skipping it sends "decline"; until it is
+  answered, the call stops again and nothing is changed.
+
+What only the REST tools did, and does not happen on MCP:
+
+- `delete_event` refusing a recurring series ID. REST looked the event up
+  first; an argument check cannot tell a series ID from a single event ID.
+- `requiredRevisionId` being mandatory for Docs and Slides edits.
+- A connection whose catalog was saved on REST keeps the REST definitions
+  for agents until its next catalog refresh. The refresh saves Google's
+  definitions and does not hold those actions for review. Gmail
+  `get_draft`, `list_threads` and `search_messages` are not in Google's
+  published reference; if Google's server does not list them, the refresh
+  removes them.
 
 ### Known differences from Google's tools
 
 From the folder README (`server/src/google-workspace-rest-tools/README.md`).
+They apply only while a service is on the REST fallback.
 
 | Service | Difference |
 | --- | --- |
@@ -106,8 +145,12 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   reviewers and nobody has signed in with it yet. Only the owner holds it.
   This test also decides whether the reviewer's `member` role can add a
   Google connection or must be raised.
-- **Disconnect and "Delete data" on the REST build.** Verified on the
-  earlier build only.
+- **Live test on Google's MCP servers.** The switch back (Nov 24) is tested
+  with fakes only. On the staging tester: mark the client as an agent client,
+  enable the six MCP APIs, then run all 36 actions, one Google confirmation
+  answered and one declined, disconnect and "Delete data".
+- **Retention after disconnect (owner decision).** See "Google AI Tools
+  Addendum".
 - **Company deletion race.** A late activity entry can fail a company
   delete with a foreign-key error (seen once in CI on Nov 23). A fix is in
   review.
@@ -137,16 +180,18 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 ## Next steps
 
-1. Owner signs in as the reviewer on the staging tester; then test connect,
+1. Mark the OAuth clients as agent clients in the Google Console and test
+   the MCP build live on the staging tester (see "Still open").
+2. Owner signs in as the reviewer on the staging tester; then test connect,
    an agent task, disconnect and "Delete data" as the reviewer.
-2. Deploy to production on the owner's go: app first, then broker. The
+3. Deploy to production on the owner's go: app first, then broker. The
    production GitHub Environment already has the reviewer login switch set
    to on (November 23), so no action is needed there. Without that switch,
    a production deploy would turn the production tester's reviewer login
    off.
-3. Get a quote from the security lab.
-4. Record the demo video and prepare the reply to Google.
-5. Update the Console declaration to the 14 when submitting.
+4. Get a quote from the security lab.
+5. Record the demo video and prepare the reply to Google.
+6. Update the Console declaration to the 14 when submitting.
 
 ## Environments
 
@@ -168,7 +213,8 @@ Staging tester state (November 23):
   releases, which is why its build changed without a deploy.
 - **On the separate Google app.** That app is External, In Production, with
   the six REST APIs enabled and the staging broker callback on its one web
-  client. The consent screen names the app by its domain and shows one
+  client. For the MCP build it also needs the six Workspace MCP APIs enabled
+  and its client marked as an agent client (not done as of Nov 24). The consent screen names the app by its domain and shows one
   unticked box per permission. The staging environment lists the tester's
   stack for the alternate client, for the Workspace group only.
 - Never set the alternate stack list before its client secret exists: the
@@ -179,7 +225,8 @@ Staging tester state (November 23):
   wrong review code is refused. Sign-in with the real review code is not
   tested (see "Still open").
 
-Passed live on the tester, on REST against real Google (November 23):
+Passed live on the tester, on the REST build against real Google (November 23;
+the MCP build is not tested live yet):
 
 - All 36 actions: Gmail (search, read, labels, drafts, list with a filter,
   create and read a draft), Drive (create, search, metadata, read, copy,
@@ -197,7 +244,8 @@ Passed live on the tester, on REST against real Google (November 23):
 - Cancelling a sign-in leaves one connection and nothing needing attention.
 - Review, Permissions and Activity show readable action names and no ids.
 
-Checked on the build before the REST switch only (test again on REST):
+Checked on the MCP build before the REST switch only (test again on the
+current MCP build):
 
 - Disconnect ends access at Google (the account's linked-apps list lost the
   entry), and reconnect works.
@@ -229,8 +277,30 @@ the reviewers only through the review channel.
   separate-project request.
 - Verification is of the original production app; the new app only gives
   reviewers a way in.
-- With the REST transport, each project needs the Gmail, Drive, Docs, Sheets,
-  Slides and Calendar APIs enabled, not the MCP APIs.
+- On Google's MCP servers (since Nov 24), each project needs the Gmail,
+  Drive, Docs, Sheets, Slides and Calendar MCP APIs enabled, and each OAuth
+  client that calls them marked "Use this client for an AI-powered agent".
+  Keep the REST APIs enabled too, for the fallback.
+
+## Google AI Tools Addendum
+
+Published November 24, 2026 with the general availability of Google's
+Workspace MCP servers: <https://workspace.google.com/terms/ai-tools>.
+
+- A tool that is, or is driven by, an AI agent must use a Google MCP, not the
+  REST APIs. Hiding that classification is forbidden. This is why all six
+  services are back on Google's MCP servers.
+- Google's MCP servers reject an OAuth client that is not marked "Use this
+  client for an AI-powered agent".
+- **February 1, 2027:** technical enforcement starts.
+- **April 1, 2027:** paid tier for the Gmail, Drive and Calendar MCP servers,
+  billed from the first request.
+- **Free tier:** 5,000 requests per day per project per product.
+- **Open, owner decision needed:** the addendum forbids keeping Google user
+  data after the user disconnects. Paperclip keeps task and run content
+  (see "Where Google content is kept") until the user runs "Delete data" or
+  deletes the task or company. Disconnect alone does not delete it. Do not
+  change this until the owner decides.
 
 ## Scopes
 

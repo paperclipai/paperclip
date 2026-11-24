@@ -1,5 +1,5 @@
 import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames } from "@paperclipai/shared";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   callGoogleWorkspaceRest,
   googleWorkspaceRestToolDefinition,
@@ -12,6 +12,8 @@ import {
 describe("Google Workspace REST transport eligibility", () => {
   it("switches no service to paperclip_rest unless the REST tools cover its whole allowlist", () => {
     expect(googleWorkspaceRestTransportGaps()).toEqual([]);
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest", drive: "paperclip_rest",
+      docs: "paperclip_rest", sheets: "paperclip_rest", slides: "paperclip_rest", calendar: "paperclip_rest" })).toEqual([]);
   });
 
   it("finds Gmail and Calendar fully implemented and Chat not", () => {
@@ -27,6 +29,9 @@ describe("Google Workspace REST transport eligibility", () => {
 
 describe("googleWorkspaceRestToolDefinition", () => {
   it("returns this folder's definition for a tool of a service on paperclip_rest, and nothing otherwise", () => {
+    const savedDocs = GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs;
+    GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = "paperclip_rest";
+    onTestFinished(() => { GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = savedDocs; });
     const rest = listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc")!;
     expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual({ name: rest.name, title: "Docs: Edit a document", description: rest.description,
       inputSchema: rest.inputSchema, outputSchema: rest.outputSchema, annotations: rest.annotations });

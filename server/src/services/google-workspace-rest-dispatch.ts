@@ -10,6 +10,7 @@ import {
 import {
   GoogleWorkspaceAuthError,
   callGoogleWorkspaceRestTool,
+  googleWorkspaceArgumentRefusal,
   isGoogleWorkspaceRestService,
   listGoogleWorkspaceRestTools,
   probeGoogleWorkspaceRestService,
@@ -53,8 +54,12 @@ export interface GoogleWorkspaceRestToolDefinition {
 }
 
 export function googleWorkspaceRestToolDefinition(toolName: string): GoogleWorkspaceRestToolDefinition | null {
+  return googleWorkspaceTransport(toolName) === "paperclip_rest" ? googleWorkspaceRestFallbackDefinition(toolName) : null;
+}
+
+export function googleWorkspaceRestFallbackDefinition(toolName: string): GoogleWorkspaceRestToolDefinition | null {
   const target = googleWorkspaceToolTarget(toolName);
-  if (!target || target.transport !== "paperclip_rest" || !isGoogleWorkspaceRestService(target.service)) return null;
+  if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
   const tool = listGoogleWorkspaceRestTools(target.service).find((candidate) => candidate.name === target.leaf);
   return tool ? {
     name: tool.name,
@@ -64,6 +69,10 @@ export function googleWorkspaceRestToolDefinition(toolName: string): GoogleWorks
     outputSchema: tool.outputSchema ? { ...tool.outputSchema } : null,
     annotations: { ...tool.annotations },
   } : null;
+}
+
+function googleWorkspaceTransport(toolName: string): GoogleWorkspaceToolTransport | null {
+  return googleWorkspaceToolTarget(toolName)?.transport ?? null;
 }
 
 export function googleWorkspaceCatalogToolTitle(
@@ -77,6 +86,12 @@ export function googleWorkspaceCatalogToolTitle(
     ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
     : undefined;
   return googleWorkspaceToolTitle(name, restTitle ?? title);
+}
+
+export function googleWorkspaceMcpArgumentRefusal(toolName: string, args: unknown, inputSchema: unknown): string | null {
+  const target = googleWorkspaceToolTarget(toolName);
+  if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
+  return googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: args, inputSchema });
 }
 
 export async function callGoogleWorkspaceRest(

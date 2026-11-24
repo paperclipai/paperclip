@@ -12,7 +12,7 @@ import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash, descriptorHash } from "../../tool-catalog-hash.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
-import { paperclipDefinedTool } from "../../connectors/paperclip-defined-tools.js";
+import { formerPaperclipDefinedTool, paperclipDefinedTool } from "../../connectors/paperclip-defined-tools.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
@@ -236,9 +236,12 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
       const paperclipDefined = paperclipDefinedTool(connection, descriptor.name) !== null;
       if (paperclipDefined && existing?.status === "quarantined") releasedNames.add(descriptor.name);
+      const former = !paperclipDefined && existing ? formerPaperclipDefinedTool(connection, descriptor.name) : null;
+      const leavingPaperclipDefinition = Boolean(former && existing && stableHash(former.inputSchema) === existing.schemaHash);
       const shouldQuarantine =
         quarantineOnRefresh &&
         !paperclipDefined &&
+        !leavingPaperclipDefinition &&
         (!existing || changed) &&
         existing?.status !== "disabled" &&
         (!safeDefault || riskLevel !== "read" || nativeProvider);

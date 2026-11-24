@@ -33,7 +33,7 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
+import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpArgumentRefusal, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
 import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
@@ -8417,6 +8417,12 @@ export function createToolGatewayService(
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
+      if (workspaceTarget?.transport === "google_mcp") {
+        const refusal = googleWorkspaceMcpArgumentRefusal(entry.toolName, parameters, entry.inputSchema);
+        if (refusal) {
+          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
+        }
+      }
       if (workspaceTarget?.transport === "paperclip_rest") {
         execution.request.protocol = "Google Workspace REST";
         delete execution.request.mcpMethod;
