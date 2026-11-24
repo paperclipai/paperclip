@@ -357,6 +357,10 @@ const support = externalDatabaseUrl
       { scenario: "different API receipt", blocked: "uncertain_provider_action" },
       { scenario: "undispatched API mutation", blocked: null },
       { scenario: "failed task document read", blocked: null },
+      { scenario: "failed chat attachment list", blocked: null },
+      { scenario: "call_api rejected by the bridge schema", blocked: null },
+      { scenario: "call_api failed with a generic error", blocked: "uncertain_provider_action" },
+      { scenario: "call_api schema rejection with pending mutation evidence", blocked: "uncertain_control_plane_action" },
       { scenario: "failed artifact download with a settled install history", blocked: null },
       { scenario: "failed artifact download with an unconfirmed install", blocked: "uncertain_provider_action" },
       { scenario: "failed artifact download with mismatched install identities", blocked: "uncertain_provider_action" },
@@ -431,14 +435,18 @@ const support = externalDatabaseUrl
           } },
         }).where(eq(heartbeatRuns.id, source.runId));
         const download = scenario.includes("artifact download");
-        const name = download ? "download_artifact" : "list_task_documents";
+        const name = download ? "download_artifact" : scenario.includes("chat attachment") ? "list_chat_attachments"
+          : scenario.startsWith("call_api") ? "call_api" : "list_task_documents";
         const namespace = scenario.includes("external namespace") ? "external" : "paperclip";
         for (const [offset, status] of (["running", "failed"] as const).entries()) {
           const eventType = status === "running" ? "tool.execution.started" : "tool.execution.completed";
           const sourceInstanceId = status === "failed" && scenario.includes("different source") ? randomUUID() : runnerInstanceId;
           const sourceSeq = offset + 1;
-          const output = status === "running" ? null : download ? "Paperclip semantic operation failed"
+          const failure = download || scenario.includes("generic error") ? "Paperclip semantic operation failed"
+            : name === "list_chat_attachments" ? "Paperclip semantic operation failed: paperclip_runner_chat_attachment_binding_denied"
+            : name === "call_api" ? "Invalid tool input: missing required field: operationId. This call included only: method, path."
             : "Invalid tool input: missing required field: taskId. This call included only: issueId.";
+          const output = status === "running" ? null : failure;
           const prpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: source.runId,
             sourceInstanceId, sourceEventId: `fixture:${sourceSeq}`, sourceSeq, normalizedSessionId: nativeSessionId,
             turnId: "provider-turn", itemId: callId, eventType, emittedAt: new Date().toISOString(), priority: 1,
@@ -446,6 +454,12 @@ const support = externalDatabaseUrl
               operation: "execute", readOnly: false, status, output, outputBytes: output?.length ?? 0, outputTruncated: false, outputDigest: null } };
           await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
             nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+        }
+        if (scenario.includes("pending mutation evidence")) {
+          const key = createHash("sha256").update(`tool-use:${callId}`).digest("hex");
+          await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson,
+            apiToolReceipts: { [key]: { state: "pending", operationId: "create_issue_attachment", digest: "a".repeat(64) } },
+          } }).where(eq(heartbeatRuns.id, source.runId));
         }
         if (download) {
           const identity = { artifactId: randomUUID(), destination: "fixture.txt", byteSize: 1, sha256: "b".repeat(64) };

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { activityLog, type heartbeatRunEvents, type heartbeatRuns, type Db } from "@paperclipai/db";
 import { nativeSha256 } from "./canonical.js";
+import { LIST_CHAT_ATTACHMENTS_TOOL_NAME } from "./chat-attachment-tool-definitions.js";
 
 type SourceRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runnerInstanceId" | "nativeSessionId">;
 type ToolEvent = Pick<typeof heartbeatRunEvents.$inferSelect, "agentId" | "seq" | "eventType" | "payload" |
@@ -16,7 +17,7 @@ export function failedClaudePaperclipTool(
   run: SourceRun,
   started: ToolEvent,
   completed: ToolEvent,
-): "list_task_documents" | "download_artifact" | null {
+): "list_task_documents" | typeof LIST_CHAT_ATTACHMENTS_TOOL_NAME | "download_artifact" | "call_api" | null {
   const admittedEvent = (row: ToolEvent) => {
     const event = record(record(row.payload).prpEvent);
     if (!run.runnerInstanceId || !run.nativeSessionId || row.agentId !== run.agentId || row.protocolSchemaVersion !== 1 ||
@@ -40,7 +41,12 @@ export function failedClaudePaperclipTool(
       a.transport !== "mcp" || b.transport !== a.transport || a.namespace !== "paperclip" || b.namespace !== a.namespace ||
       a.status !== "running" || b.status !== "failed" ||
       typeof a.executionId !== "string" || !a.executionId || a.executionId !== b.executionId || a.name !== b.name) return null;
-  return a.name === "list_task_documents" || a.name === "download_artifact" ? a.name : null;
+  if (a.name === "list_task_documents" || a.name === LIST_CHAT_ATTACHMENTS_TOOL_NAME || a.name === "download_artifact") return a.name;
+  // The bridge returns this root required-field error before calling the
+  // handler. Require the complete diagnostic and check the durable mutation
+  // receipts separately before accepting this older, display-only evidence.
+  return a.name === "call_api" && b.outputTruncated === false && typeof b.output === "string" &&
+    b.output.startsWith("Invalid tool input: missing required field: operationId.") ? a.name : null;
 }
 
 /** The artifact authority awaits a durable start before invoking the installer

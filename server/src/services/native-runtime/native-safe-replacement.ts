@@ -32,6 +32,7 @@ import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from 
 import { isUndispatchedRunnerApiReceipt } from "../recovery-effect-receipts.js";
 import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
 import { artifactInstallHistorySettled, failedClaudePaperclipTool } from "./native-pool-failed-tool-evidence.js";
+import { LIST_CHAT_ATTACHMENTS_TOOL_NAME } from "./chat-attachment-tool-definitions.js";
 import { blockBelongsToRun, quotaBlockRestoredByAssignedWorkSweep, requalifiableQuotaHold,
   UNCERTAIN_PROVIDER_ACTION } from "./native-quota-requalification.js";
 import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
@@ -652,7 +653,9 @@ export async function reconcileSafeNativeReplacements(
         const envelope = record(event.payload);
         return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
       };
-      const apiReceipts = record(run.resultJson?.apiToolReceipts);
+      const storedApiReceipts = run.resultJson?.apiToolReceipts;
+      const apiReceipts = record(storedApiReceipts);
+      const noApiMutationReceipts = storedApiReceipts === undefined || isDeepStrictEqual(storedApiReceipts, {});
       const completedProviderActions = freshConversation ? events.filter(event => event.eventType === "tool.execution.completed") : [];
       const safeControlReads = new Set([
         "connections_search",
@@ -705,8 +708,11 @@ export async function reconcileSafeNativeReplacements(
             const completed = eventPayload(done);
             const executionId = p.executionId;
             if (typeof executionId !== "string" || completed.executionId !== executionId || completed.name !== name) return false;
-            const failedTool = verifyFailedClaudeTools ? failedClaudePaperclipTool(run, event, done) : null;
-            if (failedTool === "list_task_documents" || (failedTool === "download_artifact" && artifactInstallsSettled)) {
+            const failedTool = verifyFailedClaudeTools && completed.status === "failed"
+              ? failedClaudePaperclipTool(run, event, done) : null;
+            if (failedTool === "list_task_documents" || failedTool === LIST_CHAT_ATTACHMENTS_TOOL_NAME ||
+                (failedTool === "download_artifact" && artifactInstallsSettled) ||
+                (failedTool === "call_api" && noApiMutationReceipts)) {
               provedFailedClaudeTool = true;
               return true;
             }
