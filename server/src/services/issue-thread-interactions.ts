@@ -185,10 +185,11 @@ import {
   type IssueThreadInteractionResolverRestriction,
 } from "./issue-thread-interaction-resolution.js";
 import {
-  createPullRequestMergeStateResolver,
+  createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
   setBoundedPullRequestCacheEntry,
   type GitHubPullRequestReference,
+  type PullRequestMergeDetailsResolver,
   type PullRequestMergeState,
 } from "./github-pull-request-merge.js";
 
@@ -248,6 +249,7 @@ type InteractionWakeup = (
 ) => Promise<unknown>;
 
 export type IssueThreadInteractionServiceOptions = {
+  resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   resolvePullRequestState?: (
     companyId: string,
     reference: GitHubPullRequestReference,
@@ -2453,18 +2455,17 @@ export function issueThreadInteractionService(
     { state: PullRequestMergeState; checkedAt: number }
   >();
   const now = opts.now ?? (() => new Date());
-  const defaultPullRequestStateResolver = opts.resolvePullRequestState
-    ? null
-    : createPullRequestMergeStateResolver(db);
+  const resolveDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
 
   async function resolvePullRequestState(
     companyId: string,
     reference: GitHubPullRequestReference,
     signal?: AbortSignal,
-  ): Promise<PullRequestMergeState> {
-    if (opts.resolvePullRequestState)
-      return opts.resolvePullRequestState(companyId, reference, signal);
-    return defaultPullRequestStateResolver?.(companyId, reference, signal) ?? "unknown";
+  ): Promise<{ state: PullRequestMergeState; retryAtMs?: number }> {
+    if (opts.resolvePullRequestState) {
+      return { state: await opts.resolvePullRequestState(companyId, reference, signal) };
+    }
+    return resolveDetails(companyId, reference, signal);
   }
 
   async function resolvePullRequestStates(
@@ -2475,7 +2476,7 @@ export function issueThreadInteractionService(
     }>,
     signal?: AbortSignal,
   ) {
-    const states = new Map<string, PullRequestMergeState>();
+    const states = new Map<string, Awaited<ReturnType<typeof resolvePullRequestState>>>();
     const pending = entries.slice();
     const workerCount = Math.min(8, pending.length);
     await Promise.all(
@@ -4445,12 +4446,18 @@ export function issueThreadInteractionService(
       const refreshedStates = await resolvePullRequestStates([
         ...uniqueReferences.values(),
       ], signal);
-      if (scope && [...refreshedStates.values()].some(state => state === "unknown")) {
+      if (scope && [...refreshedStates.values()].some(result => result.state === "unknown" && result.retryAtMs === undefined)) {
         throw new Error("Merge confirmation provider state is unavailable");
       }
-      for (const [key, state] of refreshedStates) {
+      let retryAtMs: number | undefined;
+      for (const [key, result] of refreshedStates) {
+        if (result.retryAtMs !== undefined) {
+          retryAtMs = Math.max(retryAtMs ?? 0, result.retryAtMs);
+          pullRequestStateCache.delete(key);
+          continue;
+        }
         setBoundedPullRequestCacheEntry(pullRequestStateCache, key, {
-          state,
+          state: result.state,
           checkedAt,
         });
       }
@@ -4555,6 +4562,7 @@ export function issueThreadInteractionService(
         candidates: eligible.length,
         accepted,
         woken,
+        ...(retryAtMs !== undefined ? { retryAtMs } : {}),
       };
     },
     listForIssue: async (

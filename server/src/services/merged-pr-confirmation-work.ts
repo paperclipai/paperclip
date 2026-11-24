@@ -13,12 +13,17 @@ export function registerMergeConfirmationWork(
   canRun: () => boolean,
 ) {
   const cursors = new Map<string, string>();
+  const retryByCompany = new Map<string, number>();
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.mergedPullRequestConfirmations,
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as MergeConfirmationScope,
     matches: (entry, scope?: MergeConfirmationScope) => !scope || (entry.companyId === scope.companyId &&
       (!scope.issueId || entry.issueId === scope.issueId) && (!scope.interactionId || entry.id === scope.interactionId)),
     load: async (scope?: MergeConfirmationScope) => {
+      const checkedAt = Date.now();
+      for (const [companyId, retryAt] of retryByCompany) {
+        if (retryAt <= checkedAt) retryByCompany.delete(companyId);
+      }
       const key = scope ? JSON.stringify(scope) : "*";
       const page = await service.mergedPullRequestConfirmationPage(scope, cursors.get(key));
       if (page.complete) cursors.delete(key);
@@ -29,10 +34,17 @@ export function registerMergeConfirmationWork(
     },
     check: async (entry, signal) => {
       const scope = { companyId: entry.companyId, issueId: entry.issueId, interactionId: entry.id };
-      await service.sweepMergedPullRequestConfirmations([], scope, signal);
+      const scheduledRetry = retryByCompany.get(entry.companyId);
+      if (scheduledRetry !== undefined && scheduledRetry > Date.now()) return { ...entry, dueAt: scheduledRetry };
+      retryByCompany.delete(entry.companyId);
+
+      const result = await service.sweepMergedPullRequestConfirmations([], scope, signal);
       if (signal?.aborted) return entry;
+      if (result.retryAtMs !== undefined) retryByCompany.set(entry.companyId, result.retryAtMs);
       const remaining = await service.mergedPullRequestConfirmationCandidates(scope);
-      return remaining.length ? { ...entry, dueAt: Date.now() + MERGE_CONFIRMATION_RECONCILE_MS } : null;
+      return remaining.length
+        ? { ...entry, dueAt: result.retryAtMs ?? Date.now() + MERGE_CONFIRMATION_RECONCILE_MS }
+        : null;
     },
   }, canRun);
 }

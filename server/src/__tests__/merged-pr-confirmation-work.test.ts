@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createPullRequestMergeStateResolver } from "../services/github-pull-request-merge.js";
+import { createPullRequestMergeDetailsResolver, createPullRequestMergeStateResolver } from "../services/github-pull-request-merge.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { eq, sql } from "drizzle-orm";
@@ -200,6 +200,46 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ idempotencyKey: `interaction:${current.id}:accepted` }));
     expect(errors).toEqual([]);
+  });
+
+  it("waits for GitHub's rate-limit reset before checking pending cards again", async () => {
+    const first = await create();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId, companyId, title: "Second merge task", status: "todo", assigneeAgentId: agentId,
+    });
+    const second = await service().create({ id: otherIssueId, companyId }, input(40), { agentId });
+    const resetAt = Date.now() + 540_000;
+    const fetchPullRequest = vi.fn(async () => Date.now() < resetAt
+      ? new Response(null, { status: 429, headers: { "retry-after": "540" } })
+      : Response.json({ merged: true, state: "closed" }));
+    const real = issueThreadInteractionService(db, {
+      resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, {
+        tokenProvider: () => null,
+        fetch: fetchPullRequest,
+      }),
+      wakeup,
+    });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    await registerMergeConfirmationWork(coordinator, real, () => true).ready;
+    await settle();
+
+    expect(errors).toEqual([]);
+    expect(fetchPullRequest).toHaveBeenCalledTimes(1);
+    expect(coordinator.nextWakeAt()).toBe(resetAt);
+    expect((await stored(first.id)).status).toBe("pending");
+    expect((await stored(second.id)).status).toBe("pending");
+
+    await vi.advanceTimersByTimeAsync(resetAt - Date.now() - 1);
+    expect(fetchPullRequest).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitFor(async () => {
+      expect((await stored(first.id)).status).toBe("accepted");
+      expect((await stored(second.id)).status).toBe("accepted");
+    });
+    await quiet();
+    expect(fetchPullRequest).toHaveBeenCalledTimes(3);
+    expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
   it("keeps unknown provider results as retryable debt and does not act before retry", async () => {
