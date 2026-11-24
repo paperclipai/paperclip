@@ -77,9 +77,8 @@ These are two different features. The pinned 1.5.2 ACP server offers neither.
 A second distribution, Google's Antigravity CLI (`agy`) 1.5.15, build
 `1.5.15-5514532022517760`, is pinned for darwin-arm64, linux-x64 and
 linux-arm64 in `packages/paperclip-runner/antigravity-cli-distributions.json`.
-It is the planned route for native `/swarm`. This step adds only the pin,
-`paperclipai runtime setup antigravity-cli` and a launch resolver. No route
-selection, driver or command detection exists yet, so nothing runs the CLI.
+It is the route for native `/swarm` (experimental, off by default; see
+"/swarm on the Antigravity CLI" below).
 
 - **Experimental.** It is not part of the registry-server profile above and
   changes none of its pins, its admission patch or its qualification state.
@@ -165,7 +164,7 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
-| Swarm (`/swarm`) | Native swarm starts from a task | Not supported by 1.5.2 (2026-11-23): not advertised, no swarm tools. A live `/swarm` task ran as a plain request |
+| Swarm (`/swarm`) | Native swarm starts from a task | Built on the Antigravity CLI route behind the off-by-default flag; fake-CLI tests pass. Live local proof pending (recipe below). The registry server 1.5.2 still has no swarm |
 
 ### First live tasks (2026-11-23, local, Google sign-in)
 
@@ -312,3 +311,61 @@ provider-death fixtures now target the store and per-launch directory layout.
   Claude and OpenCode, and Test refuses the path. Kimi, Copilot and Pi do not
   run there either. Closing it needs a plugin SDK contract change plus a Cloud
   plugin and image change.
+
+## /swarm on the Antigravity CLI (2026-11-24)
+
+What exists:
+
+- **Trusted start.** The task composer reads a leading `/swarm` with the shared
+  `parseLeadingUserCommand` rule and sends a structured `nativeCommand: "swarm"`
+  with the request text. The server accepts it only from a signed-in user,
+  records `issue.antigravity_swarm_requested` in the activity log and marks the
+  assignee's wake. Pasted, quoted, agent or API text stays text and is still
+  neutralised for the registry server.
+- **Flag.** `instance.experimental.enableAntigravitySwarm` (Settings,
+  Experimental, "Google Antigravity swarm"). Off by default. No Cloud policy in Core.
+- **Refusals, in plain language, before anything runs:** flag off, not an
+  Antigravity assignee, a chat, Plan mode, a remote or cloud environment, a
+  Gemini API key (no auto mode), an unpinned platform, extra tool servers.
+- **Driver.** `antigravity-swarm-*.ts` in the Runner. In place of the registry
+  patch receipt it verifies identity and version, the instruction channel, the
+  task folder as `cwd`, Paperclip's bridge as the only MCP server, `auto` mode
+  and the exact model by read-back, and fails closed on any later change. One
+  fresh session per run; at most one swarm per run; Paperclip delegation tools
+  are removed from the bridge for the swarm turn.
+- **Governance.** Helpers act in Antigravity's `auto` mode. The driver stops
+  the swarm on any visible change outside the task folder (file tools and shell
+  write targets, with `..`, `~`, `$HOME` and symlinks resolved), refuses every
+  permission prompt except Paperclip's own tools, and shows what changed in the
+  task folder. It does not settle on the first `end_turn` while helpers may run.
+- **Not confined by Paperclip.** Helper tool calls never reach the client, and
+  Paperclip's local process sandbox does not wrap Runner harnesses, so helper
+  shell commands are confined only by the CLI (workspace plus temp directories).
+- **Credentials.** On macOS the CLI uses its own Google sign-in from the login
+  keychain (the real HOME), not Paperclip's stored Google connection. CLI state
+  lives in a private `--gemini-dir`. Terms: a legal read of the consumer terms'
+  third-party-tool clause is pending.
+- **Usage.** One total from the coordinator, labelled as including the helpers.
+
+<a id="swarm-live-proof"></a>
+### /swarm live proof (local, attended)
+
+Setup: a local instance from the swarm branch, a Google sign-in connection, an
+Antigravity agent on `gemini-3.8-flash-low`, `paperclipai runtime setup
+antigravity-cli` run as the Paperclip user, the Antigravity CLI signed in on
+this computer, and the experimental flag on. Then, on a task for that agent:
+
+1. `/swarm two helpers: one writes a.txt containing A, one writes b.txt
+   containing B; a verifier checks both`: native swarm, both files in the task
+   folder, task Done, activity log names the swarm.
+2. The same, then Stop mid-swarm: run cancelled, no `agy` process left.
+3. The same, then kill the `agy` process mid-swarm, then Retry: a fresh swarm
+   runs in the same folder; nothing posted twice.
+4. An ordinary follow-up comment after a swarm: runs normally (fresh session).
+5. Flag off, `/swarm ...`: the composer shows "Swarm is not turned on ..." and
+   nothing is posted or run.
+
+| Gate | Result |
+| --- | --- |
+| Unit and fake-CLI tests (driver, guard, paths, route, server, composer) | Passed |
+| Live steps 1-5 | NOT RUN (pending) |
