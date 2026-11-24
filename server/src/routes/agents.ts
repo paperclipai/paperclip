@@ -3448,6 +3448,7 @@ export function agentRoutes(
           adapterType: type, adapterConfig: adapterConfigForTest,
           runner: testRunner,
           defaultEnvironmentId: requestedEnvironmentId,
+          pluginWorkers: options.pluginWorkerManager,
         });
       type = selection.adapterType;
       adapterConfigForTest = { ...selection.adapterConfig,
@@ -4645,7 +4646,7 @@ export function agentRoutes(
     }
     if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
     let configurationWarnings: AgentConfigurationWarning[] = [];
-    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner,
+    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner, pluginWorkers: options.pluginWorkerManager,
       onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig, companyId);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
@@ -4979,7 +4980,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
     let configurationWarnings: AgentConfigurationWarning[] = [];
     Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner, setupOnly: Boolean(setupId),
-      onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
+      pluginWorkers: options.pluginWorkerManager, onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig, companyId);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
@@ -5717,7 +5718,7 @@ export function agentRoutes(
       Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
         adapterType: convertingPi || convertingGrok ? existing.adapterType : typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
         adapterConfig: config, runner: runner ?? "paperclip", setupOnly: existing.lifecycleHolds?.includes("setup"),
-        onConfigurationWarnings: warnings => { configurationWarnings = warnings; },
+        pluginWorkers: options.pluginWorkerManager, onConfigurationWarnings: warnings => { configurationWarnings = warnings; },
         defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
       }));
     }
@@ -5923,6 +5924,7 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: asRecord(patchData.adapterConfig ?? existing.adapterConfig) ?? {},
         defaultEnvironmentId: nextDefaultEnvironmentId,
+        pluginWorkers: options.pluginWorkerManager,
       });
       const protectedKeyWarnings = await checkAgentProtectedEnvironmentKeys(db, patchData.adapterConfig ?? existing.adapterConfig, nextDefaultEnvironmentId);
       configurationWarnings.push(...protectedKeyWarnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));

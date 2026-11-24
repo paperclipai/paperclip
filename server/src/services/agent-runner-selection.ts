@@ -18,7 +18,7 @@ import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@p
 import { usesManagedCloudSandboxImage } from "./sandbox-snapshot-qualification.js";
 import { environmentCustomImageTemplateMatchesBaseConfig } from "./environment-custom-image-runtime.js";
 import type { ExecutionPolicy } from "./execution-allowlist.js";
-import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
+import { pluginEnvironmentRunnerTaskDriver, type PluginRunnerTaskWorkers } from "./plugin-runner-ai-connection.js";
 
 export type RunnerTarget = {
   driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
@@ -389,6 +389,7 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
  */
 export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, companyId: string, input: {
   adapterType: string; adapterConfig?: Record<string, unknown>; defaultEnvironmentId?: string | null;
+  pluginWorkers?: PluginRunnerTaskWorkers;
 }) {
   if (input.adapterType !== "paperclip_runner") return;
   // Read only the saved environment. Forced execution modes run elsewhere, and
@@ -400,7 +401,7 @@ export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, company
   const environmentId = input.defaultEnvironmentId ?? settings.defaultEnvironmentId;
   const environment = environmentId ? await environmentService(db).getById(environmentId) : null;
   if (environment?.driver !== "plugin") return;
-  const driver = await pluginEnvironmentRunnerTaskDriver(db, environment);
+  const driver = await pluginEnvironmentRunnerTaskDriver(db, environment, input.pluginWorkers);
   const harness = agentHarnessName(input.adapterType, input.adapterConfig ?? {});
   if (driver?.supportedAdapters && !driver.supportedAdapters.includes(harness)) {
     throw unprocessable("This environment does not support the selected harness. Choose a supported harness or environment.", {
@@ -409,7 +410,11 @@ export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, company
   }
 }
 
-export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
+export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & {
+  defaultEnvironmentId?: string | null;
+  /** The running plugin workers. With them, a plugin driver offers only the adapters its worker supports end to end. */
+  pluginWorkers?: PluginRunnerTaskWorkers;
+}) {
   const disabledTypes = await adapterSettingsService(db).getDisabledTypes();
   input = { ...input, disabledTypes };
   const cursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud";
@@ -440,21 +445,22 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
   if (!paperclipRunnerProfileForHarness(agentHarnessType(input.adapterType ?? "process", input.adapterConfig))
     || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) {
     const selected = resolveNewAgentRunner(input);
-    await assertRunnerTaskEnvironmentSupportsHarness(db, companyId, { ...selected, defaultEnvironmentId: input.defaultEnvironmentId });
+    await assertRunnerTaskEnvironmentSupportsHarness(db, companyId, { ...selected, defaultEnvironmentId: input.defaultEnvironmentId, pluginWorkers: input.pluginWorkers });
     return selected;
   }
-  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes);
+  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes, input.pluginWorkers);
   return resolveNewAgentRunner({ ...input, target });
 }
 
-export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[]): Promise<RunnerTarget> {
+export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[],
+  pluginWorkers?: PluginRunnerTaskWorkers): Promise<RunnerTarget> {
   await waitForExternalAdapters();
   const { environment, driver, executionMode } = await resolveAgentRunnerEnvironmentForCompany(db, companyId, defaultEnvironmentId);
   const withPolicy = (value: RunnerTarget): RunnerTarget => ({ ...value, ...(executionMode ? { executionMode } : {}) });
   let target: RunnerTarget = driver === "local" ? localAgentRunnerTarget()
     : { driver };
   if (driver === "plugin" && environment) {
-    const taskDriver = await pluginEnvironmentRunnerTaskDriver(db, environment);
+    const taskDriver = await pluginEnvironmentRunnerTaskDriver(db, environment, pluginWorkers);
     if (taskDriver) target = { driver, runnerTasks: true, ...(taskDriver.warmTaskVersion === 1 ? { warmTaskVersion: 1 as const } : {}),
       ...(taskDriver.supportedAdapters ? { supportedAdapters: taskDriver.supportedAdapters } : {}) };
   }

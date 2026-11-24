@@ -788,6 +788,24 @@ describe("Runner-only plugin environments", () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } }))
       .rejects.toMatchObject({ details: { harness: "codex_local" } });
   });
+  it("offers and saves only the listed adapters that the running worker supports end to end", async () => {
+    state.pluginByKey.mockResolvedValue(plugin({ supportsTasks: true, supportsLoginPty: true, creationOperationVersion: 1,
+      supportedAdapters: ["claude_local", "codex_local"] }));
+    const login = ["environmentTask", "environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease",
+      "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+    const workers = { getWorker: vi.fn((pluginId: string) => pluginId === "plugin-id" ? { supportedMethods: login } : undefined) };
+    const target = await resolveAgentRunnerTargetForCompany({} as never, "company", "computer", undefined, workers);
+    expect(target).toEqual({ driver: "plugin", runnerTasks: true, supportedAdapters: ["claude_local"] });
+    expect(agentRunnerAvailability("codex_local", target)).toEqual({ supportedRunners: [], defaultRunner: "legacy" });
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      defaultEnvironmentId: "computer", pluginWorkers: workers })).rejects.toMatchObject({ status: 422, details: { harness: "codex_local" } });
+    workers.getWorker.mockReturnValue({ supportedMethods: [...login, "loginPtyReadCredential"] });
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      defaultEnvironmentId: "computer", pluginWorkers: workers })).resolves.toMatchObject({ adapterType: "paperclip_runner" });
+    workers.getWorker.mockReturnValue(undefined);
+    expect(await resolveAgentRunnerTargetForCompany({} as never, "company", "computer", undefined, workers))
+      .toMatchObject({ supportedAdapters: ["claude_local", "codex_local"] });
+  });
   it("checks no harness against a driver that predates the list", async () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, defaultEnvironmentId: "computer" }))

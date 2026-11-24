@@ -357,7 +357,7 @@ describe("plugin-provided Runner execution", () => {
       return value;
     };
     const run = (harness: string, methods: string[]) => {
-      const workers = worker(); workers.getWorker = () => ({ supportedMethods: ["environmentTask", ...methods] });
+      const workers = worker(); workers.getWorker.mockReturnValue({ supportedMethods: ["environmentTask", ...methods] });
       const provider = harness === "codex" ? "openai" : harness;
       return { workers, result: executeEnvironmentTask(database(validated(provider)).db, workers as never, { companyId: "company", leaseId,
         operation: { ...submit, runner: { ...submit.runner, harness } } }) };

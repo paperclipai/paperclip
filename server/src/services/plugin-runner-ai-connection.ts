@@ -24,7 +24,14 @@ export function pluginRunnerAiConnectionRequiredMessage(preconfiguredHome: boole
 // The plugin's manifest declaration decides whether its environment runs
 // Runner tasks. Run admission separately verifies a ready plugin and a live
 // worker, so a plugin that is down still selects the Runner and fails its run.
-export async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
+/** The running plugin workers, for the methods each worker implements. */
+export type PluginRunnerTaskWorkers = { getWorker(pluginId: string): { supportedMethods: readonly string[] } | undefined };
+
+// With the running workers, a driver that lists its supported adapters returns
+// only the adapters its worker supports end to end, the same list that sign-in
+// and task submission use. A worker that is not running keeps the declared list:
+// its runs fail at admission.
+export async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0], workers?: PluginRunnerTaskWorkers) {
   let config: { pluginKey: string; driverKey: string };
   try {
     const parsed = parseEnvironmentDriverConfig(environment);
@@ -35,8 +42,12 @@ export async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Par
   }
   const { pluginRegistryService } = await import("./plugin-registry.js");
   const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
-  return plugin?.manifestJson.capabilities.includes("environment.drivers.register")
+  const driver = plugin?.manifestJson.capabilities.includes("environment.drivers.register")
     ? plugin.manifestJson.environmentDrivers?.find(driver => driver.driverKey === config.driverKey && driver.supportsTasks === true) : undefined;
+  const methods = driver?.supportedAdapters && plugin ? workers?.getWorker(plugin.id)?.supportedMethods : undefined;
+  if (!driver || !methods) return driver;
+  const { pluginDriverSupportedAdapters } = await import("./plugin-environment-driver.js");
+  return { ...driver, supportedAdapters: pluginDriverSupportedAdapters(driver, methods) };
 }
 
 /** The setup probe result for a plugin Runner-task target without a managed AI connection. */
