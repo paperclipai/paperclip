@@ -5345,6 +5345,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               }
             }
             if (event.type === "text_delta" && event.stream !== "thought") {
+              if (prepared.acpxAgent === "claude" && event.tag === "agent_message_chunk" && !event.messageId &&
+                /^\*\*Notice:\*\* [^\r\n]+['’]s safeguards stopped the response above · continuing once with that noted$/.test(event.text.trim())) {
+                await emitAcpxLog(ctx, { type: "acpx.status", tag: "claude_safeguard_retry", text: event.text });
+                continue;
+              }
               currentOutputChunk.push(event.text);
             } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
               // ACP makes tool-call status optional. The normalized event tag is

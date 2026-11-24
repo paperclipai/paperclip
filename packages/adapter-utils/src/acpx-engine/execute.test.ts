@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { parseAcpxStdoutLine } from "./ui.js";
 import { summarizeStartupReuse } from "../startup-reuse.js";
 import os from "node:os";
 import path from "node:path";
@@ -1194,6 +1195,41 @@ describe("shared ACPX engine runtime behavior", () => {
         text: `${JSON.stringify({ type: "acpx.text_delta", text, channel: "output", tag: "agent_message_chunk" })}\n`,
       });
     }
+  });
+
+  it("keeps a Claude safeguard retry out of the reply while preserving identical model text", async () => {
+    const cwd = await makeTempRoot();
+    const notice = "**Notice:** Opus 5.5's safeguards stopped the response above · continuing once with that noted";
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: notice };
+            yield { type: "text_delta", stream: "output", tag: "agent_message_chunk", messageId: "msg_1", text: notice };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "claude-notice",
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: { agent: "claude", agentCommand: "node ./fake-acp.js", cwd, stateDir: cwd },
+      runtime: {}, context: {},
+      onLog: async (stream: string, text: string) => { if (stream === "stdout") logs.push(text); },
+      onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe(notice);
+    const entries = logs.flatMap(line => parseAcpxStdoutLine(line, "timestamp"));
+    expect(entries.filter(entry => entry.kind === "assistant")).toMatchObject([{ text: notice }]);
+    expect(entries.filter(entry => entry.kind === "provider_activity")).toMatchObject([
+      { family: "safety", status: "informational", summary: notice },
+    ]);
   });
 
   it("defaults run summaries to the final output segment without thought text", async () => {
