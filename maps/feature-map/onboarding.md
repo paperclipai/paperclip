@@ -36,6 +36,11 @@ Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
 
+Going Back to organization naming retains the draft. Clearing the name leaves
+the field blank and disables Continue, including after a reload. Continue saves
+a valid replacement name to the same company before advancing. A failed save
+keeps the draft on the naming screen so the operator can retry.
+
 First-agent onboarding offers only Claude and Codex, subject to instance adapter
 availability. Other providers remain available through Add agent after onboarding.
 A saved draft for another provider requires a new choice.
