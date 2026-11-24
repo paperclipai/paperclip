@@ -27,6 +27,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
 import { attachPaperclipSessionMetadataToSessionParams, buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
+import { parseManagedConfigEnv } from "../services/managed-config.js";
+import { applyManagedEnvironmentsAtStartup } from "../services/managed-environments.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
@@ -1594,6 +1596,139 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(activity.at(-1)?.action).toBe("environment.managed_stock_skipped");
   });
 
+  it("applies repeated managed-config snapshot updates before signup and binds the first company to current stock", async () => {
+    const boot = async (version: string) => {
+      const config = parseManagedConfigEnv({
+        PAPERCLIP_MANAGED_CONFIG: JSON.stringify({
+          v: 1,
+          mode: "cloud",
+          catalogVersion: version,
+          features: {},
+          plugins: { autoInstall: ["daytona"] },
+          environments: [{ name: "Managed sandbox", provider: "daytona", config: { snapshot: version } }],
+        }),
+      });
+      return applyManagedEnvironmentsAtStartup(db, config, {
+        env: { PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE: "true" },
+        resolveSandboxProviderDriver: async () => ({
+          plugin: { id: "fixture-plugin", pluginKey: "sandbox-providers/daytona", status: "ready" },
+        }),
+        workerManager: { isRunning: () => true, getWorker: () => undefined },
+      });
+    };
+
+    expect(await db.select().from(companies)).toHaveLength(0);
+    expect(await boot("v1")).toMatchObject({ added: 1, failed: 0, skipped: 0 });
+    const original = (await svc.findManagedSandboxEnvironment())!;
+    await svc.update(original.id, {
+      envVars: { FIXTURE_FLAG: "keep" },
+      metadata: { ...original.metadata, operatorNote: "keep" },
+    });
+    for (const version of ["v2", "v3"]) {
+      expect(await boot(version)).toMatchObject({ updated: 1, failed: 0, skipped: 0 });
+      const current = (await svc.findManagedSandboxEnvironment())!;
+      expect(current).toMatchObject({
+        id: original.id,
+        config: { provider: "daytona", snapshot: version },
+        envVars: { FIXTURE_FLAG: "keep" },
+        metadata: { operatorNote: "keep" },
+      });
+      expect(await boot(version)).toMatchObject({ unchanged: 1, failed: 0, skipped: 0 });
+      expect((await svc.getById(original.id))?.updatedAt).toEqual(current.updatedAt);
+      expect(await db.select().from(builtInManagedResources)).toHaveLength(0);
+    }
+
+    const companyId = await seedCompany();
+    expect(await boot("v3")).toMatchObject({ unchanged: 1, failed: 0, skipped: 0 });
+    const [binding] = await db.select().from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(binding).toMatchObject({ resourceId: original.id, stockVersion: "v3" });
+    expect(binding?.defaultsJson.config).toEqual({ provider: "daytona", snapshot: "v3" });
+    expect(await boot("v4")).toMatchObject({ updated: 1, failed: 0, skipped: 0 });
+    const [advancedBinding] = await db.select().from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(advancedBinding).toMatchObject({ resourceId: original.id, stockVersion: "v4" });
+    expect(advancedBinding?.stockHash).not.toBe(binding?.stockHash);
+    expect((await svc.getById(original.id))?.config.snapshot).toBe("v4");
+    expect(await db.select().from(environments)).toHaveLength(1);
+  });
+
+  it.each([false, true])("repairs legacy unbound managed stock only under the trusted platform contract (%s)", async (platformFullyManaged) => {
+    const companyId = await seedCompany();
+    const legacy = await svc.create({
+      name: "Legacy managed sandbox",
+      driver: "sandbox",
+      config: { provider: "daytona", snapshot: "old" },
+      metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+    });
+    const reconcile = () => svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: legacy.name,
+      provider: "daytona",
+      config: { snapshot: "current" },
+      platformFullyManaged,
+    });
+    expect(await db.select().from(builtInManagedResources)).toHaveLength(0);
+    const first = await reconcile();
+    const repeated = await reconcile();
+    expect(first.action).toBe(platformFullyManaged ? "updated" : "skipped");
+    expect(repeated.action).toBe(platformFullyManaged ? "unchanged" : "skipped");
+    expect(repeated.environment.id).toBe(legacy.id);
+    expect(repeated.environment.config.snapshot).toBe(platformFullyManaged ? "current" : "old");
+  });
+
+  it("serializes platform stock updates and first-company binding initialization on the same row", async () => {
+    const input = { name: "Managed sandbox", provider: "daytona", platformFullyManaged: true };
+    const original = await svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "v1" } });
+    for (const version of ["v2", "v3"]) {
+      if (version === "v3") await seedCompany();
+      const results = await Promise.all(Array.from({ length: 8 }, () =>
+        svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: version } }),
+      ));
+      expect(results.filter((result) => result.action === "updated")).toHaveLength(1);
+      expect(results.filter((result) => result.action === "unchanged")).toHaveLength(7);
+      expect(results.every((result) => result.environment.id === original.environment.id)).toBe(true);
+      const bindings = await db.select().from(builtInManagedResources);
+      expect(bindings).toHaveLength(version === "v3" ? 1 : 0);
+      if (version === "v3") expect(bindings[0]?.stockHash).toBe(results[0]?.stockHash);
+    }
+    expect(await db.select().from(environments)).toHaveLength(1);
+  });
+
+  it("switches providers in the platform-owned slot before the first company exists", async () => {
+    const original = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    const switched = await svc.ensureManagedSandboxEnvironment({
+      name: "Managed sandbox",
+      provider: "daytona",
+      config: { snapshot: "current" },
+      platformFullyManaged: true,
+    });
+    expect(switched).toMatchObject({ action: "updated", environment: {
+      id: original.id,
+      config: { provider: "daytona", snapshot: "current" },
+      metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+    } });
+    expect(switched.environment.config.backend).toBeUndefined();
+    expect(switched.environment.metadata?.managedKubernetesSandbox).toBeUndefined();
+  });
+
+  it.each([false, true])("preserves archive reaffirmation before company bindings exist (%s)", async (reaffirm) => {
+    const input = { name: "Managed sandbox", provider: "daytona", platformFullyManaged: true };
+    const original = await svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "old" } });
+    await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
+    if (reaffirm) await svc.update(original.environment.id, { status: "archived" });
+    const reconcile = () => svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "current" } });
+    const first = await reconcile();
+    expect(first.action).toBe(reaffirm ? "skipped" : "updated");
+    expect(first.environment.status).toBe(reaffirm ? "archived" : "active");
+    expect(first.environment.config.snapshot).toBe(reaffirm ? "old" : "current");
+    // Creating tracking records later must not turn an earlier archive
+    // decision into permission to reactivate on a subsequent boot.
+    await seedCompany();
+    expect((await reconcile()).action).toBe(reaffirm ? "skipped" : "unchanged");
+    expect((await reconcile()).environment.status).toBe(reaffirm ? "archived" : "active");
+  });
+
   it("platformFullyManaged applies drift instead of preserving it, since no operator can edit this row", async () => {
     const companyId = await seedCompany();
     const created = await svc.ensureManagedSandboxEnvironment({
@@ -1869,13 +2004,13 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("platformFullyManaged never adopts an unbound same-name sandbox row", async () => {
+  it.each([false, true])("platformFullyManaged never adopts an unmarked same-name sandbox row (%s)", async (hasCompany) => {
     // Same setup as the plain case above: a tenant-created sandbox row holds
     // the desired name and has no stock binding. It reads as
     // `operator_modified` too, but there is no prior platform pass for it to
-    // have drifted from — the bypass must require a binding for this exact
-    // row, or it would overwrite the tenant's config and stamp it managed.
-    const companyId = await seedCompany();
+    // have drifted from. A tracking-only binding written by a skipped pass
+    // must not authorize adoption on the next boot either.
+    const companyId = hasCompany ? await seedCompany() : undefined;
     const handMade = await svc.create({
       name: "Daytona",
       driver: "sandbox",
@@ -1885,13 +2020,15 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
 
-    const reconciliation = await svc.ensureManagedSandboxEnvironment({
+    const input = {
       companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "eu" },
       platformFullyManaged: true,
-    });
+    };
+    await svc.ensureManagedSandboxEnvironment(input);
+    const reconciliation = await svc.ensureManagedSandboxEnvironment(input);
     expect(reconciliation).toMatchObject({
       action: "skipped",
       stockStatus: "operator_modified",

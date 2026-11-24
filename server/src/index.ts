@@ -163,7 +163,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
-  applyManagedEnvironments,
+  applyManagedEnvironmentsAtStartup,
   createManagedEnvironmentRecovery,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
@@ -1290,12 +1290,13 @@ async function startServerWithDatabaseTeardown(
   // the bundled-plugin install/load pass so a declared environment never
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
-  // row of a provider that did not come up).
+  // row of a provider that did not come up). Deployments may opt into requiring
+  // full convergence; that startup gate throws on failed or skipped entries.
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
-    const managedEnvironmentsResult = await startupTimeline.precondition("managed_environments", () => applyManagedEnvironments(db as any, managedConfig, {
+    const managedEnvironmentsResult = await startupTimeline.precondition("managed_environments", () => applyManagedEnvironmentsAtStartup(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,

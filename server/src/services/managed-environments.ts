@@ -15,7 +15,8 @@
  *    malformed section refuses startup with a precise error.
  * 2. **The DB ensure step is fail-safe per entry**: an ensure failure is
  *    logged and boot continues degraded (environment unavailable) rather
- *    than crash-looping a fleet.
+ *    than crash-looping a fleet. Deployments that require every declaration
+ *    to converge before startup may opt into the stricter startup wrapper.
  *
  * Ensuring is additionally synchronized with provider availability: the
  * caller's `pluginsReady` promise (the bundled-plugin install/load pass) is
@@ -732,4 +733,30 @@ export async function applyManagedEnvironments(
     outcomes,
     pluginOutcomes,
   };
+}
+
+/**
+ * Startup boundary for deployments that must not become ready with stale or
+ * unavailable managed environments. The ordinary reconciler remains best
+ * effort; this opt-in gate checks its aggregate result before startup resumes
+ * queued runs. Aggregate counters include all declared environment drivers.
+ */
+export async function applyManagedEnvironmentsAtStartup(
+  db: Db,
+  managedConfig: ManagedInstanceConfig | null,
+  opts: ApplyManagedEnvironmentsOptions = {},
+): Promise<ApplyManagedEnvironmentsResult | null> {
+  const flag = "PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE";
+  const value = (opts.env ?? process.env)[flag]?.trim().toLowerCase() ?? "";
+  if (!["", "false", "0", "true", "1"].includes(value)) {
+    throw new Error(`${flag} must be true, false, 1, or 0`);
+  }
+  const requireConvergence = value === "true" || value === "1";
+  const result = await applyManagedEnvironments(db, managedConfig, opts);
+  if (requireConvergence && result && (result.failed > 0 || result.skipped > 0)) {
+    throw new Error(
+      `${flag} requires every declared managed environment to converge: ${result.failed} failed, ${result.skipped} skipped`,
+    );
+  }
+  return result;
 }
