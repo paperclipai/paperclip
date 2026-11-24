@@ -3,6 +3,7 @@ import { companySecrets, connectionGrants, heartbeatRuns, toolConnections, type 
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -117,10 +118,17 @@ export async function refreshClaudeSubscription(
           // rotation changes the secret and wins over the pair.
           const pair = replacement;
           pendingClaudeExchanges.set(companyId, grantId, pair, async () => {
-            const [current] = await db.select({ status: connectionGrants.status, epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
-              .from(connectionGrants).innerJoin(companySecrets, and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, pair.secretId)))
-              .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId)));
-            return current?.status === "active" && current.epoch === pair.epoch && current.version === pair.version;
+            try {
+              const [current] = await db.select({ status: connectionGrants.status, epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+                .from(connectionGrants).innerJoin(companySecrets, and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, pair.secretId)))
+                .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId)));
+              return current?.status === "active" && current.epoch === pair.epoch && current.version === pair.version;
+            } catch (err) {
+              // The pair is kept: it may hold the only working refresh token.
+              // It keeps the server from an idle shutdown until a check succeeds.
+              logger.warn({ err, companyId, grantId }, "could not check whether an unsaved Claude sign-in pair is still wanted");
+              throw err;
+            }
           });
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
