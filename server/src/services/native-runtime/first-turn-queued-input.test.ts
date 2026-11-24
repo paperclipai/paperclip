@@ -124,6 +124,25 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     expect(await claimFirstTurnQueuedInput(db, binding(f, thirdRunId))).toBeNull();
   });
 
+  it("counts a retry's continuation message as delivered only when its bounded native prompt carried it", async () => {
+    const f = await seed();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: USER, body: "keep the audit trail" }).returning();
+    const ids = { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, commentIds: [comment!.id] };
+    const retry = async (prompt: string | null) => {
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+        runtimeMode: "native", runtimeModeResolvedAt: new Date(), nativeIssueId: f.issueId, retryOfRunId: f.runId,
+        responsibleUserId: USER, startedAt: new Date(Date.now() + 1_000),
+        contextSnapshot: { issueId: f.issueId, executionContinuation: { messages: [{ id: comment!.id, body: "keep the audit trail" }] } },
+        ...(prompt === null ? {} : { runnerProfileJson: { nativeExecutionInput: { task: { prompt } } } }) });
+    };
+    // The bounded prompt left the message out; the full envelope on the run is not delivery.
+    await retry("## Current request. This history is bounded to fit one turn.");
+    expect([...await deliveredQueuedCommentIds(db, ids)]).toEqual([]);
+    await retry(`## Current request {"id":"${comment!.id}","body":"keep the audit trail"}`);
+    expect([...await deliveredQueuedCommentIds(db, ids)]).toEqual([comment!.id]);
+  });
+
   it("counts a message as delivered once the provider accepted the turn, even if the run later fails", async () => {
     const f = await seed();
     const message = await queueMessage(f, "ship it");
