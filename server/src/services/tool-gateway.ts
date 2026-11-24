@@ -8264,13 +8264,15 @@ export function createToolGatewayService(
     ms: number,
     invocationId: string,
     callerHeaders: ExecuteGatewayToolInput["callerHeaders"],
+    signals: { run?: AbortSignal; caller?: AbortSignal },
   ): Promise<unknown | null> {
     const [entry] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
       eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, connectionId),
       eq(toolCatalogEntries.toolName, toolName), eq(toolCatalogEntries.status, "active"),
     )).limit(1);
     if (!entry) return null;
-    return (await executeRemoteHttpTool(session, { ...tool, catalogEntryId: entry.id }, parameters, ms, invocationId, callerHeaders)).result;
+    return (await executeRemoteHttpTool(session, { ...tool, catalogEntryId: entry.id }, parameters, ms, invocationId, callerHeaders, false,
+      { run: signals.run, caller: signals.caller })).result;
   }
 
   async function executeRemoteHttpTool(
@@ -8367,6 +8369,7 @@ export function createToolGatewayService(
       },
     };
     const controller = new AbortController();
+    const deadlineAt = Date.now() + ms;
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     const progressReporter = toolCallProgressReporterFor(session, tool, invocationId);
@@ -8440,7 +8443,8 @@ export function createToolGatewayService(
       if (workspaceTarget?.transport === "google_mcp") {
         const refusal = await googleWorkspaceMcpPreflightRefusal({
           toolName: entry.toolName, arguments: parameters, inputSchema: entry.inputSchema,
-          callTool: (toolName, args) => callConnectionToolForCheck(session, tool, connection.id, toolName, args, ms, invocationId, callerHeaders),
+          callTool: (toolName, args) => callConnectionToolForCheck(session, tool, connection.id, toolName, args,
+            Math.max(1, deadlineAt - Date.now()), invocationId, callerHeaders, { run: taskSignals.run, caller: taskSignals.caller }),
         });
         if (refusal) {
           execution.request.dispatched = false;

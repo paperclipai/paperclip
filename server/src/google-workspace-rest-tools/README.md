@@ -249,7 +249,8 @@ argument shows, with no request to Google:
 - An argument that the action's saved schema does not list. The top level is
   always checked; a nested object only when its schema has
   `additionalProperties: false`. A schema with `additionalProperties` open at
-  the top level, or with no `properties`, is not checked.
+  the top level, or with neither `properties` nor `additionalProperties:
+  false`, is not checked.
 - `fileId` and `parentId` (Drive), `documentId`, `spreadsheetId` and
   `presentationId` must each be one file ID: no link, no list.
 - Docs `update_doc` and Slides `update_presentation`: each request names
@@ -261,7 +262,10 @@ For Calendar `delete_event`, `googleWorkspaceMcpPreflightRefusal` in the
 adapter first reads the event with the connection's own `calendar__get_event`
 (only `calendarId` and `eventId`), through a callback the gateway passes, and
 gives the answer to `googleCalendarSeriesRefusal`. The gateway only looks up
-and runs that action, with its usual permission checks. A whole recurring series is
+and runs that action, with the grant and scope checks, inside the delete's
+own deadline. The read action's Off or Ask first setting does not apply: the
+read is part of a delete that the policy already allowed, and its answer never
+reaches the agent. The REST `delete_event` makes the same read. A whole recurring series is
 refused, as on REST. If the read does not return the event, nothing is
 deleted.
 

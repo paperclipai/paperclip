@@ -34,7 +34,9 @@ export interface GoogleWorkspaceArgumentCheck {
 export function googleWorkspaceArgumentRefusal(check: GoogleWorkspaceArgumentCheck): string | null {
   const args = check.arguments ?? {};
   if (!isRecord(args)) return refusal(check.toolName, "arguments must be an object.");
-  const unknown = unknownArgumentProblems(args, check.inputSchema, "", closedAtTopOrDeclared);
+  const schema = isRecord(check.inputSchema) && check.inputSchema.additionalProperties === false && !isRecord(check.inputSchema.properties)
+    ? { ...check.inputSchema, properties: {} } : check.inputSchema;
+  const unknown = unknownArgumentProblems(args, schema, "", closedAtTopOrDeclared);
   if (unknown.length > 0) return refusal(check.toolName, unknown.join(" "));
   for (const name of FILE_ID_ARGUMENTS[check.service] ?? []) {
     const value = args[name];

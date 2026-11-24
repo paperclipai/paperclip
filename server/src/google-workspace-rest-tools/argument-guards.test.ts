@@ -30,6 +30,11 @@ describe("googleWorkspaceArgumentRefusal", () => {
       .toBe("Invalid arguments for list_threads: unknown argument \"color\" in options.filter. Accepted in options.filter: label. Nothing was sent to Google.");
   });
 
+  it("refuses every argument for a closed schema that lists none", () => {
+    expect(googleWorkspaceArgumentRefusal({ service: "calendar", toolName: "list_calendars", arguments: { pageSize: 5 }, inputSchema: { type: "object", additionalProperties: false } }))
+      .toBe("Invalid arguments for list_calendars: unknown argument \"pageSize\". Accepted arguments: none. Nothing was sent to Google.");
+  });
+
   it("leaves a schema that allows more arguments, or lists none, to the server", () => {
     expect(googleWorkspaceArgumentRefusal({ service: "gmail", toolName: "get_message", arguments: { any: 1 }, inputSchema: { type: "object", properties: {}, additionalProperties: true } })).toBeNull();
     expect(googleWorkspaceArgumentRefusal({ service: "gmail", toolName: "get_message", arguments: { any: 1 }, inputSchema: { type: "object" } })).toBeNull();
