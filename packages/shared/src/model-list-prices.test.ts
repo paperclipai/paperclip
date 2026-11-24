@@ -19,6 +19,8 @@ describe("priceAtListPrice", () => {
     expect(priceAtListPrice("opus", tokens)).toBe(priceAtListPrice("claude-opus-5-5", tokens));
     expect(priceAtListPrice("openai/gpt-6.1-terra", { inputTokens: MTOK, cachedInputTokens: MTOK, outputTokens: 0 })).toBeCloseTo(105, 6);
     expect(resolveListPriceModel("anthropic/claude-sonnet-5-5")).toBe("claude-sonnet-5-5");
+    expect(resolveListPriceModel("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
+    expect(resolveListPriceModel("claude-opus-5-5[1m]")).toBe("claude-opus-5-5");
   });
 
   it("returns null for unknown models and impossible token counts", () => {

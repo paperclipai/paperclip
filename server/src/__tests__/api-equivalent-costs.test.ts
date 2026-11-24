@@ -49,7 +49,9 @@ describeEmbeddedPostgres("API-equivalent cost", () => {
   function event(companyId: string, agentId: string, values: Partial<typeof costEvents.$inferInsert> = {}) {
     return { companyId, agentId, provider: "anthropic", biller: "anthropic", billingType: "subscription_included",
       model: "claude-opus-5-5", inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: 0,
-      occurredAt: new Date(), ...values } as typeof costEvents.$inferInsert;
+      occurredAt: new Date(),
+      ...(values.heartbeatRunId ? { idempotencyKey: `heartbeat:${values.heartbeatRunId}:final` } : {}),
+      ...values } as typeof costEvents.$inferInsert;
   }
 
   it("uses the API price the provider reported for a subscription run", async () => {
@@ -82,12 +84,37 @@ describeEmbeddedPostgres("API-equivalent cost", () => {
     const { companyId, agentId } = await seed();
     const heartbeatRunId = await run(companyId, agentId, { costUsd: 3 });
     await db.insert(costEvents).values([
-      event(companyId, agentId, { heartbeatRunId, idempotencyKey: "a", inputTokens: MTOK }),
-      event(companyId, agentId, { heartbeatRunId, idempotencyKey: "b", model: "claude-haiku-5-5", outputTokens: MTOK }),
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:model:0`, inputTokens: MTOK }),
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:model:1`, model: "claude-haiku-5-5", outputTokens: MTOK }),
     ]);
     const value = (await apiEquivalentByAgent(db, companyId)).get(agentId);
     expect(value?.reportedCents).toBe(0);
     expect(value?.cents).toBeCloseTo(400 + 50, 6);
+  });
+
+  it("prefers the cache-adjusted reported price", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsd: 1, costUsdExact: null, cacheAdjustedCostUsd: 10 });
+    await db.insert(costEvents).values(event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:final` }));
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)?.reportedCents).toBe(1000);
+  });
+
+  it("uses each model's reported price for a run split per model", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsd: 3, usageByModel: [
+      { model: "claude-opus-5-5", costUsd: 2.5, usage: {} }, { model: "claude-haiku-4-5-20251001", costUsd: 0.5, usage: {} }] });
+    await db.insert(costEvents).values([
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:model:0`, inputTokens: MTOK }),
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:model:1`, model: "claude-haiku-4-5-20251001", outputTokens: MTOK }),
+    ]);
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ reportedCents: 300, listPriceCents: 0 });
+  });
+
+  it("prices a reported zero from the table instead of showing $0", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsd: 0 });
+    await db.insert(costEvents).values(event(companyId, agentId, { heartbeatRunId, outputTokens: MTOK }));
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ reportedCents: 0, listPriceCents: 2000 });
   });
 
   it("reports tokens on unknown models as unpriced instead of zero cost", async () => {
