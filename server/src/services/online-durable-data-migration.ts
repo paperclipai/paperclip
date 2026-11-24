@@ -45,7 +45,7 @@ type Owners = {
   localWorkspaces: typeof listLocalWorkspaces;
   inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[]; sourceScopeUnproven?: string; details?: string[] }>;
   migrateWorkspace: (input: { db: Db; storage: StorageService; companyId: string; workspaceId: string; apply: true;
-    signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
+    signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[]; filesUnavailable?: boolean }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
   runEvidencePage: typeof migrateRunEvidencePage;
@@ -267,6 +267,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
                 workspaceOwner = tracked;
                 const result = await untilAborted(work, signal);
                 reasons = result.alreadyMigrated ? [] : result.reasons.length ? result.reasons : ["not_migrated"];
+                if (result.filesUnavailable) add(counts, "workspacesFilesUnavailable");
               }
             } catch (error) {
               if (signal.aborted) throw error;
