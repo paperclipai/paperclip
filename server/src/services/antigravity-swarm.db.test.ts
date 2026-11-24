@@ -176,6 +176,14 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     expect(await resolve(f, { runId: retry.id, context: { issueId: f.issue.id, triggeredBy: "board", actorId: USER, responsibleUserId: USER, wakeReason: "task_retry" } })).toBe(true);
   });
 
+  it("lets a task reassigned to another kind of agent run ordinary work instead of refusing every run", async () => {
+    const f = await seed();
+    const run = await insertRun(f, {});
+    const other = { ...f.agent, adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet" } };
+    expect(await resolveAntigravitySwarmRun(db, { companyId: f.company.id, issueId: f.issue.id, runId: run.id, agent: other,
+      context: { issueId: f.issue.id, wakeReason: "issue_assigned" }, remote: false, planning: false })).toBe(false);
+  });
+
   it.each([
     ["a remote environment", { remote: true }, /this computer/],
     ["Plan mode", { planning: true }, /Plan mode/],

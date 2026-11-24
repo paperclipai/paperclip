@@ -130,7 +130,9 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
 }): Promise<boolean> {
   const marked = requestedAntigravitySwarmCommentId(input.context);
   const explicit = marked ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context);
-  const commentId = explicit ?? await pendingSwarmCommentId(db, input.companyId, input.issueId);
+  // Only an explicit request (a fresh /swarm or its retry chain) is refused for
+  // a non-Antigravity assignee; a task reassigned since then runs ordinary work.
+  const commentId = explicit ?? (isAntigravityAgent(input.agent) ? await pendingSwarmCommentId(db, input.companyId, input.issueId) : null);
   if (!commentId) return false;
   const [requested] = await db.select({ id: activityLog.id }).from(activityLog)
     .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),
