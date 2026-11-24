@@ -205,7 +205,7 @@ Automated: [recovery actions](../../server/src/__tests__/issue-recovery-actions.
 covers source scoping, bounded attempts, operator stops, quota monitoring,
 ownership, stale action retirement, and continuation deduplication.
 [Export recovery controls](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx)
-cover export-hold recovery bindings (mocked `IssueRecoveryActionCard` UI tests were removed). The fixture-backed
+cover export-hold recovery bindings. The fixture-backed
 [execution-recovery journeys](../../tests/e2e/execution-recovery/recovery.spec.ts)
 start their own test-drive instances and exercise safe, uncertain, restart,
 manager-lineage, and legacy-unknown paths:
@@ -336,9 +336,7 @@ the real temporary files are restored. Duplicate requests then admit one queued
 turn. GitHub and Telegram admission also retain the exact pending recovery.
 
 Automated: [WorkspaceExportRecovery.control](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx)
-covers verified export-recovery bindings (mocked UI tests for
-`IssueRecoveryActionCard`, `DispositionRecoveryNotice`, and `WorkspaceExportRecovery`
-were removed; verify those notice and export card states via Storybook/manual checks).
+covers verified export-recovery bindings (verify notice and export card states via Storybook/manual checks).
 
 For a retained legacy or native file hold, open the source task after its recovery
 action has resolved but its files still need recovery. The shared task projection
@@ -348,8 +346,7 @@ An authorized board operator can use the resolution API to record verified files
 and a backup link without changing task status or starting another run. The
 server independently validates the original stopped-execution receipt. Agent
 Chat retains the hold rather than suggesting another message. The [repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
-covers quiet live recovery, read-only access, stale or missing stop proof,
-(mocked `ExecutionBlockerNotice` UI tests were removed; verify notice UI manually) and
+covers quiet live recovery, read-only access, stale or missing stop proof, (verify notice UI manually) and
 source-only repair, and preserved task status. These tests use fixtures; separately
 verify original files and their attached artifact before recording a real repair.
 

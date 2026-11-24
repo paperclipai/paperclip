@@ -42,7 +42,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (mocked `RoutineDetail` page tests were removed; verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
+Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 

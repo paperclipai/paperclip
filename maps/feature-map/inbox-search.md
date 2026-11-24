@@ -150,7 +150,7 @@ initial sources settle; a failed-run row must not jump when tasks arrive. Releas
 visible-row details separately and compare row/title bounds. Mine reads its own
 100-row snapshot with parent/run context; sidebar badges use the count endpoint.
 The [inbox helpers](../../ui/src/lib/inbox.test.ts) and [coordinator inbox E2E](../../tests/e2e/coordinator-inbox-views.spec.ts)
-cover inbox projection and view transitions (mocked `Inbox.test.tsx` page tests were removed);
+cover inbox projection and view transitions ;
 [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.
 
@@ -166,9 +166,7 @@ company/private-task isolation, and private v1 targets.
 [Attention service regressions](../../server/src/__tests__/attention-service.test.ts)
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
-Idle chats without structured requests remain absent. (Mocked
-`CoordinatorNeedsYou` UI component tests for chat-sourced canonical question
-routing were removed; verify Inbox card routing manually alongside the server
+Idle chats without structured requests remain absent. (verify Inbox card routing manually alongside the server
 tests above.)
 [Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
 cover the view partition, the For you badge with per-view counts, the personal
@@ -196,9 +194,7 @@ route tests cover the active-member 422 and board-only writes.
 [Obligation tests](../../server/src/__tests__/attention-obligations.test.ts)
 cover the approval/review, budget-stop/override-approval and blocked-task/failed-run joins, the separate human
 review gate, placement with the blocked task's person, one count per obligation,
-evidence that hides and restores with its lead, and the split after an answer.
-(Mocked UI component tests for `CoordinatorNeedsYou`, `WhatNeedsMe`, and
-`CoordinatorTaskCommitment` were removed; UI view switching, Archived/Restore,
+evidence that hides and restores with its lead, and the split after an answer. (UI view switching, Archived/Restore,
 and reduced-motion card behavior are demonstrated in the Storybook stories below
 and should be verified manually.)
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
@@ -213,7 +209,7 @@ task context on receipt click. Turning the setting off restores the classic surf
 
 ### `search`
 
-Automated: [company search service](../../server/src/__tests__/company-search-service.test.ts) covers server search contracts (mocked `Search` page UI tests were removed; verify search page UI manually).
+Automated: [company search service](../../server/src/__tests__/company-search-service.test.ts) covers server search contracts (verify search page UI manually).
 
 Manual: Search a unique task title and content phrase, open the result, and compare the actual record. Test filters, no results, and a second company. Verify stale results do not expose inaccessible data.
 

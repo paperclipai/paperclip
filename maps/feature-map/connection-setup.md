@@ -104,8 +104,7 @@ do not establish OAuth registration, public callbacks, or production provider ac
 Automated: [Connection intents](../../tests/e2e/connection-intents.spec.ts)
 and [chat provider catalog E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts)
 drive catalog entry and setup against fake providers through a useful continuation
-(mocked `Browse`, `AppNotConnected`, and `AppsConnect` component tests were
-removed; Tailscale admin gating stays covered by [TailscaleConnector](../../ui/src/pages/apps/TailscaleConnector.test.tsx)):
+(Tailscale admin gating is covered by [TailscaleConnector](../../ui/src/pages/apps/TailscaleConnector.test.tsx)):
 
 ```sh
 pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts
@@ -241,8 +240,7 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
 uses production agent creation, persistent keys, run JWTs, native tool bindings,
 human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
-setup, ownership, attribution, scope, trust, work modes and revocation. (Mocked
-`GoogleWorkspaceServices` UI service-picker tests were removed; verify pending
+setup, ownership, attribution, scope, trust, work modes and revocation. (verify pending
 choices and consent-picker UI manually.) These are separate from live provider
 setup and model success.
 

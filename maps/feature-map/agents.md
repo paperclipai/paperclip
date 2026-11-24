@@ -173,7 +173,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `hire-agent`
 
-Automated: [agent configuration E2E](../../tests/e2e/agent-configuration.spec.ts) and [configuration helpers](../../ui/src/components/AgentConfigForm.test.ts) cover configuration persistence (mocked `NewAgent` and `AgentConfigForm.render` UI tests were removed; verify the new-agent page flow manually).
+Automated: [agent configuration E2E](../../tests/e2e/agent-configuration.spec.ts) and [configuration helpers](../../ui/src/components/AgentConfigForm.test.ts) cover configuration persistence (verify the new-agent page flow manually).
 
 For an agent-owned plugin environment, verify preparation before connecting,
 same-agent probes, account preservation after an environment change, failed
@@ -225,7 +225,7 @@ Automated: [instruction service](../../server/src/__tests__/agent-instructions-s
 
 The [AI connection model tests](../../ui/src/components/ai-connections/model.test.ts)
 and [AI personal connection recovery E2E](../../tests/e2e/ai-personal-connection-recovery.spec.ts)
-cover provider/account compatibility and recovery (mocked `AiConnectionField` UI tests were removed).
+cover provider/account compatibility and recovery.
 Manually compare a personal API key and shared subscription with the same name in
 Harness / Runtime. Confirm their method, scope and available identity before saving.
 Reload the saved choice and verify the next eligible task uses it; labels alone
@@ -261,7 +261,7 @@ The notice must stay absent for native agents, other harnesses, and unsupported
 targets. Discovery failure must not imply that an upgrade is available.
 Navigate to another agent while an upgrade is pending. Its result must stay with
 the original agent, without showing success on the new page or redirecting back.
-Focused coverage: [agent configuration E2E](../../tests/e2e/agent-configuration.spec.ts) (mocked `AgentConfigForm.render` and upgrade save-receipt UI tests were removed; verify upgrade save receipts manually).
+Focused coverage: [agent configuration E2E](../../tests/e2e/agent-configuration.spec.ts) (verify upgrade save receipts manually).
 
 For an existing native agent on a Daytona snapshot or immutable sandbox image,
 use **Test** in its saved Harness or Runtime configuration after a managed
@@ -281,7 +281,7 @@ or provider execution.
 
 ### `organization`
 
-Automated: none (mocked org-chart and built-in agent configuration modal UI tests were removed; verify manually).
+Automated: none (verify manually).
 
 Manual: Inspect a manager and report, change the relationship through the offered controls, and reload both views. Exercise a rejected invalid relationship. Configure a built-in agent and verify it retains its required identity and restrictions.
 
