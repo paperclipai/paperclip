@@ -1203,6 +1203,14 @@ return result};`);
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
   });
 
+  it.skipIf(process.platform === "win32")("inventories beside a named pipe, excluding the pipe in both inventory modes", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await exec("mkfifo", [path.join(workspace, "pipe")]);
+    const inventory = await readWorkspaceInventory(workspace);
+    expect(inventory.exclude).toContain("pipe");
+    expect(await readWorkspaceInventory(workspace, true)).toEqual(inventory);
+  });
+
   /**
    * The staging shape through the sandbox command path: a `node_modules/.bin` link
    * inside the workspace, a Chromium profile link by absolute path into /tmp,

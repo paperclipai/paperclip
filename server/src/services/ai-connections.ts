@@ -181,6 +181,7 @@ export function aiConnectionService(db: Db) {
     userId: string,
     grantId: string,
   ) {
+    /** The grant that was the default before this change, if any. */
     return db.transaction(async (tx) => {
       const [row] = await tx
         .select({ connection: toolConnections, grant: connectionGrants })
@@ -211,12 +212,17 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
+      const [previous] = await tx.select({ grantId: aiProviderDefaults.grantId }).from(aiProviderDefaults).where(and(
+        eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId),
+        eq(aiProviderDefaults.provider, metadata.provider),
+      ));
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
           target: [aiProviderDefaults.companyId, aiProviderDefaults.userId, aiProviderDefaults.provider],
           set: { grantId, updatedAt: new Date() },
         });
+      return { previousGrantId: previous?.grantId ?? null };
     });
   }
   async function readableAccount(companyId: string, userId: string, connectionId: string, grantId?: string) {

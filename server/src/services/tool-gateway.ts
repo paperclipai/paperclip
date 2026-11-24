@@ -33,8 +33,10 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
-import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
+import {
+  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpPreflightRefusal, googleWorkspaceRestAuditEndpoint,
+} from "./google-workspace-rest-dispatch.js";
+import { currentConnectionToolDefinition } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -644,7 +646,7 @@ type RemoteHttpExecutionAudit = {
     mcpMethod?: "tools/call";
     requestId: string;
     upstreamToolName: string;
-    dispatched: true;
+    dispatched: boolean;
   };
   response?: {
     httpStatus: number;
@@ -2075,7 +2077,7 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
-        const currentDefinition = paperclipDefinedTool(connection, catalogEntry.toolName);
+        const currentDefinition = currentConnectionToolDefinition(connection, catalogEntry.toolName);
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
           currentDefinition?.inputSchema ?? catalogEntry.inputSchema ?? {},
@@ -7518,7 +7520,7 @@ export function createToolGatewayService(
         sourceTemplateKey?.startsWith("google-") === true) &&
       /caller does not have permission/i.test(providerContent);
     const content = googleWorkspacePermissionDenied
-      ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
+      ? "Google rejected this call. Google's Workspace MCP servers accept only an OAuth client marked \"Use this client for an AI-powered agent\" in the Google Cloud console, from a project with the service's MCP API enabled. Ask the admin who set up the Google connection to check both, then reconnect and try again."
       : providerContent;
     const normalized = {
       content,
@@ -8253,6 +8255,26 @@ export function createToolGatewayService(
     }, { owner });
   }
 
+  async function callConnectionToolForCheck(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    connectionId: string,
+    toolName: string,
+    parameters: Record<string, unknown>,
+    ms: number,
+    invocationId: string,
+    callerHeaders: ExecuteGatewayToolInput["callerHeaders"],
+    signals: { run?: AbortSignal; caller?: AbortSignal },
+  ): Promise<unknown | null> {
+    const [entry] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
+      eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, connectionId),
+      eq(toolCatalogEntries.toolName, toolName), eq(toolCatalogEntries.status, "active"),
+    )).limit(1);
+    if (!entry) return null;
+    return (await executeRemoteHttpTool(session, { ...tool, catalogEntryId: entry.id }, parameters, ms, invocationId, callerHeaders, false,
+      { run: signals.run, caller: signals.caller })).result;
+  }
+
   async function executeRemoteHttpTool(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
@@ -8347,6 +8369,7 @@ export function createToolGatewayService(
       },
     };
     const controller = new AbortController();
+    const deadlineAt = Date.now() + ms;
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     const progressReporter = toolCallProgressReporterFor(session, tool, invocationId);
@@ -8417,6 +8440,17 @@ export function createToolGatewayService(
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
+      if (workspaceTarget?.transport === "google_mcp") {
+        const refusal = await googleWorkspaceMcpPreflightRefusal({
+          toolName: entry.toolName, arguments: parameters, inputSchema: entry.inputSchema,
+          callTool: (toolName, args) => callConnectionToolForCheck(session, tool, connection.id, toolName, args,
+            Math.max(1, deadlineAt - Date.now()), invocationId, callerHeaders, { run: taskSignals.run, caller: taskSignals.caller }),
+        });
+        if (refusal) {
+          execution.request.dispatched = false;
+          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
+        }
+      }
       if (workspaceTarget?.transport === "paperclip_rest") {
         execution.request.protocol = "Google Workspace REST";
         delete execution.request.mcpMethod;

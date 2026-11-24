@@ -25,6 +25,7 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
+import { releaseProviderLimitWaits } from "./heartbeat/provider-limit-wait.js";
 
 export async function lockAgentConfigurationInteractions(tx: Db, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
   const pluginOrigin = currentPluginInteractionOrigin();
@@ -191,6 +192,19 @@ export async function completeAgentConfiguration(txDb: Db, existing: AgentConfig
       existing.adapterConfig,
       options?.recordRevision,
     );
+  }
+
+  const priorRuntime = isPlainRecord(existing.runtimeConfig) ? existing.runtimeConfig : {};
+  const nextRuntime = isPlainRecord(updated.runtimeConfig) ? updated.runtimeConfig : {};
+  if (!isDeepStrictEqual(priorRuntime.aiConnection, nextRuntime.aiConnection)) {
+    // A usage limit belongs to the account it was reported on. Work held for
+    // it rechecks now, against the account the agent uses from here on.
+    const actorAgentId = options?.recordRevision?.createdByAgentId;
+    const actorUserId = options?.recordRevision?.createdByUserId;
+    await releaseProviderLimitWaits(txDb, {
+      companyId: existing.companyId, agentId: id, reason: "ai_connection_changed", publications,
+      actor: actorAgentId ? { actorType: "agent", actorId: actorAgentId } : actorUserId ? { actorType: "user", actorId: actorUserId } : undefined,
+    });
   }
 
   if (normalizedPatch.budgetMonthlyCents !== undefined) {

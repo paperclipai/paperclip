@@ -1,9 +1,10 @@
 import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames } from "@paperclipai/shared";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   callGoogleWorkspaceRest,
   googleWorkspaceRestToolDefinition,
   googleWorkspaceCatalogToolTitle,
+  googleWorkspaceMcpPreflightRefusal,
   googleWorkspaceRestTransportGaps,
   listGoogleWorkspaceRest,
   probeGoogleWorkspaceRest,
@@ -12,6 +13,8 @@ import {
 describe("Google Workspace REST transport eligibility", () => {
   it("switches no service to paperclip_rest unless the REST tools cover its whole allowlist", () => {
     expect(googleWorkspaceRestTransportGaps()).toEqual([]);
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest", drive: "paperclip_rest",
+      docs: "paperclip_rest", sheets: "paperclip_rest", slides: "paperclip_rest", calendar: "paperclip_rest" })).toEqual([]);
   });
 
   it("finds Gmail and Calendar fully implemented and Chat not", () => {
@@ -27,6 +30,9 @@ describe("Google Workspace REST transport eligibility", () => {
 
 describe("googleWorkspaceRestToolDefinition", () => {
   it("returns this folder's definition for a tool of a service on paperclip_rest, and nothing otherwise", () => {
+    const savedDocs = GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs;
+    GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = "paperclip_rest";
+    onTestFinished(() => { GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = savedDocs; });
     const rest = listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc")!;
     expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual({ name: rest.name, title: "Docs: Edit a document", description: rest.description,
       inputSchema: rest.inputSchema, outputSchema: rest.outputSchema, annotations: rest.annotations });
@@ -132,5 +138,30 @@ describe("probeGoogleWorkspaceRest", () => {
     await expect(probe(200, { emailAddress: "a@example.test" })).resolves.toEqual({ ok: true });
     await expect(probe(401, {})).resolves.toMatchObject({ ok: false, authFailure: "unauthenticated" });
     await expect(probe(403, { error: { errors: [{ reason: "accessNotConfigured" }] } })).resolves.toMatchObject({ ok: false, authFailure: null });
+  });
+});
+
+describe("googleWorkspaceMcpPreflightRefusal", () => {
+  const eventResult = (event: Record<string, unknown>) => ({ content: JSON.stringify(event), data: { isError: false, structuredContent: event } });
+
+  it("reads the event through the gateway's callback before a Calendar delete, and refuses a recurring series", async () => {
+    const callTool = vi.fn(async () => eventResult({ id: "s1", recurrence: ["RRULE:FREQ=WEEKLY"] }));
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { calendarId: "primary", eventId: "s1", sendUpdates: "none" },
+      inputSchema: {}, callTool })).resolves.toContain("whole recurring series");
+    expect(callTool).toHaveBeenCalledWith("calendar__get_event", { calendarId: "primary", eventId: "s1" });
+  });
+
+  it("passes one occurrence, refuses when the callback has no event, and reads nothing for other tools", async () => {
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { eventId: "s1_20261124" }, inputSchema: {},
+      callTool: async () => eventResult({ id: "s1_20261124", recurringEventId: "s1" }) })).resolves.toBeNull();
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { eventId: "e1" }, inputSchema: {},
+      callTool: async () => null })).resolves.toContain("Nothing was deleted.");
+    const callTool = vi.fn(async () => null);
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__update_event", arguments: { eventId: "e1" }, inputSchema: {}, callTool })).resolves.toBeNull();
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "drive__get_file_metadata", arguments: { fileId: "a,b" }, inputSchema: {}, callTool }))
+      .resolves.toContain("fileId must be one Google file ID");
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "chat__list_messages", arguments: { anything: 1 }, inputSchema: { type: "object", properties: {} }, callTool }))
+      .resolves.toBeNull();
+    expect(callTool).not.toHaveBeenCalled();
   });
 });
