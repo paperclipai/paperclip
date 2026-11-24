@@ -3371,6 +3371,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --z-60: 60; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (z-[60]). */
   --z-1: 1; /* Extracted from ui/src/components/IssueDocumentAnnotations.tsx (z-[1]). */
   --z-200: 200; /* Extracted from ui/src/components/Layout.tsx (z-[200]). */
+  --z-250: 250; /* Onboarding organization menu, above the setup switch (--z-200). */
   --z-9999: 9999; /* Extracted from ui/src/components/MarkdownEditor.tsx (z-[9999]). */
   --z-120: 120; /* Extracted from ui/src/components/ToastViewport.tsx (z-[120]). */
   --s-0_98: 0.98; /* Extracted from ui/src/pages/Inbox.tsx (scale-[0.98]). */
