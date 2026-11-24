@@ -34,6 +34,14 @@ describe("local import package-cache boundary", () => {
     await expect(assertLocalImportOutsideSkillPackageCache(managed, managed)).rejects.toThrow("package caches");
   });
 
+  it.each(["__audit__", "__audit__/version-copy", "__audit__/version-copy/SKILL.md"])(
+    'rejects an audit library copy "%s", which may hold a restricted repository', async source => {
+      await fs.mkdir(path.join(managed, "__audit__", "version-copy"), { recursive: true });
+      await fs.writeFile(path.join(managed, "__audit__", "version-copy", "SKILL.md"), "Private instructions");
+      await expect(assertLocalImportOutsideSkillPackageCache(await fs.realpath(path.join(managed, source)), managed))
+        .rejects.toMatchObject({ status: 422, details: { code: "skill_package_cache_import_denied" } });
+    });
+
   it.each(["ordinary-skill", "__packages__-backup"])("allows unrelated sibling %s", async name => {
     const source = path.join(managed, name);
     await fs.mkdir(source);

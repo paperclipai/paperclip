@@ -3,7 +3,7 @@ import { registerDeadlineWork } from "../deadline-work.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { nativeHarnessBackupExpirationService, type NativeHarnessBackupExpirationOptions } from "./native-harness-backup-expiration.js";
-import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
+import { onNativeRunnerEvidence, onNativeRunnerSkillStorage } from "./native-runner-evidence-signal.js";
 
 export function registerNativeRunnerEvidenceRetentionWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -29,6 +29,8 @@ export function registerNativeRunnerEvidenceRetentionWork(
     },
     next: async () => continuation ?? service.nextEvidenceAt(),
   });
-  const unsubscribe = onNativeRunnerEvidence(at => { service.noteEvidence(at); worker.wake(); });
+  const unsubscribeEvidence = onNativeRunnerEvidence(at => { service.noteEvidence(at); worker.wake(); });
+  const unsubscribeSkills = onNativeRunnerSkillStorage(at => { service.noteSkillStorage(at); worker.wake(); });
+  const unsubscribe = () => { unsubscribeEvidence(); unsubscribeSkills(); };
   return { ...worker, unsubscribe };
 }

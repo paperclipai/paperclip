@@ -27,10 +27,10 @@ fn download_directory(state_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn codex_attachment_read_args(args: &[String], state_dir: &Path) -> Vec<String> {
-    let directory = download_directory(state_dir);
-    let Some(directory) = directory.to_str() else {
-        return Vec::new();
-    };
+    codex_runtime_read_args(args, &[download_directory(state_dir)])
+}
+
+pub(crate) fn codex_runtime_read_args(args: &[String], directories: &[PathBuf]) -> Vec<String> {
     let mut extra = Vec::new();
     for profile in [
         "paperclip-runner-workspace-only",
@@ -46,7 +46,9 @@ pub(crate) fn codex_attachment_read_args(args: &[String], state_dir: &Path) -> V
         let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
             continue;
         };
-        filesystem.insert(directory, "read".into());
+        for directory in directories.iter().filter_map(|path| path.to_str()) {
+            filesystem.insert(directory, "read".into());
+        }
         extra.extend(["-c".to_owned(), format!("{prefix}{filesystem}")]);
     }
     extra

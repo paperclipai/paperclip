@@ -1,3 +1,4 @@
+import { removeCodexSkillHomeTree } from "../drivers/codex-skill-home.js";
 import {
   bindRunnerLaunchResources,
   createRunnerProviderLaunch,
@@ -79,6 +80,58 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+it.skipIf(process.platform === "win32")("resumes the same old Codex thread with a shared skill home and retires duplicates on the next cold start", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-legacy-skills-"));
+  const stateDirectory = join(root, "durable-sessions", "saved-session");
+  const codexHome = join(stateDirectory, "codex-home");
+  const storeRoot = join(root, "skill-homes");
+  const skillSource = join(root, "assigned");
+  await mkdir(skillSource, { recursive: true });
+  await writeFile(join(skillSource, "SKILL.md"), "# Assigned");
+  await writeFile(join(root, "AGENTS.md"), "# Workspace");
+  const identity = {
+    runnerInstanceId: "runner-shared-skills", environmentLeaseId: "lease-shared-skills",
+    runId: "run-shared-skills", normalizedSessionId: "session-shared-skills",
+    turnId: "turn-shared-skills", itemId: "item-shared-skills",
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex, sourceCodexHome: "",
+    stateDirectory, prpIdentity: identity, runtimeContext: assignedRuntimeContext(skillSource, root),
+  };
+  const first = createCapabilityRunnerdCodexTransport({
+    ...options, codexArgs: fakeCodexArgs(root),
+  });
+  const threadId = (await first.transport.request("thread/start", { cwd: root })).thread as { id: string };
+  try {
+    await first.transport.close();
+    const privateSkill = join(codexHome, "skills", "assigned", "SKILL.md");
+    await expect(readFile(privateSkill, "utf8")).resolves.toBe("# Assigned");
+    const marker = join(codexHome, "paperclip-skill-home.json");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const resumed = createCapabilityRunnerdCodexTransport({ ...options, codexSkillHomeStoreRoot: storeRoot });
+      try {
+        await expect(resumed.transport.request("thread/read", { threadId: threadId.id })).resolves.toMatchObject({ thread: { id: threadId.id } });
+        const { digest } = JSON.parse(await readFile(marker, "utf8"));
+        if (process.platform === "linux") {
+          const pid = resumed.evidence().runnerPid;
+          expect(pid).toBeTruthy();
+          const environment = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
+          expect(environment).toContain(`HOME=${join(storeRoot, digest)}`);
+          expect(environment).toContain(`CODEX_HOME=${codexHome}`);
+        }
+        await expect(readFile(join(storeRoot, digest, ".agents", "skills", "assigned", "SKILL.md"), "utf8")).resolves.toBe("# Assigned");
+        if (attempt === 0) await expect(readFile(privateSkill, "utf8")).resolves.toBe("# Assigned");
+        else await expect(stat(privateSkill)).rejects.toHaveProperty("code", "ENOENT");
+      } finally {
+        await resumed.transport.close();
+      }
+    }
+  } finally {
+    await first.transport.close().catch(() => undefined);
+    await removeCodexSkillHomeTree(root);
+  }
+}, 60_000);
 
 describe("committedEventWindowComplete", () => {
   const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));
@@ -3397,6 +3450,82 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
   );
 });
 
+it.skipIf(process.platform === "win32").each([
+  ["claude", {}, "/state/skill-homes"],
+  ["codex", {}, undefined],
+  ["claude", { runnerFilesystemRoot: "/remote/root" }, undefined],
+  ["claude", { homeMode: "preconfigured" as const }, undefined],
+] as const)("passes the skill home store to ACPX %s only when it can share skills (%o)", (agent, extra, expected) => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "acpx",
+    options: {
+      provider: "acpx", acpxAgent: agent, codexSkillHomeStoreRoot: "/state/skill-homes", ...extra,
+      environment: { PATH: "/bin" },
+    },
+    identity: {
+      runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
+      normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+    acpxSidecarPath: "/package/dist/cli/acpx-runtime-sidecar.cjs",
+  });
+  expect(environment.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBe(expected);
+});
+
+it.skipIf(process.platform === "win32").each([
+  [{}, "/state/skill-homes"],
+  [{ runnerFilesystemRoot: "/remote/root" }, undefined],
+] as const)("passes the skill home store to OpenCode only when it can share skills (%o)", (extra, expected) => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "opencode",
+    options: { provider: "opencode", codexSkillHomeStoreRoot: "/state/skill-homes", ...extra, environment: { PATH: "/bin" } },
+    identity: {
+      runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
+      normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+  });
+  expect(environment.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBe(expected);
+});
+
+it.skipIf(process.platform === "win32").each([
+  ["acpx", "claude", {}, "/state/skill-homes"],
+  ["acpx", "claude", { runnerFilesystemRoot: "/remote/root" }, undefined],
+  ["acpx", "claude", { homeMode: "preconfigured" as const }, undefined],
+  ["opencode", undefined, {}, "/state/skill-homes"],
+  ["opencode", undefined, { runnerFilesystemRoot: "/remote/root" }, undefined],
+] as const)("ignores agent-configured skill home paths for %s %s (%o)", (provider, agent, extra, expected) => {
+  // Agent adapter env reaches the runner through the configured projection.
+  const configured = {
+    PATH: "/bin",
+    ...configuredEnvironmentProjection({
+      PAPERCLIP_SKILL_HOME_STORE_ROOT: "/attacker/store",
+      PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR: "/attacker/plugin",
+    }),
+  };
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider,
+    options: {
+      provider, ...(agent ? { acpxAgent: agent } : {}), codexSkillHomeStoreRoot: "/state/skill-homes", ...extra,
+      environment: configured,
+    },
+    identity: {
+      runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
+      normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+    ...(provider === "acpx" ? { acpxSidecarPath: "/package/dist/cli/acpx-runtime-sidecar.cjs" } : {}),
+  });
+  expect(environment.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBe(expected);
+  expect(environment.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR).toBeUndefined();
+});
+
 it("passes the configured Codex API key only through the provider process environment", () => {
   const environment = createCapabilityRunnerdProviderEnvironment({
     provider: "codex",
@@ -3997,7 +4126,7 @@ it("joins delayed environment preparation before close and prevents a late launc
 });
 
 it("does not invoke deferred startup preparation after immediate close", async () => {
-  const prepare = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue(undefined);
+  const prepare = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue({ skillHome: null });
   const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: () => undefined }));
   const launch = vi.fn(() => { throw new Error("unexpected launch"); });
   const { transport } = createCapabilityRunnerdCodexTransport({
@@ -4037,6 +4166,7 @@ it("owns blocked Codex home preparation through driver abort without later regis
     preparationContinuedAfterClose = closeSettled;
     await mkdir(input.codexHome, { mode: 0o700 });
     await writeFile(join(input.codexHome, "preparation-marker"), "fixture preparation drained\n", { mode: 0o600 });
+    return { skillHome: null };
   });
   const registration = vi.fn(async () => ({
     connection: { mode: "connect" as const, connectUrl: "ws://127.0.0.1:1/fixture-never-connected" },
@@ -4812,6 +4942,7 @@ it("joins owned credential preparation before close returns and never launches a
     await gate;
     await mkdir(codexHome, { recursive: true });
     await writeFile(join(codexHome, "owned-write.txt"), "completed owned preparation");
+    return { skillHome: null };
   });
   const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: async () => {} }));
   const launch = vi.fn(() => { throw new Error("unexecuted late launch"); });
@@ -4849,7 +4980,7 @@ it("retains owned state when credential preparation outlives bounded close", asy
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { entered = resolve; });
-  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; return { skillHome: null }; });
   const registration = vi.fn(async () => ({ connectUrl: "ws://127.0.0.1:1", release: async () => {} }));
   const launch = vi.fn(() => { throw new Error("unexpected launch"); });
   const bundle = createCapabilityRunnerdCodexTransport({ stateDirectory: root, runnerBinary: artifact, codexCommand: artifact, provider: "codex", closeGraceMs: 100,
@@ -4877,7 +5008,7 @@ it.each(["settled", "late", "late-release-error"] as const)("retires owned start
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const registered = new Promise<void>(resolve => { entered = resolve; });
-  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue(undefined);
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockResolvedValue({ skillHome: null });
   const retire = vi.fn(async () => { if (mode === "late-release-error") throw new Error("owned registration release failed"); });
   const registration = vi.fn(async () => { entered(); await gate; return { connectUrl: "ws://127.0.0.1:1", release: retire }; });
   const launch = vi.fn(() => { throw new Error("unexpected launch"); });
@@ -4916,7 +5047,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { entered = resolve; });
-  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; });
+  const preparation = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockImplementation(async () => { entered(); await gate; return { skillHome: null }; });
   const cleanup = vi.fn(async () => {});
   const launch = vi.fn(() => { throw new Error("unexpected launch"); });
   const probe = probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: "codex", model: "gpt-test", timeoutMs: 100,

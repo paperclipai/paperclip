@@ -6,7 +6,12 @@ import { NATIVE_MODEL_ENVELOPE_SCHEMA, NATIVE_MODEL_ENVELOPE_SCHEMA_V2 } from ".
  * current request and approval context. Comments never select a command.
  * Multiple selections remain available to the Skill tool rather than picking one.
  */
-export function claudeNativeSkillPrompt(text: string, assignedNames: readonly string[]): string {
+export function claudeNativeSkillPrompt(
+  text: string,
+  assignedNames: readonly string[],
+  /** Plugin name when the skills come from a shared plugin (`/<plugin>:<skill>`). */
+  pluginNamespace?: string,
+): string {
   let envelope: unknown;
   try { envelope = JSON.parse(text); } catch { return text; }
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return text;
@@ -21,5 +26,5 @@ export function claudeNativeSkillPrompt(text: string, assignedNames: readonly st
     const description = (value.task as Record<string, unknown>).description;
     selected = explicitTaskSkillNames(typeof description === "string" ? description : null, assignedNames);
   } else return text;
-  return selected.length === 1 ? `/${selected[0]} ${text}` : text;
+  return selected.length === 1 ? `/${pluginNamespace ? `${pluginNamespace}:` : ""}${selected[0]} ${text}` : text;
 }

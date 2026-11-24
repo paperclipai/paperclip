@@ -353,7 +353,7 @@ import {
 } from "./native-run-trace.js";
 import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { readNativeRunWakeRequestedAtMs } from "./native-run-wake-anchor.js";
-import { noteNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
+import { noteNativeRunnerEvidence, noteNativeRunnerSkillStorage } from "./native-runner-evidence-signal.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
@@ -2650,6 +2650,11 @@ function runnerdStateBase(): string {
       "durable-sessions",
     )
   );
+}
+
+/** Sealed Codex skill homes shared by local sessions; a sibling of the session roots. */
+export function codexSkillHomeStoreRoot(): string {
+  return resolve(runnerdStateBase(), "..", "skill-homes");
 }
 
 /**
@@ -18785,6 +18790,9 @@ async function createRunnerdBackendWithinSessionClaim(
       "acpx",
     ),
     codexTransportFactory: (recoveryContext) => {
+      // A local isolated launch prepares skills (a shared home or staging): wake the cleanup for a day later.
+      if ((input.execution.provider.kind === "codex" || input.execution.provider.kind === "acpx"
+        || input.execution.provider.kind === "opencode") && !preconfiguredHome && !remoteTarget) noteNativeRunnerSkillStorage(Date.now());
       const bundle = createRunnerdCodexTransport({
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
@@ -18795,6 +18803,11 @@ async function createRunnerdBackendWithinSessionClaim(
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
+        // The runner decides per platform and agent (Codex, ACPX Claude, OpenCode);
+        // Windows and other ACPX agents keep copying skills.
+        ...((input.execution.provider.kind === "codex" || input.execution.provider.kind === "acpx"
+          || input.execution.provider.kind === "opencode") && !preconfiguredHome && !remoteTarget
+          ? { codexSkillHomeStoreRoot: codexSkillHomeStoreRoot() } : {}),
         ...accountingTransportOptions,
         onCredentialsUpdated: credentialUpdates?.onCredentialsUpdated,
         provider:

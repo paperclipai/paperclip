@@ -30,6 +30,19 @@ the local libc remains unknown and automatic GNU/Linux runner selection stays
 disabled. Qualified Linux targets still require GNU libc 2.39 or newer. Existing
 saved execution choices remain unchanged.
 
+## Recovering local Codex skill homes
+
+A cold recovery of a local isolated Codex session can switch to the shared
+skill store if its assigned files match the private skill tree. The runner
+keeps the Codex home, session identity and persisted launch profile. It adds
+read access to the sealed shared skills for the relaunched process.
+
+The controller records the shared home after the original thread is restored.
+The next cold launch can remove the proven duplicates before the app-server
+discovers skills again. Codex-managed .system skills remain private. A live
+runner reattachment, an unavailable source, or a mismatched snapshot keeps
+the private skill tree.
+
 ## OpenCode native runtime
 
 Paperclip Runner resolves the pinned OpenCode platform package installed with

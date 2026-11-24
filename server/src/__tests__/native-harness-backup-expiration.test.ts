@@ -10,7 +10,7 @@ import { issueService } from "../services/issues.js";
 import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerNativeRunnerEvidenceRetentionWork } from "../services/native-runtime/native-runner-evidence-retention-work.js";
-import { noteNativeRunnerEvidence } from "../services/native-runtime/native-runner-evidence-signal.js";
+import { noteNativeRunnerEvidence, noteNativeRunnerSkillStorage } from "../services/native-runtime/native-runner-evidence-signal.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -391,6 +391,57 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     await db.delete(agentTaskSessions);
     expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 2, truncated: true });
     expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 1, truncated: false });
+  });
+
+  it("removes an unreferenced, expired Codex skill home in the same pass", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const skillHomeStoreRoot = path.join(stateBase, "store-for-test");
+    const home = path.join(skillHomeStoreRoot, "a".repeat(64));
+    await fs.mkdir(path.join(home, ".agents", "skills", "alpha"), { recursive: true });
+    await fs.writeFile(path.join(home, ".agents", "skills", "alpha", "SKILL.md"), "skill");
+    const old = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    await fs.utimes(home, old, old);
+    const recentHome = path.join(skillHomeStoreRoot, "b".repeat(64));
+    await fs.mkdir(path.join(recentHome, ".agents", "skills", "beta"), { recursive: true });
+    const recent = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    await fs.utimes(recentHome, recent, recent);
+    // Production runs tick() only from the evidence worker (duty "evidence").
+    const evidence = nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillHomeStoreRoot, closedForDays: 7, now, isSessionBusy: () => false,
+    });
+    const result = await evidence.tick();
+    expect(result).toMatchObject({ skillHomesRemoved: 1, failed: 0 });
+    expect(result.skillHomeReclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(home)).toBe(false);
+    expect(await exists(recentHome)).toBe(true);
+    // The worker comes back when the kept home's grace period ends, also when no other evidence is due.
+    expect(evidence.nextEvidenceAt()).toBe(recent.getTime() + 24 * 60 * 60 * 1000);
+  });
+
+  it("schedules no skill-home pass when no skill storage needs cleanup", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const evidence = nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillHomeStoreRoot: path.join(stateBase, "empty-store"), skillStagingRoots: [],
+      closedForDays: 7, now, isSessionBusy: () => false,
+    });
+    await evidence.tick();
+    expect(evidence.nextEvidenceAt()).toBeNull();
+  });
+
+  it("removes skill staging an interrupted launch left in a provider home in the same pass", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const acpxSessions = path.join(stateBase, "acpx-for-test");
+    const staging = path.join(acpxSessions, "session-1", "claude-home", ".paperclip-skills-staging-old");
+    await fs.mkdir(path.join(staging, "skill"), { recursive: true });
+    await fs.writeFile(path.join(staging, "skill", "SKILL.md"), "partial");
+    const old = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    await fs.utimes(staging, old, old);
+    const result = await nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillStagingRoots: [acpxSessions], closedForDays: 7, now, isSessionBusy: () => false,
+    }).tick();
+    expect(result).toMatchObject({ abandonedSkillStagingRemoved: 1, failed: 0 });
+    expect(result.abandonedSkillStagingBytes).toBeGreaterThan(0);
+    expect(await exists(staging)).toBe(false);
   });
 
   it("expires the backup of a session whose issue closed before the window and clears its resume pointer", async () => {
@@ -1159,6 +1210,21 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     await startEvidence(); await settled(); expect(await exists(session.current)).toBe(true);
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
     reads.mockRestore(); writes.mockRestore(); await quiet();
+  });
+
+  it("wakes an idle evidence worker for skill storage a launch prepared and removes its abandoned staging a day later", async () => {
+    const scope = await emptyStateBase();
+    await startEvidence({ skillHomeStoreRoot: path.join(stateBase, "skill-homes"), skillStagingRoots: [stateBase] });
+    await settled(); await quiet();
+    const launchedAt = Date.now();
+    const staging = path.join(stateBase, scope, "codex-home", ".paperclip-skills-staging-interrupted");
+    await fs.mkdir(path.join(staging, "skill"), { recursive: true });
+    await fs.utimes(staging, new Date(launchedAt), new Date(launchedAt));
+    noteNativeRunnerSkillStorage(launchedAt);
+    const deadline = launchedAt + DAY_MS + 1;
+    await settled(deadline);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(staging)).toBe(false); await quiet();
   });
 
   it("reconstructs and replaces the saved evidence deadline after a publication signal", async () => {

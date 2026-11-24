@@ -15,6 +15,9 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
+import {
+  prepareSharedSkillHome,
+} from "./codex-skill-home.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 
@@ -194,6 +197,101 @@ async function removeMaterializedTree(
   await removeTree(skillsHome);
 }
 
+const SKILL_STAGING_PREFIX = ".paperclip-skills-staging-";
+/** A launch copies skills in minutes; older staging was left by an interrupted launch. */
+const ABANDONED_STAGING_AT_LAUNCH_MS = 60 * 60 * 1000;
+
+/** Entries one abandoned staging tree may hold before cleanup leaves it alone. */
+const MAX_STAGING_ENTRIES = 100_000;
+
+/**
+ * Walks an abandoned staging tree in a provider home the agent can write to,
+ * without opening files or following links: directories are opened with
+ * O_DIRECTORY | O_NOFOLLOW, so a planted FIFO cannot block and a link is never
+ * followed. With `unseal`, each directory is made writable so the tree can be
+ * removed. Returns the file bytes, or null when the tree exceeds `maxEntries`.
+ */
+async function walkStagingTree(root: string, maxEntries: number, unseal: boolean): Promise<number | null> {
+  let bytes = 0;
+  let entries = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (unseal) await handle.chmod(0o700);
+    } finally {
+      await handle.close();
+    }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (++entries > maxEntries) return null;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile()) bytes += (await lstat(path)).size;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Removes `.paperclip-skills-staging-*` directories in `parent` that are older
+ * than `olderThanMs`. An interrupted launch (cancellation, a killed process)
+ * leaves a partly sealed copy there that no later launch reuses. A tree that
+ * cannot be removed safely (too large, or changed underneath) is skipped and
+ * counted, so it never stops the cleanup of the others.
+ */
+export async function removeAbandonedSkillStaging(
+  parent: string,
+  options: {
+    olderThanMs: number;
+    now?: number;
+    dryRun?: boolean;
+    /** Removals allowed in this call; the rest is reported as `truncated`. */
+    maxRemovals?: number;
+    shouldContinue?: () => boolean;
+    /** Entries one staging tree may hold (default 100,000). */
+    maxEntries?: number;
+  },
+): Promise<{ removed: number; candidates: number; bytes: number; nextDueAt: number | null; truncated: boolean; skipped: number }> {
+  const result = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null as number | null, truncated: false, skipped: 0 };
+  const names = await readdir(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return [] as string[];
+    throw error;
+  });
+  const before = (options.now ?? Date.now()) - options.olderThanMs;
+  for (const name of names.sort()) {
+    if (!name.startsWith(SKILL_STAGING_PREFIX)) continue;
+    const path = join(parent, name);
+    const info = await lstat(path).catch(() => null);
+    if (!info?.isDirectory()) continue;
+    if (info.mtimeMs >= before) {
+      // Still young: due once it is old enough to belong to no live launch.
+      const dueAt = info.mtimeMs + options.olderThanMs;
+      result.nextDueAt = result.nextDueAt === null ? dueAt : Math.min(result.nextDueAt, dueAt);
+      continue;
+    }
+    if (!options.dryRun && (options.shouldContinue?.() === false || result.removed >= (options.maxRemovals ?? Infinity))) {
+      result.truncated = true;
+      continue;
+    }
+    try {
+      const bytes = await walkStagingTree(path, options.maxEntries ?? MAX_STAGING_ENTRIES, !options.dryRun);
+      if (bytes === null) {
+        result.skipped++;
+        continue;
+      }
+      result.candidates++;
+      result.bytes += bytes;
+      if (options.dryRun) continue;
+      await rm(path, { recursive: true, force: true });
+      result.removed++;
+    } catch {
+      result.skipped++;
+    }
+  }
+  return result;
+}
+
 /** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
 export async function releaseMaterializedNativeRuntimeSkills(
   skillsHome: string,
@@ -256,7 +354,8 @@ export async function materializeNativeRuntimeSkills(
 
   const parent = dirname(skillsHome);
   const nonce = randomUUID();
-  const stagingHome = join(parent, `.paperclip-skills-staging-${nonce}`);
+  const stagingHome = join(parent, `${SKILL_STAGING_PREFIX}${nonce}`);
+  await removeAbandonedSkillStaging(parent, { olderThanMs: ABANDONED_STAGING_AT_LAUNCH_MS });
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await chmod(parent, 0o700);
   await mkdir(stagingHome, { mode: 0o700 });
@@ -337,15 +436,26 @@ export async function prepareIsolatedCodexHome(input: {
   codexHome: string;
   sourceCodexHome?: string | null;
   apiKey?: string | null;
-}): Promise<void> {
-  await materializeNativeRuntimeSkills(
-    input.context,
-    join(input.codexHome, "skills"),
-  );
+  /** Shared skill home store; when set, skills are not copied into this home. */
+  skillHomeStoreRoot?: string;
+}): Promise<{ skillHome: string | null }> {
+  let skillHome: string | null = null;
+  if (input.skillHomeStoreRoot && input.context) {
+    // Also migrates sessions that still carry a per-session skills copy.
+    ({ home: skillHome } = await prepareSharedSkillHome({
+      providerHome: input.codexHome, storeRoot: input.skillHomeStoreRoot, context: input.context,
+    }));
+  } else {
+    await materializeNativeRuntimeSkills(
+      input.context,
+      join(input.codexHome, "skills"),
+    );
+  }
 
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);
+  return { skillHome };
 }
 
 async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: string): Promise<void> {

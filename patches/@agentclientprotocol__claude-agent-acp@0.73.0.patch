@@ -209,7 +209,7 @@ index 0214a50..a68121d 100644
      async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
          if (signal.aborted)
              throw new Error("Tool use aborted");
-@@ -5311,14 +5445,24 @@ export class ClaudeAcpAgent {
+@@ -5311,14 +5445,28 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -219,6 +219,10 @@ index 0214a50..a68121d 100644
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
 +            // Subagent progress summaries (~30s) feed the task chat's subagent card.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { agentProgressSummaries: true }),
++            // Paperclip Runner may share one sealed skill home between sessions; Claude
++            // loads it as a local plugin, so its skills appear as `paperclip:<name>`.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && process.env.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR?.startsWith("/")
++                && { plugins: [{ type: "local", path: process.env.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR }] }),
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
@@ -235,7 +239,7 @@ index 0214a50..a68121d 100644
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5473,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5477,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),

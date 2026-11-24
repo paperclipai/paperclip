@@ -103,6 +103,15 @@ describe("configured environment authority", () => {
       expect(() => configuredEnvironment({ [CONFIGURED_ENVIRONMENT_KEYS]: raw })).toThrow("Invalid configured environment");
     });
 
+  it("keeps runner-generated skill home paths out of the configured projection", () => {
+    const projected = configuredEnvironmentProjection({
+      CUSTOM: "kept", PAPERCLIP_SKILL_HOME_STORE_ROOT: "/attacker/store", PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR: "/attacker/plugin",
+    });
+    expect(JSON.parse(projected[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM"]);
+    expect(projected.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBeUndefined();
+    expect(projected.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR).toBeUndefined();
+  });
+
   it("rejects oversized and null-containing values without reporting their contents", () => {
     for (const value of ["x".repeat(65_536), "secret\0suffix"]) {
       expect(() => configuredEnvironmentProjection({ CUSTOM: value })).toThrow(/configured environment|Configured environment/);
