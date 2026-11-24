@@ -141,16 +141,27 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(activity).toEqual([expect.objectContaining({ action: "issue.thread_interaction_created", actorType: "system" })]);
   });
 
-  it("does nothing when the agent already opened a card for the revision", async () => {
+  // The agent's plan card opened as instructed: bound to the saved plan revision.
+  async function agentPlanCard(t: Awaited<ReturnType<typeof seed>>, runId: string, key: string) {
+    const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+    return issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: key, sourceRunId: runId, continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve the plan?", acceptLabel: "Approve plan", rejectLabel: "Request changes",
+        target: { type: "issue_document", issueId: t.issueId, documentId: plan!.id, key: "plan",
+          revisionId: plan!.latestRevisionId, revisionNumber: plan!.latestRevisionNumber } },
+    } as never, { agentId: t.agentId, runId });
+  }
+  const plainCard = (t: Awaited<ReturnType<typeof seed>>, runId: string, key: string, prompt: string) =>
+    issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: key, sourceRunId: runId, continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt, acceptLabel: "Confirm", rejectLabel: "Request changes" },
+    } as never, { agentId: t.agentId, runId });
+
+  it("does nothing when the agent already opened its plan card for the revision", async () => {
     const t = await seed();
     const runId = await t.newRun();
     await t.writePlan(runId);
-    // The agent's own card, without a document target (as Antigravity opens it).
-    await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
-      kind: "request_confirmation", idempotencyKey: "confirm-plan-v1", sourceRunId: runId,
-      title: "Approve the plan", continuationPolicy: "wake_assignee_on_accept",
-      payload: { version: 1, prompt: "Proceed with implementation?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
-    } as never, { agentId: t.agentId, runId });
+    await agentPlanCard(t, runId, "confirm-plan-v1");
 
     await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({ kind: "pending" });
     expect(await t.cards()).toHaveLength(1);
@@ -241,17 +252,12 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(cards[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
   });
 
-  it("replaces the agent's untargeted card for the plan a crashed run wrote, leaving one answerable card", async () => {
+  it("withdraws the agent's plan card for v1 when a recovered run writes v2, leaving one answerable card", async () => {
     const t = await seed();
     const crashed = await t.newRun();
     await t.writePlan(crashed);
-    // The agent opened its plan card without a target (as Antigravity does), then the process died.
-    await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
-      kind: "request_confirmation", idempotencyKey: "own-v1", sourceRunId: crashed, continuationPolicy: "wake_assignee_on_accept",
-      payload: { version: 1, prompt: "Proceed with plan v1?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
-    } as never, { agentId: t.agentId, runId: crashed });
+    const v1 = await agentPlanCard(t, crashed, "own-v1");
     const recovered = await t.newRun();
-    await new Promise(resolve => setTimeout(resolve, 5));
     await t.writePlan(recovered, `${PLAN}\n3. Revised after recovery.`);
 
     await expect(ensureNativePlanReviewCard(db, t.binding(recovered))).resolves.toMatchObject({ kind: "created" });
@@ -259,37 +265,23 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     const pending = (await t.cards()).filter(card => card.status === "pending");
     expect(pending).toHaveLength(1);
     expect(pending[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
+    await expect(interactionsAccept(t, v1.id)).rejects.toThrow();
   });
 
-  it("binds the agent's own Plan-mode confirmation to the plan revision it reviews", async () => {
+  it("keeps an unrelated confirmation opened after the plan ordinary: answering it never approves the plan", async () => {
     const t = await seed();
     const runId = await t.newRun();
     await t.writePlan(runId);
-    const card = await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
-      kind: "request_confirmation", idempotencyKey: "own-plan", sourceRunId: runId, continuationPolicy: "wake_assignee",
-      payload: { version: 1, prompt: "Approve my plan?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
-    } as never, { agentId: t.agentId, runId });
-    const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
-    expect(card.payload).toMatchObject({ target: { type: "issue_document", key: "plan", revisionId: plan!.latestRevisionId } });
-  });
-
-  it("leaves an unrelated pending confirmation answerable when the plan card opens", async () => {
-    const t = await seed();
-    const runId = await t.newRun();
-    // Asked before any plan existed: not a plan review, so never bound or withdrawn.
-    const unrelated = await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
-      kind: "request_confirmation", idempotencyKey: "rename-repo", sourceRunId: runId, continuationPolicy: "wake_assignee",
-      payload: { version: 1, prompt: "May I rename the repository?", acceptLabel: "Yes", rejectLabel: "No" },
-    } as never, { agentId: t.agentId, runId });
+    const unrelated = await plainCard(t, runId, "rename-repo", "May I rename the repository?");
     expect((unrelated.payload as { target?: unknown }).target).toBeUndefined();
-    await t.writePlan(runId);
 
     await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({ kind: "created" });
+    await interactionsAccept(t, unrelated.id);
 
-    const cards = await t.cards();
-    expect(cards.find(card => card.id === unrelated.id)?.status).toBe("pending");
-    expect(cards.filter(card => card.status === "pending" &&
-      (card.payload as { target?: { key?: string } }).target?.key === "plan")).toHaveLength(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, t.issueId));
+    expect(issue!.workMode).toBe("planning");
+    const planCards = (await t.cards()).filter(card => (card.payload as { target?: { key?: string } }).target?.key === "plan");
+    expect(planCards).toEqual([expect.objectContaining({ status: "pending" })]);
   });
 
   it("leaves a card opened before plan binding existed answerable, and still opens the current plan's card", async () => {
@@ -313,13 +305,19 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(cards.find(card => card.id === legacy!.id)?.status).toBe("pending");
     expect(cards.filter(card => card.status === "pending" &&
       (card.payload as { target?: { revisionNumber?: number } }).target?.revisionNumber === 2)).toHaveLength(1);
+    // Accepting the old card does not approve the newer revision.
+    await interactionsAccept(t, legacy!.id);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, t.issueId));
+    expect(issue!.workMode).toBe("planning");
+    expect((await t.cards()).filter(card => card.status === "pending")).toHaveLength(1);
   });
 
-  it("keeps an earlier run's pending card as the gate in a Plan-mode conversation", async () => {
+  it.each(["server", "agent"])("keeps run A's pending %s plan card as the gate when run B settles a Plan-mode conversation", async (opener) => {
     const t = await seed("planning", { conversation: true });
     const first = await t.newRun();
     await t.writePlan(first);
-    await expect(ensureNativePlanReviewCard(db, t.binding(first))).resolves.toMatchObject({ kind: "created" });
+    if (opener === "server") await expect(ensureNativePlanReviewCard(db, t.binding(first))).resolves.toMatchObject({ kind: "created" });
+    else await agentPlanCard(t, first, "conversation-plan");
     const second = await t.newRun();
 
     await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "pending" });
@@ -331,6 +329,17 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
       { id: t.issueId, companyId: t.companyId, projectId: null, goalId: null }, id, {} as never, { userId: "local-board" } as never,
     );
   }
+
+  it("returns the original card for an identical retry after a plan revision landed", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    const first = await plainCard(t, runId, "retry-key", "May I proceed?");
+    // The response was lost; meanwhile the agent saved its plan.
+    await t.writePlan(runId);
+
+    const retried = await plainCard(t, runId, "retry-key", "May I proceed?");
+    expect(retried.id).toBe(first.id);
+  });
 
   it("reports a Plan-mode run with no plan, and leaves Standard tasks untouched", async () => {
     const planning = await seed();
@@ -390,13 +399,12 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
   const scenarios: Scenario[] = [
     { name: "no plan saved", setup: async () => {}, kind: "no_plan" },
     { name: "plan saved, agent opened no card (first run or recovered run)", setup: async (t, runId) => { await t.writePlan(runId); }, kind: "created" },
-    { name: "plan saved, agent opened its own card", setup: async (t, runId) => {
-      await t.writePlan(runId);
-      await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
-        kind: "request_confirmation", idempotencyKey: `own-${runId}`, sourceRunId: runId, continuationPolicy: "wake_assignee_on_accept",
-        payload: { version: 1, prompt: "Proceed?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
-      } as never, { agentId: t.agentId, runId });
+    { name: "plan saved, agent opened its plan card bound to the revision", setup: async (t, runId) => {
+      await t.writePlan(runId); await agentPlanCard(t, runId, `own-${runId}`);
     }, kind: "pending" },
+    { name: "plan saved, agent opened an unbound confirmation (ordinary, not a plan review)", setup: async (t, runId) => {
+      await t.writePlan(runId); await plainCard(t, runId, `plain-${runId}`, "Proceed?");
+    }, kind: "created" },
     { name: "plan saved, agent asked a current question", setup: async (t, runId) => {
       await t.writePlan(runId); await question(t, runId);
     }, kind: "pending" },

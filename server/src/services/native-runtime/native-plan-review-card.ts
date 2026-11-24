@@ -86,7 +86,7 @@ export function planReviewConfirmationInput(input: {
   };
 }
 
-async function coveringCard(db: Db, binding: Binding, revision: { id: string; createdAt: Date }, conversationMode: boolean) {
+async function coveringCard(db: Db, binding: Binding, revision: { id: string }, conversationMode: boolean) {
   // A historical or deferred card cannot give the user the next action; the
   // same rule decides the run's governance gate.
   const active = new Set((await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -100,8 +100,6 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     kind: issueThreadInteractions.kind,
     status: issueThreadInteractions.status,
     payload: issueThreadInteractions.payload,
-    createdAt: issueThreadInteractions.createdAt,
-    createdByAgentId: issueThreadInteractions.createdByAgentId,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, binding.companyId),
     eq(issueThreadInteractions.issueId, binding.issueId),
@@ -111,27 +109,25 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     const target = record(record(payload).target);
     return target.type === "issue_document" && typeof target.revisionId === "string" ? target.revisionId : null;
   };
-  // A card covers the revision when it is a plan review of it: bound to this
-  // revision (the server's and Codex/Claude cards), or the plain confirmation
-  // the assigned agent opened itself after writing it (ACPX agents open their
-  // plan card without a target). A pending question also gives the user the
-  // next action. A card bound to an older revision does not: the new one
-  // replaces it.
+  // Only an explicit plan review covers a revision: a card bound to this
+  // revision (the server's, Codex/Claude's, or an agent's card opened with the
+  // plan target). An unbound confirmation is an ordinary request: it never
+  // covers a plan, never starts execution and is never withdrawn here. A
+  // pending question also gives the user the next action. A card bound to an
+  // older revision does not cover this one.
   const covers = (card: (typeof cards)[number]) => {
     if (card.kind === "ask_user_questions") return card.status === "pending";
-    // Governed-action cards (tool calls, secrets, connections, quality
-    // reviews) are about something else and never stand in for a plan review.
     if (hasGovernedPayload(card.payload)) return false;
-    const revisionId = targetRevision(card.payload);
-    if (revisionId) return revisionId === revision.id;
-    return card.createdByAgentId === binding.agentId && card.createdAt >= revision.createdAt;
+    return targetRevision(card.payload) === revision.id;
   };
   // A pending card bound to this revision always gates it, also when the
   // conversation prior-turn rule would leave it out of the active set.
   const pending = cards.find(card => card.status === "pending" && covers(card) &&
     (active.has(card.id) || targetRevision(card.payload) === revision.id));
   if (pending) return { kind: "pending" as const, interactionId: pending.id };
-  const answered = cards.find(card => card.kind === "request_confirmation" && card.status !== "expired" && covers(card));
+  // Only a decision answers a revision; a pending card never counts as reviewed.
+  const answered = cards.find(card => card.kind === "request_confirmation" &&
+    ["accepted", "rejected"].includes(card.status) && covers(card));
   if (answered) return { kind: "reviewed" as const, revisionId: revision.id };
   return null;
 }
