@@ -21,7 +21,7 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
 interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean;
-  laggingAgentReads?: number; reopenedLaggingAgentReads?: number; reopenedStale?: "task-run" | "both-runs" | "task-status" | "document" | "locks" | "native-phase"; reopenedStaleReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
+  laggingAgentReads?: number; reopenedLaggingAgentReads?: number; reopenedStale?: "task-run" | "both-runs" | "task-status" | "document" | "locks" | "native-phase" | "run-facts"; reopenedStaleReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
 async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
@@ -128,6 +128,7 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
       if ((options.reopenedStale === "both-runs" || options.reopenedStale === "task-run" && source === "task")
         && stale(source)) run.status = "running";
       if (options.reopenedStale === "native-phase" && stale(source)) run.nativePhase = "running";
+      if (options.reopenedStale === "run-facts" && stale(source)) run.startedAt = "2019-12-31T23:59:00Z";
       detailReads.push({ projection: source, stage, status: run.status });
       return run;
     }
@@ -297,7 +298,7 @@ describe("dependency browser flow orchestration", () => {
       expect(f.writes).toEqual([]);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
-  it.each((["task-run", "both-runs", "task-status", "document", "locks", "native-phase"] as const)
+  it.each((["task-run", "both-runs", "task-status", "document", "locks", "native-phase", "run-facts"] as const)
     .flatMap(stale => [2, Infinity].map(lag => ({ stale, lag }))))(
     "waits for reopened $stale staleness ($lag reads) within the original deadline", async ({ stale, lag }) => {
       const f = await fixture(false, { reopenedStale: stale, reopenedStaleReads: lag });
