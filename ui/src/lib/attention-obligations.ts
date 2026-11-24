@@ -47,6 +47,25 @@ export function attentionObligationEvidence(
   return folded.evidenceByLeadId.get(item.id) ?? NO_EVIDENCE;
 }
 
+/** The task rows a provider-limit card represents in the inbox toolbar. */
+export function inboxCardMembers(folded: FoldedAttentionObligations, item: AttentionItem) {
+  return item.providerLimit ? [item, ...attentionObligationEvidence(folded, item)] : [item];
+}
+
+export function inboxCardMatchesFilters(folded: FoldedAttentionObligations, item: AttentionItem,
+  filters: { query: string; agentId: string; agentName?: string; projectId: string }) {
+  const query = filters.query.trim().toLocaleLowerCase();
+  return inboxCardMembers(folded, item).some(member => {
+    if (filters.projectId && member.project?.id !== filters.projectId) return false;
+    const agentId = member.providerLimit?.agentId ?? member.subject.metadata?.createdByAgentId ?? member.subject.metadata?.originAgentId;
+    if (filters.agentId && agentId !== filters.agentId
+      && (agentId || !filters.agentName || member.originAgentName !== filters.agentName)) return false;
+    if (!query) return true;
+    return [member.subject.title, member.relatedIssue?.title, member.relatedIssue?.identifier, member.originAgentName,
+      member.providerLimit?.agentName, member.project?.name, attentionDetailLine(member)].join(" ").toLocaleLowerCase().includes(query);
+  });
+}
+
 /**
  * What an evidence card is to its lead: the task that waits on the approval,
  * the work a failed run blocks, or another cause.

@@ -21,7 +21,7 @@ import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DEC
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
-import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
+import { attentionObligationEvidence, foldAttentionObligations, inboxCardMatchesFilters, inboxCardMembers } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
@@ -193,12 +193,9 @@ export function CoordinatorNeedsYou() {
     }).map(([, item]) => item);
   }, [obligations, settling, settlingIds, recentItems, savedIds, feed.dataUpdatedAt]);
   const filtered = useMemo(() => pendingItems.filter((item) => {
-    const agentId = String(item.subject.metadata?.createdByAgentId ?? item.subject.metadata?.originAgentId ?? "");
-    if (agentFilter && agentId !== agentFilter && item.originAgentName !== agentMap.get(agentFilter)?.name) return false;
-    if (projectFilter && item.project?.id !== projectFilter) return false;
     if (forUserId && coordinatorAudienceKey(item) !== `user:${forUserId}`) return false;
-    return [item.subject.title, item.relatedIssue?.title, item.relatedIssue?.identifier, item.originAgentName, item.project?.name, attentionDetailLine(item)].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  }).sort((a, b) => Date.parse(b.activityAt) - Date.parse(a.activityAt)), [pendingItems, agentFilter, projectFilter, forUserId, query, agentMap]);
+    return inboxCardMatchesFilters(obligations, item, { query, agentId: agentFilter, agentName: agentMap.get(agentFilter)?.name, projectId: projectFilter });
+  }).sort((a, b) => Date.parse(b.activityAt) - Date.parse(a.activityAt)), [pendingItems, obligations, agentFilter, projectFilter, forUserId, query, agentMap]);
   // Stale cards go to the collapsed group at the bottom of each view (Rule 10).
   // The Archived view keeps stale cards in place with their chip, and puts
   // snoozed cards in their own group (plan §3).
@@ -239,9 +236,9 @@ export function CoordinatorNeedsYou() {
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
   }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
   const projects = useMemo(() => [...new Map([
-    ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
+    ...pendingItems.flatMap(item => inboxCardMembers(obligations, item)).flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
     ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
-  ]).entries()], [pendingItems, recentItems]);
+  ]).entries()], [pendingItems, obligations, recentItems]);
   // Assigned to you, everyone the viewer may see, one person, no owner yet, or company alerts.
   const assigneeOptions = useMemo(() => {
     const people = [...userLabelMap].filter(([id]) => id !== userId).sort(([, a], [, b]) => a.localeCompare(b));
