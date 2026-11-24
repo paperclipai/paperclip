@@ -210,7 +210,11 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     filesGone = !entry && !retainedDirectory && !archivedGitSource && workspace.status === "archived"
       && !reasons.includes("restore_point_expired") && !reasons.includes("restore_point_invalid")
       && await workspaceFilesProvenGone(db, workspace);
-    if (entry?.isDirectory() && !entry.isSymbolicLink()) reasons.push(...await workspaceMigrationLayoutBlockers(db, workspace, input.writersStopped, input.onlineSource));
+    if (entry?.isDirectory() && !entry.isSymbolicLink()) {
+      for (const blocker of await workspaceMigrationLayoutBlockers(db, workspace, input.writersStopped, input.onlineSource)) {
+        if (blocker.state) detail(blocker.reason, blocker.state); else reasons.push(blocker.reason);
+      }
+    }
   }
   const [issue] = workspace.sourceIssueId ? await db.select().from(issues).where(and(eq(issues.companyId, workspace.companyId), eq(issues.id, workspace.sourceIssueId))) : [];
   // Historical records still own their saved files after the task selects a
@@ -412,8 +416,9 @@ export async function inventoryRemoteWorkspaceMigration(db: Db, input: { company
   const onlineSource = explained && !("unproven" in explained) ? explained : undefined;
   const onlineSourceUnproven = Boolean(workspace && explained && !onlineSource && await requiresOnlineWorkspaceSource(workspace));
   const result = await inspect(db, { ...input, onlineSource, onlineSourceUnproven });
+  const scopeNamed = onlineSourceUnproven || result.reasons.includes("overlapping_workspace_requires_maintenance");
   return { companyId: input.companyId, workspaceId: input.workspaceId, eligible: result.reasons.length === 0,
-    ...(onlineSourceUnproven && explained && "unproven" in explained ? { sourceScopeUnproven: explained.unproven } : {}),
+    ...(scopeNamed && explained && "unproven" in explained ? { sourceScopeUnproven: explained.unproven } : {}),
     ...(result.details.length ? { details: result.details } : {}),
     alreadyMigrated: Boolean(result.authority), ...(result.filesGone ? { filesUnavailable: true } : {}), reasons: result.reasons, localPath: result.workspace.cwd ?? result.workspace.providerRef,
     source: result.source, operationId: typeof result.marker.operationId === "string" ? result.marker.operationId : null,

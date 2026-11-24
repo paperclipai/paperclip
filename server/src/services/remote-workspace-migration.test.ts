@@ -404,6 +404,12 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   }
   it("requires offline maintenance for overlapping physical workspace paths", async () => {
     const { parent, child } = await nestedFixture();
+    expect(await inventoryRemoteWorkspaceMigration(db, child)).toMatchObject({ eligible: false,
+      reasons: ["overlapping_workspace_requires_maintenance"], sourceScopeUnproven: "ordinary_root_unmanaged",
+      details: ["overlapping_workspace_requires_maintenance:enclosing_workspace"] });
+    expect(await inventoryRemoteWorkspaceMigration(db, parent)).toMatchObject({ eligible: false,
+      reasons: ["overlapping_workspace_requires_maintenance"], sourceScopeUnproven: "ordinary_root_unmanaged",
+      details: ["overlapping_workspace_requires_maintenance:nested_workspace"] });
     await expect(migrateRemoteWorkspace({ db, storage, ...child, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
     await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
     expect(await fs.readFile(path.join(child.cwd, "child.txt"), "utf8")).toBe("saved child edits\n");
