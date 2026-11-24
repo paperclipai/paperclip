@@ -202,7 +202,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
 
-  it("waits for GitHub's rate-limit reset before checking pending cards again", async () => {
+  it.each(["anonymous", "server_env"] as const)("waits for GitHub's rate-limit reset before checking pending cards again (%s)", async (source) => {
     const first = await create();
     const otherIssueId = randomUUID();
     await db.insert(issues).values({
@@ -210,13 +210,18 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     const second = await service().create({ id: otherIssueId, companyId }, input(40), { agentId });
     const resetAt = Date.now() + 540_000;
-    const fetchPullRequest = vi.fn(async () => Date.now() < resetAt
-      ? new Response(null, { status: 429, headers: { "retry-after": "540" } })
-      : Response.json({ merged: true, state: "closed" }));
+    const fetchGitHub = vi.fn(async (url: string | URL | Request) => {
+      if (Date.now() < resetAt) return new Response(null, { status: 429, headers: { "retry-after": "540" } });
+      return String(url).includes("/pulls/")
+        ? Response.json({ merged: true, state: "closed" })
+        : Response.json({ private: false });
+    });
     const real = issueThreadInteractionService(db, {
       resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, {
-        tokenProvider: () => null,
-        fetch: fetchPullRequest,
+        credentialProvider: () => source === "server_env"
+          ? { token: "fixture", source, secretName: null }
+          : null,
+        fetch: fetchGitHub,
       }),
       wakeup,
     });
@@ -225,20 +230,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await settle();
 
     expect(errors).toEqual([]);
-    expect(fetchPullRequest).toHaveBeenCalledTimes(1);
+    expect(fetchGitHub).toHaveBeenCalledTimes(1);
     expect(coordinator.nextWakeAt()).toBe(resetAt);
     expect((await stored(first.id)).status).toBe("pending");
     expect((await stored(second.id)).status).toBe("pending");
 
     await vi.advanceTimersByTimeAsync(resetAt - Date.now() - 1);
-    expect(fetchPullRequest).toHaveBeenCalledTimes(1);
+    expect(fetchGitHub).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     await waitFor(async () => {
       expect((await stored(first.id)).status).toBe("accepted");
       expect((await stored(second.id)).status).toBe("accepted");
     });
     await quiet();
-    expect(fetchPullRequest).toHaveBeenCalledTimes(3);
+    expect(fetchGitHub).toHaveBeenCalledTimes(source === "server_env" ? 5 : 3);
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
