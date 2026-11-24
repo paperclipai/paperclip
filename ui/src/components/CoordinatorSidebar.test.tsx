@@ -31,10 +31,10 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({
 }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }) }));
-vi.mock("@/plugins/slots", () => ({ PluginSlotOutlet: ({ slotTypes, context }: { slotTypes: string[]; context: Record<string, unknown> }) =>
-  <div data-testid="plugin-slot-outlet" data-slot-types={slotTypes.join(",")} data-context={JSON.stringify(context)} /> }));
-vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: ({ placementZones, context }: { placementZones: string[]; context: Record<string, unknown> }) =>
-  <div data-testid="plugin-launcher-outlet" data-placement-zones={placementZones.join(",")} data-context={JSON.stringify(context)} /> }));
+vi.mock("@/plugins/slots", () => ({ PluginSlotOutlet: ({ slotTypes, context, itemClassName }: { slotTypes: string[]; context: Record<string, unknown>; itemClassName?: string }) =>
+  <div data-testid="plugin-slot-outlet" data-slot-types={slotTypes.join(",")} data-context={JSON.stringify(context)}><div data-testid="plugin-slot-item" className={itemClassName} /></div> }));
+vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: ({ placementZones, context, itemClassName }: { placementZones: string[]; context: Record<string, unknown>; itemClassName?: string }) =>
+  <div data-testid="plugin-launcher-outlet" data-placement-zones={placementZones.join(",")} data-context={JSON.stringify(context)}><div data-testid="plugin-launcher-item" className={itemClassName} /></div> }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/ACME/issues", search: "" }),
@@ -75,6 +75,20 @@ describe("CoordinatorSidebar plugin and flag-gated entries", () => {
     const launchers = navigation().querySelector('[data-testid="plugin-launcher-outlet"]');
     expect(launchers?.getAttribute("data-placement-zones")).toBe("sidebar");
     expect(JSON.parse(launchers!.getAttribute("data-context")!)).toEqual(pluginContext);
+  });
+
+  it("insets plugin sidebar rows once, like native rows", async () => {
+    await renderSidebar();
+    // Plugin sidebar pages render their own SidebarNavItem-style link (`mx-2 px-2`), so the
+    // slot wrapper must not add the row inset again. Launchers render a full-width button with
+    // its own padding, so their wrapper supplies only the outer margin.
+    const slotItem = navigation().querySelector('[data-testid="plugin-slot-outlet"][data-slot-types="sidebar"] [data-testid="plugin-slot-item"]')!;
+    expect(slotItem.classList.contains("design-sidebar-item")).toBe(false);
+    expect(slotItem.classList.contains("design-sidebar-plugin-item")).toBe(true);
+    expect([...slotItem.classList].some(name => /^-?(m|p)[xlrse]?-/.test(name))).toBe(false);
+    const launcherItem = navigation().querySelector('[data-testid="plugin-launcher-item"]')!;
+    expect(launcherItem.classList.contains("design-sidebar-item")).toBe(false);
+    expect([...launcherItem.classList].filter(name => /^-?(m|p)[xlrse]?-/.test(name))).toEqual(["mx-2"]);
   });
 
   it.each([false, true])("shows Status and Goals only when their flags are enabled (%s)", async enabled => {

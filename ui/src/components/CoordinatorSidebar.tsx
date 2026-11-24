@@ -209,8 +209,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
           {experimental?.enableStatusCards === true && <SidebarNavItem className="design-sidebar-item" to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />}
           {experimental?.enableGoalsSidebarLink === true && <SidebarNavItem className="design-sidebar-item" to="/goals" label="Goals" icon={Target} />}
-          <PluginSlotOutlet slotTypes={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-item text-(length:--text-compact) font-medium" missingBehavior="placeholder" />
-          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-item text-(length:--text-compact) font-medium" />
+          {/* Plugin rows carry their own inset: sidebar pages render SidebarNavItem-style links (`mx-2 px-2`),
+              so the slot wrapper uses `design-sidebar-plugin-item` (native height, type and colours) rather than
+              `design-sidebar-item`, which would inset them again. Launcher buttons are full width with their own
+              padding, so their wrapper also gives the row's outer margin. */}
+          <PluginSlotOutlet slotTypes={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item" missingBehavior="placeholder" />
+          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item mx-2" />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
