@@ -1684,9 +1684,11 @@ function createSandboxEnvironmentDriver(
         companyId, pluginWorkerManager, applyCustomImageTemplate: true,
         acquireSandboxRuntimeLease: true, assertCompanyBinding: true,
       });
+      // Only controlled diagnostics reach the run error; provider exception
+      // text can carry credentials and stays in the probe result.
       const reason = result.ok
         ? (typeof result.details?.platformQualificationDiagnostic === "string" ? result.details.platformQualificationDiagnostic : null)
-        : (typeof result.details?.error === "string" ? result.details.error : result.summary);
+        : "The check sandbox could not start. Paperclip tries again on the next run.";
       return { environment: await environments.getById(environmentId), reason };
     })().finally(() => { sandboxSnapshotRequalifications.delete(key); });
     sandboxSnapshotRequalifications.set(key, run);

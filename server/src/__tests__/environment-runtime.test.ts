@@ -435,14 +435,36 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     vi.mocked(worker.getWorker).mockReturnValue({ supportedMethods: ["environmentExecute", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] } as never);
     // Routes build separate runtimes; concurrent runs through two of them share one probe.
     const [acquired, second] = await Promise.all([environmentRuntimeService(db, { pluginWorkerManager: worker }),
-      environmentRuntimeService(db, { pluginWorkerManager: worker })].map(runtime => runtime.acquireRunLease({ companyId, environment,
-      issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" })));
+      environmentRuntimeService(db, { pluginWorkerManager: worker })].map((runtime, index) => runtime.acquireRunLease({ companyId, environment,
+      issueId: null, heartbeatRunId: index === 0 ? runId : null, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" })));
     expect(acquired.lease.metadata?.snapshot).toBe(snapshotId);
     expect(second.lease.metadata?.snapshot).toBe(snapshotId);
     expect(vi.mocked(worker.call).mock.calls.filter(([, method, params]: any[]) => method === "environmentAcquireLease" && params.resolveSnapshotIdentity)).toHaveLength(1);
     const proof = ((await environmentService(db).getById(environment.id))!.metadata?.paperclipSandboxPlatformProbes as Record<string, any>)[companyId];
     expect(proof).toMatchObject({ v: 2, snapshot: config.snapshot, snapshotIdentity: { id: snapshotId } });
     expect(proof).not.toHaveProperty("invalidated");
+  });
+
+  it("keeps provider error text out of the run error when automatic re-qualification fails", async () => {
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [] }));
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    await insertSandboxProviderPlugin(pluginId, { environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider", displayName: "Daytona", configSchema: { type: "object" } }] });
+    await db.update(environments).set({ driver: "sandbox", config: { provider: "daytona", snapshot: "fleet-sbx-current" }, metadata: { managedByPaperclip: true,
+      paperclipSandboxPlatformProbes: { [companyId]: { v: 2, companyId, snapshot: "fleet-sbx-previous", template: null, invalidated: true } } } })
+      .where(eq(environments.id, baseEnvironment.id));
+    const environment = (await environmentService(db).getById(baseEnvironment.id))!;
+    const worker = createFreshPluginLeaseWorker(pluginId);
+    vi.mocked(worker.call).mockImplementation(async (_id, method) => {
+      if (method === "environmentAcquireLease") throw new Error("upstream rejected token sk-live-secret-value");
+      throw new Error(`Unexpected ${method}`);
+    });
+    const failure = await environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({ companyId, environment,
+      issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" }).catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("sandbox_snapshot_qualification_required");
+    expect((failure as Error).message).toContain("The check sandbox could not start.");
+    expect((failure as Error).message).not.toContain("sk-live-secret-value");
   });
 
   it("forwards the run's warm idle window to the provider worker without changing lease identity", async () => {
