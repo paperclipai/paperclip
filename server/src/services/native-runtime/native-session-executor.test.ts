@@ -479,6 +479,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
+  nativeStartupFailureMessage,
   NATIVE_PROVIDER_SESSION_CLOSED,
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
@@ -16126,6 +16127,18 @@ describe("native session bounded recovery", () => {
       expect(skew.message).toContain("mode is supported only for Cursor");
       expect(nativeSessionFailureSourceCode(rejected("candidate_admission_invalid"))).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
       expect(nativeSessionFailureSourceCode(rejected("unclassified"))).toBe("provider_session_open_rejected");
+    });
+
+    it("gives a refused /swarm one plain sentence as its run error, never the Runner's command JSON", () => {
+      // The live Neon refusal (2026-11-24): the PRP failure text with the typed provider failure inside.
+      const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+      const raw = `PRP command session.open failed: {"commandId":"command_prp_00000002","commandType":"session.open","controllerSeq":2,"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=antigravity_swarm_unavailable)","providerFailure":{"schema":"paperclip.provider-failure.v1","provider":"antigravity","phase":"startup","category":"model_unavailable","message":${JSON.stringify(plain)},"retryability":"requires_action"},"sidecarRejection":{"command":"session.open","code":"ANTIGRAVITY_SWARM_UNAVAILABLE","message":"The Antigravity CLI offered 13 models and not gemini-4-neon-low: gemini-4-argon-medium"}},"status":"failed"}`;
+      const error = new Error(raw);
+      expect(nativeSessionFailureSourceCode(error)).toBe("antigravity_swarm_unavailable");
+      expect(nativeStartupFailureMessage("antigravity_swarm_unavailable", raw, { message: plain })).toBe(plain);
+      // Other failures keep their text; a swarm refusal without a typed cause keeps the raw text rather than nothing.
+      expect(nativeStartupFailureMessage("provider_session_open_rejected", raw, { message: plain })).toBe(raw);
+      expect(nativeStartupFailureMessage("antigravity_swarm_unavailable", raw, null)).toBe(raw);
     });
 
     it("rests a run whose Runner refused its commands as out of sequence with a precise code and a Retry", () => {

@@ -1812,6 +1812,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Runtime missing"
             : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
+            : code === "antigravity_swarm_unavailable" && source.status === "failed"
+            ? "Swarm did not start"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
@@ -1841,6 +1843,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ? `${props.interruption?.observedRunId === source.id && props.interruption.rejectedModel
                     ? `The provider rejected the model "${props.interruption.rejectedModel}".`
                     : meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                : code === "antigravity_swarm_unavailable" && source.status === "failed"
+                  // The swarm route's own plain sentence; never the code.
+                  ? meta?.error?.trim() || "Swarm did not start, and nothing was changed. Send /swarm again to try once more."
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
@@ -1871,7 +1876,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption,
+            // A refused /swarm waits for the person (another model, or /swarm again); Retry meets the same refusal.
+            retryable: code !== "native_session_cleanup_quarantined" && code !== "antigravity_swarm_unavailable" && !diskFullBesideInterruption,
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,
