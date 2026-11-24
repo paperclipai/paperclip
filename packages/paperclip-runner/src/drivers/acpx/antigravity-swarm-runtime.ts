@@ -228,6 +228,25 @@ function addUsage(total: Json | null, usage: unknown): Json | null {
   return next;
 }
 
+const TASK_ENVELOPE_SCHEMAS = new Set(["paperclip.native-model-envelope.v1", "paperclip.native-model-envelope.v2", "paperclip.native-model-envelope.v3"]);
+const MAX_SWARM_REQUEST_CHARS = 16_000;
+
+/**
+ * The swarm's instruction is only the user's recorded request: the task
+ * envelope's `task.prompt`, which Paperclip sets to that comment's own text
+ * for a swarm run. Titles, descriptions, wake comments, continuation events
+ * and anything else in the envelope never reach the auto-approved coordinator.
+ */
+export function antigravitySwarmRequestText(turnText: string): string | null {
+  let envelope: Json;
+  try { envelope = record(JSON.parse(turnText)); } catch { return null; }
+  if (!TASK_ENVELOPE_SCHEMAS.has(String(envelope.schema))) return null;
+  const prompt = record(envelope.task).prompt;
+  if (typeof prompt !== "string") return null;
+  const request = prompt.trim();
+  return request && request.length <= MAX_SWARM_REQUEST_CHARS ? request : null;
+}
+
 function failed(code: string, message: string): AcpRuntimeTurnResult {
   return { status: "failed", error: { code, message, retryable: false } };
 }
@@ -376,6 +395,11 @@ export async function openAntigravitySwarmRuntime(
       started();
       return failed("ANTIGRAVITY_SWARM_UNAVAILABLE", "At most one swarm runs per task run. Send another /swarm message to start a new one.");
     }
+    const request = antigravitySwarmRequestText(input.text);
+    if (!request) {
+      started();
+      return failed("ANTIGRAVITY_SWARM_UNAVAILABLE", "This swarm has no request to run. Send /swarm with what the swarm should do.");
+    }
     const workspace = options.cwd;
     const before = await snapshotWorkspace(workspace, listing.signal);
     await dependencies.onStage?.("snapshot");
@@ -478,7 +502,7 @@ export async function openAntigravitySwarmRuntime(
     const dispatch = input.dispatchJournal?.markReceived() ? input.dispatchJournal : null;
     try {
       dispatch?.markDispatched();
-      let stopReason = await prompt(`/swarm ${input.text}`, null);
+      let stopReason = await prompt(`/swarm ${request}`, null);
       if (stopReason === "end_turn" && !stop && !cancelled && helpers.size > 0 && !waitedAfterLastAdd && !classifyAntigravityRefusalText(transcript)) {
         events.push(line("wait", "Waiting for the helpers to finish"));
         transcript += "\n";

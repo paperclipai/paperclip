@@ -1,4 +1,5 @@
 import { and, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { parseLeadingUserCommand } from "@paperclipai/shared";
 import { activityLog, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -127,21 +128,24 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   context: unknown;
   remote: boolean;
   planning: boolean;
-}): Promise<boolean> {
+}): Promise<AntigravitySwarmSelection | null> {
   const marked = requestedAntigravitySwarmCommentId(input.context);
   const explicit = marked ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context);
   // Only an explicit request (a fresh /swarm or its retry chain) is refused for
   // a non-Antigravity assignee; a task reassigned since then runs ordinary work.
   const commentId = explicit ?? (isAntigravityAgent(input.agent) ? await pendingSwarmCommentId(db, input.companyId, input.issueId) : null);
-  if (!commentId) return false;
-  const [requested] = await db.select({ id: activityLog.id }).from(activityLog)
+  if (!commentId) return null;
+  const [requested] = await db.select({ id: activityLog.id, body: issueComments.body }).from(activityLog)
     .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),
       isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
     .where(and(eq(activityLog.companyId, input.companyId), eq(activityLog.action, ANTIGRAVITY_SWARM_REQUESTED_ACTION),
       eq(activityLog.entityId, input.issueId), eq(activityLog.actorType, "user"), eq(activityLog.actorId, issueComments.authorUserId),
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
     .limit(1);
-  if (!requested) return false;
+  if (!requested) return null;
+  // The swarm's only instruction is this recorded comment's own text.
+  const request = (parseLeadingUserCommand(requested.body, ["swarm"])?.argument ?? requested.body).trim();
+  if (!request) return null;
   // The user asked for this run: a fresh /swarm comment, or Retry. Everything
   // else (recovery, sweeps, continuations) is automatic and bounded below.
   const manual = marked !== null || record(input.context).wakeReason === "task_retry";
@@ -153,7 +157,7 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
         sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
-    if (attempts.some(run => run.status === "succeeded")) return false;
+    if (attempts.some(run => run.status === "succeeded")) return null;
     if (attempts.some(run => ["queued", "running"].includes(run.status))) refuse("A swarm for this request is already running.");
     if (!manual && attempts.some(run => run.status === "cancelled")) {
       refuse("The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again.");
@@ -175,6 +179,18 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
         summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
       },
     });
-    return true;
+    return { commentId, request };
   });
+}
+
+export interface AntigravitySwarmSelection {
+  commentId: string;
+  /** The recorded request comment's own text: the swarm's only instruction. */
+  request: string;
+}
+
+/** A native execution that runs the trusted swarm (Antigravity CLI route). */
+export function isAntigravitySwarmExecution(execution: { provider: unknown }): boolean {
+  const provider = record(execution.provider);
+  return provider.kind === "acpx" && provider.agent === "antigravity" && provider.mode === "swarm";
 }

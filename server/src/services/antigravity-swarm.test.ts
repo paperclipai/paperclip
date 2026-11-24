@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { antigravitySwarmRefusal, requestedAntigravitySwarmCommentId } from "./antigravity-swarm.js";
+import { antigravitySwarmRefusal, isAntigravitySwarmExecution, requestedAntigravitySwarmCommentId } from "./antigravity-swarm.js";
 
 const antigravity = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } };
 
@@ -20,5 +20,11 @@ describe("trusted /swarm for Google Antigravity", () => {
     expect(requestedAntigravitySwarmCommentId({ commentId: id, wakeCommentId: id })).toBeNull();
     expect(requestedAntigravitySwarmCommentId({ antigravitySwarmCommentId: "/swarm do it" })).toBeNull();
     expect(requestedAntigravitySwarmCommentId(null)).toBeNull();
+  });
+
+  it("recognises only the Antigravity swarm execution, so other runs keep their prompt supplements", () => {
+    expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "antigravity", mode: "swarm" } })).toBe(true);
+    expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "antigravity" } })).toBe(false);
+    expect(isAntigravitySwarmExecution({ provider: { kind: "acpx", agent: "cursor", mode: "swarm" } })).toBe(false);
   });
 });

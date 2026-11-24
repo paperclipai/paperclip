@@ -64,6 +64,13 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     companyId: f.companyId, runId, agentId: f.agentId, eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
+  it("takes no queued message into a swarm run, whose only instruction is the recorded request", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, antigravitySwarmCommentId: randomUUID() } }).where(eq(heartbeatRuns.id, f.runId));
+    await queueMessage(f, "an ordinary message written while the swarm prepares");
+    expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
+  });
+
   it("gives a message that arrived during preparation to the first turn, without a stop", async () => {
     const f = await seed();
     const message = await queueMessage(f, "oh i mean each of the ones that appeared within the last 24 hours");

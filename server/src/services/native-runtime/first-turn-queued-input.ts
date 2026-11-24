@@ -247,7 +247,9 @@ export async function claimFirstTurnQueuedInput(
     }
     // Only the run that holds the task takes its queue. Conversations keep
     // their own turn-boundary contract.
+    // A swarm run's instruction is only its recorded request; nothing joins it.
     const joining = !issue || issue.conversationAgentId || issue.executionRunId !== run.id
+      || record(run.contextSnapshot).antigravitySwarmCommentId !== undefined
       ? [] : wakes.filter(wake => deferredWakeJoinsFirstTurn(wake, run));
     const commentIds = [...new Set(joining.flatMap(wake => queuedCommentIdsFromWakePayload(wake.payload)))];
     const taken = await readQueuedMessages(tx as unknown as Db, { ...binding, responsibleUserId: run.responsibleUserId,

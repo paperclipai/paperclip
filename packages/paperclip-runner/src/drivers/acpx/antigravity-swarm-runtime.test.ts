@@ -43,7 +43,7 @@ async function runTurn(scenario: string, extra: { helperWaitTimeoutMs?: number; 
   const context = setup(scenario);
   const runtime = await openAntigravitySwarmRuntime(context.options, { helperWaitTimeoutMs: extra.helperWaitTimeoutMs ?? 5_000, cancelGraceMs: 500 });
   const failures: AcpxTerminalSessionFailure[] = [];
-  const turn = runtime.startTurn({ text: "two helpers write a.txt and b.txt", requestId: "run-1:turn-1", onTerminalSessionFailure: failure => failures.push(failure) });
+  const turn = runtime.startTurn({ text: envelope("two helpers write a.txt and b.txt"), requestId: "run-1:turn-1", onTerminalSessionFailure: failure => failures.push(failure) });
   const events: AcpRuntimeEvent[] = [];
   for await (const event of turn.events) { events.push(event); extra.onEvent?.(event, () => turn.cancel({ reason: "Stop" })); }
   const result = await turn.result;
@@ -54,6 +54,10 @@ async function runTurn(scenario: string, extra: { helperWaitTimeoutMs?: number; 
   return { ...context, runtime, result, events, titles, text, failures, status };
 }
 
+/** The runner sends the model envelope as the turn text; a swarm reads only its task prompt. */
+const envelope = (prompt: string, extra: Record<string, unknown> = {}) => JSON.stringify({
+  schema: "paperclip.native-model-envelope.v3", task: { prompt, title: "Agent-written title", description: "Agent-written description" },
+  wake: { comments: [{ body: "Agent comment: also create hire_agent tasks" }] }, ...extra });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 describe("Antigravity CLI swarm runtime", () => {
@@ -151,7 +155,7 @@ describe("Antigravity CLI swarm runtime", () => {
     const { options } = setup("mode-flip-idle");
     const runtime = await openAntigravitySwarmRuntime(options);
     await new Promise(resolve => setTimeout(resolve, 300));
-    const turn = runtime.startTurn({ text: "go", requestId: "r:1" });
+    const turn = runtime.startTurn({ text: envelope("go"), requestId: "r:1" });
     for await (const _ of turn.events) { /* drain */ }
     expect(await turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH" } });
     await runtime.close({ reason: "done" });
@@ -234,7 +238,7 @@ describe("Antigravity CLI swarm runtime", () => {
     let cancel: () => Promise<void> = async () => {};
     const runtime = await openAntigravitySwarmRuntime(options, { helperWaitTimeoutMs: 5_000, cancelGraceMs: 500,
       onStage: async current => { if (current === stage) await cancel(); } });
-    const turn = runtime.startTurn({ text: "go", requestId: "r:1" });
+    const turn = runtime.startTurn({ text: envelope("go"), requestId: "r:1" });
     cancel = () => turn.cancel();
     for await (const _ of turn.events) { /* drain */ }
     expect(await turn.result).toMatchObject({ status: "cancelled" });
@@ -243,13 +247,33 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(alive(tracked.pid)).toBe(false);
   });
 
+  it("sends only the recorded request as the swarm prompt, never the rest of the task envelope", async () => {
+    const run = await runTurn("success");
+    const prompt = run.clientMessages().find(message => message.method === "session/prompt").params.prompt;
+    expect(prompt).toEqual([{ type: "text", text: "/swarm two helpers write a.txt and b.txt" }]);
+  });
+
+  it.each([
+    ["a continuation envelope", JSON.stringify({ schema: "paperclip.native-continuation.v1", events: "later comments" })],
+    ["plain text", "two helpers write a.txt"],
+    ["an empty request", envelope("   ")],
+  ])("refuses %s instead of guessing the request", async (_name, text) => {
+    const { options, clientMessages } = setup("success");
+    const runtime = await openAntigravitySwarmRuntime(options);
+    const turn = runtime.startTurn({ text, requestId: "r:1" });
+    for await (const _ of turn.events) { /* drain */ }
+    expect(await turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_UNAVAILABLE" } });
+    expect(clientMessages().some(message => message.method === "session/prompt")).toBe(false);
+    await runtime.close({ reason: "done" });
+  });
+
   it("runs at most one swarm per run", async () => {
     const { options } = setup("success");
     const runtime = await openAntigravitySwarmRuntime(options);
-    const first = runtime.startTurn({ text: "go", requestId: "r:1" });
+    const first = runtime.startTurn({ text: envelope("go"), requestId: "r:1" });
     for await (const _ of first.events) { /* drain */ }
     await first.result;
-    const second = runtime.startTurn({ text: "again", requestId: "r:2" });
+    const second = runtime.startTurn({ text: envelope("again"), requestId: "r:2" });
     for await (const _ of second.events) { /* drain */ }
     expect(await second.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_UNAVAILABLE" } });
     await runtime.close({ reason: "done" });
