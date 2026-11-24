@@ -108,10 +108,10 @@ const routeModules = hoistModuleGraph(() => {
   vi.doUnmock("../routes/authz.js");
   vi.doUnmock("../middleware/index.js");
 }, async () => {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ agentRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   return { agentRoutes, errorHandler };
 });
 
