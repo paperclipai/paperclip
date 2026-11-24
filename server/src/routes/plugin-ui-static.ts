@@ -53,6 +53,7 @@ import { badRequest } from "../errors.js";
  * The hash portion must be at least 8 hex characters to avoid false positives.
  */
 const CONTENT_HASH_PATTERN = /[.-][a-fA-F0-9]{8,}\.\w+$/;
+const UUID_INPUT_PATTERN = /^[0-9a-f]{4}(?:-?[0-9a-f]{4}){7}$/i;
 
 /**
  * Cache-Control header for content-hashed files.
@@ -247,16 +248,11 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Step 1: Look up the plugin
     let plugin = null;
-    try {
+    const uuidInput = pluginId.startsWith("{") && pluginId.endsWith("}")
+      ? pluginId.slice(1, -1)
+      : pluginId;
+    if (UUID_INPUT_PATTERN.test(uuidInput)) {
       plugin = await registry.getById(pluginId);
-    } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
-        throw error;
-      }
     }
     if (!plugin) {
       plugin = await registry.getByKey(pluginId);

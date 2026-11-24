@@ -48,6 +48,14 @@ describe("tool content guards", () => {
     expect(identity).not.toBe(createHmac("sha256", signingSecret).update(canonicalToolArguments(first)).digest("hex"));
   });
 
+  it("truncates audit summaries without splitting an emoji, so jsonb accepts them", () => {
+    // `{"text":"` is 9 code units, so the cut at 3997 lands between the emoji's surrogate halves.
+    const value = { text: `${"x".repeat(3987)}${"\u{1F600}".repeat(20)}` };
+    const { summary } = summarizeToolValue(value);
+    expect(summary).toBe(`{"text":"${"x".repeat(3987)}...`);
+    expect(summary).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it("includes values beyond audit preview truncation in request identities", () => {
     const prefix = "x".repeat(5000);
     expect(toolRequestIdentityHash({ body: `${prefix}first` })).not.toBe(toolRequestIdentityHash({ body: `${prefix}second` }));

@@ -92,7 +92,7 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
       }
       return null;
     }
-    if (outcome.kind !== "completed" || outcome.operation.status === "succeeded") return null;
+    if (outcome.kind === "inactive" || (outcome.kind === "completed" && outcome.operation.status === "succeeded")) return null;
     const failure = await recordNativeWorkspaceFinalizationFailure(db, current.id, outcome.operation);
     if (failure.phase === "terminal_failure") {
       await options.onWorkspaceSettled({ runId: row.id, companyId: row.companyId, agentId: row.agentId, succeeded: false });

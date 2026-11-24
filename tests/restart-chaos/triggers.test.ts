@@ -6,7 +6,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
-import { gradeR5 } from "./grader.js";
+import { gradeR5, PREPARATION_LIMIT_MS } from "./grader.js";
+import { DEFAULT_UNIVERSAL_BOUNDS, gradeU1 } from "./universal.js";
 import { latestIso, localProcessAlive, noteLivenessEvent, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
@@ -414,6 +415,86 @@ describe("R5 live evidence", () => {
     expect(gradeR5(quietB5({ toolInFlight: true })).verdict).toBe("pass");
     expect(gradeR5(quietB5({ processAlive: true })).verdict).toBe("pass");
     expect(gradeR5(quietB5({}))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+  });
+
+  it("does not flag a slow model request while the provider turn is active with no tool running (w-20261115T044649-s7106/t028)", () => {
+    const slow = JSON.parse(readFileSync(path.join(import.meta.dirname, "fixtures/t028-slow-provider-turn.json"), "utf8")) as { samples: TaskSample[] };
+    const gap = slow.samples.filter(sample => sample.runs?.[0]?.lastEvidenceAt === "2026-11-15T05:22:13.005Z");
+    expect(gap.at(-1)!.at - gap[0]!.at).toBeGreaterThan(300_000);
+    expect(gap.every(sample => sample.runs![0]!.providerTurnActive && !sample.runs![0]!.toolInFlight)).toBe(true);
+    expect(gradeR5(record(slow.samples)).verdict).toBe("pass");
+  });
+
+  const quietTurn = (live: { providerTurnActive?: boolean; preparing?: boolean }, quietMs: number) => {
+    const start = Date.parse("2026-11-15T05:00:00Z");
+    const run = { id: "r1", status: "running", createdAt: null, startedAt: new Date(start - 600_000).toISOString(), finishedAt: null,
+      errorCode: null, retryOfRunId: null, wakeCommentIds: [], livenessState: null, lastEvidenceAt: new Date(start).toISOString(), ...live };
+    const offsets = Array.from({ length: Math.floor(quietMs / 30_000) + 1 }, (_, index) => index * 30_000);
+    return record(offsets.map(offset => ({ at: start + offset, reachable: true, serverReady: true, issueStatus: "in_progress", runs: [run] })));
+  };
+
+  it("still fails a silent run with no active provider turn, and a provider turn silent past the provider-latency bound", () => {
+    expect(gradeR5(quietTurn({}, 240_000))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeR5(quietTurn({ providerTurnActive: false }, 240_000))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeR5(quietTurn({ providerTurnActive: true }, 570_000)).verdict).toBe("pass");
+    expect(gradeR5(quietTurn({ providerTurnActive: true }, 630_000))).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^silent_dead_run r1 .* for 630s/) });
+  });
+
+  it("does not flag a run that is still acquiring its environment before its first run event (w-20261116T001158-s7106/t010)", () => {
+    const slow = JSON.parse(readFileSync(path.join(import.meta.dirname, "fixtures/t010-slow-environment-acquire.json"), "utf8")) as
+      { runId: string; firstRunEventAt: string; samples: TaskSample[] };
+    const firstEventAt = Date.parse(slow.firstRunEventAt);
+    const quiet = slow.samples.filter(sample => sample.at < firstEventAt);
+    expect(quiet.at(-1)!.at - quiet[0]!.at).toBeGreaterThan(240_000);
+    expect(quiet.every(sample => sample.runs!.find(run => run.id === slow.runId)!.lastEvidenceAt
+      === sample.runs!.find(run => run.id === slow.runId)!.startedAt)).toBe(true);
+    expect(gradeR5(record(slow.samples))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run aedc1f6e/) });
+    const observed = slow.samples.map(sample => ({ ...sample, runs: sample.runs?.map(run =>
+      run.id === slow.runId && run.status === "running" && sample.at < firstEventAt ? { ...run, preparing: true } : run) }));
+    expect(gradeR5(record(observed)).verdict).toBe("pass");
+    expect(gradeU1(record(observed), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("pass");
+  });
+
+  it("R5 and U1 agree on a preparing run: a 6 and 7 minute restore passes both, silence past the preparation bound fails both", () => {
+    for (const quietMs of [360_000, 420_000]) {
+      expect(gradeR5(quietTurn({ preparing: true }, quietMs)).verdict).toBe("pass");
+      expect(gradeU1(quietTurn({ preparing: true }, quietMs), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("pass");
+    }
+    const pastBound = PREPARATION_LIMIT_MS + DEFAULT_UNIVERSAL_BOUNDS.orphanMs + 60_000;
+    expect(gradeR5(quietTurn({ preparing: true }, pastBound))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeU1(quietTurn({ preparing: true }, pastBound), DEFAULT_UNIVERSAL_BOUNDS)).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^no_owner_no_action/) });
+    expect(gradeU1(quietTurn({}, 420_000), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("fail");
+  });
+
+  it("still fails a run silent past the preparation bound, and a started run silent past the stall bound", () => {
+    expect(gradeR5(quietTurn({ preparing: true }, 570_000)).verdict).toBe("pass");
+    expect(gradeR5(quietTurn({ preparing: true }, 630_000))).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^silent_dead_run r1 .* for 630s/) });
+    expect(gradeR5(quietTurn({ preparing: false }, 240_000))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+  });
+
+  it("marks a running run as preparing only while its events read back empty", async () => {
+    const startedAt = new Date().toISOString();
+    const state = { runs: [{ runId: "r1", status: "running", startedAt }] as Json[], issue: { id: "i1", status: "in_progress" }, events: [] as Json[] };
+    const observer = new TaskObserver({ ...base, workload: "B5" }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(Date.now());
+    expect(observer.record.samples.at(-1)!.runs![0]).toMatchObject({ preparing: true });
+    state.events.push({ seq: 1, eventType: "lifecycle", message: "run started", payload: {}, createdAt: startedAt });
+    await observer.poll(Date.now() + 3_000);
+    expect(observer.record.samples.at(-1)!.runs![0]!.preparing).toBeUndefined();
+
+    const unread = scriptedApi({ ...state, events: [] });
+    const failing = { ...unread, get: async (route: string) => {
+      if (route.includes("/events")) throw new Error("events unavailable");
+      return (unread as unknown as { get(route: string): Promise<unknown> }).get(route);
+    } } as unknown as ChaosApi;
+    const blind = new TaskObserver({ ...base, workload: "B5" }, failing, lab, new Timeline(null), ready);
+    await blind.launch();
+    await blind.poll(Date.now());
+    expect(blind.record.samples.at(-1)!.runs![0]!.preparing).toBeUndefined();
   });
 
   it("derives tool-in-flight and process liveness from run events", async () => {

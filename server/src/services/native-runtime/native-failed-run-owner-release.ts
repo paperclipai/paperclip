@@ -15,7 +15,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { LEGACY_WORKSPACE_RECOVERY_KEY } from "../workspace-restore-recovery-state.js";
 import { activeNativeExecutionRunIds } from "./native-active-runs.js";
-import { currentNativeControllerIdentity, isCurrentNativeControllerProcess, surfaceNativeControllerNamespaceAttention, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
+import { currentNativeControllerIdentity, isCurrentNativeControllerProcess, settledNativeControllerNamespaceAttention, surfaceNativeControllerNamespaceAttention, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "./native-owner-stamps.js";
 
 /**
@@ -59,6 +59,13 @@ const unsettledRunEnvironmentLease = sql`exists (
 
 /** A pending Stop belongs to native restart recovery's stop cleanup. */
 const pendingNativeStop = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) #>> '{nativeCancellation,dispatchState}' = 'pending'`;
+
+const quietNamespaceOwner = () => sql`(${settledNativeControllerNamespaceAttention({
+  companyId: nativeRunFinalizations.companyId, issueId: nativeRunFinalizations.issueId,
+  runId: nativeRunFinalizations.runId, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+})} or exists (select 1 from ${issues} source_task
+  where source_task.company_id = ${nativeRunFinalizations.companyId} and source_task.id = ${nativeRunFinalizations.issueId}
+    and source_task.status in ('done', 'cancelled')))`;
 
 /**
  * Rows the background pass may release once their lease expires. A pinned
@@ -108,6 +115,7 @@ export async function nextAbandonedNativeOwnerReleaseAt(db: Db): Promise<Date | 
         where attention.company_id = ${nativeRunFinalizations.companyId}
           and attention.source_issue_id = ${nativeRunFinalizations.issueId}
           and attention.status in ('active', 'escalated'))`,
+      sql`not ${quietNamespaceOwner()}`,
     )).orderBy(asc(nativeRunFinalizations.leaseExpiresAt)).limit(1);
   const [row] = await db.select({ at: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
@@ -245,7 +253,8 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       if (!isCurrentNativeControllerProcess(coordinator)) {
         const current = currentProcessSpaceHash();
         if (current === "unknown" || coordinator.controllerHostHash !== current) {
-          if (!coordinator.leaseOwner?.startsWith("native-finalizer:") && !coordinator.leaseOwner?.startsWith("native-cleanup:")) {
+          if (!coordinator.leaseOwner?.startsWith("native-finalizer:") && !coordinator.leaseOwner?.startsWith("native-cleanup:")
+            && task && !["done", "cancelled"].includes(task.status)) {
             const [expiry] = await tx.select({ epoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text` })
               .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
             const { remoteProcess } = await readNativeRemoteExecutionOwnership(tx, { run, issueId: coordinator.issueId });
@@ -379,6 +388,7 @@ export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pag
   // One bounded page per pass. The cursor rotates across passes, so rows that a
   // live process still holds cannot starve stopped owners behind them; any
   // remaining expired row keeps the finalization deadline due for the next pass.
+  const local = await localOwnerSpaceCondition();
   const page = (after: string | null) => db.select({
     runId: nativeRunFinalizations.runId,
     leaseOwner: nativeRunFinalizations.leaseOwner,
@@ -388,6 +398,7 @@ export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pag
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
     .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now),
+      sql`(coalesce(${local}, false) or not ${quietNamespaceOwner()})`,
       after ? gt(nativeRunFinalizations.runId, after) : undefined))
     .orderBy(asc(nativeRunFinalizations.runId))
     .limit(pageSize + 1);

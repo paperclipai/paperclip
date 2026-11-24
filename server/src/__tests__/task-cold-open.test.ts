@@ -134,6 +134,26 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     expect(response.body.comments.map((c: { body: string }) => c.body)).toEqual([
       "Human direction", "Newest direction", "New reply 5", "New reply 4", "New reply 3", "New reply 2",
     ]);
+    expect(response.body.hasMore).toBe(true);
+  });
+  it.each([
+    { replies: 4, pinned: 2, hasMore: false },
+    { replies: 4, pinned: 3, hasMore: true },
+    { replies: 4, pinned: 6, hasMore: true },
+  ])("reports more comments only when one stays hidden ($replies replies after $pinned older)", async ({ replies, pinned, hasMore }) => {
+    const bareIssueId = randomUUID();
+    await db.insert(issues).values({ id: bareIssueId, companyId, title: "No description" });
+    await db.insert(issueComments).values([
+      ...Array.from({ length: pinned }, (_, i) => ({
+        companyId, issueId: bareIssueId, body: `Older ${i}`, createdAt: new Date(i),
+        ...(i === 0 || i === pinned - 1 ? { authorType: "user" as const, authorUserId: "local-board" } : { authorType: "agent" as const, authorAgentId: agentId }),
+      })),
+      ...Array.from({ length: replies }, (_, i) => ({ companyId, issueId: bareIssueId, body: `Reply ${i}`, authorType: "agent" as const, authorAgentId: agentId, createdAt: new Date(1000 + i) })),
+    ]);
+    const response = await request(app()).get(`/api/issues/${bareIssueId}/recent-comments`);
+    expect(response.status).toBe(200);
+    expect(response.body.comments).toHaveLength(replies + 2);
+    expect(response.body.hasMore).toBe(hasMore);
   });
   it("loads the original input receipts outside the recent activity window and ignores replay receipts", async () => {
     const commentId = randomUUID();

@@ -1,13 +1,15 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
 export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
-export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
+export { ANTIGRAVITY_DISTRIBUTION_PINS, ANTIGRAVITY_RUNTIME_VERSION, CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
+export { COPILOT_CLOSURE_SHA256 } from "./drivers/acpx/copilot-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
 export * from "./contracts/provider-performance.js";
 export * from "./contracts/durable-recovery.js";
+export * from "./contracts/sandbox-disk-full.js";
 export * from "./contracts/harness-driver.js";
 export * from "./contracts/local-runner.js";
 export * from "./contracts/native-execution.js";
@@ -20,6 +22,7 @@ export * from "./contracts/types.js";
 export * from "./backends/harness-driver-backend.js";
 export * from "./drivers/dot/dot-harness-driver.js";
 export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";
+export { nativeRunAttachReservedBytes } from "./backends/runtime-context.js";
 export { createOpenCodeNativeSessionBackend } from "./backends/opencode-native-backend.js";
 export {
   createNativeSessionBackend,
@@ -34,6 +37,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./native-provider-turn-wait.js";
 export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
@@ -50,6 +54,7 @@ export {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectUnclaimedBootstrapCheckpoint,
   inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
@@ -73,13 +78,17 @@ export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
 export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, type ToolInputSchemaAdmission } from "./drivers/tool-input-schema.js";
+export { TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./contracts/tool-input-variants.js";
+export { providerToolSchemaShapeIssues } from "./contracts/provider-tool-schema-shape.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
-export { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
+export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
+export { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunch, type AntigravityCliLaunchOptions, type AntigravityCliRuntimeErrorCode } from "./drivers/acpx/antigravity-cli-installation.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,
@@ -92,6 +101,8 @@ export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  isSettledReleasedRunnerCut,
+  revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
@@ -131,9 +142,9 @@ export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, PROVIDER_PACK_COMPATIBILITY, b
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
 
-export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
+export type { RunnerExecutionDriver, RunnerReleaseResumeOutcome } from "./control-plane/runner-execution-driver.js";
 
-export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
+export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchPreparationDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";

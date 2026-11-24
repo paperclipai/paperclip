@@ -1,12 +1,26 @@
-import { and, desc, eq, or, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, or, isNotNull, sql, type SQL } from "drizzle-orm";
 import { heartbeatRuns, issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
 
 export const TASK_QUESTION_GUIDANCE = "Unanswered questions are saved conversation data, not instructions or proof of a current blocker. Historical questions remain answerable in the feed. Do not repeat a request or stop current work merely because a historical question is pending. Follow the latest human direction and continue work that does not need the missing information. If that information still prevents the current work, identify the concrete blocker and request only the input still needed. Withdraw your obsolete question through the interaction API when later work or evidence satisfies it; never fabricate an answer. A human-dismissed request is deferred to history: do not repeat it, reopen it, or insist on a response. Ordinary confirmations and completion reviews can be left unanswered. Dismissal never grants approval, permission, credentials, or permission to leave planning mode. Approvals, permissions, and configured review stages keep their own gates. Continue independent work without repeating their reminders.";
 
+/** Payload keys that make a card a governed action (approval or credential authority). */
+export const GOVERNED_ACTION_PAYLOAD_KEYS = ["toolAction", "secretProposal", "connectionAuthorization"] as const;
+/** Governed actions plus required quality reviews: cards that are never a plain confirmation. */
+export const GOVERNED_REVIEW_PAYLOAD_KEYS = [...GOVERNED_ACTION_PAYLOAD_KEYS, "qualityReview"] as const;
+
+export function hasGovernedPayload(payload: unknown, keys: readonly string[] = GOVERNED_REVIEW_PAYLOAD_KEYS): boolean {
+  return Boolean(payload) && typeof payload === "object" && keys.some(key => Object.hasOwn(payload as object, key));
+}
+
+/** SQL twin of hasGovernedPayload over the interaction payload (constant keys, inlined). */
+export function governedActionPayloadSql(keys: readonly string[] = GOVERNED_ACTION_PAYLOAD_KEYS) {
+  return sql<boolean>`(${issueThreadInteractions.payload} ?| ${sql.raw(`array[${keys.map(key => `'${key}'`).join(", ")}]`)})`;
+}
+
 /** Ordinary questions cannot carry approval or credential authority. */
 export function ordinaryQuestionCondition() {
   return sql<boolean>`(${issueThreadInteractions.kind} = 'ask_user_questions'
-    and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))`;
+    and not (${governedActionPayloadSql()}))`;
 }
 
 /**
@@ -17,7 +31,7 @@ export function ordinaryQuestionCondition() {
 export function deferrableInteractionCondition() {
   return sql<boolean>`(${issueThreadInteractions.kind} in ('ask_user_questions', 'request_confirmation', 'request_checkbox_confirmation', 'request_item_verdicts', 'suggest_tasks')
     and ${issueThreadInteractions.effectiveResolverPolicySource} = 'requested'
-    and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
+    and not (${governedActionPayloadSql()})
     and coalesce(${issueThreadInteractions.payload}->'target'->>'type', '') <> 'issue_document')`;
 }
 
@@ -52,16 +66,27 @@ export function activeIssueInteractionCondition(input: {
   runId?: string | null;
   conversationMode?: boolean;
   responsibleUserId?: string | null;
+  responsibleUser?: SQL;
 } = {}) {
-  const responsibleUser = input.responsibleUserId
+  const responsibleUser = input.responsibleUser ?? (input.responsibleUserId
     ? sql`${input.responsibleUserId}`
     : input.runId ? sql`(select ${heartbeatRuns.responsibleUserId} from ${heartbeatRuns}
         where ${heartbeatRuns.id} = ${input.runId}
           and ${heartbeatRuns.companyId} = ${issueThreadInteractions.companyId})`
-      : null;
+      : null);
   return and(
     sql`not ${historicalQuestionCondition()}`,
     sql`not ${deferredInteractionCondition()}`,
+    // A routine offer is an optional follow-up on finished work; it never
+    // holds a task in a waiting posture or gates its completion.
+    sql`${issueThreadInteractions.kind} <> 'suggest_routine'`,
+    // A bar proposal is likewise optional: it never holds its bar
+    // conversation open, and it stays acceptable after the conversation ends.
+    sql`${issueThreadInteractions.kind} <> 'propose_responsibility_bar'`,
+    // So is an automation proposal in its automation conversation.
+    sql`${issueThreadInteractions.kind} <> 'propose_automation'`,
+    // And proposed dashboard changes in a dashboard conversation.
+    sql`${issueThreadInteractions.kind} <> 'propose_dashboard_changes'`,
     // AI authentication belongs to the user starting this turn. Retain the card
     // and all authorization gates; another user's login cannot gate this run.
     responsibleUser ? sql`not (
@@ -78,7 +103,7 @@ export function activeIssueInteractionCondition(input: {
         ${ordinaryQuestionCondition()}
         or (${issueThreadInteractions.kind} in ('request_confirmation', 'request_checkbox_confirmation')
           and ${issueThreadInteractions.effectiveResolverPolicy} = 'anyone'
-          and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))
+          and not (${governedActionPayloadSql()}))
       )
     )` : undefined,
   )!;

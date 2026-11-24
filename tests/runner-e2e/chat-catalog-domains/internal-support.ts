@@ -17,7 +17,7 @@ export interface Entity {
 export interface InternalObservation {
   scenarioId: string; origin: string; companyId: string; leadId: string; state: Record<string, unknown>;
   tasks: Entity[]; projects: Entity[]; goals: Entity[]; comments: Entity[];
-  renderedLinkEvidence?: RenderedConversationLink[]; linkDiagnostics?: ConversationLinkDiagnostics; activity: Entity[]; annotations?: Entity[]; agents?: Entity[]; documents: Entity[]; revisions: Entity[]; reply: string; links: string[]; humanQueries: string[]; runs: ChatRun[];
+  renderedLinkEvidence?: RenderedConversationLink[]; unservedLinkEvidence?: Array<RenderedConversationLink & { reason: string }>; linkDiagnostics?: ConversationLinkDiagnostics; activity: Entity[]; annotations?: Entity[]; agents?: Entity[]; documents: Entity[]; revisions: Entity[]; reply: string; links: string[]; humanQueries: string[]; runs: ChatRun[];
 }
 export function entity(state: Record<string, unknown>, key: string): Entity {
   const value = state[key];
@@ -72,7 +72,7 @@ export async function observeInternal(ctx: ChatCatalogContext, state: Record<str
   }
   return { scenarioId: ctx.scenario.id, origin: api.baseURL, companyId: fixtures.company.id, leadId: fixtures.agent.id,
     state, tasks: tasks.filter(row => row.id !== source?.id), projects, goals, runs, comments, activity, documents, revisions,
-    renderedLinkEvidence, ...(collected.diagnostics ? { linkDiagnostics: collected.diagnostics } : {}), humanQueries: chat.filter(row => !row.authorAgentId).map(row => row.body ?? ""), reply: replies.map(row => row.body ?? "").join("\n"), links };
+    renderedLinkEvidence, ...("rejected" in collected && collected.rejected ? { unservedLinkEvidence: collected.rejected } : {}), ...(collected.diagnostics ? { linkDiagnostics: collected.diagnostics } : {}), humanQueries: chat.filter(row => !row.authorAgentId).map(row => row.body ?? ""), reply: replies.map(row => row.body ?? "").join("\n"), links };
 }
 export function hasLink(o: InternalObservation, kind: "issues" | "projects" | "goals", row: Entity): boolean {
   return o.links.some(href => {

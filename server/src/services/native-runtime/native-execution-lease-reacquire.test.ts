@@ -5,8 +5,8 @@ import {
   agents, closeLivenessDb, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import {
-  lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, renewNativeSessionExecutionLease,
-  startNativeSessionExecutionLeaseRenewal,
+  lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, renewNativeExecutionLeasesNow,
+  renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal,
 } from "./native-execution-lease.js";
 import { OPERATOR_ATTESTED_CONTROLLER_HOST } from "./native-controller-host-recovery.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "./native-runner-ownership.js";
@@ -90,13 +90,14 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
 
   it("renews from the shared timer after the sleep instead of interrupting the turn", async () => {
     const run = await seedSleptRun("timer");
-    vi.useFakeTimers({ toFake: ["setInterval"] });
     const onLost = vi.fn(async () => undefined);
     const { reacquire: _reacquire, ...input } = run.renewal;
     const guard = startNativeSessionExecutionLeaseRenewal({ ...input, remote: false,
       controllerGeneration: GENERATION, onLost });
     try {
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      // The shared batch finds the lapsed lease and hands it to the single-run
+      // path, which takes it back under the run row lock.
+      await renewNativeExecutionLeasesNow(owner);
       await vi.waitFor(async () => expect((await row(run.runId)).leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now()));
       expect(onLost).not.toHaveBeenCalled();
     } finally {
@@ -125,11 +126,10 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     await expect(renewNativeSessionExecutionLease(legacy)).rejects.toThrow("native_session_lease_lost");
     await expect(renewNativeSessionExecutionLease({ ...legacy, reacquire: { controllerGeneration: GENERATION + 1 } }))
       .rejects.toThrow("native_session_lease_lost");
-    vi.useFakeTimers({ toFake: ["setInterval"] });
     const onLost = vi.fn(async () => undefined);
     const guard = startNativeSessionExecutionLeaseRenewal({ ...legacy, remote: true,
       controllerGeneration: GENERATION, onLost });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await renewNativeExecutionLeasesNow(owner);
     await vi.waitFor(() => expect(onLost).toHaveBeenCalled());
     await expect(guard.stop()).rejects.toThrow("native_session_lease_lost");
     expect((await row(run.runId)).leaseExpiresAt!.getTime()).toBeLessThan(Date.now());

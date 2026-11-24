@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { PopoverTitle, PopoverDescription } from "@/components/ui/popover";
 
 const SECRET_NAME_RE = /^[a-z][a-z0-9_]*$/;
@@ -108,7 +109,7 @@ export function SecretPopoverForm({
         <span className="text-(length:--text-micro) font-medium text-muted-foreground">Value</span>
         <div className="relative">
           <input
-            className={cn(fieldClass, "pr-8", valueError && "border-destructive focus-visible:ring-destructive/40")}
+            className={cn(fieldClass, "pr-8", ANALYTICS_NO_CAPTURE_CLASS, valueError && "border-destructive focus-visible:ring-destructive/40")}
             type={reveal ? "text" : "password"}
             value={value}
             readOnly={mode === "store"}

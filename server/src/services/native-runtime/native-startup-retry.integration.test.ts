@@ -35,12 +35,13 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { DurablePrpControlPlane, NativeProviderTerminalFailure } from "../../vendor/paperclip-runner/index.js";
 import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
-import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { currentNativeControllerIdentity, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
 import { agentProviderLimitCooldown } from "./native-startup-retry.js";
+import { projectTaskInterruption } from "../task-interruption-presentation.js";
 import { resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../../runtime-api.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
@@ -290,6 +291,7 @@ describe("native provider startup retry", () => {
 
   it.each([
     { name: "transient 502", status: 502, retry: true },
+    { name: "transient 502 after a bootstrap_incomplete restart", status: 502, retry: true, restart: true },
     { name: "credential 401", status: 401, retry: false },
     { name: "permission 403", status: 403, retry: false },
     { name: "invalid request 400", status: 400, retry: false },
@@ -305,6 +307,19 @@ describe("native provider startup retry", () => {
   ])("settles ingress failure safely: $name", async options => {
     const seeded = await seedRun(await createAgent());
     if (options.finalAttempt) await db.update(nativeRunFinalizations).set({ attempt: 2 }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    // A server restart interrupted the first bootstrap. The recovery scan's
+    // claim makes this attempt launch a fresh bootstrap on the same run.
+    let restartRecovery: NativeRestartRecoveryClaim | undefined;
+    if (options.restart) {
+      const controller = await currentNativeControllerIdentity();
+      restartRecovery = { kind: "bootstrap_incomplete", runId: seeded.runId, leaseOwner: `restart-${seeded.runId}`,
+        controllerGeneration: 2, providerAttempt: 0, restartKind: "hard", recoveryRequestId: null };
+      await db.update(nativeRunFinalizations).set({ leaseOwner: restartRecovery.leaseOwner,
+        leaseExpiresAt: new Date(Date.now() + 10 * 60_000), controllerBootId: controller.bootId,
+        controllerPid: controller.pid, controllerHostHash: controller.hostHash ?? null,
+        controllerProcessStartedAt: controller.processStartedAt, controllerGeneration: 2,
+        recoveryState: "bootstrap_incomplete" }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    }
     const root = mkdtempSync(join(tmpdir(), "native-ingress-bootstrap-"));
     const server = createServer((_request, response) => {
       response.writeHead(options.status, { "content-type": "text/html" });
@@ -386,6 +401,7 @@ describe("native provider startup retry", () => {
     try {
       await expect(executePaperclipNativeSession({ db, execution: seeded.execution,
         runnerInstanceId: seeded.runnerInstanceId, useRunnerd: true,
+        ...(restartRecovery ? { leaseOwner: restartRecovery.leaseOwner, restartRecovery } : {}),
         runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: {} } as never,
         backend: { descriptor: async () => { throw new Error("unexpected descriptor"); },
           openSession: async () => { throw new Error("unexpected provider session"); } },
@@ -430,6 +446,33 @@ describe("native provider startup retry", () => {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("records a timed-out step's own cause and settles the run through the failure classifier", async () => {
+    const seeded = await seedRun(await createAgent());
+    const expired = AbortSignal.timeout(1);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    provider.execute.mockReset().mockImplementation(async () => { throw expired.reason; });
+    await expect(executePaperclipNativeSession({ db, execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      } })).rejects.toMatchObject({ name: "TimeoutError", message: "The operation was aborted due to timeout" });
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      attempt: 1,
+      leaseOwner: null,
+      failureDetail: expect.objectContaining({
+        message: "The operation was aborted due to timeout",
+        originalFailureCode: "native_session_interrupted",
+        providerSessionEstablished: false,
+        providerEventsExist: false,
+      }),
+    });
+    expect(state.run).toMatchObject({ status: "failed", errorCode: state.coordinator.failureCode });
+    expect(state.run.errorCode).not.toBe("native_continuation_requires_reconciliation");
   });
 
   it("retries a rejected session.open with growing backoff instead of blocking the task", async () => {
@@ -857,6 +900,24 @@ describe("native provider startup retry", () => {
       now: new Date(Date.now() + 60 * 60_000),
       deferIneligible: false,
     })).toEqual([]);
+  });
+
+  it("settles a startup billing refusal without scheduling another provider attempt", async () => {
+    const seeded = await seedRun(await createAgent());
+    const failure = Object.defineProperty(sessionOpenFailure({ providerFailure: limitFailure({
+      phase: "startup", category: "quota_exhausted", retryability: "requires_action",
+      message: "Check your plan and billing details.",
+    }) }), "runnerExitConfirmed", { value: true });
+    await failStartup(seeded, failure);
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({ phase: "terminal_failure", recoveryState: "blocked", nextAttemptAt: null });
+    expect(state.run.status).toBe("failed");
+    expect(state.issue).toMatchObject({ status: "blocked", executionRunId: null });
+    expect(projectTaskInterruption(state.issue, { run: state.run, action: state.action ?? undefined,
+      agent: { status: "idle", pauseReason: null }, paused: false, approval: false }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "provider_billing", nextRetryAt: null });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "startup-retry-test", runIds: [seeded.runId],
+      now: new Date(Date.now() + 10 * 60_000), deferIneligible: false })).toEqual([]);
   });
 
   it("waits for the cooldown of a recent provider usage limit before retrying", async () => {

@@ -43,9 +43,9 @@ Use authorized diagnostic access. If company scoping blocks a read, use an
 already-authorized diagnostic path or label the missing evidence; do not bypass
 the boundary.
 
-Read repository instructions and the relevant current execution contract. In this
-repository, use `doc/execution-semantics.md` for ownership, continuation, waiting,
-finalization, and recovery. Inspect recent changes and open/merged repairs in the
+Read repository instructions. In this repository, the code and tests under
+`server/src/services/heartbeat/` and `server/src/services/recovery/` define
+ownership, continuation, waiting, finalization, and recovery. Inspect recent changes and open/merged repairs in the
 affected area. A correct fix that has not reached the target is a deployment gap;
 do not create a second patch without evidence that the first is insufficient.
 Choose code repair, configuration repair, or recovery from that evidence. If an
@@ -132,6 +132,9 @@ the evidence requires. Avoid historical string allowlists, swallowed errors,
 unbounded retries, or relaxing an integrity check to accommodate malformed input.
 Preserve the requested model, trust, isolation, and performance behavior unless a
 change or explicit fallback policy is part of the assignment.
+A repair that makes recovery start more runs must state its worst-case starts per
+hour across the company during an outage (provider refusing, crash loop, deploy)
+and what bounds them; per-task caps do not bound the aggregate.
 
 Before implementation, state the behavioral rule and the strongest plausible
 second-order failure. Trace callers, downstream consumers, persisted state, and
@@ -207,6 +210,11 @@ address review and CI failures, and inspect required checks and review on the
 current head SHA. Pending, skipped, and passing are distinct. Retry a failed check
 only with a reason; retain its evidence and fix repeatable failures. Resolve
 companion repository/artifact changes needed by the fix and state their ordering.
+A job whose log shows the runner shut down or lost communication is lost
+infrastructure: re-run it. A cancellation without that evidence may be deliberate. A test failing in a file the PR does not touch gets one re-run; if it
+repeats, check master and tell the test's owner. When review finds one instance of
+a bug class, enumerate and test every entry point or counter of that class before
+pushing again.
 
 The PR must explain the causal defect, behavioral change, failing-before/passing-
 after evidence, safety regressions, actual acceptance environment, and limitations.

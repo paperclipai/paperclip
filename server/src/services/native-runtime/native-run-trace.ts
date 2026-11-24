@@ -210,6 +210,7 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
   "anchor",
   "bytesTransferred",
+  "check",
   "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
@@ -228,6 +229,11 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "strategy",
   "target",
 ]);
+
+export function nativeRunFailureCheck(error: unknown): string | undefined {
+  const check = (error as { failureCheck?: unknown } | null)?.failureCheck;
+  return typeof check === "string" && /^[A-Za-z0-9_.:,@/-]{1,120}$/.test(check) ? check : undefined;
+}
 
 function finiteMs(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -630,6 +636,8 @@ export function createNativeRunTrace(input: {
       return await run(scope, fn);
     } catch (error) {
       outcome = "failed";
+      const check = nativeRunFailureCheck(error);
+      if (check) annotate(scope, { check });
       throw error;
     } finally {
       await end(scope, { outcome });

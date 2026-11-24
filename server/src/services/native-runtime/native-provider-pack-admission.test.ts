@@ -5,7 +5,7 @@ import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizati
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
-import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, recordNativeProviderPackAdmission,
+import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, prepareNativeProviderPackAdmission, recordNativeProviderPackAdmission,
   rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack } from "./native-provider-pack-admission.js";
 
 const hash = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -32,6 +32,41 @@ function receiptDb(receipt: unknown, state: unknown = verified): Db {
 }
 
 describe("provider pack admission identity", () => {
+  it("reattaches after a previous claim was interrupted before its admission callback", async () => {
+    const original = sessionFixture(); remember(original.session);
+    const receipt = admittedNativeProviderPack(original.session, initial)!;
+    const profile = { nativeProviderPackAdmission: receipt, nativeProviderPackAdmissionState: verified };
+    const first = prepareNativeProviderPackAdmission(initial.runId, profile, randomUUID());
+    // The claim commits, then snapshot/drain fails before the callback. The
+    // replacement controller has only persisted data, not the first's locals.
+    const pending = JSON.parse(JSON.stringify({ ...profile, ...first.patch }));
+    expect(pending.nativeProviderPackAdmissionState.state).toBe("pending");
+    const second = prepareNativeProviderPackAdmission(initial.runId, pending, randomUUID());
+    const recovered = sessionFixture();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(receipt, pending.nativeProviderPackAdmissionState), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, source: second.source })).resolves.toBe(true);
+    expect(admittedNativeProviderPack(recovered.session, initial)).toEqual(receipt);
+  });
+  it.each(["unknown", "missing", "different receipt", "different run", "different runner", "different lease"])(
+    "does not reuse a pending recovery proof with %s", async change => {
+      const original = sessionFixture(); remember(original.session);
+      const receipt = admittedNativeProviderPack(original.session, initial)!;
+      const profile = { nativeProviderPackAdmission: receipt, nativeProviderPackAdmissionState: verified };
+      const first = prepareNativeProviderPackAdmission(initial.runId, profile, randomUUID());
+      const pending = JSON.parse(JSON.stringify({ ...profile, ...first.patch }));
+      if (change === "unknown") pending.nativeProviderPackAdmissionState.state = "unknown";
+      if (change === "missing") delete pending.nativeProviderPackAdmissionRecovery;
+      if (change === "different receipt") pending.nativeProviderPackAdmission.providerPackDigest = hash("replacement");
+      if (change === "different run") pending.nativeProviderPackAdmissionRecovery.runId = "other-run";
+      const next = prepareNativeProviderPackAdmission(initial.runId, pending, randomUUID());
+      const recovered = sessionFixture();
+      await expect(rememberRecoveredNativeProviderPack(receiptDb(null), recovered.session, {
+        identity: initial, sourceRunId: initial.runId, ...binding, source: next.source,
+        ...(change === "different runner" ? { runnerInstanceId: "replacement" } : {}),
+        ...(change === "different lease" ? { environmentLeaseId: "replacement" } : {}),
+      })).resolves.toBe(false);
+      expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
+    });
   it("does not publish selected configuration before successful session admission", async () => {
     const { session } = sessionFixture();
     expect(admittedNativeProviderPack(session, initial)).toBeNull();
@@ -179,6 +214,32 @@ describe("provider pack admission PostgreSQL fencing", () => {
     await expect(recordNativeProviderPackAdmission(db, { ...f, claim: { ...f.claim, [key]: changed } as typeof f.claim })).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual(f.profile);
   });
+  it("republishes admission after two persisted interrupted claims without admitting a different Runner", async () => {
+    const f = await fixture();
+    await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(true);
+    for (let i = 0; i < 2; i++) {
+      const prior = (await read(f.identity.runId)).runnerProfileJson!;
+      const claim = prepareNativeProviderPackAdmission(f.identity.runId, prior, randomUUID());
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...prior, ...claim.patch } }).where(eq(heartbeatRuns.id, f.identity.runId));
+    }
+    const prior = (await read(f.identity.runId)).runnerProfileJson!;
+    const claim = prepareNativeProviderPackAdmission(f.identity.runId, prior, randomUUID());
+    const recovered = sessionFixture(f.identity);
+    await expect(rememberRecoveredNativeProviderPack(db, recovered.session, {
+      identity: f.identity, sourceRunId: f.identity.runId, ...binding, source: claim.source,
+      runnerInstanceId: "replacement",
+    })).resolves.toBe(false);
+    await expect(rememberRecoveredNativeProviderPack(db, recovered.session, {
+      identity: f.identity, sourceRunId: f.identity.runId, ...binding, source: claim.source,
+    })).resolves.toBe(true);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...prior, ...claim.patch } }).where(eq(heartbeatRuns.id, f.identity.runId));
+    await expect(recordNativeProviderPackAdmission(db, { ...f, session: recovered.session,
+      admissionEpoch: claim.patch.nativeProviderPackAdmissionState.admissionEpoch })).resolves.toBe(true);
+    const final = (await read(f.identity.runId)).runnerProfileJson!;
+    expect(final.nativeProviderPackAdmissionState).toMatchObject({ state: "verified" });
+    expect(final.nativeProviderPackAdmission).toEqual(prior.nativeProviderPackAdmission);
+    expect(final.nativeProviderPackAdmissionRecovery).toBeNull();
+  });
   it("rejects an expired claim and a terminal run", async () => {
     const f = await fixture();
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.identity.runId));
@@ -217,16 +278,53 @@ describe("provider pack admission PostgreSQL fencing", () => {
     await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual(next);
   });
-  it.each(["runner", "lease", "unsupported"])("keeps the first receipt historical after an authorized %s replacement", async change => {
+  async function replacementClaim(retainedArtifacts: boolean) {
     const f = await fixture(); await recordNativeProviderPackAdmission(db, f);
-    const previous = (await read(f.identity.runId)).runnerProfileJson!;
+    const recorded = (await read(f.identity.runId)).runnerProfileJson!;
+    const previous = retainedArtifacts ? { ...recorded, nativeProviderArtifacts: { schema: "retained-under-the-first-pack" } } : recorded;
     const admissionEpoch = randomUUID();
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...previous,
       nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(admissionEpoch) } }).where(eq(heartbeatRuns.id, f.identity.runId));
-    const replacement = sessionFixture(f.identity);
+    return { f, previous, admissionEpoch, replacement: sessionFixture(f.identity) };
+  }
+  it.each([
+    ["runner", { runnerInstanceId: "replacement" }, manifest()],
+    ["lease", { environmentLeaseId: "replacement" }, manifest()],
+    ["release", { runnerInstanceId: "replacement" }, manifest("b".repeat(40))],
+  ] as const)("publishes a fresh %s replacement's verified selection when no provider artifacts were retained", async (_change, change, selected) => {
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(false);
+    rememberAdmittedNativeProviderPack(replacement.session, { identity: f.identity, manifest: selected, ...binding, ...change });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(true);
+    const published = (await read(f.identity.runId)).runnerProfileJson;
+    expect(published).toEqual({ ...previous,
+      nativeProviderPackAdmission: admittedNativeProviderPack(replacement.session, f.identity),
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "verified" } });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(true);
+    await expect(recordNativeProviderPackAdmission(db, { ...f, claim: { ...f.claim, controllerGeneration: 1 } })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual(published);
+  });
+  it.each(["runner", "lease", "unsupported"])("keeps the first receipt historical after a %s replacement once provider artifacts were retained", async change => {
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(true);
     if (change !== "unsupported") rememberAdmittedNativeProviderPack(replacement.session, { identity: f.identity, manifest: manifest(),
       ...binding, ...(change === "runner" ? { runnerInstanceId: "replacement" } : { environmentLeaseId: "replacement" }) });
     await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
+  });
+  it("leaves an unsupported replacement unknown even without retained provider artifacts", async () => {
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(false);
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
+  });
+  it("does not let a retained attachment from another run replace this run's receipt", async () => {
+    const { f, previous, admissionEpoch } = await replacementClaim(false);
+    const source = { ...f.identity, runId: randomUUID() };
+    const inherited = sessionFixture(source);
+    rememberAdmittedNativeProviderPack(inherited.session, { identity: source, manifest: manifest("b".repeat(40)), ...binding });
+    await inherited.attach(f.identity);
+    expect(admittedNativeProviderPack(inherited.session, f.identity)).toMatchObject({ inheritedFromRunId: source.runId });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: inherited.session })).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
       nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
   });

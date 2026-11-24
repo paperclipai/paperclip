@@ -4,7 +4,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
-import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 
 /** Categories that report an exhausted account or request allowance. */
 const PROVIDER_LIMIT_CATEGORIES = ["rate_limit", "quota_exhausted"];
@@ -18,6 +18,7 @@ type ProviderLimitEvidence = { resetAt: number; resetReported: boolean; category
 
 function limitEvidence(failure: ProviderFailure | null, observedAt: Date, sourceRunId: string | null): ProviderLimitEvidence | null {
   if (!failure || !PROVIDER_LIMIT_CATEGORIES.includes(failure.category)) return null;
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: failure } }, observedAt)) return null;
   const retryAt = failure.retryAt ? Date.parse(failure.retryAt) : Number.NaN;
   if (Number.isFinite(retryAt)) return { resetAt: retryAt, resetReported: true, category: failure.category, sourceRunId };
   // ACP harnesses report the reset only in the provider's own wording.
@@ -49,6 +50,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   failure?: ProviderFailure | null;
   now: Date;
 }): Promise<AgentProviderLimitCooldown | null> {
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now)) return null;
   const now = input.now.getTime();
   let latest = limitEvidence(input.failure ?? null, input.now, input.runId ?? null);
   const rows = await db
@@ -77,7 +79,10 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   for (const row of rows) {
     // The provider accepted work after this point, so its allowance was restored.
     if (row.status === "succeeded") break;
-    let recorded = limitEvidence(readProviderFailure(row.providerFailure), row.observedAt, row.id);
+    const failure = readProviderFailure(row.providerFailure);
+    // A newer billing refusal supersedes an older estimate or reported reset.
+    if (isProviderQuotaActionRequired({ resultJson: { providerFailure: failure } }, row.observedAt)) break;
+    let recorded = limitEvidence(failure, row.observedAt, row.id);
     if (recorded === null && PROVIDER_LIMIT_ERROR_CODES.includes(row.errorCode ?? "")) {
       const reset = row.retryNotBefore ? Date.parse(row.retryNotBefore) : Number.NaN;
       recorded = Number.isFinite(reset)
@@ -108,6 +113,8 @@ export async function planNativeStartupRetry(input: {
   failure: ProviderFailure | null;
   now: Date;
 }): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now))
+    return { nextAttemptAt: null, providerCooldownAt: null };
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
   const providerCooldownAt = await agentProviderLimitCooldown(input.db, {

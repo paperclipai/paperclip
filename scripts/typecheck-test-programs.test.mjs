@@ -7,13 +7,18 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   checkCoverage,
+  checkCoverageAsync,
   findUncheckedTests,
   LOCKED_PROVIDERS,
   PROGRAMS,
+  prepareTestPrograms,
   PROVIDER_WORKSPACE,
   RESOLVE_ARGS,
+  SANDBOX_PROVIDER_PROGRAMS,
   SANDBOX_PROVIDERS,
+  selectTestPrograms,
   typecheckTestPrograms,
+  typecheckTestProgramsAsync,
 } from "./typecheck-test-programs.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -120,6 +125,20 @@ test("providers install frozen without scripts, then relink the SDK", () => {
   assert.ok(install.args.includes("--frozen-lockfile"));
   assert.ok(install.args.includes("--ignore-scripts"));
   assert.equal(calls.linked, 1);
+});
+
+test("preparation runs on its own, and a run that skips it only checks", () => {
+  const prepared = harness();
+  assert.equal(prepareTestPrograms(prepared.options), 0);
+  assert.ok(prepared.calls.pnpm.some(({ cwd }) => cwd === path.join("/repo", PROVIDER_WORKSPACE)));
+  assert.equal(prepared.calls.linked, 1);
+  assert.deepEqual(prepared.calls.tsc, []);
+
+  const checked = harness();
+  assert.equal(typecheckTestPrograms({ ...checked.options, prepare: false }), 0);
+  assert.deepEqual(checked.calls.pnpm, []);
+  assert.equal(checked.calls.linked, 0);
+  assert.equal(checked.calls.tsc.length, 2);
 });
 
 test("a locked provider installs frozen from its own lockfile, outside any workspace", () => {
@@ -244,4 +263,151 @@ test("a real type error in a test-style program makes tsc exit non-zero", () => 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("selectTestPrograms skips sandbox providers and examples unless their inputs or SDK/shared changed", () => {
+  const full = selectTestPrograms(null);
+  assert.deepEqual(full.programs, PROGRAMS);
+  assert.equal(full.includeProviders, true);
+  assert.equal(full.checkCoverage, true);
+
+  const serverOnly = selectTestPrograms(["server/src/services/issues.ts", "server/src/__tests__/issues.test.ts"]);
+  assert.deepEqual(serverOnly.programs, []);
+  assert.equal(serverOnly.includeProviders, false);
+  assert.equal(serverOnly.includeRunnerEval, false);
+  assert.equal(serverOnly.checkCoverage, false);
+
+  const daytonaOnly = selectTestPrograms(["packages/plugins/sandbox-providers/daytona/src/plugin.ts"]);
+  assert.deepEqual(daytonaOnly.programs, ["packages/plugins/sandbox-providers/daytona/tsconfig.test.json"]);
+  assert.equal(daytonaOnly.includeProviders, true);
+  assert.equal(daytonaOnly.includeRunnerEval, false);
+
+  const cloudflare = selectTestPrograms(["packages/plugins/sandbox-providers/cloudflare/src/plugin.ts"]);
+  assert.deepEqual(cloudflare.programs, [
+    "packages/plugins/sandbox-providers/cloudflare/tsconfig.test.json",
+    "packages/plugins/sandbox-providers/cloudflare/bridge-template/tsconfig.test.json",
+  ]);
+  assert.equal(cloudflare.includeProviders, true);
+
+  const sdkChange = selectTestPrograms(["packages/plugins/sdk/src/index.ts"]);
+  assert.equal(sdkChange.includeProviders, true);
+  for (const providerProgram of SANDBOX_PROVIDER_PROGRAMS) {
+    assert.ok(sdkChange.programs.includes(providerProgram), providerProgram);
+  }
+  assert.ok(sdkChange.programs.includes("packages/kv-demo-mcp-server/tsconfig.test.json"));
+  assert.ok(sdkChange.programs.includes("packages/plugins/examples/plugin-orchestration-smoke-example/tsconfig.test.json"));
+
+  const uiWithTest = selectTestPrograms(["ui/src/components/Card.tsx", "ui/src/components/Card.test.tsx"]);
+  assert.deepEqual(uiWithTest.programs, ["tests/tsconfig.playwright.json"]);
+  assert.equal(uiWithTest.includeProviders, false);
+  assert.equal(uiWithTest.checkCoverage, true);
+  assert.deepEqual(uiWithTest.changedTestFiles, ["ui/src/components/Card.test.tsx"]);
+
+  const tsconfigEdit = selectTestPrograms(["ui/tsconfig.json"]);
+  assert.equal(tsconfigEdit.checkCoverage, true);
+  assert.equal(tsconfigEdit.changedTestFiles, null);
+});
+
+test("prepareTestPrograms can skip sandbox provider installs, runner eval prep, and plugin SDK", () => {
+  const { options, calls } = harness();
+  assert.equal(
+    prepareTestPrograms({ ...options, includeProviders: false, includeRunnerEval: false, includePluginSdk: false }),
+    0,
+  );
+  assert.deepEqual(calls.pnpm, []);
+  assert.equal(calls.linked, 0);
+
+  const evalOnly = harness();
+  assert.equal(
+    prepareTestPrograms({ ...evalOnly.options, includeProviders: false, includeRunnerEval: true, includePluginSdk: false }),
+    0,
+  );
+  assert.equal(evalOnly.calls.pnpm.length, 1);
+  assert.ok(evalOnly.calls.pnpm[0].args.includes("ensure:eval-build-deps"));
+  assert.equal(evalOnly.calls.linked, 0);
+});
+
+test("typecheckTestProgramsAsync runs programs concurrently up to the limit and preserves failure/signal semantics", async () => {
+  let active = 0;
+  let peak = 0;
+  const started = [];
+  const status = await typecheckTestProgramsAsync({
+    root: "/repo",
+    programs: ["a/tsconfig.test.json", "b/tsconfig.test.json", "c/tsconfig.test.json", "d/tsconfig.test.json"],
+    prepare: false,
+    coverage: false,
+    concurrency: 2,
+    checkers: 1,
+    log: () => {},
+    logError: () => {},
+    runAsync: async (args) => {
+      started.push(args);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { status: args[1].startsWith("b/") ? 2 : 0, signal: null, output: "", durationMs: 10 };
+    },
+  });
+  assert.equal(status, 2);
+  assert.equal(peak, 2);
+  assert.equal(started.length, 4);
+  assert.deepEqual(started[0], ["-p", "a/tsconfig.test.json", "--checkers", "1"]);
+
+  // A killed compiler stops queuing further programs.
+  const killedStarts = [];
+  const killedStatus = await typecheckTestProgramsAsync({
+    root: "/repo",
+    programs: ["a/tsconfig.test.json", "b/tsconfig.test.json", "c/tsconfig.test.json"],
+    prepare: false,
+    coverage: false,
+    concurrency: 1,
+    log: () => {},
+    logError: () => {},
+    runAsync: async (args) => {
+      killedStarts.push(args[1]);
+      return { status: 1, signal: "SIGKILL", output: "", durationMs: 5 };
+    },
+  });
+  assert.equal(killedStatus, 1);
+  assert.deepEqual(killedStarts, ["a/tsconfig.test.json"]);
+});
+
+test("checkCoverageAsync checks targeted files with early exit and skips uninstalled providers", async () => {
+  const listed = [];
+  const covered = await checkCoverageAsync({
+    root: "/repo",
+    includeProviders: false,
+    onlyFiles: ["ui/src/Card.test.tsx"],
+    concurrency: 1,
+    workspaceConfigs: () => ["cli/tsconfig.json", "ui/tsconfig.json"],
+    trackedFiles: () => ["ui/src/Card.test.tsx", "packages/plugins/sandbox-providers/daytona/src/x.test.ts"],
+    listFilesAsync: async (config) => {
+      listed.push(config);
+      return {
+        status: 0,
+        output: "",
+        files: config === "ui/tsconfig.json" ? ["ui/src/Card.test.tsx"] : [],
+      };
+    },
+    logError: () => {},
+  });
+  assert.deepEqual(covered, []);
+  // Prioritized ui/tsconfig.json first and stopped immediately once covered.
+  assert.deepEqual(listed, ["ui/tsconfig.json"]);
+
+  const uncovered = await checkCoverageAsync({
+    root: "/repo",
+    includeProviders: false,
+    onlyFiles: ["ui/src/Orphan.test.tsx"],
+    concurrency: 2,
+    workspaceConfigs: () => ["ui/tsconfig.json"],
+    trackedFiles: () => ["ui/src/Orphan.test.tsx"],
+    listFilesAsync: async (config) => {
+      assert.ok(!SANDBOX_PROVIDER_PROGRAMS.includes(config), `should skip uninstalled provider ${config}`);
+      return { status: 0, output: "", files: [] };
+    },
+    logError: () => {},
+  });
+  assert.deepEqual(uncovered, ["ui/src/Orphan.test.tsx"]);
 });

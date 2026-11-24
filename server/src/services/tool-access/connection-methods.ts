@@ -361,8 +361,13 @@ export function projectedConnectionToolInputSchema(
   );
 }
 
+/** The configured remote address, before validation: `url`, then `endpoint`, then `remoteUrl`. */
+export function remoteEndpointValue(config: Record<string, unknown>): unknown {
+  return config.url ?? config.endpoint ?? config.remoteUrl;
+}
+
 export function remoteEndpoint(config: Record<string, unknown>): string {
-  const value = config.url ?? config.endpoint ?? config.remoteUrl;
+  const value = remoteEndpointValue(config);
   const parsed = parseRemoteHttpEndpoint(value, (message, code) =>
     badRequest(message, { code }),
   );

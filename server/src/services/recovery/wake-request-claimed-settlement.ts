@@ -64,7 +64,7 @@ export async function settleClaimedWakeRequest(db: Db, record: InProgressRecord,
       .where(claim).for("update");
     if (!current) return { settled: false, reason: "claim_no_longer_held" };
     // Work intents before the write they announce (sleep-aware background work).
-    await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
+    await notifyExternalConversationSettlement(tx, { companyId: run.companyId, runId: run.id });
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: current.agentId });
     const updated = await tx.update(agentWakeupRequests).set({
       status: wakeStatusFor(run.status),

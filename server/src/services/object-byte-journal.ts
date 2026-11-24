@@ -3,6 +3,8 @@ import { runSharedStorageWork, sendThroughStorageOutage } from "../storage/stora
 import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
+import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
+import { assertActiveRunSlotBounds, slotsForActiveRuns } from "../lib/active-run-slots.js";
 
 const MAX_INDEX_LEVEL = 52;
 const MAX_OBJECT_BYTES = 4 * 1024 * 1024;
@@ -67,10 +69,14 @@ export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
 }
+// Reads abandoned by their own attempt deadline, not by their caller. A GET is
+// safe to send again.
+const expiredReads = new WeakSet<object>();
 function isRetryable(error: unknown) {
   const e = error as { name?: string; code?: string; $metadata?: { httpStatusCode?: number } };
   const status = e?.$metadata?.httpStatusCode;
   return (
+    (typeof error === "object" && error !== null && expiredReads.has(error)) ||
     e?.name === "ConditionalRequestConflict" ||
     status === 409 ||
     status === 429 ||
@@ -217,20 +223,90 @@ export function isObjectJournalBusyError(error: unknown): error is ObjectJournal
 }
 
 export type ObjectJournalIOPriority = "background" | "interactive";
-const MAX_ACTIVE_IO = 8;
+export const OBJECT_JOURNAL_READ_IO_RESERVE = 4;
+export const OBJECT_JOURNAL_IO_CEILING = Math.floor(S3_CLIENT_MAX_SOCKETS / 2);
+export const OBJECT_JOURNAL_UPLOAD_SLOTS = assertActiveRunSlotBounds({
+  runsPerSlot: 10,
+  floor: 4,
+  ceiling: OBJECT_JOURNAL_IO_CEILING - OBJECT_JOURNAL_READ_IO_RESERVE,
+});
 const MAX_WAITING_INTERACTIVE_IO = 32;
+let openWriters = 0;
 let activeIO = 0;
 const waitingIO: Record<ObjectJournalIOPriority, Array<() => void>> = {
   background: [],
   interactive: [],
 };
+export function objectJournalUploadSlots() {
+  return slotsForActiveRuns(openWriters, OBJECT_JOURNAL_UPLOAD_SLOTS);
+}
+export function objectJournalIOSlots() {
+  return objectJournalUploadSlots() + OBJECT_JOURNAL_READ_IO_RESERVE;
+}
+export function trackObjectJournalWriter(): () => void {
+  openWriters++;
+  grantWaitingUploads();
+  grantWaitingIO();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    openWriters--;
+  };
+}
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+export function objectJournalUploadActivity() {
+  return { active: activeUploads, waiting: uploadWaiters.length };
+}
+function grantWaitingUploads() {
+  while (activeUploads < objectJournalUploadSlots()) {
+    const next = uploadWaiters.shift();
+    if (!next) return;
+    activeUploads++;
+    next();
+  }
+}
+export async function acquireObjectJournalUpload(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  if (activeUploads >= objectJournalUploadSlots())
+    await new Promise<void>((resolve, reject) => {
+      const enter = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = uploadWaiters.indexOf(enter);
+        if (index !== -1) uploadWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      uploadWaiters.push(enter);
+    });
+  else activeUploads++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeUploads--;
+    grantWaitingUploads();
+  };
+}
+function grantWaitingIO() {
+  while (activeIO < objectJournalIOSlots()) {
+    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
+    if (!next) return;
+    activeIO++;
+    next();
+  }
+}
 async function objectIO<T>(
   operation: () => Promise<T>,
   priority: ObjectJournalIOPriority = "background",
   signal?: AbortSignal,
 ): Promise<T> {
   signal?.throwIfAborted();
-  if (activeIO >= MAX_ACTIVE_IO) {
+  if (activeIO >= objectJournalIOSlots()) {
     const queue = waitingIO[priority];
     if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
       throw new ObjectJournalBusyError();
@@ -251,9 +327,8 @@ async function objectIO<T>(
   try {
     return await operation();
   } finally {
-    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
-    if (next) next();
-    else activeIO--;
+    activeIO--;
+    grantWaitingIO();
   }
 }
 
@@ -393,30 +468,34 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   async function getBytes(key: string, limit: number, signal?: AbortSignal) {
     return objectIO(async () => {
       signal?.throwIfAborted();
-      signal = signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-        : AbortSignal.timeout(15_000);
-      const read = signal;
-      return sendThroughStorageOutage(async () => {
-        const result = await retryObjectOperation(
-          () => provider.getObject({ objectKey: key, signal: read }),
-          read,
-        );
-        const chunks: Buffer[] = [];
-        let size = 0;
+      const caller = signal;
+      return sendThroughStorageOutage(() => retryObjectOperation(async () => {
+        // Each attempt has its own deadline. One deadline shared by every
+        // attempt made a single hung GET final: once it expired, nothing
+        // could send the read again.
+        const deadline = AbortSignal.timeout(15_000);
+        const read = caller ? AbortSignal.any([caller, deadline]) : deadline;
         try {
-          for await (const chunk of result.stream) {
-            const bytes = Buffer.from(chunk);
-            size += bytes.length;
-            if (size > limit) throw new Error("object_journal_object_too_large");
-            chunks.push(bytes);
+          const result = await provider.getObject({ objectKey: key, signal: read });
+          const chunks: Buffer[] = [];
+          let size = 0;
+          try {
+            for await (const chunk of result.stream) {
+              const bytes = Buffer.from(chunk);
+              size += bytes.length;
+              if (size > limit) throw new Error("object_journal_object_too_large");
+              chunks.push(bytes);
+            }
+          } finally {
+            result.stream.destroy();
           }
-        } finally {
-          result.stream.destroy();
+          read.throwIfAborted();
+          return { bytes: Buffer.concat(chunks), etag: result.etag };
+        } catch (error) {
+          if (deadline.aborted && !caller?.aborted && error && typeof error === "object") expiredReads.add(error);
+          throw error;
         }
-        read?.throwIfAborted();
-        return { bytes: Buffer.concat(chunks), etag: result.etag };
-      }, read);
+      }, caller), caller);
     }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {

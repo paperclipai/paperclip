@@ -7,9 +7,11 @@ import { createSystemRecovery } from "../services/system-recovery-state.js";
 import * as conversationContinuation from "../services/conversation-continuation.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../services/environment-runtime.js";
 import * as workspaceRuntime from "../services/workspace-runtime.js";
+import * as workspacePreparation from "../services/heartbeat/workspace-preparation.js";
 import { nativeWorkspaceSyncInternals } from "../services/native-runtime/native-workspace-sync.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { readNativePlanWait, hasCommittedNativePlanWait } from "../services/native-runtime/native-plan-wait.js";
+import { hasCommittedNativeConversationTurnWait } from "../services/native-runtime/native-response-wake-wait.js";
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { buildQuestionResponseDeliveryEnvelope } from "../services/question-response-delivery.js";
 import * as aiConnectionRuntime from "../services/ai-connection-runtime.js";
@@ -32,6 +34,9 @@ import { executionProjectionForRun } from "../services/execution-projection.js";
 import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { leaseFaultError } from "../services/environment-lease-fault-injection.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import { automaticRunBrake } from "../services/recovery/automatic-run-brake.js";
+import { environmentService } from "../services/environments.js";
+import { ENVIRONMENT_PROVIDER_WAIT, ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON } from "../services/environment-provider-wait.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -119,6 +124,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { NativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
@@ -264,7 +270,9 @@ import {
 } from "../services/native-runtime/native-restart-recovery.ts";
 import { claimNativeSessionResumptions } from "../services/native-runtime/native-finalization-reconciler.ts";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
+import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { recordNativeAttentionAssessment } from "../services/native-runtime/work-assessments.js";
 import { routeNativeAttention } from "../services/native-runtime/native-interaction-bridge.js";
 import * as paperclipRunner from "../vendor/paperclip-runner/index.js";
@@ -1509,18 +1517,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       routingPolicy: "board_escalation_no_takeover_v1",
     });
     if (input.cause === "execution_review_participant_recovery") {
-      expect(action.nextAction).toContain("failed review participant path");
+      expect(action.nextAction).toContain("The reviewer did not finish the review");
     } else if (input.cause === "process_lost") {
-      expect(action.nextAction).toContain(
-        "explicitly retry the original owner",
-      );
+      expect(action.nextAction).toContain("Press Retry to start it again from the saved work");
     } else {
       expect(action.nextAction).toContain(
-        input.kind === "deliberate_wait_without_target" ? "repair, retry the original owner" : input.kind === "missing_disposition"
-          ? "valid issue disposition"
-          : "Board operator",
+        input.kind === "deliberate_wait_without_target" ? "without saying what happens next" : input.kind === "missing_disposition"
+          ? "without saying whether the task is done"
+          : "Press Retry to start it again from the saved work",
       );
     }
+    expect(action.nextAction).not.toMatch(/Board operator|inspect/i);
 
     const recoveryIssues = await db
       .select()
@@ -1569,8 +1576,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
-    const companyId = randomUUID();
+  async function seedQueuedIssueRunFixture(shared?: { companyId: string; issueNumber: number }) {
+    const companyId = shared?.companyId ?? randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
@@ -1578,12 +1585,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-    await seedRecoveryCompany(companyId, issuePrefix);
+    if (!shared) await seedRecoveryCompany(companyId, issuePrefix);
 
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: shared ? `CodexCoder ${shared.issueNumber}` : "CodexCoder",
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
@@ -1640,8 +1647,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       checkoutRunId: runId,
       executionRunId: runId,
       responsibleUserId: "responsible-user",
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      issueNumber: shared?.issueNumber ?? 1,
+      identifier: `${issuePrefix}-${shared?.issueNumber ?? 1}`,
       startedAt: now,
     });
 
@@ -1779,6 +1786,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     },
   );
+
+  it("routes a credential sharing denial to its owner when the controller lease lapses during AI selection", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await db.update(agents).set({ runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+    } }).where(eq(agents.id, agentId));
+    let runController: AbortController | undefined;
+    const originalWatch = controllerLeases.watchLegacyControllerLease;
+    const watcher = vi.spyOn(controllerLeases, "watchLegacyControllerLease").mockImplementation((...args) => {
+      if (args[1].id === runId) runController = args[2];
+      return originalWatch(...args);
+    });
+    // The renewal deadline passes while selection reads the grant, then the
+    // selection's own sharing denial reaches the setup failure path.
+    const prepare = vi.spyOn(aiConnectionRuntime, "prepareManagedAiRuntime").mockImplementationOnce(async () => {
+      runController!.abort(new controllerLeases.LegacyControllerLeaseLostError("renewal_deadline",
+        { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+      throw aiConnectionCredentialNotSharedFailure();
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+        error: "This credential is not shared with the responsible user", resultJson: {
+          configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_credential_not_shared" },
+          controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418 },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      // No retry that would repeat the same denial before the owner acts.
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+      const [action] = await selectRecoveryActionsForIssue(issueId);
+      expect(action).toMatchObject({ status: "active", kind: "configuration_validation", cause: "configuration_incomplete", ownerType: "board" });
+    } finally {
+      await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+      prepare.mockRestore();
+      watcher.mockRestore();
+      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+    }
+  });
 
   it.each(["timeout", "upstream", "cleanup_pending", "cleanup_pending_edited", "cleanup_pending_exhausted", "edited", "exhausted", "new_message", "no_claim", "reassigned", "superseded", "stopped"])(
     "settles explicit retry admission through real executor cleanup: %s", async scenario => {
@@ -5278,6 +5333,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
+  it("hands off the same portable task lease during in-flight workspace preparation on graceful shutdown", async () => {
+    const f = await seedRunFixture({ adapterType: "paperclip_runner", agentStatus: "idle", runStatus: "queued", runtimeMode: "legacy" });
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    const { leaseId } = await seedEnvironmentLeaseFixture({ ...f, driver: "plugin", provider: "plugin:fixture:tasks" });
+    await db.update(environmentLeases).set({ providerLeaseId: "same-portable-task", metadata: {
+      driver: "plugin", agentId: f.agentId, runnerTaskLease: true, portableTaskPreviousLeaseId: randomUUID(),
+    } }).where(eq(environmentLeases.id, leaseId));
+    let finishPreparation!: () => void;
+    const providerReply = new Promise<void>(resolve => { finishPreparation = resolve; });
+    const reachedPreparation = vi.fn();
+    const preparation = vi.spyOn(workspacePreparation, "prepareHeartbeatWorkspace").mockImplementationOnce(async (_db, input) => {
+      await input.controllerLease.assertOwned();
+      reachedPreparation();
+      await providerReply;
+      await input.controllerLease.assertOwned();
+      throw new Error("Old controller unexpectedly kept preparation authority");
+    });
+    const runtime = environmentRuntimeService(db);
+    const release = vi.spyOn(runtime, "releaseRunLeases");
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+      await vi.waitFor(() => expect(reachedPreparation).toHaveBeenCalledOnce(), { timeout: 10_000 });
+      expect(await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId])).toMatchObject({
+        restartSuspendedRunIds: [f.runId], interruptedRunIds: [], retryRunIds: [],
+      });
+      finishPreparation();
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(run).toMatchObject({ status: "running", runtimeMode: "legacy", executionStage: "preparing" });
+      expect(run.controllerLeaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
+        .toMatchObject({ heartbeatRunId: f.runId, status: "active", providerLeaseId: "same-portable-task" });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.runId);
+      expect(release).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+    } finally {
+      finishPreparation();
+      await heartbeat.drainActiveRunExecutions();
+      preparation.mockRestore();
+      release.mockRestore();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it.each([
     { name: "still preparing", resumes: true },
     { name: "admitted to dispatch", stage: "dispatching", resumes: false },
@@ -6257,9 +6358,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }, 60_000);
 
-    it("explains the block with a working Retry once automatic retries are used up", async () => {
+    async function expireProviderWait(agentId: string) {
+      const [waiting] = (await runsFor(agentId)).filter(run => run.status === "scheduled_retry");
+      expect(waiting).toMatchObject({ scheduledRetryReason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON });
+      const wait = waiting!.contextSnapshot?.[ENVIRONMENT_PROVIDER_WAIT_KEY] as Record<string, unknown>;
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...waiting!.contextSnapshot, [ENVIRONMENT_PROVIDER_WAIT_KEY]: { ...wait,
+        waitingSince: new Date(Date.now() - ENVIRONMENT_PROVIDER_WAIT.ceilingMs - 1_000).toISOString() } } })
+        .where(eq(heartbeatRuns.id, waiting!.id));
+    }
+
+    it("waits for the provider without a Retry, and offers a working Retry only after the 30-minute ceiling", async () => {
       const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
-      const lease = failLeaseAcquisition(3);
+      const lease = failLeaseAcquisition(5);
       try {
         const heartbeat = heartbeatService(db);
         await heartbeat.resumeQueuedRuns();
@@ -6267,13 +6377,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await promoteLatestScheduledRetry(heartbeat, agentId);
         await promoteLatestScheduledRetry(heartbeat, agentId);
 
-        const exhausted = await runsFor(agentId);
-        expect(exhausted.map(run => [run.status, run.errorCode])).toEqual([
-          ["failed", "environment_provider_unavailable"],
-          ["failed", "environment_provider_unavailable"],
-          ["failed", "environment_provider_unavailable"],
+        const fastRetriesSpent = await runsFor(agentId);
+        expect(fastRetriesSpent.map(run => [run.status, run.errorCode, run.scheduledRetryReason])).toEqual([
+          ["failed", "environment_provider_unavailable", null],
+          ["failed", "environment_provider_unavailable", "transient_failure"],
+          ["failed", "environment_provider_unavailable", "transient_failure"],
+          ["scheduled_retry", null, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON],
         ]);
-        expect(lease.acquisitions.refused).toBe(3);
+        expect(fastRetriesSpent[3]).toMatchObject({ scheduledRetryAttempt: 1 });
+        expect(fastRetriesSpent[3]!.scheduledRetryAt!.getTime() - fastRetriesSpent[3]!.createdAt.getTime())
+          .toBeGreaterThanOrEqual(ENVIRONMENT_PROVIDER_WAIT.delaysMs[0] - 1_000);
+        const [waiting] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(waiting).toMatchObject({ status: "in_progress", executionRunId: fastRetriesSpent[3]!.id });
+        expect(await taskInterruptionPresentation(db, waiting!)).toMatchObject({ state: "working", responsibility: "system",
+          canRetry: false, retryWait: { reason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+            message: expect.stringMatching(/^Waiting for .+ to come back\. Paperclip continues this task automatically when it does\.$/) } });
+        expect((await selectRecoveryActionsForIssue(issueId)).filter(action => action.status === "active")).toEqual([]);
+
+        await promoteLatestScheduledRetry(heartbeat, agentId);
+        const stillWaiting = await runsFor(agentId);
+        expect(stillWaiting.at(-1)).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+          scheduledRetryAttempt: 2 });
+        expect(stillWaiting.at(-1)!.scheduledRetryAt!.getTime() - stillWaiting.at(-1)!.createdAt.getTime())
+          .toBeGreaterThanOrEqual(ENVIRONMENT_PROVIDER_WAIT.delaysMs[1] - 1_000);
+        const [stillWorking] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(await taskInterruptionPresentation(db, stillWorking!)).toMatchObject({ state: "working", canRetry: false });
+
+        await expireProviderWait(agentId);
+        await promoteLatestScheduledRetry(heartbeat, agentId);
+
+        const exhausted = await runsFor(agentId);
+        expect(exhausted.map(run => [run.status, run.errorCode])).toEqual(
+          Array(5).fill(["failed", "environment_provider_unavailable"]));
+        expect(lease.acquisitions.refused).toBe(5);
         expect(mockAdapterExecute).not.toHaveBeenCalled();
 
         const blocked = await waitForValue(async () => {
@@ -6284,12 +6420,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         // The blocked task names its cause, its next action, and a Retry.
         const presentation = await taskInterruptionPresentation(db, blocked!);
         expect(presentation).toMatchObject({ state: "failed", responsibility: "system", canRetry: true,
-          observedRunId: exhausted[2]!.id,
+          observedRunId: exhausted[4]!.id,
           providerFailure: { httpStatus: 502, phase: "startup", retryability: "transient" } });
         expect(presentation?.providerFailure?.message).toContain("temporarily unavailable");
         const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
         expect(notices.map(comment => (comment.presentation as { title?: string } | null)?.title))
           .toContain("Environment provider was temporarily unavailable");
+        expect(presentation?.retryWait).toBeUndefined();
         // No no-replay hold: provider work never started.
         expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
 
@@ -6344,7 +6481,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     it("rests a provider deadline that never clears on a working Retry, never on a board recovery action", async () => {
       const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
-      const lease = failLeaseAcquisition(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS + 1, daytonaAcquisitionDeadline);
+      const lease = failLeaseAcquisition(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS + 2, daytonaAcquisitionDeadline);
       try {
         const heartbeat = heartbeatService(db);
         await heartbeat.resumeQueuedRuns();
@@ -6352,9 +6489,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         for (let attempt = 0; attempt < BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS; attempt += 1) {
           await promoteLatestScheduledRetry(heartbeat, agentId);
         }
+        await expireProviderWait(agentId);
+        await promoteLatestScheduledRetry(heartbeat, agentId);
         const exhausted = await runsFor(agentId);
         expect(exhausted.map(run => run.errorCode)).toEqual(
-          Array(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS + 1).fill("environment_provider_unavailable"));
+          Array(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS + 2).fill("environment_provider_unavailable"));
         expect(mockAdapterExecute).not.toHaveBeenCalled();
 
         const blocked = await waitForValue(async () => {
@@ -6382,6 +6521,172 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         mockAdapterExecute.mockClear();
       }
     }, 90_000);
+
+    async function seedProviderWaiters(leaderWaitedMs: number, followerWaitedMs: number) {
+      const leader = await seedQueuedIssueRunFixture();
+      const follower = await seedQueuedIssueRunFixture({ companyId: leader.companyId, issueNumber: 2 });
+      const environment = await environmentService(db).ensureLocalEnvironment(leader.companyId);
+      const now = new Date();
+      for (const [task, waitedMs] of [[leader, leaderWaitedMs], [follower, followerWaitedMs]] as const) {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, task.runId));
+        await db.update(heartbeatRuns).set({ status: "scheduled_retry", scheduledRetryReason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+          scheduledRetryAttempt: 1, scheduledRetryAt: new Date(now.getTime() - 1_000), createdAt: new Date(now.getTime() - 10_000),
+          contextSnapshot: { ...run!.contextSnapshot, [ENVIRONMENT_PROVIDER_WAIT_KEY]: { environmentId: environment.id,
+            environmentName: environment.name, waitingSince: new Date(now.getTime() - waitedMs).toISOString() } } })
+          .where(eq(heartbeatRuns.id, task.runId));
+      }
+      return { leader, follower, environment, now };
+    }
+
+    it("lets the next waiter probe when the first waiter cannot start because its agent is busy", async () => {
+      const { leader, follower, now } = await seedProviderWaiters(120_000, 60_000);
+      await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null,
+        updatedAt: new Date(now.getTime() - 2 * ENVIRONMENT_PROVIDER_WAIT.probeStartGraceMs) }).where(eq(heartbeatRuns.id, leader.runId));
+      await heartbeatService(db).promoteDueScheduledRetries(now);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).toBe("queued");
+    }, 60_000);
+
+    it("hands a parked task to a person with a working Retry at the 30-minute ceiling even while the leader stays queued", async () => {
+      const { leader, follower, now } = await seedProviderWaiters(ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 120_000,
+        ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 60_000);
+      await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null, updatedAt: now }).where(eq(heartbeatRuns.id, leader.runId));
+      const lease = failLeaseAcquisition(2);
+      try {
+        const heartbeat = heartbeatService(db);
+        await heartbeat.promoteDueScheduledRetries(now);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).not.toBe("scheduled_retry");
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect(lease.acquisitions.refused).toBeGreaterThanOrEqual(1);
+        expect((await runsFor(follower.agentId)).filter(run => run.status === "scheduled_retry")).toEqual([]);
+        const blocked = await waitForValue(async () => {
+          const [row] = await db.select().from(issues).where(eq(issues.id, follower.issueId));
+          return row?.status === "blocked" ? row : null;
+        });
+        expect(await taskInterruptionPresentation(db, blocked!)).toMatchObject({ state: "failed", canRetry: true });
+      } finally {
+        lease.restore();
+        mockAdapterExecute.mockClear();
+      }
+    }, 60_000);
+
+    it("lets one waiter per environment probe the provider and releases the others once a lease is acquired", async () => {
+      const { leader, follower, environment, now } = await seedProviderWaiters(120_000, 60_000);
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.promoteDueScheduledRetries(now);
+      const [probe] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, leader.runId));
+      const [parked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId));
+      expect(probe!.status).toBe("queued");
+      expect(parked).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+      expect(parked!.scheduledRetryAt!.getTime() - now.getTime()).toBe(ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs);
+
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: now }).where(eq(heartbeatRuns.id, leader.runId));
+      const recheck = new Date(now.getTime() + ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs);
+      await heartbeat.promoteDueScheduledRetries(recheck);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]).toMatchObject({
+        status: "scheduled_retry", scheduledRetryAt: new Date(recheck.getTime() + ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs) });
+
+      await db.insert(environmentLeases).values({ companyId: leader.companyId, environmentId: environment.id,
+        heartbeatRunId: leader.runId, issueId: leader.issueId, status: "active", provider: "local", acquiredAt: now });
+      const released = new Date(recheck.getTime() + ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs);
+      await heartbeat.promoteDueScheduledRetries(released);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).toBe("queued");
+    }, 60_000);
+
+    it("resumes ten tasks by itself when a five-minute provider outage ends, one probe at a time and within the automatic-run brake", async () => {
+      const first = await seedQueuedIssueRunFixture();
+      const tasks = [first];
+      for (let issueNumber = 2; issueNumber <= 10; issueNumber += 1)
+        tasks.push(await seedQueuedIssueRunFixture({ companyId: first.companyId, issueNumber }));
+      const outageMs = 5 * 60_000;
+      let simulatedMs = 0;
+      const attempts: Array<{ at: number; refused: boolean; runId: string | null }> = [];
+      const originalFactory = environmentOrchestrator.environmentRunOrchestrator;
+      const factory = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((database, options = {}) => {
+        const runtime = originalFactory(database, options).runtime;
+        return originalFactory(database, { ...options, environmentRuntime: { ...runtime, acquireRunLease: async (input) => {
+          const refused = simulatedMs < outageMs;
+          attempts.push({ at: simulatedMs, refused, runId: input.heartbeatRunId });
+          if (refused) throw daytonaCreate502();
+          return runtime.acquireRunLease(input);
+        } } });
+      });
+      const advance = async (ms: number) => {
+        const by = `${ms} milliseconds`;
+        await db.execute(sql`update heartbeat_runs set created_at = created_at - ${by}::interval, updated_at = updated_at - ${by}::interval,
+          started_at = started_at - ${by}::interval, finished_at = finished_at - ${by}::interval,
+          scheduled_retry_at = scheduled_retry_at - ${by}::interval, last_output_at = last_output_at - ${by}::interval,
+          context_snapshot = case when context_snapshot #>> '{environmentProviderWait,waitingSince}' is null then context_snapshot
+            else jsonb_set(context_snapshot, '{environmentProviderWait,waitingSince}', to_jsonb(to_char(
+              ((context_snapshot #>> '{environmentProviderWait,waitingSince}')::timestamptz - ${by}::interval) at time zone 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))) end
+          where company_id = ${first.companyId}`);
+        await db.execute(sql`update agent_wakeup_requests set requested_at = requested_at - ${by}::interval,
+          claimed_at = claimed_at - ${by}::interval, finished_at = finished_at - ${by}::interval,
+          created_at = created_at - ${by}::interval, updated_at = updated_at - ${by}::interval where company_id = ${first.companyId}`);
+        await db.execute(sql`update environment_leases set acquired_at = acquired_at - ${by}::interval, created_at = created_at - ${by}::interval,
+          last_used_at = last_used_at - ${by}::interval, released_at = released_at - ${by}::interval where company_id = ${first.companyId}`);
+        await db.execute(sql`update automatic_run_brakes set state_changed_at = state_changed_at - ${by}::interval,
+          opened_at = opened_at - ${by}::interval, next_probe_at = next_probe_at - ${by}::interval,
+          release_window_started_at = release_window_started_at - ${by}::interval, next_creation_at = next_creation_at - ${by}::interval
+          where company_id = ${first.companyId}`);
+        automaticRunBrake.reset();
+        simulatedMs += ms;
+      };
+      const finished = async () => (await Promise.all(tasks.map(async task =>
+        (await runsFor(task.agentId)).some(run => run.status === "succeeded")))).every(Boolean);
+      const ticks: Array<{ at: number; brake: string; brakeAfter: string; starts: number }> = [];
+      try {
+        const heartbeat = heartbeatService(db);
+        const tick = async () => {
+          await heartbeat.promoteDueScheduledRetries(new Date());
+          await heartbeat.resumeQueuedRuns();
+          await heartbeat.drainActiveRunExecutions();
+        };
+        await tick();
+        for (let step = 0; step < 120 && !(await finished()); step += 1) {
+          await advance(30_000);
+          const brake = (await automaticRunBrake.read(db, first.companyId)).state;
+          const before = attempts.length;
+          await tick();
+          automaticRunBrake.reset();
+          const brakeAfter = (await automaticRunBrake.read(db, first.companyId)).state;
+          ticks.push({ at: simulatedMs, brake, brakeAfter, starts: attempts.length - before });
+          for (const task of tasks) {
+            const taskRuns = await runsFor(task.agentId);
+            if (taskRuns.some(run => run.status === "succeeded")) continue;
+            const [issue] = await db.select().from(issues).where(eq(issues.id, task.issueId));
+            const current = taskRuns.find(run => run.id === issue!.executionRunId);
+            if (current?.status === "scheduled_retry" && current.scheduledRetryReason !== ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
+              && current.scheduledRetryAt && current.scheduledRetryAt.getTime() <= Date.now()) continue;
+            expect(issue!.status).not.toBe("blocked");
+            expect((await taskInterruptionPresentation(db, issue!))?.canRetry ?? false).toBe(false);
+          }
+        }
+
+        expect(await finished()).toBe(true);
+        expect(simulatedMs).toBeLessThan(ENVIRONMENT_PROVIDER_WAIT.ceilingMs);
+        const runs = (await Promise.all(tasks.map(task => runsFor(task.agentId)))).flat();
+        const waitRunIds = new Set(runs.filter(run => run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON).map(run => run.id));
+        const waitRefusalsByTick = new Map<number, number>();
+        for (const attempt of attempts.filter(entry => entry.refused && entry.runId !== null && waitRunIds.has(entry.runId)))
+          waitRefusalsByTick.set(attempt.at, (waitRefusalsByTick.get(attempt.at) ?? 0) + 1);
+        expect([...waitRefusalsByTick.values()].every(count => count === 1)).toBe(true);
+        expect(ticks.some(entry => entry.brake === "open")).toBe(true);
+        expect(ticks.filter(entry => entry.brake === "open" && entry.brakeAfter === "open").every(entry => entry.starts <= 1)).toBe(true);
+        expect(simulatedMs).toBeLessThanOrEqual(outageMs + 5 * 60_000);
+        for (const task of tasks) {
+          expect((await selectRecoveryActionsForIssue(task.issueId))
+            .filter(action => action.status === "active" && action.cause === "environment_provider_unavailable")).toEqual([]);
+        }
+        expect(runs.filter(run => run.status === "succeeded" && run.errorCode === null).length).toBeGreaterThanOrEqual(10);
+        expect(attempts.filter(entry => !entry.refused).length).toBeGreaterThanOrEqual(10);
+      } finally {
+        factory.mockRestore();
+        mockAdapterExecute.mockClear();
+      }
+    }, 300_000);
   });
 
   it("classifies only the installed-but-not-ready sandbox provider plugin message as a configuration gap", () => {
@@ -6539,7 +6844,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "active",
       ownerType: "board",
     });
-    expect(recoveryAction?.nextAction).toContain("sandbox provider plugin");
+    expect(recoveryAction?.nextAction).toContain("plugin that starts this agent's sandbox is not running");
     expect(recoveryAction?.nextAction).toContain("enable the plugin");
 
     const notice = await waitForValue(async () => {
@@ -7094,14 +7399,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       recoveryCause: "workspace_validation_failed",
     });
     expect(recoveryAction?.nextAction).toContain(
-      "repair the source task workspace link",
+      "The task's workspace could not be used",
     );
 
     const validationComment = await waitForValue(async () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("workspace failed validation"),
+          comment.body.includes("workspace could not be used"),
         ) ?? null
       );
     });
@@ -7149,7 +7454,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toEqual([]);
     } finally {
       await heartbeat.waitForRunExecutionDrain(runId);
@@ -7243,7 +7548,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
       expect(action.nextAction).toContain("workspace");
       const comments = await selectRecoveryCommentsForIssue(issueId);
-      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(comments.some((comment) => comment.body.includes("workspace could not be used"))).toBe(true);
       expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(report ? 1 : 0);
       const calls = (await fs.readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
       expect(calls).toHaveLength(failures.length);
@@ -7466,13 +7771,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ownerAgentId: null,
       recoveryIssueId: null,
     });
-    expect(recoveryAction?.nextAction).toContain("bind the missing secret");
+    expect(recoveryAction?.nextAction).toContain("A secret this agent needs is not set");
 
     const configurationComment = await waitForValue(async () => {
       const rows = await selectRecoveryCommentsForIssue(issueId);
       return (
         rows.find((comment) =>
-          comment.body.includes("secret/env bindings are missing"),
+          comment.body.includes("a secret it needs is not set"),
         ) ?? null
       );
     });
@@ -7831,7 +8136,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             expect.objectContaining({
               type: "key_value",
               label: "Recovery owner",
-              value: "Board decision required",
+              value: "Waiting for you",
             }),
           ]),
         }),
@@ -8083,8 +8388,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("bounded retry budget");
-    expect(comments[0]?.body).toContain("no live execution path");
+    expect(comments[0]?.body).toContain("Paperclip tried to continue this task again, but it still could not continue");
+    expect(comments[0]?.body).toContain("Press Retry");
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
@@ -8180,7 +8485,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue?.status).toBe("blocked");
     expect(sourceIssue?.assigneeAgentId).toBe(agentId);
     const comments = await selectRecoveryCommentsForIssue(issueId);
-    expect(comments[0]?.body).toContain("bounded retry budget");
+    expect(comments[0]?.body).toContain("Paperclip tried to start this task again, but it still could not start. Press Retry");
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
@@ -9779,11 +10084,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
-    const { agentId, runId } = await seedRunFixture({
+    const { companyId, agentId, runId } = await seedRunFixture({
       agentStatus: "running",
       includeIssue: false,
     });
+    await db.update(agents).set({ createdByUserId: "paperclip-id:agent-owner" }).where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
+    const scopedCompanies: Array<string | undefined> = [];
+    const scopedPeople: unknown[] = [];
+    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => {
+      scopedCompanies.push(scopedTelemetryCompanyId());
+      scopedPeople.push(scopedTelemetryPerson());
+    });
 
     await heartbeat.cancelRun(runId);
 
@@ -9794,6 +10106,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         agentId,
       }),
     );
+    expect(scopedCompanies).toEqual([companyId]);
+    expect(scopedPeople).toEqual([{ userId: "paperclip-id:agent-owner", attributedVia: "run_owner" }]);
   });
 
   it("preserves first-heartbeat telemetry after a timer interval claim", async () => {
@@ -10487,7 +10801,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(events[0]).toMatchObject({
       eventType: "lifecycle",
       stream: "system",
-      level: "warn",
+      level: "info",
       message: "run interrupted by board comment",
       payload: expect.objectContaining({
         issueId,
@@ -11523,7 +11837,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         comments.find(
           (comment) =>
             comment.body.includes(
-              "pending execution-review participant once",
+              "did not finish the review, even after Paperclip asked again",
             ) &&
             noticeMetadataReferencesRecoveryAction(
               comment.metadata,
@@ -12321,7 +12635,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried dispatch");
+    expect(comments[0]?.body).toContain("tried to start this task again");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     expect(JSON.stringify(comments[0]?.metadata)).not.toContain(
       "sk-test-recovery-secret",
@@ -12351,7 +12665,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Board decision required",
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -12425,13 +12739,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "stopped automatic stranded-work recovery",
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
-      "recovery issues do not create nested `stranded_issue_recovery` issues",
+      "This task was created to recover another task, so Paperclip does not create another recovery task for it.",
     );
+    expect(comments[0]?.body).not.toMatch(/stranded_issue_recovery|Retry reason|assignment_recovery/);
     expect(comments[0]?.body).toContain(
-      `Recovery issue: [${recoveryIssues[0]?.identifier}]`,
+      `Recovery task: [${recoveryIssues[0]?.identifier}]`,
     );
     expect(comments[0]?.body).toContain("Next action:");
     expect(comments[0]?.presentation).toMatchObject({
@@ -12811,7 +13126,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
+    expect(comments[0]?.body).toContain("tried to continue this task again");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "danger",
@@ -12827,7 +13142,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (row) =>
           row.type === "key_value" &&
           row.label === "Recovery owner" &&
-          row.value === "Board decision required",
+          row.value === "Waiting for you",
       ),
     ).toBe(true);
   });
@@ -12965,8 +13280,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("3× attempts");
+    expect(comments[0]?.body).toContain("tried to continue this task again");
+    expect(comments[0]?.body).toContain("after 3 tries");
     expect(commentMetadataRows(comments[0])).toContainEqual({
       type: "key_value",
       label: "Failure code",
@@ -13030,8 +13345,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("non-retryable failure");
-    expect(comments[0]?.body).toContain("`budget_blocked`");
+    expect(comments[0]?.body).toContain("retrying alone would not fix");
+    expect(comments[0]?.body).not.toContain("budget_blocked");
 
     const followupRuns = await selectRecoveryRunsByAgent(agentId);
     const continuationRetryRun = followupRuns.find((row) => {
@@ -13875,6 +14190,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     },
   );
+
+  it("checks an automatic continuation that names no retry source against the task's previous run", async () => {
+    const source = await seedCommittedChatControlStop();
+    const child = await seedChatAutomaticChild(source);
+    await db
+      .update(heartbeatRuns)
+      .set({ retryOfRunId: null, createdAt: new Date(Date.now() + 1_000) })
+      .where(eq(heartbeatRuns.id, child.runId));
+    expect(
+      (await readChatControlRecoveryStop(db, chatStopScope(source, child.runId))).kind,
+    ).toBe("stopped");
+    await db
+      .update(chatPublications)
+      .set({ state: "pending" })
+      .where(eq(chatPublications.id, source.publicationId));
+    expect(
+      (await readChatControlRecoveryStop(db, chatStopScope(source, child.runId))).kind,
+    ).toBe("clear");
+  });
 
   it("defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim", async () => {
     const source = await seedCommittedChatControlStop();
@@ -14882,13 +15216,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "stopped automatic stranded-work recovery",
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
-      "Latest retry failure details were withheld from the issue thread",
+      "The failure details are kept with the run",
     );
     expect(comments[0]?.body).toContain(
-      "recovery issues do not create nested `stranded_issue_recovery` issues",
+      "This task was created to recover another task, so Paperclip does not create another recovery task for it.",
     );
     await expect(
       sourceBlockerIssueIds(companyId, sourceIssueId),
@@ -15224,7 +15558,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedNativePassiveBoardResponse(
     continuationKind:
       "response_wake" | "same_agent" | "retry" = "response_wake",
-    options: { blockingWork?: boolean; repairUsed?: boolean; assignmentWake?: boolean } = {},
+    options: { blockingWork?: boolean; repairUsed?: boolean; assignmentWake?: boolean; objectiveUnsatisfied?: boolean } = {},
   ) {
     const fixture = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -15332,14 +15666,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
         completionClaim: {
           contractRevision: "1",
-          objectiveSatisfied: true,
+          objectiveSatisfied: !options.objectiveUnsatisfied,
           criteria: [
-            { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
+            { criterionId: "objective", status: options.objectiveUnsatisfied ? "not_satisfied" : "satisfied",
+              evidenceRefs: options.objectiveUnsatisfied ? ["catalog:launch_export:quarantined"] : [] },
           ],
           remainingWork: options.blockingWork ? [{ description: "Finish icons, screenshots, verification and PR", blocksCompletion: true }] : [],
         },
-        evidence: [],
-        verification: [],
+        evidence: options.objectiveUnsatisfied ? [{ ref: "catalog:launch_export:quarantined" }] : [],
+        verification: options.objectiveUnsatisfied ? [{ commandOrCheck: "GET /api/tool-connections/{connectionId}/catalog",
+          status: "passed", detail: "Catalog shows launch_export with status quarantined." }] : [],
         attentionRequests: [],
         artifacts: [],
       },
@@ -15403,6 +15739,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it("does not queue a continuation from a latest run it read while that run was still finishing", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, {
+      enqueueWakeup,
+      afterStrandedLatestRunRead: async (read) => {
+        if (read.runId !== runId) return;
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+      },
+    });
+
+    const result = await recovery.reconcileStrandedAssignedIssues({ companyId, issueId });
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("leaves a chat turn that yielded to wait for a person without starting another run", async () => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true, objectiveUnsatisfied: true });
+    const previousSettings = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await db.update(issues).set({ conversationAgentId: fixture.agentId, conversationUserId: "responsible-user",
+        conversationState: "active" }).where(eq(issues.id, fixture.issueId));
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      const [finalized] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      const { finalizationReasonCode: _reason, decisionId: _decision, assessmentId: _assessment, ...completionResult } =
+        finalized!.resultJson ?? {};
+      await db.update(heartbeatRuns).set({ livenessState: "blocked", livenessReason: "Run output declared a concrete blocker",
+        resultJson: completionResult }).where(eq(heartbeatRuns.id, fixture.runId));
+      const heartbeat = heartbeatService(db);
+      for (let sweep = 0; sweep < 2; sweep += 1) {
+        const recovery = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(recovery.continuationRequeued + recovery.escalated).toBe(0);
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(1);
+      expect(await db.select().from(issues).where(eq(issues.id, fixture.issueId))).toEqual([
+        expect.objectContaining({ status: "in_progress", assigneeAgentId: fixture.agentId }),
+      ]);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+      expect(await hasCommittedNativeConversationTurnWait(db, fixture)).toBe(true);
+      expect(await hasCommittedNativeConversationTurnWait(db, { ...fixture, agentId: randomUUID() })).toBe(false);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: previousSettings.enableAgentChat });
+    }
+  });
+
   it("parks a native response_wake that no response admitted instead of waking the same agent again", async () => {
     const fixture = await seedNativePassiveBoardResponse("response_wake", { assignmentWake: true });
     expect(await readNativeBoardResponseWaitSource(db, fixture)).toBeNull();
@@ -15428,6 +15819,106 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
     expect(await executionProjectionForRun(db, fixture.companyId, fixture.runId))
       .toMatchObject({ phase: "completed", label: "Completed" });
+  });
+
+  it.each([
+    { saved: "before", read: "none", delivered: true },
+    { saved: "after", read: "none", delivered: false },
+    { saved: "after", read: "after the child finished", delivered: true },
+    { saved: "after", read: "while the child was open", delivered: false },
+  ] as const)("counts a child result as read by the finishing parent run (saved $saved the run started, read: $read)", async ({
+    saved: savedRelativeToStart, read, delivered,
+  }) => {
+    const expectedStatus = delivered ? "done" : "in_progress";
+    const expectedReason = delivered ? "completion_claim_policy_accepted" : "native_child_completion_pending";
+    const fixture = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    const { companyId, agentId, issueId, runId } = fixture;
+    const childId = randomUUID();
+    const contractId = randomUUID();
+    const runnerInstanceId = randomUUID();
+    const runStartedAt = new Date(Date.now() - 60_000);
+    const childResultSavedAt = new Date(runStartedAt.getTime() + (savedRelativeToStart === "before" ? -30_000 : 30_000));
+    await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Child ledger", status: "done",
+      priority: "medium", responsibleUserId: "responsible-user" });
+    const [childResult] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_execution_deferred",
+      requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${randomUUID()}`,
+      status: "deferred_issue_execution", createdAt: childResultSavedAt, updatedAt: childResultSavedAt,
+      payload: { issueId, _paperclipWakeContext: {
+        issueId, wakeReason: "issue_children_completed", source: "native_status_decision",
+        nativeChildCompletionDecisionId: randomUUID(), completedChildIssueId: childId, childIssueIds: [childId],
+        childIssueSummaries: [{ id: childId, status: "done", summary: "Ledger saved." }],
+      } },
+    }).returning();
+    await db.insert(completionContracts).values({
+      id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v4", risk: "low", completionAuthority: "agent_claim_policy",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "1", objective: "Merge the child ledgers.", criteria: [{ id: "objective", requirement: "Merge the child ledgers." }] },
+      canonicalSha256: `child-result-contract-${runId}`, createdByActorType: "system", createdByActorId: "test",
+    });
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "native", nativeIssueId: issueId, nativeSessionId: runId, completionContractId: contractId,
+      completionContractSha256: `child-result-contract-${runId}`, runnerInstanceId,
+      startedAt: runStartedAt, finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, executionLockedAt: runStartedAt }).where(eq(issues.id, issueId));
+    if (read !== "none") {
+      if (read === "while the child was open") await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, childId));
+      await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+      const reader = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      try {
+        const context = await reader.execute({ tool: "get_task_context", callId: `context-${runId}`, arguments: {} });
+        expect((context as { childTasks: Array<{ id: string }> }).childTasks.map(task => task.id)).toEqual([childId]);
+      } finally { reader.close(); }
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, childId));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    }
+    await db.insert(issueComments).values({ companyId, issueId, authorType: "agent", authorAgentId: agentId,
+      createdByRunId: runId, body: "Both children are done; merged their ledgers. Task complete." });
+    await new PaperclipControlPlanePort(db, {
+      companyId, issueId, runId, agentId, sessionId: runId, completionContractId: contractId,
+      completionContractSha256: `child-result-contract-${runId}`, sourceInstanceId: runnerInstanceId,
+      controlPlaneSourceInstanceId: `child-result-control-${runId}`,
+    }).completeRun({
+      result: {
+        schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+        summary: "Both children are done; merged their ledgers. Task complete.",
+        completionClaim: { contractRevision: "1", objectiveSatisfied: true,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [],
+      },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded",
+        turnTerminalState: "completed", reportedWorkDisposition: "done" },
+    });
+
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await createWakeQueue(db, {
+      resolveResponsibleUserId: async () => "responsible-user",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {} as Parameters<typeof createWakeQueue>[1]["wakeAdmissionHelpers"],
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    }).releaseIssueExecution({ companyId, runId, now: new Date() });
+
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toEqual([
+      expect.objectContaining({ reasonCode: expectedReason, toStatus: expectedStatus, applicationState: "applied" }),
+    ]);
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)))
+      .toEqual([expect.objectContaining({ status: expectedStatus })]);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, childResult!.id));
+    if (delivered) {
+      expect(wake).toMatchObject({ status: "cancelled", runId: null });
+      expect(runs).toHaveLength(1);
+    } else {
+      const successor = runs.find((run) => run.id !== runId);
+      expect(runs).toHaveLength(2);
+      expect(wake).toMatchObject({ runId: successor!.id });
+      expect(successor!.contextSnapshot).toMatchObject({ wakeReason: "issue_children_completed",
+        childIssueSummaries: [{ id: childId, status: "done", summary: "Ledger saved." }] });
+    }
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   it("delays a no-progress native continuation until the rewake cooldown instead of dropping it", async () => {
@@ -17085,6 +17576,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
   });
+
+  it.each(["queued", "claimed"] as const)(
+    "does not queue a second continuation while the finished run's own status wake (%s) awaits dispatch (Gate C C1 t169)",
+    async (intentStatus) => {
+      const { companyId, agentId, issueId, runId } =
+        await seedStrandedIssueFixture({
+          status: "in_progress",
+          runStatus: "succeeded",
+          livenessState: "advanced",
+        });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        status: intentStatus,
+        claimedAt: intentStatus === "claimed" ? new Date() : null,
+        requestedByActorType: "system",
+        requestedByActorId: "native-status-committer",
+        idempotencyKey: `agent_tool_call_loop:${runId}`,
+        payload: { issueId, taskId: issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop" },
+      });
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(await selectRecoveryRunsByAgent(agentId)).toHaveLength(1);
+      expect((await selectRecoveryIssueById(issueId))?.status).toBe("in_progress");
+    },
+  );
 
   it("does not replenish exhausted legacy repair from a recent comment", async () => {
     const { companyId, agentId, issueId, runId } =

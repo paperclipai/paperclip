@@ -2,16 +2,19 @@ import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
-import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
+import { acpxInstructionsAdmissionError, recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
+import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
@@ -20,7 +23,7 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { nativeMcpLaunchBinding } from "../native-mcp.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
 
 import type {
   AcpRuntimeOptions,
@@ -35,6 +38,7 @@ import {
   releaseMaterializedNativeRuntimeSkills,
 } from "../runtime-context-materializer.js";
 import {
+  canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
   type RunnerToolBridgeOptions,
@@ -158,6 +162,20 @@ export interface AcpxRuntimeTurn {
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
+export type AcpxProviderTurnBinding = {
+  onPermissionRequest: AcpxHostPermissionHandler;
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  busy(): boolean;
+};
+
+export interface AcpxProviderCycleStream {
+  next(): Promise<ClaudeProviderCycleItem | null>;
+  adopt(binding: AcpxProviderTurnBinding): boolean;
+  drop(): void;
+  cancel(): boolean;
+  decisionFor(toolCallId: unknown): Promise<boolean> | null;
+}
+
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
@@ -167,6 +185,9 @@ export interface AcpxRuntimePort {
   queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  backgroundTaskState?(): ClaudeBackgroundTaskState | null;
+  providerCycles?(): AcpxProviderCycleStream | null;
+  providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -206,6 +227,8 @@ export interface AcpxRuntimePortOpenOptions {
   /** Abort provider admission and clean any runtime that resolves too late. */
   signal?: AbortSignal;
   mcpServers: readonly AcpxMcpServerBinding[];
+  /** Canonical names of the tools the runner-owned Paperclip bridge registered. */
+  paperclipTools?: readonly string[];
   onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
   /**
    * Transfer the provider cleanup proof before a failed open settles. The host
@@ -379,11 +402,7 @@ export class AcpxRuntimeHost {
     }
     // shortcut: qualify session permissions that deny Runner state before enabling this provider.
     if (preconfigured && options.agent === "codex") throw new Error("preconfigured ACPX Codex cannot protect Runner state; use native Codex or isolated mode");
-    const nativeMcp = preconfigured ? null : nativeMcpLaunchBinding(options.environment);
-    if (nativeMcp?.name === "paperclip") {
-      throw new Error("assigned native MCP name conflicts with the task bridge");
-    }
-    if (!preconfigured && options.runtimeContext?.mcp.bindingId && !nativeMcp
+    if (!preconfigured && options.runtimeContext?.mcp.bindingId
       && !(options.assignedMcpTransport === "prp" && options.semanticTools)) {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
@@ -416,6 +435,8 @@ export class AcpxRuntimeHost {
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
+      const routeChange = antigravityRouteChangeRefusal(options.agent, options.expectedIdentity.mode, binding.mode);
+      if (routeChange) throw routeChange;
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
     options.assertWorkspaceHeld?.();
@@ -428,15 +449,27 @@ export class AcpxRuntimeHost {
       );
     }
 
+    const swarmRoute = isAntigravitySwarmRoute(options.agent, binding.mode);
+    if (swarmRoute) {
+      const refusal = antigravitySwarmRouteRefusal({ environment: options.environment ?? {} });
+      if (refusal) throw refusal;
+    }
+    let swarmStateDirectory: string | null = null;
     const installation = await runAbortableAdmissionStage(
       options.signal,
       () =>
         dependencies.verifyInstallation
           ? dependencies.verifyInstallation(profile)
-          : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
+          : swarmRoute
+            // The trusted /swarm turn runs the pinned Antigravity CLI, not the registry server.
+            ? verifyAntigravitySwarmInstallation(() => {
+              if (swarmStateDirectory === null) throw new Error("Antigravity CLI state directory is not prepared");
+              return swarmStateDirectory;
+            })
+            : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
-    if (installation.commandDigest !== profile.commandDigest) {
+    if (!swarmRoute && installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
     let admissionSucceeded = false;
@@ -525,7 +558,7 @@ export class AcpxRuntimeHost {
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
         });
-      } else if (options.agent === "antigravity") {
+      } else if (options.agent === "antigravity" && !swarmRoute) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
           acquire: () => stageManagedAntigravityCredential({ agentHomeDirectory: sandbox.agentHomeDirectory,
@@ -575,6 +608,11 @@ export class AcpxRuntimeHost {
       if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
+      if (swarmRoute) {
+        swarmStateDirectory = antigravitySwarmStateDirectory(sandbox.agentHomeDirectory);
+        await mkdir(swarmStateDirectory, { recursive: true, mode: 0o700 });
+        launchEnvironment = Object.freeze(antigravitySwarmLaunchEnvironment(launchEnvironment, { agentHomeDirectory: sandbox.agentHomeDirectory }));
+      }
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each
       // resumed process receives the newly registered copy; collection already
@@ -708,11 +746,11 @@ export class AcpxRuntimeHost {
               ...(options.providerPolicy?.readOnly ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
-              // This is Paperclip's authenticated gateway, not a direct upstream
-              // binding. Its existing grants and approval checks remain authoritative.
-              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
-                bearerToken: nativeMcp.token, runnerOwned: true }] : []),
             ],
+            // The bridge's own admitted names, one source: the run's tools,
+            // the reserved finish and block tools it adds itself, and any
+            // private tools.
+            ...(toolBridge ? { paperclipTools: toolBridge.admittedToolNames.map(canonicalRunnerToolName) } : {}),
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),
@@ -898,6 +936,18 @@ export class AcpxRuntimeHost {
 
   goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
     return this.#runtime.goalSnapshot?.() ?? null;
+  }
+
+  backgroundTaskState(): ClaudeBackgroundTaskState | null {
+    return this.#runtime.backgroundTaskState?.() ?? null;
+  }
+
+  providerCycles(): AcpxProviderCycleStream | null {
+    return this.#runtime.providerCycles?.() ?? null;
+  }
+
+  providerTurnsAvailable(): boolean {
+    return this.#runtime.providerTurnsAvailable?.() ?? false;
   }
 
   async controlGoal(
@@ -1396,7 +1446,7 @@ async function cleanupRuntimeResources(
 function boundedInstructions(value: string | undefined): string {
   const instructions = value ?? "";
   if (Buffer.byteLength(instructions) > 256 * 1024) {
-    throw new Error("ACPX system instructions exceed their bounded size");
+    throw acpxInstructionsAdmissionError("ACPX system instructions exceed their bounded size");
   }
   return instructions;
 }

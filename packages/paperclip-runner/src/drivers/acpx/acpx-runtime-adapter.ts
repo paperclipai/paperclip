@@ -6,7 +6,9 @@ import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
-import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
+import { CLAUDE_ASYNC_TASKS_CAPABILITY } from "./claude-background-tasks.js";
+import { ClaudeProviderCycles } from "./claude-provider-turns.js";
+import { ANTIGRAVITY_MODEL_UNAVAILABLE, acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -30,6 +32,7 @@ import {
 
 import type {
   AcpxPlanProposal,
+  AcpxProviderCycleStream,
   AcpxRuntimeGoalCapability,
   AcpxRuntimeGoalSnapshot,
   AcpxRuntimeSteeringCapability,
@@ -48,8 +51,11 @@ import { createAcpxEffectiveModelGate, type AcpxEffectiveModelGate, type AcpxMod
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
-import { createAntigravityAdmission } from "./antigravity-admission.js";
+import { antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
+import { openAntigravitySwarmRuntime } from "./antigravity-swarm-runtime.js";
+import { isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
 import { acpxElicitationHandler, createAcpxPermissionReplyConfirmations, withReturnedResponseDelivery, type AcpxHostExtensionRequestHandler, type AcpxHostPermissionHandler } from "./interaction-delivery.js";
@@ -195,9 +201,6 @@ export interface QualifiedAcpxRuntimeDependencies {
   platform?: NodeJS.Platform;
 }
 
-/** @deprecated Use QualifiedAcpxRuntimeDependencies for provider-neutral ACPX runtimes. */
-export type CodexAcpxRuntimeDependencies = QualifiedAcpxRuntimeDependencies;
-
 /**
  * Adapt the pinned ACPX library to Paperclip's admitted runtime port. The
  * executable, launch environment, and spawn cwd stay host-owned and are never
@@ -223,6 +226,9 @@ export async function openQualifiedAcpxRuntime(
   // tree when Node cannot safely signal a verified provider process group.
   assertVerifiedAcpxProviderPlatform(dependencies.platform ?? process.platform);
   options.signal?.throwIfAborted();
+  // A trusted /swarm turn runs the pinned Antigravity CLI through its own
+  // verified ACP client (antigravity-swarm-runtime.ts), never through ACPX.
+  if (isAntigravitySwarmRoute(options.profile.agent, options.mode)) return openAntigravitySwarmRuntime(options);
   const credentialFenceFds = options.credentialFenceFds;
   if (
     !Array.isArray(credentialFenceFds) ||
@@ -358,6 +364,10 @@ export async function openQualifiedAcpxRuntime(
       .filter((server) => server.runnerOwned)
       .map((server) => server.name),
   );
+  const antigravityPlanPolicy = {
+    paperclipServerOwned: options.mcpServers.some(server => server.runnerOwned && server.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER),
+    paperclipTools: new Set(options.paperclipTools ?? []),
+  };
   const permissionBoundary: {
     active: AbortController | null;
     hasAdmittedTurn: boolean;
@@ -368,6 +378,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
+  const providerCycleTurn: { active: AcpxRuntimeExtensionTurn | null } = { active: null };
   const permissionReplies = createAcpxPermissionReplyConfirmations();
   const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
   // Copilot's admitted permission policy is enforced from the observed wire:
@@ -382,6 +393,10 @@ export async function openQualifiedAcpxRuntime(
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
     active: null, sessionIds: new Set(), steering: null, promptDispatch: null,
   };
+  const providerCycles = options.profile.agent === "claude" ? new ClaudeProviderCycles({
+    sessionId: () => extensionBoundary.sessionIds.values().next().value ?? null,
+    promptActive: () => extensionBoundary.active !== null && extensionBoundary.active !== providerCycleTurn.active,
+  }) : null;
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
       && (params.sessionId === undefined || (typeof params.sessionId === "string" && extensionBoundary.sessionIds.has(params.sessionId)));
@@ -423,6 +438,16 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
+  const mcpBearerVariable = (index: number): string | undefined =>
+    options.profile.agent === "claude" ? `PAPERCLIP_ACPX_MCP_BEARER_${index}` : undefined;
+  const mcpBearerEnvironment = Object.fromEntries(options.mcpServers.flatMap((server, index) => {
+    const name = mcpBearerVariable(index);
+    return name && "url" in server ? [[name, server.bearerToken]] : [];
+  }));
+  const mcpBearerCredential = (index: number, bearerToken: string): string => {
+    const name = mcpBearerVariable(index);
+    return name ? `\${${name}}` : bearerToken;
+  };
   // The agent's complete launch environment. ACPX's own environment handling
   // (credential checks, ACP terminals) keeps reading this process's environment.
   const agentEnvironment = (): Record<string, string> => ({
@@ -439,6 +464,7 @@ export async function openQualifiedAcpxRuntime(
           PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
             (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
           )?.url ?? "",
+          ...mcpBearerEnvironment,
         }
       : {}),
   });
@@ -470,7 +496,10 @@ export async function openQualifiedAcpxRuntime(
       ? "approve-reads"
       : options.permissionMode,
     elicitationModes: ["form"],
-    clientCapabilities: acpxTypedSessionFailureClientCapabilities(options.clientCapabilities),
+    clientCapabilities: acpxTypedSessionFailureClientCapabilities(
+      options.clientCapabilities,
+      providerCycles ? [CLAUDE_ASYNC_TASKS_CAPABILITY] : [],
+    ),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
@@ -507,7 +536,7 @@ export async function openQualifiedAcpxRuntime(
         ? [...options.permissionPolicy.escalate]
         : undefined,
     },
-    mcpServers: options.mcpServers.map((server) => "command" in server ? {
+    mcpServers: options.mcpServers.map((server, index) => "command" in server ? {
       name: server.name, command: server.command, args: server.args,
       env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
     } : ({
@@ -515,7 +544,7 @@ export async function openQualifiedAcpxRuntime(
       name: server.name,
       url: server.url,
       headers: [
-        { name: "Authorization", value: `Bearer ${server.bearerToken}` },
+        { name: "Authorization", value: `Bearer ${mcpBearerCredential(index, server.bearerToken)}` },
       ],
     })),
     onPermissionRequest: async (request, context) => {
@@ -526,6 +555,8 @@ export async function openQualifiedAcpxRuntime(
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
         return { outcome: "reject_once" };
       }
+      const cycleDecision = providerCycles?.decisionFor(objectRecord(objectRecord(request.raw).toolCall).toolCallId);
+      if (cycleDecision && !(await cycleDecision)) return { outcome: "cancel" };
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
       if (options.profile.agent === "claude") {
@@ -540,6 +571,8 @@ export async function openQualifiedAcpxRuntime(
       }
       if (options.profile.agent === "kimi" && options.readOnly === true
         && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
+      if (options.profile.agent === "antigravity" && options.readOnly === true
+        && !antigravityPlanModeAllows(request, antigravityPlanPolicy)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -584,6 +617,7 @@ export async function openQualifiedAcpxRuntime(
       return { outcome: disposition };
     },
     onAcpMessage: (direction, message) => {
+      providerCycles?.observe(direction, message);
       observeAgentInitialize(direction, message);
       copilotPolicy?.observe(direction, message);
       modelGate.observe(direction, message);
@@ -735,6 +769,10 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
+      // A refused Antigravity reload is saved state this build cannot reopen,
+      // not ACPX's retryable "resume required"; the Runner names its class.
+      const savedState = options.profile.agent === "antigravity" ? antigravitySavedStateIncompatible(error) : null;
+      if (savedState) throw savedState;
       // The closed code below cannot say why the provider session did not
       // start, so every ensure rejection keeps its redacted explanation. An
       // abort reason is Runner cancellation, not a provider explanation.
@@ -831,6 +869,7 @@ export async function openQualifiedAcpxRuntime(
       copilotPolicy,
       modelGate,
       promptReceipts,
+      providerCycles ? { cycles: providerCycles, turn: providerCycleTurn } : null,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -850,9 +889,6 @@ export async function openQualifiedAcpxRuntime(
     throw error;
   }
 }
-
-/** Backward-compatible name retained for existing Codex-only consumers. */
-export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
 function classifySessionEnsureFailure(error: unknown, providerFailure: ProviderFailure | null): Error {
   const failure = error instanceof Error ? error
@@ -1285,8 +1321,10 @@ function runtimePort(
   copilotPolicy?: CopilotPolicyEnforcement | null,
   modelGate?: AcpxEffectiveModelGate,
   promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
+  providerCycles?: { cycles: ClaudeProviderCycles; turn: { active: AcpxRuntimeExtensionTurn | null } } | null,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
+  let cycleStream: AcpxProviderCycleStream | null = null;
   let extensionControls: Promise<void> = Promise.resolve();
   const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
     const active = extensionBoundary.active;
@@ -1327,6 +1365,7 @@ function runtimePort(
     pendingExternalIntent: boolean;
   };
   let runtimeClosed = false;
+  let runtimeShutdown: Promise<unknown | null> | undefined;
   let providerProcessLost = false;
   let runtimeCloseAttempt: RuntimeCloseAttempt | undefined;
   let lateReconciliationOwner: Promise<void> | undefined;
@@ -1431,6 +1470,7 @@ function runtimePort(
             attempt.reconciliationGeneration,
           );
           runtimeClosed = !hasUnreconciledLateFailure();
+          if (runtimeClosed) void shutdownClosedRuntime();
         }
         scheduleLateFailureReconciliation();
         return;
@@ -1451,6 +1491,11 @@ function runtimePort(
     });
   };
 
+  const shutdownClosedRuntime = (): Promise<unknown | null> => {
+    runtimeShutdown ??= boundedCloseOutcome(ownedRuntimeShutdownOutcome(runtime), runtimeCloseTimeoutMs);
+    return runtimeShutdown;
+  };
+
   async function closeRuntime(input: {
     reason: string;
     reconciliation?: {
@@ -1459,7 +1504,13 @@ function runtimePort(
     };
   }): Promise<void> {
     extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
-    if (runtimeClosed) return;
+    if (runtimeClosed) {
+      const shutdownError = await shutdownClosedRuntime();
+      if (shutdownError !== null) {
+        throw new AggregateError([shutdownError], "ACPX runtime and provider cleanup failed");
+      }
+      return;
+    }
     if (
       runtimeCloseAttempt?.origin.kind === "reconciliation" &&
       input.reconciliation === undefined
@@ -1526,9 +1577,10 @@ function runtimePort(
     } else {
       runtimeClosed = false;
     }
+    const shutdownError = runtimeClosed ? await shutdownClosedRuntime() : null;
     scheduleLateFailureReconciliation();
-    if (closeError !== null || processErrors.length > 0) {
-      const errors = [closeError, ...processErrors].filter(
+    if (closeError !== null || processErrors.length > 0 || shutdownError !== null) {
+      const errors = [closeError, ...processErrors, shutdownError].filter(
         (error): error is unknown => error !== null,
       );
       throw new AggregateError(
@@ -1559,6 +1611,17 @@ function runtimePort(
       return goalState.capability === null
         ? null
         : structuredClone(goalState.capability);
+    },
+    backgroundTaskState() {
+      return providerCycles?.cycles.backgroundTasks() ?? null;
+    },
+    providerCycles() {
+      providerCycles?.cycles.subscribe();
+      return cycleStream;
+    },
+    providerTurnsAvailable() {
+      return providerCycles !== null && providerCycles !== undefined && !providerCycles.cycles.retired
+        && !providerProcessLost && !runtimeClosed && !runtimeCloseAttempt;
     },
     goalSnapshot() {
       return goalState.snapshot === null
@@ -1789,8 +1852,62 @@ function runtimePort(
         })(),
       };
     },
-    close: closeRuntime,
+    close: (input) => {
+      providerCycles?.cycles.close();
+      return closeRuntime(input);
+    },
   };
+  if (providerCycles) {
+    const { cycles, turn: cycleTurn } = providerCycles;
+    let started: string | null = null;
+    let approval: AbortController | null = null;
+    const release = (): void => {
+      const extensionTurn = cycleTurn.active;
+      const adopted = approval;
+      cycleTurn.active = null;
+      approval = null;
+      if (!extensionTurn || !adopted) return;
+      extensionTurn.controller.abort(new Error("ACPX provider turn expired"));
+      if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
+      if (permissionBoundary.active === adopted) {
+        permissionBoundary.active = null;
+        permissionBoundary.handler = undefined;
+        adopted.abort();
+      }
+    };
+    children.watchProviderExit(() => {
+      if (cycleTurn.active) providerProcessLost = true;
+      cycles.lost();
+    });
+    cycleStream = {
+      async next() {
+        const item = await cycles.next();
+        if (item?.type === "started") started = item.requestId;
+        else if (item?.type !== "event") release();
+        return item;
+      },
+      adopt(binding) {
+        if (started === null || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return false;
+        approval = new AbortController();
+        const controller = new AbortController();
+        const extensionTurn: AcpxRuntimeExtensionTurn = {
+          requestId: started, sessionId: identity.backendSessionId, controller,
+          signal: AbortSignal.any([controller.signal, approval.signal]), promptStarted: Promise.resolve(),
+          onPlanProposal: binding.onPlanProposal,
+        };
+        cycleTurn.active = extensionTurn;
+        extensionBoundary.active = extensionTurn;
+        permissionBoundary.hasAdmittedTurn = true;
+        permissionBoundary.active = approval;
+        permissionBoundary.handler = binding.onPermissionRequest;
+        cycles.adopt(binding.busy);
+        return true;
+      },
+      drop: () => cycles.drop(),
+      cancel: () => cycles.cancel(),
+      decisionFor: (toolCallId) => cycles.decisionFor(toolCallId),
+    };
+  }
   return port;
 }
 
@@ -1938,6 +2055,17 @@ function ownedRuntimeCloseOutcome(
       (error: unknown) => error,
     );
   return retainRuntimeCleanupOwner(cleanup);
+}
+
+function ownedRuntimeShutdownOutcome(runtime: AcpRuntime): Promise<unknown | null> {
+  return retainRuntimeCleanupOwner(
+    Promise.resolve()
+      .then(() => runtime.shutdown?.())
+      .then(
+        () => null,
+        (error: unknown) => error,
+      ),
+  );
 }
 
 function retainRuntimeCleanupOwner<T>(cleanup: Promise<T>): Promise<T> {
@@ -2467,7 +2595,7 @@ function definedEnvironment(
 }
 
 /** A typed AIR session failure fails the turn even though ACP reported a normal stop. */
-function typedTerminalTurnResult(
+export function typedTerminalTurnResult(
   result: AcpRuntimeTurnResult,
   onFailure?: (failure: AcpxTerminalSessionFailure) => void,
 ): AcpRuntimeTurnResult {
@@ -2478,6 +2606,15 @@ function typedTerminalTurnResult(
     onFailure?.(failure);
   } catch {
     // Diagnostics cannot change the failed terminal outcome.
+  }
+  const provider = failure.provider;
+  if (provider?.kind === "model_unavailable") {
+    // Permanent: never an accepted result and never retried as capacity. The
+    // server words it from these fields, without provider text.
+    const error = { message: "The selected model is not available for this connection.",
+      code: ANTIGRAVITY_MODEL_UNAVAILABLE, retryable: false,
+      ...(provider.model ? { model: provider.model } : {}), ...(provider.route ? { route: provider.route } : {}) };
+    return { status: "failed", error };
   }
   return { status: "failed", error: { message: `ACP agent reported a terminal ${failure.category} failure.`, code: "RUNTIME" } };
 }

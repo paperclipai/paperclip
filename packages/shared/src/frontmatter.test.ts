@@ -54,6 +54,11 @@ describe("parseFrontmatterMarkdown", () => {
     expect(literal.frontmatter.description).toBe("First line\nsecond line\n");
   });
 
+  it("decodes single-quoted scalars, as published MCP skills use them", () => {
+    const parsed = parseFrontmatterMarkdown("---\nname: env-setup\ndescription: 'Set up the \"environment\". Don''t use system Python.'\n---\n\nBody\n");
+    expect(parsed.frontmatter).toEqual({ name: "env-setup", description: "Set up the \"environment\". Don't use system Python." });
+  });
+
   it("respects block-scalar chomping indicators", () => {
     const foldedStrip = parseFrontmatterMarkdown([
       "---",

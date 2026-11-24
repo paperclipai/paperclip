@@ -41,11 +41,39 @@ export function nativeProviderPackAdmissionPending(admissionEpoch: string) {
   return { schema: "paperclip.native-provider-pack-admission-state.v1" as const, state: "pending" as const, admissionEpoch };
 }
 
+/** Called under the executor's claim lock, before provider admission. */
+export function prepareNativeProviderPackAdmission(runId: string, profile: Record<string, unknown> | null | undefined, admissionEpoch: string) {
+  const receipt = profile?.nativeProviderPackAdmission;
+  let state = profile?.nativeProviderPackAdmissionState;
+  const saved = profile?.nativeProviderPackAdmissionRecovery as Record<string, unknown> | null | undefined;
+  const receiptDigest = receipt && typeof receipt === "object" && !Array.isArray(receipt)
+    ? `sha256:${createHash("sha256").update(canonicalProviderPackJson(receipt)).digest("hex")}` : null;
+  // A pending claim has not selected a different pack. It can carry forward
+  // the exact verified proof that the previous claim captured under its lock.
+  // Unknown state means selection was refused and must never regain that proof.
+  if (admissionState(state, "pending")
+    && saved?.schema === "paperclip.native-provider-pack-admission-recovery.v1"
+    && Object.keys(saved).sort().join(",") === "receiptDigest,runId,schema,state"
+    && saved.runId === runId && receiptDigest !== null && saved.receiptDigest === receiptDigest
+    && verifiedState(saved.state)) state = saved.state;
+  const recovery = receiptDigest !== null && verifiedState(state)
+    ? { schema: "paperclip.native-provider-pack-admission-recovery.v1", runId, receiptDigest, state } : null;
+  return {
+    source: { runId, receipt, state, artifacts: profile?.nativeProviderArtifacts },
+    patch: { nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(admissionEpoch),
+      nativeProviderPackAdmissionRecovery: recovery },
+  };
+}
+
 function verifiedState(value: unknown): boolean {
+  return admissionState(value, "verified");
+}
+
+function admissionState(value: unknown, expected: "pending" | "verified"): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const state = value as Record<string, unknown>;
   return Object.keys(state).sort().join(",") === "admissionEpoch,schema,state"
-    && state.schema === "paperclip.native-provider-pack-admission-state.v1" && state.state === "verified"
+    && state.schema === "paperclip.native-provider-pack-admission-state.v1" && state.state === expected
     && typeof state.admissionEpoch === "string" && /^[a-f0-9-]{36}$/.test(state.admissionEpoch);
 }
 
@@ -205,11 +233,15 @@ async function recordNativeProviderPackAdmissionOnce(db: Db, input: AdmissionInp
       || !["pending", "verified", "unknown"].includes(String(current.state))) return false;
     if (current.state === "unknown") return false;
     const previous = run.profile?.nativeProviderPackAdmission;
-    const verified = receipt != null && (previous == null ? current.state === "pending"
-      : canonicalProviderPackJson({ ...(previous as Record<string, unknown>), inheritedFromRunId: null })
-        === canonicalProviderPackJson({ ...receipt, inheritedFromRunId: null }));
+    const unchanged = previous != null && receipt != null
+      && canonicalProviderPackJson({ ...(previous as Record<string, unknown>), inheritedFromRunId: null })
+        === canonicalProviderPackJson({ ...receipt, inheritedFromRunId: null });
+    const superseded = previous != null && !unchanged && receipt != null && current.state === "pending"
+      && receipt.inheritedFromRunId === undefined && run.profile?.nativeProviderArtifacts == null;
+    const verified = receipt != null && (previous == null ? current.state === "pending" : unchanged || superseded);
     if (verified && current.state === "verified") return true;
-    const patch = { ...(verified && previous == null ? { nativeProviderPackAdmission: receipt } : {}),
+    const patch = { ...(verified && (previous == null || superseded) ? { nativeProviderPackAdmission: receipt } : {}),
+      ...(run.profile?.nativeProviderPackAdmissionRecovery != null ? { nativeProviderPackAdmissionRecovery: null } : {}),
       nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(input.admissionEpoch), state: verified ? "verified" : "unknown" } };
     const saved = await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,

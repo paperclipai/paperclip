@@ -19,7 +19,10 @@ export const GOOGLE_WORKSPACE_SERVICE_GROUPS = [
 export function googleWorkspaceSelectedScopes(selection: GoogleWorkspaceServiceSelection): string[] {
   return [...new Set(GOOGLE_WORKSPACE_SERVICE_GROUPS.flatMap(group => {
     const access = selection[group.id];
-    return access ? group[access].flatMap(profile => GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes) : [];
+    return access ? [
+      ...group[access].flatMap(profile => GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes),
+      ...(SELECTION_ADDED_SCOPES[group.id]?.[access] ?? []),
+    ] : [];
   }))].sort();
 }
 
@@ -28,7 +31,7 @@ export function googleWorkspaceEffectiveScopes(requested: readonly string[], gra
   const implies: Record<string, string[]> = {
     documents: ["documents.readonly"], spreadsheets: ["spreadsheets.readonly"],
     presentations: ["presentations.readonly"],
-    "calendar.events": ["calendar.events.readonly", "calendar.events.freebusy"],
+    "calendar.events": ["calendar.events.readonly"],
     "calendar.readonly": ["calendar.calendarlist.readonly", "calendar.events.readonly", "calendar.events.freebusy"],
   };
   const expand = (scopes: readonly string[]) => new Set(scopes.flatMap(scope => [scope, ...(implies[scope.replace("https://www.googleapis.com/auth/", "")] ?? []).map(value => `https://www.googleapis.com/auth/${value}`)]));
@@ -75,6 +78,10 @@ export function googleWorkspaceDraftRequestedScopes(
 
 const auth = (scope: string) => `https://www.googleapis.com/auth/${scope}`;
 
+const SELECTION_ADDED_SCOPES: Partial<Record<keyof GoogleWorkspaceServiceSelection, Partial<Record<"read" | "write", readonly string[]>>>> = {
+  calendar: { write: [auth("calendar.events.freebusy")] },
+};
+
 const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileId, "workspace.all">, {
   appSlug: string;
   serverUrl: string;
@@ -100,13 +107,24 @@ const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileI
   "workspace-search.read": def("google-workspace-search", "https://workspacemcp.googleapis.com/mcp/v1", [auth("gmail.readonly"), auth("drive.readonly"), auth("calendar.readonly"), auth("chat.messages.readonly")]),
 };
 
+export const GOOGLE_WORKSPACE_SUBMITTED_SCOPES: readonly string[] = Object.freeze([
+  "gmail.readonly", "gmail.compose",
+  "drive.readonly", "drive.file",
+  "documents.readonly", "documents",
+  "spreadsheets.readonly", "spreadsheets",
+  "presentations.readonly", "presentations",
+  "calendar.calendarlist.readonly", "calendar.events.readonly", "calendar.events.freebusy", "calendar.events",
+].map(auth));
+
 /** One consent request, containing only scopes already reviewed for our services. */
 export const GOOGLE_WORKSPACE_CONNECTOR_PROFILES = {
   ...SERVICE_PROFILES,
-  "workspace.all": def("google-workspace", "https://workspacemcp.googleapis.com/mcp/v1",
-    // Keep the original broker/envelope contract stable as legacy profiles evolve.
-    [...new Set(Object.entries(SERVICE_PROFILES).filter(([id]) => id !== "gmail.archive").flatMap(([, profile]) => profile.scopes))]),
+  "workspace.all": def("google-workspace", "https://workspacemcp.googleapis.com/mcp/v1", GOOGLE_WORKSPACE_SUBMITTED_SCOPES),
 };
+
+export function googleWorkspaceProfileWithinSubmittedScopes(profile: GoogleWorkspaceConnectorProfileId): boolean {
+  return GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
+}
 
 export const GOOGLE_WORKSPACE_SERVICES = {
   gmail: "gmail.draft", drive: "drive.write", docs: "docs.write", sheets: "sheets.write",
@@ -114,6 +132,14 @@ export const GOOGLE_WORKSPACE_SERVICES = {
   people: "people.read", search: "workspace-search.read",
 } as const;
 export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SERVICES;
+
+export type GoogleWorkspaceToolTransport = "google_mcp" | "paperclip_rest";
+
+export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, GoogleWorkspaceToolTransport> = {
+  gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest", sheets: "paperclip_rest",
+  slides: "paperclip_rest", calendar: "paperclip_rest", chat: "google_mcp",
+  people: "google_mcp", search: "google_mcp",
+};
 
 // Each inner group is a set of authorization alternatives; every group is required.
 // Keep the reviewed tool allowlist closed, even when upstream adds tools.
@@ -168,7 +194,27 @@ export function googleWorkspaceToolTarget(name: string) {
   if (!Object.hasOwn(toolScopes[service], leaf)) return null;
   const profile = SERVICE_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
   return { service, upstreamName, leaf, serverUrl: profile.serverUrl, appSlug: profile.appSlug,
-    requiredScopes: toolScopes[service][leaf]!, write: profile.writeTools.some((tool) => tool === leaf) };
+    requiredScopes: toolScopes[service][leaf]!, write: profile.writeTools.some((tool) => tool === leaf),
+    transport: GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] };
+}
+
+const GOOGLE_WORKSPACE_SERVICE_TITLES: Record<GoogleWorkspaceService, string> = {
+  gmail: "Gmail", drive: "Drive", docs: "Docs", sheets: "Sheets", slides: "Slides",
+  calendar: "Calendar", chat: "Chat", people: "People", search: "Workspace search",
+};
+
+export function googleWorkspaceToolTitle(name: string, title?: string | null): string | null {
+  const target = googleWorkspaceToolTarget(name);
+  const given = title?.trim() || null;
+  if (!target) return given;
+  const service = GOOGLE_WORKSPACE_SERVICE_TITLES[target.service];
+  if (given?.startsWith(`${service}: `)) return given;
+  const leaf = target.leaf.replace(/_/g, " ");
+  return `${service}: ${given ?? leaf.charAt(0).toUpperCase() + leaf.slice(1)}`;
+}
+
+export function googleWorkspaceServiceToolNames(service: GoogleWorkspaceService): string[] {
+  return Object.keys(toolScopes[service]);
 }
 
 export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly string[]): boolean {
@@ -176,9 +222,12 @@ export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly stri
   return Boolean(target && target.requiredScopes.every((alternatives) => alternatives.some((scope) => scopes.includes(scope))));
 }
 
+export function googleWorkspaceSubmittedScopesIn(scopes: readonly string[]): string[] {
+  return [...new Set(scopes.filter((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope)))];
+}
+
 export function isGoogleWorkspaceScopeGrant(scopes: readonly string[]): boolean {
-  const allowed = GOOGLE_WORKSPACE_CONNECTOR_PROFILES["workspace.all"].scopes;
-  return scopes.length > 0 && scopes.every((scope) => allowed.includes(scope));
+  return scopes.length > 0 && scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
 }
 
 export function googleWorkspaceServiceGranted(service: GoogleWorkspaceService, scopes: readonly string[]): boolean {
