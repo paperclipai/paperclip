@@ -38,8 +38,6 @@
 
 Paperclip is an open-source (MIT) multi-player control plane for running teams of AI agents. Run Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Hermes, and custom HTTP or process agents in one shared workspace with org charts, atomic task ownership, approval gates, and hard-stop budgets at company, agent, and project scope.
 
-Frameworks like LangGraph and CrewAI help you build an agent. Paperclip runs and governs the team of agents you already use, across software engineering and business operations. It is free to self-host as a Node.js server and React UI, with all team features included.
-
 **If OpenClaw is an _employee_, Paperclip is the _company_.**
 
 |        | Step            | Example                                                                   |
@@ -342,7 +340,6 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 ## Compare and learn more
 
 - [What is Paperclip AI?](https://paperclip.ing/blog/what-is-paperclip-ai/): overview of how Paperclip coordinates multi-agent teams.
-- [Pricing](https://paperclip.ing/pricing/): free self-hosted MIT license with all team features included, plus Paperclip Cloud beta details.
 - [Paperclip vs LangGraph](https://paperclip.ing/vs/langgraph/): building stateful agent graphs versus running and governing an agent team.
 - [Paperclip vs CrewAI](https://paperclip.ing/vs/crewai/): code-first multi-agent crews versus a shared control plane with budgets and approvals.
 - [Paperclip vs Linear Agents](https://paperclip.ing/vs/linear-agents/): issue-tracker agent delegation versus a multi-player workspace for any agent runtime.
