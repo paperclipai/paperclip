@@ -156,7 +156,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Optional parent task ID. Omit it to create a child of the current task, or a top-level task from a conversation. Agents nest one level: a child of a child is placed beside it, and the result reports the parent actually used. A conversation is never a parent.",
+            "description": "Optional parent task ID. Omit it to create a child of the current task (or a top-level task from a conversation). Pass null to create a top-level task with no parent. Pass a task ID to make that task the parent. Agents nest one level: a child of a child is placed beside it, and the result reports the parent actually used. A conversation is never a parent.",
             "minLength": 1,
             "maxLength": 200
           },

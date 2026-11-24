@@ -51,9 +51,11 @@ export async function callProjectTool(input: {
       assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
       assigneeUserId: args.assigneeUserId,
       // An explicit parent goes through the route's depth placement and
-      // authorization; a conversation itself is never a parent.
+      // authorization; a conversation itself is never a parent. An explicit
+      // null is a top-level task, matching the route's `parentId: null`.
       parentId: typeof args.parentTaskId === "string" && args.parentTaskId
         ? args.parentTaskId
+        : args.parentTaskId === null ? null
         : (input.conversation ? null : input.issueId),
       // Same rule as the native tool: backlog is honored and never wakes an
       // agent; otherwise unresolved blockers make the task blocked.
