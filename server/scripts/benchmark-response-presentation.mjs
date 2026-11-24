@@ -12,7 +12,7 @@ const output = path.resolve(process.argv[2] ?? mkdtempSync(path.join(tmpdir(), "
 mkdirSync(output, { recursive: true });
 assert.equal(existsSync(path.join(output, "pairs.jsonl")), false, "Use a fresh output directory");
 const baseline = "82c033ed127d07862e6765aa4b69a3cf339bde81";
-const integration = "server/src/__tests__/chat-channels.integration.test.ts";
+const integration = "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts";
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
 assert.equal(git("status", "--porcelain").trim(), "", "Commit fixture changes first; use an isolated checkout");
 const original = readFileSync(path.join(root, integration), "utf8");
