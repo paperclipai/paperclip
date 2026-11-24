@@ -2743,6 +2743,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     // The first process stops at once. The second one, which the reopen launches, never confirms its stop.
     browserLoginMock.startLocalBrowserLogin.mockImplementation(() => (++launched === 1 ? { abort: () => {} } : { abort: () => new Promise<void>(() => {}) }) as never);
     const login = localAiLoginService(db);
+    // The stop deadline is five seconds. Let it pass at once; other timers keep their time.
+    const realSetTimeout = globalThis.setTimeout;
+    const clock = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(handler, ms === 5_000 ? 0 : ms, ...rest)) as typeof setTimeout);
     try {
       const id = (await login.start(companyId, owner, intent)).sessionId;
       const transaction = db.transaction.bind(db);
@@ -2757,10 +2761,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(attempt).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
       expect(attempt!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
     } finally {
+      clock.mockRestore();
       browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
-  }, 30_000);
+  });
   it("keeps a Claude sign-in pending for the expiry worker until its Keychain item is deleted", async () => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();
