@@ -660,6 +660,25 @@ describe("Cursor mode native execution projection", () => {
   });
 });
 
+describe("Antigravity swarm native execution projection", () => {
+  const fixture = (acpxAgent: "antigravity" | "cursor", antigravitySwarm?: boolean) => ({
+    companyId: "company-1", runId: "run-1", agentId: "agent-1",
+    issue: { id: "issue-1", identifier: "SWARM-1", title: "Write two files", description: null, workMode: "standard" },
+    taskPrompt: "Write a.txt and b.txt.",
+    workspace: { id: "workspace-1", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId: null, provider: "acpx" as const, acpxAgent,
+    model: acpxAgent === "antigravity" ? "gemini-3.8-flash-low" : "exact-cursor-model", acpxPermissionMode: "deny-all" as const,
+    ...(antigravitySwarm === undefined ? {} : { antigravitySwarm }),
+    completionContract: { id: "contract-1", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Write", criteria: [{ id: "output", requirement: "Write" }] } },
+    runtimeContext: nativeRuntimeContextFixture(),
+  });
+  it("selects the swarm provider mode only for a trusted Antigravity swarm run", () => {
+    expect(buildNativeExecutionInput(fixture("antigravity", true)).provider).toMatchObject({ agent: "antigravity", mode: "swarm" });
+    expect(buildNativeExecutionInput(fixture("antigravity")).provider).not.toHaveProperty("mode");
+    expect(buildNativeExecutionInput(fixture("cursor", true)).provider).toMatchObject({ agent: "cursor", mode: "agent" });
+  });
+});
+
 describe("Pi thinking native execution projection", () => {
   function fixture(piThinkingLevel?: "off" | "low" | "high" | "max") {
     return {
