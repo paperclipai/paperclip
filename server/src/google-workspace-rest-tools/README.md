@@ -241,7 +241,7 @@ stream and for a stateless one.
 
 Before the gateway sends a call to Google's MCP server for Gmail, Drive,
 Docs, Sheets, Slides or Calendar, it runs `googleWorkspaceArgumentRefusal`
-(`argument-guards.ts`, through `googleWorkspaceMcpArgumentRefusal` in the
+(`argument-guards.ts`, through `googleWorkspaceMcpPreflightRefusal` in the
 adapter). A refusal is a tool error that ends with "Nothing was sent to
 Google.", recorded and audited like a REST refusal. It checks only what an
 argument shows, with no request to Google:
@@ -257,9 +257,11 @@ argument shows, with no request to Google:
   `docs/request-kinds.ts` or `slides/request-kinds.ts` (so kinds that read
   another file, and images from Drive or Docs links, are refused).
 
-For Calendar `delete_event`, the gateway first calls Google's `get_event`
-(the connection's own action, with only `calendarId` and `eventId`) and passes
-the answer to `googleCalendarSeriesRefusal`. A whole recurring series is
+For Calendar `delete_event`, `googleWorkspaceMcpPreflightRefusal` in the
+adapter first reads the event with the connection's own `calendar__get_event`
+(only `calendarId` and `eventId`), through a callback the gateway passes, and
+gives the answer to `googleCalendarSeriesRefusal`. The gateway only looks up
+and runs that action, with its usual permission checks. A whole recurring series is
 refused, as on REST. If the read does not return the event, nothing is
 deleted.
 

@@ -2,6 +2,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   GOOGLE_WORKSPACE_TOOL_TRANSPORT,
   googleWorkspaceServiceToolNames,
+  googleWorkspaceToolName,
   googleWorkspaceToolTarget,
   googleWorkspaceToolTitle,
   type GoogleWorkspaceService,
@@ -89,18 +90,21 @@ export function googleWorkspaceCatalogToolTitle(
   return googleWorkspaceToolTitle(name, restTitle ?? title);
 }
 
-export function googleWorkspaceMcpArgumentRefusal(toolName: string, args: unknown, inputSchema: unknown): string | null {
-  const target = googleWorkspaceToolTarget(toolName);
+export interface GoogleWorkspaceMcpPreflight {
+  toolName: string;
+  arguments: unknown;
+  inputSchema: unknown;
+  callTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown | null>;
+}
+
+export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceMcpPreflight): Promise<string | null> {
+  const target = googleWorkspaceToolTarget(input.toolName);
   if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
-  return googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: args, inputSchema });
-}
-
-export function isGoogleCalendarEventDelete(toolName: string): boolean {
-  const target = googleWorkspaceToolTarget(toolName);
-  return target?.service === "calendar" && target.leaf === "delete_event";
-}
-
-export function googleWorkspaceMcpSeriesRefusal(result: unknown): string | null {
+  const refusal = googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: input.arguments, inputSchema: input.inputSchema });
+  if (refusal || target.service !== "calendar" || target.leaf !== "delete_event") return refusal;
+  const args = (input.arguments ?? {}) as Record<string, unknown>;
+  const lookup = Object.fromEntries(["calendarId", "eventId"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+  const result = await input.callTool(googleWorkspaceToolName("calendar", "get_event"), lookup);
   const record = (result && typeof result === "object" ? result : {}) as { content?: unknown; data?: { isError?: unknown; structuredContent?: unknown } };
   return googleCalendarSeriesRefusal({
     isError: record.data?.isError === true,

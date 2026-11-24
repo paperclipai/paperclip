@@ -34,8 +34,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import {
-  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpArgumentRefusal, googleWorkspaceMcpSeriesRefusal,
-  googleWorkspaceRestAuditEndpoint, isGoogleCalendarEventDelete,
+  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpPreflightRefusal, googleWorkspaceRestAuditEndpoint,
 } from "./google-workspace-rest-dispatch.js";
 import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
@@ -8256,24 +8255,22 @@ export function createToolGatewayService(
     }, { owner });
   }
 
-  async function googleCalendarSeriesCheck(
+  async function callConnectionToolForCheck(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     connectionId: string,
-    parameters: unknown,
+    toolName: string,
+    parameters: Record<string, unknown>,
     ms: number,
     invocationId: string,
     callerHeaders: ExecuteGatewayToolInput["callerHeaders"],
-  ): Promise<string | null> {
-    const [read] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
+  ): Promise<unknown | null> {
+    const [entry] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
       eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, connectionId),
-      eq(toolCatalogEntries.toolName, "calendar__get_event"), eq(toolCatalogEntries.status, "active"),
+      eq(toolCatalogEntries.toolName, toolName), eq(toolCatalogEntries.status, "active"),
     )).limit(1);
-    if (!read) return googleWorkspaceMcpSeriesRefusal(null);
-    const args = asRecord(parameters) ?? {};
-    const lookup = Object.fromEntries(["calendarId", "eventId"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
-    const outcome = await executeRemoteHttpTool(session, { ...tool, catalogEntryId: read.id }, lookup, ms, invocationId, callerHeaders);
-    return googleWorkspaceMcpSeriesRefusal(outcome.result);
+    if (!entry) return null;
+    return (await executeRemoteHttpTool(session, { ...tool, catalogEntryId: entry.id }, parameters, ms, invocationId, callerHeaders)).result;
   }
 
   async function executeRemoteHttpTool(
@@ -8441,12 +8438,13 @@ export function createToolGatewayService(
         );
       };
       if (workspaceTarget?.transport === "google_mcp") {
-        const refusal = googleWorkspaceMcpArgumentRefusal(entry.toolName, parameters, entry.inputSchema);
-        const seriesRefusal = refusal ?? (isGoogleCalendarEventDelete(entry.toolName)
-          ? await googleCalendarSeriesCheck(session, tool, connection.id, parameters, ms, invocationId, callerHeaders) : null);
-        if (refusal || seriesRefusal) {
+        const refusal = await googleWorkspaceMcpPreflightRefusal({
+          toolName: entry.toolName, arguments: parameters, inputSchema: entry.inputSchema,
+          callTool: (toolName, args) => callConnectionToolForCheck(session, tool, connection.id, toolName, args, ms, invocationId, callerHeaders),
+        });
+        if (refusal) {
           execution.request.dispatched = false;
-          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal ?? seriesRefusal! }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
+          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
         }
       }
       if (workspaceTarget?.transport === "paperclip_rest") {

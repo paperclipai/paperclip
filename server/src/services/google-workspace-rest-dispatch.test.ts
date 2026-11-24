@@ -4,6 +4,7 @@ import {
   callGoogleWorkspaceRest,
   googleWorkspaceRestToolDefinition,
   googleWorkspaceCatalogToolTitle,
+  googleWorkspaceMcpPreflightRefusal,
   googleWorkspaceRestTransportGaps,
   listGoogleWorkspaceRest,
   probeGoogleWorkspaceRest,
@@ -137,5 +138,30 @@ describe("probeGoogleWorkspaceRest", () => {
     await expect(probe(200, { emailAddress: "a@example.test" })).resolves.toEqual({ ok: true });
     await expect(probe(401, {})).resolves.toMatchObject({ ok: false, authFailure: "unauthenticated" });
     await expect(probe(403, { error: { errors: [{ reason: "accessNotConfigured" }] } })).resolves.toMatchObject({ ok: false, authFailure: null });
+  });
+});
+
+describe("googleWorkspaceMcpPreflightRefusal", () => {
+  const eventResult = (event: Record<string, unknown>) => ({ content: JSON.stringify(event), data: { isError: false, structuredContent: event } });
+
+  it("reads the event through the gateway's callback before a Calendar delete, and refuses a recurring series", async () => {
+    const callTool = vi.fn(async () => eventResult({ id: "s1", recurrence: ["RRULE:FREQ=WEEKLY"] }));
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { calendarId: "primary", eventId: "s1", sendUpdates: "none" },
+      inputSchema: {}, callTool })).resolves.toContain("whole recurring series");
+    expect(callTool).toHaveBeenCalledWith("calendar__get_event", { calendarId: "primary", eventId: "s1" });
+  });
+
+  it("passes one occurrence, refuses when the callback has no event, and reads nothing for other tools", async () => {
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { eventId: "s1_20261124" }, inputSchema: {},
+      callTool: async () => eventResult({ id: "s1_20261124", recurringEventId: "s1" }) })).resolves.toBeNull();
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__delete_event", arguments: { eventId: "e1" }, inputSchema: {},
+      callTool: async () => null })).resolves.toContain("Nothing was deleted.");
+    const callTool = vi.fn(async () => null);
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "calendar__update_event", arguments: { eventId: "e1" }, inputSchema: {}, callTool })).resolves.toBeNull();
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "drive__get_file_metadata", arguments: { fileId: "a,b" }, inputSchema: {}, callTool }))
+      .resolves.toContain("fileId must be one Google file ID");
+    await expect(googleWorkspaceMcpPreflightRefusal({ toolName: "chat__list_messages", arguments: { anything: 1 }, inputSchema: { type: "object", properties: {} }, callTool }))
+      .resolves.toBeNull();
+    expect(callTool).not.toHaveBeenCalled();
   });
 });
