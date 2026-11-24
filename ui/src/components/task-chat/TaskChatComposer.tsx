@@ -72,6 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
+import { parseLeadingUserCommand } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -230,15 +231,13 @@ function normalizeActionCommandText(value: string, command: "goal" | "plan"): st
 
 /**
  * `/plan <request>` is the typed form of the Plan mode control: the request is
- * sent in Plan mode, without the command. Only a leading command in what the
- * user submits counts; a `/plan` anywhere else, including quoted or pasted
- * text, stays ordinary text.
+ * sent in Plan mode, without the command. This composer submission is the
+ * user-authored text `parseLeadingUserCommand` requires; only its leading
+ * command counts, and a `/plan` anywhere else stays ordinary text.
  */
 export function parsePlanCommand(value: string): { matched: false } | { matched: true; request: string } {
-  const trimmed = normalizeActionCommandText(value, "plan");
-  const match = /^\/plan(?=\s|$)/.exec(trimmed);
-  if (!match) return { matched: false };
-  return { matched: true, request: trimmed.slice(match[0].length).trim() };
+  const command = parseLeadingUserCommand(normalizeActionCommandText(value, "plan"), ["plan"]);
+  return command ? { matched: true, request: command.argument } : { matched: false };
 }
 
 export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
