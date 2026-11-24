@@ -5967,6 +5967,16 @@ export function agentRoutes(
           || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
             key => aiConfig[key] !== existing.adapterConfig[key],
           ));
+        // A model-only PATCH sends no runtimeConfig, so the binding is neither
+        // sent nor restored — it is silently reused — and neither the roster
+        // check nor the preservation flag above covers it. Carry the catalog
+        // check with the reused binding when the AI config changed; PATCHes
+        // that do not touch the model, an explicitly-sent binding, and setup
+        // drafts are unaffected.
+        const reusedBindingAiConfigChanged = !requestedRuntimeConfig
+          && !isAgentSetupDraft(existing)
+          && nextAiBinding.mode !== "router"
+          && ["model", "provider", "acpxAgent", "engine"].some(key => aiConfig[key] !== existing.adapterConfig[key]);
         if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
         const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
           && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
@@ -5974,7 +5984,7 @@ export function agentRoutes(
           const configuringSetup = isAgentSetupDraft(existing);
           await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
             (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
-            !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings) || preservedAiBinding);
+            !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings) || preservedAiBinding || reusedBindingAiConfigChanged);
         }
       }
     }
