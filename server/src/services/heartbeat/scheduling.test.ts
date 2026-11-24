@@ -280,6 +280,25 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
   });
 
+  it("parks a monitor wake blocked by an execution reconciliation hold and keeps it armed", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
+      options?.issueStateGuard?.onExecutionDeferred?.("uncertain_provider_action");
+      return null;
+    });
+    const result = await f.scheduler.tickIssueMonitors(now);
+    expect(result).toMatchObject({ parked: 1, skipped: 0 });
+    // The monitor stays armed — the next tick can reclaim it after the stale-claim window.
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt });
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    const parked = events.find(event => event.action === "issue.monitor_wake_parked");
+    expect(parked).toBeDefined();
+    expect(parked?.details).toMatchObject({
+      reason: "execution_reconciliation_required",
+      blockerCause: "uncertain_provider_action",
+    });
+  });
+
   it("releases a monitor claim when diagnostic storage fails", async () => {
     const f = await fixture();
     await db.execute(sql`create function fail_monitor_diagnostic_test() returns trigger language plpgsql as $$
@@ -669,7 +688,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       expect(await heartbeat.nextIssueMonitorAt()).toBe(dueAt.getTime());
       await settings.updateExperimental({ enableWorktreeRunExecution: false });
       expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
-      expect(await heartbeat.tickIssueMonitors()).toEqual({ checked: 0, triggered: 0, skipped: 0 });
+      expect(await heartbeat.tickIssueMonitors()).toEqual({ checked: 0, triggered: 0, skipped: 0, parked: 0 });
       expect((await readIssue(f.issue.id)).monitorNextCheckAt).toEqual(dueAt);
     });
 
