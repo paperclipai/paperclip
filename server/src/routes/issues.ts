@@ -1,3 +1,4 @@
+import { isRestrictedIncidentRunOutput } from "../agent-auth-jwt.js";
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
@@ -8551,7 +8552,7 @@ export function issueRoutes(
       issue: issueCore,
       ...recentCommentsAndFacts,
       recentActivity,
-      recentRuns,
+      recentRuns: recentRuns.filter((run) => !isRestrictedIncidentRunOutput(issue.companyId, run.runId)),
       interactions,
       attachments,
       liveRuns,

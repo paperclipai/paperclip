@@ -1956,6 +1956,7 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       status: "succeeded",
       scopeKind: "company",
+      issueId: null,
     });
     mockProviderTraceStore.inspect.mockResolvedValue({
       trace: { id: "trace-1", status: "complete" },
