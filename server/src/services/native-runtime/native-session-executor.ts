@@ -6678,6 +6678,9 @@ async function migrateRunnerdStateRootForExecution(input: {
       return;
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
+      if (!input.restartRecovery && !input.retainedWarmOwnerRunId
+        && (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local")
+        && await retireNeverOpenedCandidateRunRoot(input.execution, scoped)) return;
       if (!input.restartRecovery && !input.retainedWarmOwnerRunId && input.bootstrapRetryLeaseOwner
         && input.runnerExecutionTarget?.kind === "remote"
         && runnerdAuthorityLifecycle(scoped, identity) === "absent"
@@ -7168,6 +7171,34 @@ export function prepareNativeSessionOpenTimeoutRetry(execution: NativeExecutionI
   const identity = readRunnerdDurableIdentity(root);
   if (!identity || identity.runId !== execution.binding.runId) return false;
   if (!runnerdStateProvesIncompleteBootstrap(root, { localProcesses: true })) return false;
+  quarantineRunnerdStateRoot(root, "identity_indeterminate");
+  return true;
+}
+
+/**
+ * The pending Antigravity candidate's runner refuses every prior activation in
+ * its run-scoped root. A same-run startup retry after a session.open that never
+ * recorded a provider identity has nothing to adopt, so its root is retired and
+ * the retry bootstraps fresh. A root whose provider state recorded an identity,
+ * a turn, or anything unreadable is kept, and the runner's gate refuses it.
+ */
+export async function retireNeverOpenedCandidateRunRoot(execution: NativeExecutionInput, root: string): Promise<boolean> {
+  if (!antigravityUsesRunScopedState(execution) || !isSafeNativeStateDirectory(root)) return false;
+  const identity = readRunnerdDurableIdentity(root);
+  if (!durableIdentityMatchesExecution(identity, execution)) return false;
+  let state: Record<string, unknown>;
+  try {
+    state = record(JSON.parse(readBoundedNativeFile(resolve(root, "runner", "acpx-provider-state.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8")));
+  } catch {
+    return false;
+  }
+  const empty = (value: unknown) => value == null || (Array.isArray(value) ? value.length === 0 : Object.keys(record(value)).length === 0);
+  if (state.schema !== ACPX_PROVIDER_STATE_SCHEMA || !["prepared", "closed"].includes(String(state.lifecycle))
+    || state.identity !== null || state.activeTurnId !== null || state.providerExitUnconfirmed !== false
+    || state.semanticResult != null || !empty(state.pendingEvents) || !empty(state.pendingRuntimeRequests)
+    || !empty(state.openSemanticCalls)) return false;
+  if (!(await noLocalRunnerProcessForRun(execution.binding.runId))) return false;
   quarantineRunnerdStateRoot(root, "identity_indeterminate");
   return true;
 }
