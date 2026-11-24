@@ -4,6 +4,7 @@ import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments,
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-profile.js";
+import { recordedSwarmRequestSql } from "./queued-comment-delivery.js";
 import { saveUndeliveredUserComments } from "./work-intent-outbox.js";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
 
@@ -22,8 +23,8 @@ import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from 
  * never run as an ordinary request.
  */
 export const ANTIGRAVITY_SWARM_COMMAND = "swarm" as const;
-export { ANTIGRAVITY_SWARM_UNAVAILABLE } from "./antigravity-swarm-refusal.js";
-import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "./antigravity-swarm-refusal.js";
+export { ANTIGRAVITY_SWARM_REQUESTED_ACTION, ANTIGRAVITY_SWARM_UNAVAILABLE, isAntigravityAgent } from "./antigravity-swarm-refusal.js";
+import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, ANTIGRAVITY_SWARM_UNAVAILABLE, isAntigravityAgent } from "./antigravity-swarm-refusal.js";
 /** Automatic wakes (recovery, sweeps) attempt one swarm request at most this often; the user can always ask again. */
 export const ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS = 3;
 
@@ -31,10 +32,6 @@ type Json = Record<string, unknown>;
 const record = (value: unknown): Json =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 
-export function isAntigravityAgent(agent: { adapterType: string; adapterConfig: unknown } | null): boolean {
-  const config = record(agent?.adapterConfig);
-  return agent?.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "antigravity";
-}
 
 export function antigravitySwarmRefusal(input: {
   enabled: boolean;
@@ -56,8 +53,6 @@ export function requestedAntigravitySwarmCommentId(context: unknown): string | n
   const value = record(context).antigravitySwarmCommentId;
   return typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
 }
-
-export const ANTIGRAVITY_SWARM_REQUESTED_ACTION = "issue.antigravity_swarm_requested";
 
 /** The swarm's instruction from a recorded request comment: its text, without a leading /swarm it may still carry. */
 export function antigravitySwarmRequestFromComment(body: string): string {
@@ -160,12 +155,35 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
     .limit(1);
   if (!requested) return null;
-  // The swarm's only instruction is this recorded comment's own text.
-  const request = antigravitySwarmRequestFromComment(requested.body);
   const refuse = (message: string): never => { throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, message); };
+  // A later user /swarm replaces an earlier one (queued-comment-delivery.ts
+  // counts the earlier one handled). When the newest request rode into this
+  // wake, this run is that swarm; otherwise this request was replaced and
+  // never runs, neither as a swarm nor as ordinary work.
+  const wakeIds = await wakeCommentIds(db, input);
+  const recordedInWake = await recordedSwarmRequestIds(db, input.companyId, input.issueId, wakeIds);
+  const newest = await newestSwarmRequest(db, input.companyId, input.issueId);
+  let selected = { commentId, body: requested.body };
+  if (newest && newest.id !== commentId) {
+    if (!wakeIds.includes(newest.id)) {
+      await queueCommentsTheSwarmDoesNotSend(db, { ...input, commentId });
+      refuse("A newer /swarm request on this task replaced this one, so this one did not run.");
+    }
+    selected = { commentId: newest.id, body: newest.body };
+  }
+  const replacedCommentIds = recordedInWake.filter(id => id !== selected.commentId);
+  // The swarm's only instruction is this recorded comment's own text.
+  const request = antigravitySwarmRequestFromComment(selected.body);
   // A requested swarm with nothing (or too much) to run is refused, never run as ordinary work.
   const requestRefusal = antigravitySwarmRequestRefusal(request);
   if (requestRefusal) refuse(requestRefusal);
+  return selectSwarm(db, { ...input, commentId: selected.commentId, request, replacedCommentIds, refuse });
+}
+
+async function selectSwarm(db: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1] & {
+  commentId: string; request: string; replacedCommentIds: string[]; refuse: (message: string) => never;
+}): Promise<AntigravitySwarmSelection | null> {
+  const { commentId, request, refuse } = input;
   return db.transaction(async (tx) => {
     // One selection at a time per task, so one request starts one swarm.
     await tx.select({ id: issues.id }).from(issues)
@@ -208,7 +226,9 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
       issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
       details: {
         commentId,
-        summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
+        ...(input.replacedCommentIds.length ? { replacedCommentIds: input.replacedCommentIds } : {}),
+        summary: (input.replacedCommentIds.length ? "Your latest /swarm request replaced the earlier one, which did not run. " : "") +
+          "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
       },
     });
     return { commentId, request };
@@ -247,12 +267,7 @@ async function userRetryStartedRun(db: Db, input: { companyId: string; agentId: 
 async function queueCommentsTheSwarmDoesNotSend(db: Db, input: {
   companyId: string; issueId: string; runId: string; agent: { id: string }; context: unknown; commentId: string;
 }): Promise<void> {
-  const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-  const merged = [run?.contextSnapshot, input.context].flatMap(value => [...queuedCommentIdsFromRunContext(value),
-    record(value).wakeCommentId, record(value).commentId]);
-  const others = [...new Set(merged.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)
-    && id !== input.commentId))];
+  const others = (await wakeCommentIds(db, input)).filter(id => id !== input.commentId);
   if (others.length === 0) return;
   const receipts = await db.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agent.id),
@@ -263,6 +278,31 @@ async function queueCommentsTheSwarmDoesNotSend(db: Db, input: {
   if (owed.length === 0) return;
   await saveUndeliveredUserComments(db, { companyId: input.companyId, issueId: input.issueId, agentId: input.agent.id,
     commentIds: owed, allowedStatuses: ["backlog", "todo", "in_progress", "in_review", "blocked"] });
+}
+
+/** The user comment ids this run's wake carries (its stored context and the wake's own), in order. */
+async function wakeCommentIds(db: Db, input: { companyId: string; runId: string; context: unknown }): Promise<string[]> {
+  const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+  const merged = [run?.contextSnapshot, input.context].flatMap(value => [...queuedCommentIdsFromRunContext(value),
+    record(value).wakeCommentId, record(value).commentId]);
+  return [...new Set(merged.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)))];
+}
+
+async function recordedSwarmRequestIds(db: Db, companyId: string, issueId: string, commentIds: string[]): Promise<string[]> {
+  if (commentIds.length === 0) return [];
+  const rows = await db.select({ id: issueComments.id }).from(issueComments).where(and(eq(issueComments.companyId, companyId),
+    eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds), recordedSwarmRequestSql(companyId, sql`${issueComments}`)));
+  return commentIds.filter(id => rows.some(row => row.id === id));
+}
+
+/** The task's newest live recorded /swarm request: the one a later request has not replaced. */
+async function newestSwarmRequest(db: Db, companyId: string, issueId: string): Promise<{ id: string; body: string } | null> {
+  const [newest] = await db.select({ id: issueComments.id, body: issueComments.body }).from(issueComments)
+    .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt),
+      recordedSwarmRequestSql(companyId, sql`${issueComments}`)))
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+  return newest ?? null;
 }
 
 export interface AntigravitySwarmSelection {

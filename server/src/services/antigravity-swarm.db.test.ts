@@ -8,6 +8,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
 import { mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
+import { saveUndeliveredUserComments } from "./work-intent-outbox.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "swarm-user";
@@ -314,6 +315,69 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
       body: "three helpers write c.txt", createdAt: new Date(Date.now() + 1000) }).returning();
     await recordAntigravitySwarmRequest(db, { companyId: f.company.id, issueId: f.issue.id, commentId: later!.id, userId: USER });
     expect(await automatic(f, (await insertRun(f, {})).id)).toEqual({ commentId: later!.id, request: "three helpers write c.txt" });
+  });
+
+  /**
+   * One wake can carry several user comments (coalescing merges them, newest
+   * wake context last). The rule, in comment order: the newest recorded /swarm
+   * runs as the swarm with its own text; an older recorded /swarm is replaced
+   * (never run, neither as a swarm nor as ordinary work, and counted handled);
+   * every ordinary comment waits for an ordinary run and never rides in the swarm.
+   */
+  it.each([
+    { name: "swarm then ordinary", order: ["S1", "O"], runs: "S1", requeued: ["O"], replaced: [] },
+    { name: "ordinary then swarm", order: ["O", "S1"], runs: "S1", requeued: ["O"], replaced: [] },
+    { name: "swarm then swarm", order: ["S1", "S2"], runs: "S2", requeued: [], replaced: ["S1"] },
+    { name: "swarm, ordinary, swarm", order: ["S1", "O", "S2"], runs: "S2", requeued: ["O"], replaced: ["S1"] },
+  ])("a wake carrying $name runs $runs as the swarm, re-queues $requeued and replaces $replaced", async ({ order, runs, requeued, replaced }) => {
+    const f = await seed({ record: "none" });
+    await db.delete(issueComments).where(eq(issueComments.id, f.comment.id));
+    const base = Date.now() - 60_000;
+    const ids: Record<string, string> = {};
+    for (const [index, label] of order.entries()) {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user",
+        authorUserId: USER, body: label.startsWith("S") ? `/swarm request ${label}` : `ordinary ${label}`,
+        createdAt: new Date(base + index * 1000) }).returning();
+      ids[label] = comment!.id;
+      if (label.startsWith("S")) await recordAntigravitySwarmRequest(db, { companyId: f.company.id, issueId: f.issue.id, commentId: comment!.id, userId: USER });
+    }
+    const wakeContext = order.map(label => ({ issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: ids[label],
+      wakeCommentIds: [ids[label]], ...(label.startsWith("S") ? { antigravitySwarmCommentId: ids[label] } : {}) }))
+      .reduce<Record<string, unknown>>((merged, wake) => mergeCoalescedContextSnapshot(merged, wake), {});
+    const run = await insertRun(f, { startedAt: new Date(Date.now() + 1000), contextSnapshot: wakeContext });
+    // The swarm runs the newest request with only that request's text.
+    expect(await resolve(f, { runId: run.id, context: wakeContext })).toEqual({ commentId: ids[runs], request: `request ${runs}` });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.contextSnapshot)
+      .toMatchObject({ antigravitySwarmCommentId: ids[runs] });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 2000) }).where(eq(heartbeatRuns.id, run.id));
+    // Handled: the swarm's own request and every request it replaced. Ordinary comments are still owed.
+    const all = Object.values(ids);
+    expect(new Set(await deliveredQueuedCommentIds(db, { companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id, commentIds: all })))
+      .toEqual(new Set([runs, ...replaced].map(label => ids[label])));
+    // Only the ordinary comments wait in an ordinary receipt; a replaced request is never re-queued.
+    const waiting = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.company.id),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect(waiting.map(wake => queuedCommentIdsFromWakePayload(wake.payload))).toEqual(requeued.length ? [requeued.map(label => ids[label])] : []);
+    for (const wake of waiting) {
+      expect((wake.payload as Record<string, Record<string, unknown>>)._paperclipWakeContext).not.toHaveProperty("antigravitySwarmCommentId");
+    }
+    // The next run is ordinary work: no swarm is pending, and a replaced request never starts one.
+    expect(await automatic(f, (await insertRun(f, {})).id, "issue_commented")).toBeNull();
+    for (const label of replaced) {
+      await expect(resolve(f, { runId: (await insertRun(f, {})).id, context: { issueId: f.issue.id, antigravitySwarmCommentId: ids[label] } }))
+        .rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/newer \/swarm/) });
+    }
+  });
+
+  it("keeps a recorded /swarm request's marker when an undelivered-comment backstop re-queues it", async () => {
+    const f = await seed();
+    const [ordinary] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user",
+      authorUserId: USER, body: "and update the readme", createdAt: new Date(Date.now() + 1000) }).returning();
+    await saveUndeliveredUserComments(db, { companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+      commentIds: [f.comment.id, ordinary!.id], allowedStatuses: ["todo"] });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.company.id),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect((receipt!.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({ antigravitySwarmCommentId: f.comment.id });
   });
 
   it.each([
