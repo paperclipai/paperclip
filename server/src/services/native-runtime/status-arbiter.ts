@@ -7,7 +7,8 @@ import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_A
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 import { planNotProducedDecision } from "./plan-mode-status.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
-  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS } from "./native-agent-blocker.js";
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS,
+  NATIVE_AGENT_BLOCKER_SPLIT_CODE, nativeAgentBlockerSplitAction } from "./native-agent-blocker.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -275,6 +276,11 @@ export function arbitrateNativeStatus(input: {
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
   agentBlockerProgress?: boolean;
+  /**
+   * The agent that created this task, when it may take it back to split it:
+   * set only once its progress continuations are spent and it was not asked before.
+   */
+  agentBlockerSplitOwnerAgentId?: string | null;
   /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
   hasQueuedChatRequest?: boolean;
   failureRetryCount?: number;
@@ -709,6 +715,21 @@ export function arbitrateNativeStatus(input: {
         effects: [{ kind: "schedule_retry", cause: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
           summary: "Continue the task in a fresh session.", agentId: input.agentId,
           ...(progressNextAction ? { progressNextAction } : {}) }],
+      };
+    }
+    // Every run saved work but the task still is not done: it is too large for
+    // one agent turn chain. Its creator can split it better than the board.
+    if (input.assessment.blocker.ownerKind === "agent" && !input.hasActivePauseHold &&
+        progressNextAction && input.agentBlockerSplitOwnerAgentId) {
+      const owner = { agentId: input.agentBlockerSplitOwnerAgentId };
+      const action = nativeAgentBlockerSplitAction(progressNextAction);
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked", toStatus: "blocked",
+        reasonCode: NATIVE_AGENT_BLOCKER_SPLIT_CODE,
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
+        unblockDescriptor: { owner, action },
+        effects: [{ kind: "bind_blocker", owner, action }],
       };
     }
     const action = input.assessment.blocker.unblockAction;

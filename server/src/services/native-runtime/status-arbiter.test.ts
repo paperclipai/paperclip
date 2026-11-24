@@ -833,4 +833,20 @@ describe("native status authority", () => {
     expect(arbitrate({ ...progressing, failureRetryCount: NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS })).toMatchObject({
       toStatus: "blocked", reasonCode: "native_agent_blocker_needs_person", unblockDescriptor: { owner: "board" } });
   });
+
+  it("hands a task whose progress continuations are spent back to the agent that created it, to split it", () => {
+    const blocked = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+      blocker: { unblockAction: "Finish the remaining stories.", boardOwned: false, ownerKind: "agent", scope: "task_wide" } });
+    const spent = { assessment: blocked, agentBlockerRecoverable: true, agentBlockerProgress: true,
+      failureRetryCount: NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS, agentBlockerSplitOwnerAgentId: "creator" };
+    const decision = arbitrate(spent);
+    expect(decision).toMatchObject({ toStatus: "blocked", reasonCode: "native_agent_blocker_split_requested",
+      unblockDescriptor: { owner: { agentId: "creator" } },
+      effects: [{ kind: "bind_blocker", owner: { agentId: "creator" } }] });
+    expect(decision.unblockDescriptor?.action).toContain("Finish the remaining stories.");
+    // Without saved progress, or while continuations remain, the creator is not involved.
+    expect(arbitrate({ ...spent, agentBlockerProgress: false })).toMatchObject({ reasonCode: "native_agent_blocker_needs_person" });
+    expect(arbitrate({ ...spent, failureRetryCount: 2 })).toMatchObject({ reasonCode: "native_agent_blocker_continuation" });
+    expect(arbitrate({ ...spent, hasActivePauseHold: true })).toMatchObject({ unblockDescriptor: { owner: "board" } });
+  });
 });
