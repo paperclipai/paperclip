@@ -1653,14 +1653,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       );
   }
 
-  // Guarded orphan candidates must not refill the same page on every tick.
-  // Advance the pages with in-memory keyset cursors instead of rewriting the
-  // row's `updatedAt`: that column means "last real change", and bumping it
-  // on a skip makes a deferred row never age past the backoff cutoff, so a
-  // later aging or escalation based on it never fires.
-  // Where the next orphaned run-lease page starts, per company scope.
+  // Where the next unscoped orphaned run-lease page starts, per company scope.
   const orphanRunLeaseCursors = new Map<string, string>();
-  // Where the next run-less (login/probe) lease page starts, by (updatedAt, id).
   const orphanRunlessLeaseCursors = new Map<string, { updatedAt: Date; id: string }>();
 
   async function retryTerminalRunLeaseRelease(lease: typeof environmentLeases.$inferSelect,
@@ -1819,8 +1813,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           ))
           .limit(1);
         if (otherOwner) {
-          // The cursor advances past this row so the page reaches the rows
-          // behind it, without touching its real `updatedAt`.
           continue;
         }
       }
