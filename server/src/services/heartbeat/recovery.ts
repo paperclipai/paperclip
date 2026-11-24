@@ -1653,29 +1653,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       );
   }
 
-  // Move a guarded orphan candidate to the back of the sweep order. The
-  // shared-resource guard below can skip a row on every tick as long as the
-  // other owner stays live, retained, or pending cleanup. The select orders
-  // by `updatedAt` ascending and takes only the oldest page, so an untouched
-  // skipped row keeps refilling that same page and blocks every row behind
-  // it. The bump pushes the row past the fixed-size page, so the next tick
-  // reaches the rows behind it. It costs the row one extra backoff wait,
-  // which is safe because the guard means a physical sandbox still exists.
   // Where the next unscoped orphaned run-lease page starts, per company scope.
   const orphanRunLeaseCursors = new Map<string, string>();
-
-  async function deferOrphanedActiveLease(leaseId: string): Promise<void> {
-    const now = new Date();
-    await db
-      .update(environmentLeases)
-      .set({ updatedAt: now })
-      .where(
-        and(
-          eq(environmentLeases.id, leaseId),
-          eq(environmentLeases.status, "active"),
-        ),
-      );
-  }
+  const orphanRunlessLeaseCursors = new Map<string, { updatedAt: Date; id: string }>();
 
   async function retryTerminalRunLeaseRelease(lease: typeof environmentLeases.$inferSelect,
     localRuns: { has(runId: string): boolean }, onDeferredDeadline?: (at: number) => void): Promise<boolean> {
@@ -1782,6 +1762,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
 
     const cutoff = new Date(Date.now() - opts.backoffMs);
+    const runlessCursorKey = opts.leaseId ? null : opts.companyId ?? "*";
+    const runlessAfter = runlessCursorKey === null
+      ? undefined
+      : orphanRunlessLeaseCursors.get(runlessCursorKey);
     const runless = await db
       .select({ lease: environmentLeases })
       .from(environmentLeases)
@@ -1792,12 +1776,26 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         isNull(environmentLeases.heartbeatRunId),
         sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
         lte(environmentLeases.updatedAt, cutoff),
+        runlessAfter ? or(
+          gt(environmentLeases.updatedAt, runlessAfter.updatedAt),
+          and(
+            eq(environmentLeases.updatedAt, runlessAfter.updatedAt),
+            gt(environmentLeases.id, runlessAfter.id),
+          ),
+        ) : undefined,
       ))
-      .orderBy(asc(environmentLeases.updatedAt))
+      .orderBy(asc(environmentLeases.updatedAt), asc(environmentLeases.id))
       .limit(ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE);
+    if (runlessCursorKey !== null) {
+      if (runless.length < ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE) {
+        orphanRunlessLeaseCursors.delete(runlessCursorKey);
+      } else {
+        const last = runless[runless.length - 1]!.lease;
+        orphanRunlessLeaseCursors.set(runlessCursorKey, { updatedAt: last.updatedAt, id: last.id });
+      }
+    }
     for (const { lease } of runless) {
       if (!(await allowLegacyShutdownWorkspaceCleanup(db, lease))) {
-        if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
         continue;
       }
       // A provider resource id names one physical sandbox. A different lease
@@ -1815,8 +1813,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           ))
           .limit(1);
         if (otherOwner) {
-          // Defer this row so the fixed-size page reaches the rows behind it.
-          if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
           continue;
         }
       }
