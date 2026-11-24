@@ -76,23 +76,28 @@ export async function reconcilePendingNativeReviews(db: Db, scope: {
   onDeferredDeadline?: (at: number) => void;
 }, now = new Date()) {
   const result = { rewoken: 0, escalated: 0 };
-  const [issue] = await db.select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId }).from(issues)
-    .where(and(eq(issues.companyId, scope.companyId), eq(issues.id, scope.issueId)));
-  if (!issue || issue.status !== "in_review") return result;
-  const [activeIssueRun] = issue.executionRunId ? [] : await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+  // This runs on every stranded-task check, so a task without a pending review
+  // costs one narrow read: the review rows of an in-review task.
+  const pending = await db.select({ id: issueThreadInteractions.id, addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+    payload: issueThreadInteractions.payload, createdAt: issueThreadInteractions.createdAt, executionRunId: issues.executionRunId })
+    .from(issueThreadInteractions).innerJoin(issues, and(eq(issues.companyId, issueThreadInteractions.companyId),
+      eq(issues.id, issueThreadInteractions.issueId), eq(issues.status, "in_review")))
+    .where(and(
+      eq(issueThreadInteractions.companyId, scope.companyId),
+      eq(issueThreadInteractions.issueId, scope.issueId),
+      eq(issueThreadInteractions.status, "pending"),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      isNotNull(issueThreadInteractions.addresseeAgentId),
+      sql`${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review'`,
+    ));
+  if (!pending.length) return result;
+  const executionRunId = pending[0]!.executionRunId;
+  const [activeIssueRun] = executionRunId ? [] : await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, scope.companyId),
     eq(heartbeatRuns.issueId, scope.issueId),
     inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
   )).limit(1);
-  const issueExecutionHeld = Boolean(issue.executionRunId || activeIssueRun);
-  const pending = await db.select().from(issueThreadInteractions).where(and(
-    eq(issueThreadInteractions.companyId, scope.companyId),
-    eq(issueThreadInteractions.issueId, scope.issueId),
-    eq(issueThreadInteractions.status, "pending"),
-    eq(issueThreadInteractions.kind, "request_confirmation"),
-    isNotNull(issueThreadInteractions.addresseeAgentId),
-    sql`${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review'`,
-  ));
+  const issueExecutionHeld = Boolean(executionRunId || activeIssueRun);
   for (const interaction of pending) {
     const reviewerId = interaction.addresseeAgentId!;
     const decisionId = (interaction.payload as { target?: { revisionId?: unknown } } | null)?.target?.revisionId;
