@@ -36,10 +36,11 @@ Decisions and the details behind them are kept in the
 - [x] **Owner** (Nov 17): Dotta owns submission, security, privacy and release.
 - [x] **Engineering test instance** (Nov 17): create
       `googletester.staging.paperclip.app`.
-- [ ] What we send to the reviewers (the staging tester or something else),
-      including the custom reviewer password.
+- [x] What we send to the reviewers (the staging tester or something else),
+      including the custom reviewer password. (Nov 23: the staging tester)
 - [ ] Privacy policy edits approved.
-- [ ] Security lab and budget.
+- [ ] Security lab and budget. (Nov 23: TAC Security recommended; quote and
+      budget not confirmed)
 - [ ] Email the Developer Preview team asking for permission to offer the MCP
       integration publicly (optional now, still cheap).
 
@@ -72,7 +73,7 @@ Decisions and the details behind them are kept in the
       (Nov 17, [#22001](https://github.com/paperclipai/paperclip/pull/22001)).
 - [x] Prompt-injection screening confirmed on every Google tool result
       (Nov 17, [#21999](https://github.com/paperclipai/paperclip/pull/21999)).
-- [ ] Disconnecting the last Google connection revokes the grant at Google.
+- [x] Disconnecting the last Google connection revokes the grant at Google. (Nov 23: seen at Google)
 - [x] Retention and deletion of Google content in tasks, runs and files audited
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
       store inventory; summary in the working memory's "Where Google content
