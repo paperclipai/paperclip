@@ -64,16 +64,27 @@ test("ordinary app PRs skip canary dry run, runner support, docker context and r
 test("canary dry run, runner support, chat, docker and test-only edits select their exact owners", () => {
   for (const file of ["scripts/release.sh", "scripts/release-lib.sh", "scripts/release-package-manifest.json",
     "scripts/release-package-map.mjs", "scripts/build-npm.sh", "scripts/build-standalone-public-packages.mjs",
-    "scripts/link-plugin-dev-sdk.mjs", "scripts/stage-bundled-packages.mjs", "scripts/pack-staged-packages.mjs",
+    "scripts/cli-bundled-npm-dependencies.mjs", "scripts/link-plugin-dev-sdk.mjs", "scripts/prefetch-child.mjs",
+    "scripts/stage-bundled-packages.mjs", "scripts/pack-staged-packages.mjs",
     "scripts/prepare-bundled-package.mjs", "scripts/prepare-server-ui-dist.sh",
     "scripts/generate-npm-package-json.mjs", "scripts/prepare-npm-readme.mjs"]) {
     assert.equal(selected(plan([file]), "canary_dry_run"), true, `canary: ${file}`);
   }
-  for (const entry of ["scripts/release.sh", "scripts/build-npm.sh"]) {
+  const canaryQueue = ["scripts/release.sh", "scripts/build-npm.sh"];
+  const canarySeen = new Set(canaryQueue);
+  while (canaryQueue.length) {
+    const entry = canaryQueue.shift();
     const content = readFileSync(new URL(entry, root), "utf8");
-    for (const [, scriptPath] of content.matchAll(/(?:^|[^a-zA-Z0-9._/-])(scripts\/[a-zA-Z0-9._-]+\.(?:sh|mjs|js|json))/g)) {
-      if (scriptPath === "scripts/stage-release-runner-binaries.mjs") continue;
-      assert.equal(selected(plan([scriptPath]), "canary_dry_run"), true, `${entry} invokes ${scriptPath}`);
+    for (const [, rawTarget] of content.matchAll(/(?:^|[^a-zA-Z0-9._/-])((?:\.\.?\/|scripts\/)[a-zA-Z0-9._/-]+\.(?:sh|mjs|js|json))/g)) {
+      const target = rawTarget.startsWith(".") ? path.posix.normalize(path.posix.join(path.posix.dirname(entry), rawTarget)) : rawTarget;
+      if (!target.startsWith("scripts/") || target === "scripts/stage-release-runner-binaries.mjs") continue;
+      if (canarySeen.has(target)) continue;
+      let exists = false;
+      try { readFileSync(new URL(target, root)); exists = true; } catch {}
+      if (!exists) continue;
+      canarySeen.add(target);
+      canaryQueue.push(target);
+      assert.equal(selected(plan([target]), "canary_dry_run"), true, `${entry} transitively depends on ${target}`);
     }
   }
   for (const file of ["package.json", "server/package.json", "packages/shared/package.json",
