@@ -1210,8 +1210,12 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
+      // A task woken by an external chat message (for example a GitHub review
+      // comment) gets the same final reply as on the live completion path,
+      // which a post-result failure such as copy-back can skip.
+      const externalChatTaskReply = !conversation && isExternalChatPresentationContext(run.contextSnapshot);
       const ordinaryTaskReply = (!conversation || currentConversation) &&
-        !isExternalChatPresentationContext(run.contextSnapshot) &&
+        (externalChatTaskReply || !isExternalChatPresentationContext(run.contextSnapshot)) &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
@@ -1223,9 +1227,10 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.turnTerminalState === "completed" &&
         (ordinaryTaskReply || blockedTaskReply);
       const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
-      const externalChatReply = blockedTaskReply &&
+      const externalChatReply = (blockedTaskReply || externalChatTaskReply) &&
         isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
-      if (taskReplyEligible && replyAuthorization && (blockedTaskReply || replyAuthorization === "internal_agent_write")) {
+      if (taskReplyEligible && replyAuthorization &&
+          (blockedTaskReply || externalChatTaskReply || replyAuthorization === "internal_agent_write")) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
             eq(heartbeatRunEvents.companyId, input.companyId),

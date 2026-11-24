@@ -703,6 +703,28 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply })]);
     expect((await issue(f.issueId)).conversationAgentId).toBeNull();
   });
+  it.each([
+    ["done", { source: "chat:github" }],
+    ["needs_review", { source: "chat:github" }],
+    ["done", { source: "automation", externalChatContinuation: true }],
+  ] as const)("publishes an external-chat task's %s reply when copy-back failure skipped the live path (%j)", async (disposition, context) => {
+    // A run woken by an external chat message reaches its accepted final reply,
+    // then workspace copy-back fails, so the live completion path never posts
+    // it. Presentation recovery must still put that reply on the task.
+    const f = await fixture(false, { disposition });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, ...context } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const work = nativeResponsePresentationWork(db), entries = await work.load(f.input);
+    expect(entries).toEqual([expect.objectContaining({ id: f.runId })]);
+    await expect(work.check(entries[0])).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).toMatchObject({ presentationDecision: { reasonCodes: expect.arrayContaining(["committed_task_response_recovered"]) } });
+    expect((run.resultJson as Record<string, unknown>).responsePublication).not.toMatchObject({ state: "failed" });
+    expect(await work.load(f.input)).toEqual([]);
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+  });
   it("recovers a deferred review reply once without resolving the review or rerunning work", async () => {
     const f = await fixture(false, { disposition: "needs_review" });
     const before = await issue(f.issueId);
