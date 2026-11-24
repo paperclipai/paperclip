@@ -110,12 +110,14 @@ function readProposalPaneWidth(fallback: number): number {
   return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
 }
 
+function getMaximumPaneWidth(): number | undefined {
+  return typeof window === "undefined"
+    ? undefined
+    : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
+}
+
 function clampPaneWidth(width: number): number {
-  const max =
-    typeof window === "undefined"
-      ? Number.POSITIVE_INFINITY
-      : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
-  return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), max);
+  return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), getMaximumPaneWidth() ?? Number.POSITIVE_INFINITY);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
@@ -197,6 +199,7 @@ function ResizablePropertiesPanel({
   const [width, setWidth] = useState(() =>
     clampPaneWidth(readStoredPaneWidth(widthStorageKey, defaultPaneWidth)),
   );
+  const [maximumPaneWidth, setMaximumPaneWidth] = useState(getMaximumPaneWidth);
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
@@ -204,7 +207,14 @@ function ResizablePropertiesPanel({
   // The host can outlive a viewport change while its content is loading.
   // Clamp before revealing it, without overwriting the user's saved width.
   useLayoutEffect(() => {
-    if (panelVisible) setWidth(clampPaneWidth);
+    if (!panelVisible) return;
+    function syncPaneWidth() {
+      setMaximumPaneWidth(getMaximumPaneWidth());
+      setWidth(clampPaneWidth);
+    }
+    syncPaneWidth();
+    window.addEventListener("resize", syncPaneWidth);
+    return () => window.removeEventListener("resize", syncPaneWidth);
   }, [panelVisible]);
 
   const paneId = useId();
@@ -308,7 +318,7 @@ function ResizablePropertiesPanel({
   }
 
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(designSandbox ? clampPaneWidth(readProposalPaneWidth(productionPaneWidth)) : defaultPaneWidth);
+    setWidth(clampPaneWidth(designSandbox ? readProposalPaneWidth(productionPaneWidth) : defaultPaneWidth));
     clearStoredPaneWidth(widthStorageKey);
   }, [defaultPaneWidth, designSandbox, productionPaneWidth, widthStorageKey]);
 
@@ -428,7 +438,7 @@ function ResizablePropertiesPanel({
             aria-label="Resize panel"
             aria-controls={paneId}
             aria-valuemin={MIN_PANE_WIDTH}
-            aria-valuemax={typeof window === "undefined" ? undefined : Math.max(width, clampPaneWidth(window.innerWidth))}
+            aria-valuemax={maximumPaneWidth}
             aria-valuenow={width}
             tabIndex={0}
             onKeyDown={handleGripKeyDown}
