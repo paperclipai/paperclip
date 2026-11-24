@@ -1332,6 +1332,12 @@ function adaptDuplexChannelHostSession(
   };
 }
 
+/** One automatic snapshot re-qualification per environment and company at a
+ * time in this process. Routes and services each build their own runtime, so
+ * the pending probes are shared across all of them: a burst of runs behind one
+ * stale proof boots one probe sandbox. */
+const sandboxSnapshotRequalifications = new Map<string, Promise<{ environment: Environment | null; reason: string | null }>>();
+
 function createSandboxEnvironmentDriver(
   db: Db,
   options: {
@@ -1665,12 +1671,9 @@ function createSandboxEnvironmentDriver(
     });
   }
 
-  /** One automatic re-qualification per environment and company at a time,
-   * so a burst of runs behind one stale proof boots one probe sandbox. */
-  const requalifications = new Map<string, Promise<{ environment: Environment | null; reason: string | null }>>();
   function requalifyStaleSandboxSnapshot(environmentId: string, companyId: string) {
     const key = `${environmentId}:${companyId}`;
-    const pending = requalifications.get(key);
+    const pending = sandboxSnapshotRequalifications.get(key);
     if (pending) return pending;
     const run = (async () => {
       const environments = environmentService(db);
@@ -1685,8 +1688,8 @@ function createSandboxEnvironmentDriver(
         ? (typeof result.details?.platformQualificationDiagnostic === "string" ? result.details.platformQualificationDiagnostic : null)
         : (typeof result.details?.error === "string" ? result.details.error : result.summary);
       return { environment: await environments.getById(environmentId), reason };
-    })().finally(() => { requalifications.delete(key); });
-    requalifications.set(key, run);
+    })().finally(() => { sandboxSnapshotRequalifications.delete(key); });
+    sandboxSnapshotRequalifications.set(key, run);
     return run;
   }
 
@@ -1721,12 +1724,17 @@ function createSandboxEnvironmentDriver(
           // A saved proof goes stale whenever its snapshot, config or captured
           // image changes, or a probe is interrupted. Re-run the same check the
           // agent's Run test performs instead of waiting for a person to click it.
-          const requalified = await requalifyStaleSandboxSnapshot(configuredEnvironment.id, input.companyId);
-          if (requalified.environment) {
-            pinnedSnapshotId = qualifiedSandboxSnapshotId(requalified.environment, input.companyId, parsed.config, selectedTemplate.value);
-          }
+          // Another run may have just re-qualified it; read the saved proof first.
+          const saved = await environmentService(db).getById(configuredEnvironment.id);
+          pinnedSnapshotId = saved ? qualifiedSandboxSnapshotId(saved, input.companyId, parsed.config, selectedTemplate.value) : null;
           if (!pinnedSnapshotId) {
-            throw new Error(`sandbox_snapshot_qualification_required: Paperclip could not re-check this sandbox image before starting Paperclip Runner.${requalified.reason ? ` ${requalified.reason}` : ""}`);
+            const requalified = await requalifyStaleSandboxSnapshot(configuredEnvironment.id, input.companyId);
+            if (requalified.environment) {
+              pinnedSnapshotId = qualifiedSandboxSnapshotId(requalified.environment, input.companyId, parsed.config, selectedTemplate.value);
+            }
+            if (!pinnedSnapshotId) {
+              throw new Error(`sandbox_snapshot_qualification_required: Paperclip could not re-check this sandbox image before starting Paperclip Runner.${requalified.reason ? ` ${requalified.reason}` : ""}`);
+            }
           }
         }
       }

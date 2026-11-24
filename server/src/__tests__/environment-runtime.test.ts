@@ -433,10 +433,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       throw new Error(`Unexpected ${method}`);
     });
     vi.mocked(worker.getWorker).mockReturnValue({ supportedMethods: ["environmentExecute", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] } as never);
-    const runtime = environmentRuntimeService(db, { pluginWorkerManager: worker });
-    const acquired = await runtime.acquireRunLease({ companyId, environment, issueId: null, heartbeatRunId: runId,
-      persistedExecutionWorkspace: null, adapterType: "paperclip_runner" });
+    // Routes build separate runtimes; concurrent runs through two of them share one probe.
+    const [acquired, second] = await Promise.all([environmentRuntimeService(db, { pluginWorkerManager: worker }),
+      environmentRuntimeService(db, { pluginWorkerManager: worker })].map(runtime => runtime.acquireRunLease({ companyId, environment,
+      issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" })));
     expect(acquired.lease.metadata?.snapshot).toBe(snapshotId);
+    expect(second.lease.metadata?.snapshot).toBe(snapshotId);
+    expect(vi.mocked(worker.call).mock.calls.filter(([, method, params]: any[]) => method === "environmentAcquireLease" && params.resolveSnapshotIdentity)).toHaveLength(1);
     const proof = ((await environmentService(db).getById(environment.id))!.metadata?.paperclipSandboxPlatformProbes as Record<string, any>)[companyId];
     expect(proof).toMatchObject({ v: 2, snapshot: config.snapshot, snapshotIdentity: { id: snapshotId } });
     expect(proof).not.toHaveProperty("invalidated");
