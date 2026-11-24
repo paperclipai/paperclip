@@ -888,7 +888,7 @@ describe("managed AI connections", () => {
   });
 
   it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
-    const owner = "quota-receiver-process-loss";
+    const owner = `quota-receiver-process-loss-${randomUUID()}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
@@ -927,7 +927,7 @@ describe("managed AI connections", () => {
         blocked = exchanges === 1 && rows.length > 0;
         if (!blocked) await new Promise(resolve => setTimeout(resolve, 25));
       }
-      expect(blocked).toBe(true);
+      expect(blocked, `Receiver fixture did not reach the save barrier (loopback requests: ${exchanges}, child status: ${child.exitCode ?? child.signalCode ?? "running"})`).toBe(true);
       child.kill("SIGKILL"); await exited;
     } finally {
       if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
