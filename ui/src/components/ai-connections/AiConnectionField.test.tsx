@@ -38,12 +38,12 @@ async function settle() {
     flushSync(() => {});
   }
 }
-async function mount(connections: AiManagedConnectionSummary[], canManageConnections = true, preferAdvanced = false) {
+async function mount(connections: AiManagedConnectionSummary[], canManageConnections = true, preferAdvanced = false, props: Partial<ComponentProps<typeof AiConnectionField>> = {}) {
   mocks.list.mockResolvedValue({ currentUserId: "owner", connections, canManageConnections });
   flushSync(() => root.render(<QueryClientProvider client={client}>
     <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local"
       preferAdvanced={preferAdvanced}
-      value={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} onChange={onChange} />
+      value={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} onChange={onChange} {...props} />
   </QueryClientProvider>));
   await settle();
 }
@@ -70,6 +70,21 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+});
+
+it("disables a saved Claude subscription after the harness changes to Codex", async () => {
+  const value = { provider: "anthropic" as const, method: "subscription" as const, mode: "shared" as const,
+    connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" };
+  const connections = [account({ id: value.connectionId, grantId: value.grantId, ownership: "shared", status: "connected" })];
+  await mount(connections, true, false, { value });
+  await mount(connections, true, false, { value, adapterType: "codex_local" });
+  const trigger = container.querySelector<HTMLElement>('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("My Claude"));
+  expect(option?.getAttribute("aria-disabled")).toBe("true");
+  expect(option?.textContent).toContain("Incompatible with this harness and model");
+  expect(onChange).not.toHaveBeenCalled();
 });
 afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
 

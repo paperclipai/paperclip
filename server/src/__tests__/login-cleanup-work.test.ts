@@ -12,7 +12,7 @@ import { loginCleanupSchedule, orphanLoginLeases } from "../services/login-clean
 import { createDbAdapterAuthSessionStore, LOGIN_LEASE_SESSION_TAG_KEY } from "../services/device-login-service.js";
 import { createDeviceLoginReaper, createProductionLoginSessionReaperRuntime } from "../services/device-login-reaper.js";
 import { createDbSetupTokenCleanupStore, transitionSetupTokenSessionToStored } from "../services/setup-token-session.js";
-import { createSetupTokenReaper } from "../services/setup-token-reaper.js";
+import { createProductionSetupTokenReaper, createSetupTokenReaper } from "../services/setup-token-reaper.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -63,6 +63,64 @@ describe("login cleanup lifecycle", () => {
     await vi.advanceTimersByTimeAsync(30_000); expect(run).toHaveBeenCalledTimes(2);
     release(); await vi.advanceTimersByTimeAsync(30_000);
     expect(run).toHaveBeenCalledTimes(3); expect(c.nextWakeAt()).toBeNull();
+  });
+  it("honors setup-token backoff across notifications, then becomes quiet", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner();
+    const c = coordinator(owner);
+    let failures = 0;
+    let pending = true;
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => pending ? [{ sessionId: "retry", companyId: "company", ownerUserId: "user", adapterType: "claude_local", environmentId: "env", leaseId: "lease", state: "failed", deadline: 0, boundAt: null }] : [],
+        remove: async () => { pending = false; },
+      },
+      leases: { releaseById: async () => { failures += 1; if (failures < 3) throw new Error("provider down"); } },
+    });
+    const run = vi.fn(reaper.sweep);
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run, next: async () => pending ? Date.now() : null, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.setupTokenCleanup));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(c.nextWakeAt()).toBeNull();
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+  it("backs off a setup-token sweep that throws through the worker, then becomes quiet", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner();
+    const failures: unknown[] = [];
+    const c = coordinator(owner, () => true, error => failures.push(error));
+    let outages = 2;
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => { if (outages > 0) { outages -= 1; throw new Error("database unavailable"); } return []; },
+        remove: async () => {},
+      },
+      leases: { releaseById: async () => {} },
+    });
+    const started = Date.now();
+    const attempts: number[] = [];
+    const run = vi.fn(async () => { attempts.push(Date.now() - started); return reaper.sweep(); });
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run, next: async () => outages > 0 ? Date.now() : null, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(attempts).toEqual([0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(attempts).toEqual([0, 30_000]);
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.setupTokenCleanup));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(attempts).toEqual([0, 30_000]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([0, 30_000, 90_000]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(attempts).toHaveLength(3);
+    expect(reaper.retryDelayMs()).toBe(0);
+    expect(failures).toHaveLength(2);
+    expect(c.nextWakeAt()).toBeNull();
   });
   it("does not block another cleanup worker and awaits in-flight work on shutdown", async () => {
     vi.useFakeTimers(); const c = coordinator(fakeOwner()); let release!: () => void;
@@ -192,6 +250,31 @@ describe.skipIf(!support.supported)("durable login cleanup", () => {
     expect(driver.releaseRunLease).toHaveBeenCalledTimes(1); expect(c.nextWakeAt()).not.toBeNull();
     await vi.advanceTimersByTimeAsync(10_000); expect(driver.releaseRunLease).toHaveBeenCalledTimes(1);
     failedDelete = false; await quiet(c); expect(driver.releaseRunLease).toHaveBeenCalledTimes(2);
+  });
+  it("clears setup-token sessions a restart left in submitting, with and without a lease", async () => {
+    const expired = new Date(Date.now() - 1_000);
+    const orphan = async (providerLeaseId: string | null) => {
+      const sessionId = randomUUID();
+      await db.insert(adapterAuthSessions).values({ companyId, environmentId, adapterType: "claude_local", startedByUserId: randomUUID(),
+        publicSessionId: sessionId, status: "submitting", providerLeaseId, expiresAt: expired });
+      return sessionId;
+    };
+    const withoutLease = await orphan(null);
+    const leaseSession = randomUUID();
+    const leaseId = await lease(leaseSession);
+    const withLease = await orphan(leaseId);
+    const lines: string[] = [];
+    const reaper = createProductionSetupTokenReaper({ db: observed, environmentRuntime: { getDriver: () => driver } as any, log: line => lines.push(line) });
+
+    expect(await reaper.sweep()).toEqual({ released: 2, failed: 0 });
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0 });
+
+    const remaining = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.companyId, companyId));
+    expect(remaining.map(row => row.publicSessionId)).not.toEqual(expect.arrayContaining([withoutLease]));
+    expect(remaining.map(row => row.publicSessionId)).not.toEqual(expect.arrayContaining([withLease]));
+    expect(driver.releaseRunLease).toHaveBeenCalledTimes(1);
+    expect(driver.releaseRunLease.mock.calls[0]![0].lease.id).toBe(leaseId);
+    expect(lines).toEqual([]);
   });
   it.each([false, true])("keeps nested producer intent until outer settlement (rollback=%s)", async rollback => {
     const c = await adapterWorker(); await quiet(c);

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
@@ -25,9 +25,10 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { claimVolumeFreeControllerState } from "./volume-free-controller-state.js";
-import { assertEphemeralServerData } from "../ephemeral-server-contract.js";
+import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../ephemeral-server-contract.js";
+import { readOnlineEphemeralEnrollmentEligibility } from "../ephemeral-enrollment.js";
 
-describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
+describeEmbeddedPostgres.each(["volume_free_owner", "eligibility_unreadable", "archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
   "active_warm", "source_scan", "active_durable", "active_durable_cold", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
@@ -96,6 +97,25 @@ describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_o
       taskKey: f.issueId, lastRunId: f.runId }).returning();
     return { ...f, companyId, agentId, paperclipHome, runtimeRoot, paths, file, source, profile, session, queuedId, identity, snapshot };
   }
+  if (scenario === "eligibility_unreadable") it("names a controller check that cannot read its source instead of failing the eligibility read", async () => {
+    const f = await fixture();
+    await link(f.file, `${f.file}.alias`);
+    const failed = "native_controllers_check_failed:native_controller_migration_unsafe_source";
+    expect((await readEphemeralServerDataEligibility(f.db, { purpose: "startup" })).blockers).toContain(failed);
+    const online = await readOnlineEphemeralEnrollmentEligibility(f.db);
+    expect(online.eligible).toBe(false);
+    expect(online.blockers).toContain(failed);
+    expect(online.blockers).not.toContain("native_controllers_require_migration");
+    expect(await readFile(f.file, "utf8")).toBe(f.source);
+    await rm(`${f.file}.alias`);
+    if (process.getuid?.() !== 0) {
+      await chmod(f.file, 0o000);
+      try {
+        expect((await readEphemeralServerDataEligibility(f.db, { purpose: "startup" })).blockers)
+          .toContain("native_controllers_check_failed:source_eacces");
+      } finally { await chmod(f.file, 0o600); }
+    }
+  });
   if (scenario === "volume_free_owner") it("starts a volume-free server over controller state it wrote itself and keeps unmarked state blocked", async () => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     expect(await claimVolumeFreeControllerState(true)).toBe("claimed");
@@ -365,10 +385,14 @@ describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_o
         status: "queued", runtimeMode: "native" });
       return result;
     });
-    const counts = await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000) });
+    const outcomes: string[] = [];
+    const counts = await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000), onOutcome: outcome => outcomes.push(outcome) });
     if (["archive_online_owned", "archive_online_changed", "archive_online_active", "archive_online_foreign"].includes(scenario)) {
       expect(counts.archivedFailed).toBe(0);
       expect(counts.deferred[scenario === "archive_online_foreign" ? "artifact_binding" : "archive_source_unsettled"]).toBe(1);
+      const state = { archive_online_owned: "coordinator_leased", archive_online_changed: "controller_files_changed",
+        archive_online_active: "turn_active" }[scenario as "archive_online_owned"];
+      if (state) expect(outcomes).toEqual(["archive_source_unsettled", `archive_source_unsettled:${state}`]);
       if (["archive_online_owned", "archive_online_changed"].includes(scenario)) expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(true);
       const backups = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.runId, f.runId));
       expect(backups.some(backup => backup.status === "current")).toBe(false);
@@ -428,8 +452,11 @@ describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_o
       await f.db.update(agentTaskSessions).set({ id: "00000000-0000-4000-8000-000000000001" }).where(eq(agentTaskSessions.id, f.session.id));
       const next = await fixture();
       await settle(next);
-      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) });
+      const outcomes: string[] = [];
+      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000), onOutcome: outcome => outcomes.push(outcome) });
       expect(actual).toMatchObject({ inspected: 2, imported: 1, deferred: { artifact_unproven: 1 } });
+      const [source] = await f.db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(outcomes).toContain(`artifact_unproven:${source.status}_run`);
       expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
       expect(await loadNativeRunnerCheckpoint(f.db, { companyId: next.companyId, issueId: next.issueId, runId: next.runId })).not.toBeNull();
       expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);

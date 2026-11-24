@@ -132,6 +132,7 @@
               "api/secrets",
               "api/tool-gateway-tokens",
               "api/tool-connections",
+              "api/agent-setup-progress",
               "api/activity",
               "api/dashboard",
               "api/cloud"

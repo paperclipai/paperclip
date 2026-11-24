@@ -1507,7 +1507,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       });
       expect(selectedCopilot.grant.id).toBe(copilot.grantId);
     } finally {
-      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0501_marvelous_black_bolt.sql", import.meta.url), "utf8");
+      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0505_marvelous_black_bolt.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
         for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));
@@ -1726,9 +1726,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   });
 
   it.each([
-    ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
-  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {
-    const userId = `auth-recovery-${provider}-${switchMethod}`;
+    ["anthropic", false, false], ["openai", false, false], ["anthropic", true, false], ["openai", true, false],
+    ["anthropic", false, true], ["openai", false, true],
+  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s, typed: %s)", async (provider, switchMethod, typed) => {
+    const userId = `auth-recovery-${provider}-${switchMethod}-${typed}`;
     const id = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
@@ -1739,10 +1740,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: typed ? "native_session_interrupted" : "acpx_auth_required", responsibleUserId: userId,
+      ...(typed ? { resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider, phase: "turn",
+        category: "authentication", message: "Invalid API key", retryability: "requires_action" } } } : {}),
       contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await runtime.cleanup();
     const intents = connectionIntentService(db);
+    if (typed) {
+      const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...failed.contextSnapshot, aiConnection: {
+        ...runtime.attribution, identity: runtime.identity, provider: provider === "openai" ? "anthropic" : "openai",
+      } } }).where(eq(heartbeatRuns.id, runId));
+      expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0].status).toBe("active");
+      await db.update(heartbeatRuns).set({ contextSnapshot: failed.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+    }
     const card = await intents.requestForRunAuthFailure(runId);
     expect(card).toMatchObject({ state: "needs_user_action", service: provider });
     expect((await intents.requestForRunAuthFailure(runId))?.interactionId).toBe(card!.interactionId);

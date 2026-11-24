@@ -16056,6 +16056,16 @@ describe("native session bounded recovery", () => {
       });
     });
 
+    it.each([false, true])("stops a billing refusal on its first attempt even with a confirmed runner exit (remote: %s)", remote => {
+      const failure = Object.defineProperty(sessionOpenFailure(startupFailure({
+        category: "quota_exhausted", retryability: "requires_action", message: "Check billing and usage.",
+      })), "runnerExitConfirmed", { value: true });
+      const code = nativeSessionFailureSourceCode(failure);
+      expect(nativeRemoteStartupRejectionCode(code, failure, remote)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeSessionFailureDisposition(1, new Date(), code))
+        .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null });
+    });
+
     it("keeps bounded same-run retries for a local startup failure without a definite permanent cause", () => {
       for (const fields of [
         {},
@@ -16063,7 +16073,8 @@ describe("native session bounded recovery", () => {
         { category: "overloaded", retryability: "transient", httpStatus: 503 },
         { category: "timeout", retryability: "transient", httpStatus: 504 },
         { category: "rate_limit", httpStatus: 429 },
-        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded" },
+        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded",
+          retryAt: new Date(Date.now() + 60_000).toISOString() },
         { category: "model_unavailable", retryability: "requires_action" },
         { phase: "turn", category: "authentication", retryability: "requires_action" },
       ]) {
@@ -16139,7 +16150,8 @@ describe("native session bounded recovery", () => {
         ...fields });
       const confirmed = (fields: Record<string, unknown>) =>
         Object.defineProperty(sessionOpenFailure(limit(fields)), "runnerExitConfirmed", { value: true, enumerable: false });
-      for (const fields of [{ category: "rate_limit" }, { category: "quota_exhausted", retryability: "requires_action" }]) {
+      for (const fields of [{ category: "rate_limit" }, { category: "quota_exhausted", retryability: "requires_action",
+        retryAt: new Date(Date.now() + 60_000).toISOString() }]) {
         const first = confirmed(fields);
         expect(nativeSessionFailureSourceCode(first)).toBe("provider_session_open_rejected");
         // The first refusal still retries the same run after the cooldown.

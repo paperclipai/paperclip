@@ -218,6 +218,27 @@ describe("authenticated activity notifications", () => {
     }
   });
 
+  it("delivers an agent setup progress update to the page with only the checklist id", async () => {
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      const message = once(socket, "message");
+      publishLiveEvent({ companyId: "company", type: "agent_setup_progress.updated", payload: { progressId: "progress-1", token: "never-sent" } });
+      const [data] = await message;
+      const event = JSON.parse(data.toString());
+      expect(event).toMatchObject({ type: "agent_setup_progress.updated", payload: { progressId: "progress-1" } });
+      expect(event.payload).toEqual({ progressId: "progress-1" });
+    } finally {
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it("uses the persisted local-board user identity for local task eligibility", async () => {
     vi.mocked(taskToastEligible).mockImplementation(async (_db, _event, userId) => userId === "local-board");
     const server = createServer();

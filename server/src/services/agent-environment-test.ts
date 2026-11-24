@@ -19,6 +19,7 @@ import { resolveEnvironmentExecutionTarget } from "./environment-execution-targe
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
 import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "./runner-revision-mismatch.js";
 import { aiConnectionService } from "./ai-connections.js";
+import { isAiKeyVerificationFailureCode } from "./ai-api-key-failures.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -630,8 +631,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";
-        const rejected = error instanceof HttpError && asRecord(error.details)?.code === "ai_connection_api_key_rejected";
-        result.checks.push({ code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
+        const code = error instanceof HttpError ? asRecord(error.details)?.code : undefined;
+        result.checks.push({ code: isAiKeyVerificationFailureCode(code) ? code : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
       }
       return finishManagedConnectionTest(adapterType, context, result);
     }
