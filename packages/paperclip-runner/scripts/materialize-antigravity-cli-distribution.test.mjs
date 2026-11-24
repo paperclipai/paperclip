@@ -193,15 +193,39 @@ test("a modified installation is retired and replaced from a fresh verified down
   await chmod(installed.executable, 0o700);
   await writeFile(installed.executable, "#!/bin/sh\necho tampered\n");
   await chmod(installed.executable, 0o500);
-  await assert.rejects(f.api.verifyAntigravityCliDistribution(f.destination), /does not match the pinned executable/);
+  const pinned = await f.api.antigravityCliDistribution("darwin", "arm64");
+  await assert.rejects(f.api.verifyAntigravityCliDistribution(f.destination, pinned), /does not match the pinned executable/);
   const repaired = await f.provision();
   assert.equal(repaired.status, "replaced");
   assert.deepEqual(await readFile(repaired.executable), executable);
-  await f.api.verifyAntigravityCliDistribution(f.destination);
+  await f.api.verifyAntigravityCliDistribution(f.destination, pinned);
 });
 
 test("setup refuses an unpublished provisioner location and an unsupported host", async t => {
   const f = await fixture(t);
   await assert.rejects(f.provision({ moduleUrl: "file:///tmp/provision-antigravity-cli.cjs" }), /published provisioner/);
   await assert.rejects(f.provision({ platform: "win32", architecture: "x64" }), /no pinned distribution for win32\/x64/);
+});
+
+test("an unsafe cache parent stops setup without touching a valid installation", async t => {
+  const f = await fixture(t);
+  const installed = await f.provision();
+  const parent = join(f.home, ".paperclip/runtimes/antigravity-cli/darwin-arm64");
+  await chmod(parent, 0o777);
+  t.after(() => chmod(parent, 0o700).catch(() => undefined));
+  await assert.rejects(f.provision(), /shared write access/);
+  await chmod(parent, 0o700);
+  assert.deepEqual(await readFile(installed.executable), executable);
+  assert.equal((await f.provision({ archivePath: undefined, fetch: () => { throw new Error("must not download"); } })).status, "verified");
+});
+
+test("a failed replacement keeps the previous installation in place", async t => {
+  const f = await fixture(t);
+  const installed = await f.provision();
+  await chmod(installed.executable, 0o700);
+  await writeFile(installed.executable, "#!/bin/sh\necho modified\n");
+  await chmod(installed.executable, 0o500);
+  await assert.rejects(f.provision({ archivePath: undefined, fetch: () => new Response("gone", { status: 503 }) }), /download failed \(HTTP 503\)/);
+  assert.equal(await readFile(installed.executable, "utf8"), "#!/bin/sh\necho modified\n");
+  assert.deepEqual(await readdir(join(f.home, ".paperclip/runtimes/antigravity-cli/darwin-arm64")), [installed.closureSha256]);
 });
