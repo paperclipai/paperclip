@@ -450,10 +450,11 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
-                  {data.costs.monthApiEquivalentCents || data.costs.monthApiEquivalentUnpricedTokens ? (
+                  {data.costs.monthApiEquivalentCents || data.costs.monthApiEquivalentUnpricedTokens || data.costs.monthApiEquivalentUnpricedEvents ? (
                     <span className="block" title={API_EQUIVALENT_TOOLTIP}>
                       {data.costs.monthApiEquivalentCents ? `≈ ${formatApiEquivalent({ cents: data.costs.monthApiEquivalentCents, unpricedTokens: 0 })} at API prices` : "At API prices"}
-                      {data.costs.monthApiEquivalentUnpricedTokens ? ` · ${unpricedTokensNote(data.costs.monthApiEquivalentUnpricedTokens)}` : ""}
+                      {unpricedTokensNote(data.costs.monthApiEquivalentUnpricedTokens, data.costs.monthApiEquivalentUnpricedEvents)
+                        ? ` · ${unpricedTokensNote(data.costs.monthApiEquivalentUnpricedTokens, data.costs.monthApiEquivalentUnpricedEvents)}` : ""}
                     </span>
                   ) : null}
                 </span>

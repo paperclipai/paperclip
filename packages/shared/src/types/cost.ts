@@ -51,6 +51,7 @@ export interface ApiEquivalent {
   reportedCents: number;
   listPriceCents: number;
   unpricedTokens: number;
+  unpricedEvents: number;
   unpricedModels: string[];
 }
 

@@ -77,7 +77,7 @@ export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: st
             <MetricCard appearance="card" icon={Coins} value={formatTokens(totalTokens)} label="Tokens" description={`in ${formatTokens(row.inputTokens + row.cachedInputTokens)} (${formatTokens(row.cachedInputTokens)} cached) · out ${formatTokens(row.outputTokens)}`} />
             <MetricCard appearance="card" icon={PlayCircle} value={row.apiRunCount + row.subscriptionRunCount} label="Runs" description={`${row.apiRunCount} api · ${row.subscriptionRunCount} subscription`} />
             <MetricCard appearance="card" icon={DollarSign} value={formatApiEquivalent(row.apiEquivalent)} label="API-equivalent"
-              description={<span title={API_EQUIVALENT_TOOLTIP}>Estimated at API prices{row.apiEquivalent?.unpricedTokens ? ` · ${unpricedTokensNote(row.apiEquivalent.unpricedTokens)}` : ""}</span>} />
+              description={<span title={API_EQUIVALENT_TOOLTIP}>Estimated at API prices{row.apiEquivalent && unpricedTokensNote(row.apiEquivalent.unpricedTokens, row.apiEquivalent.unpricedEvents) ? ` · ${unpricedTokensNote(row.apiEquivalent.unpricedTokens, row.apiEquivalent.unpricedEvents)}` : ""}</span>} />
           </div>
           <section className="space-y-3" aria-labelledby="agent-cost-models-heading">
             <h3 id="agent-cost-models-heading" className="text-sm font-medium text-foreground">By model</h3>

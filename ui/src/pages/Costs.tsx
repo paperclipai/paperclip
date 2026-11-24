@@ -706,8 +706,8 @@ export function Costs({
               label="API-equivalent"
               value={formatApiEquivalent(spendData?.summary.apiEquivalent)}
               subtitle={spendData?.summary.apiEquivalent ? <span title={API_EQUIVALENT_TOOLTIP}>
-                Estimated cost of all usage at API prices{spendData.summary.apiEquivalent.unpricedTokens > 0
-                  ? ` · ${unpricedTokensNote(spendData.summary.apiEquivalent.unpricedTokens)}` : ""}
+                Estimated cost of all usage at API prices{unpricedTokensNote(spendData.summary.apiEquivalent.unpricedTokens, spendData.summary.apiEquivalent.unpricedEvents)
+                  ? ` · ${unpricedTokensNote(spendData.summary.apiEquivalent.unpricedTokens, spendData.summary.apiEquivalent.unpricedEvents)}` : ""}
               </span> : spendData ? "Not available" : "Cost data is loading"}
               icon={DollarSign}
             />
@@ -819,7 +819,7 @@ export function Costs({
                                         : "0 sub"}
                                     </div>
                                   ) : null}
-                                  {row.apiEquivalent && row.apiEquivalent.cents + row.apiEquivalent.unpricedTokens > 0 ? (
+                                  {row.apiEquivalent && row.apiEquivalent.cents + row.apiEquivalent.unpricedTokens + (row.apiEquivalent.unpricedEvents ?? 0) > 0 ? (
                                     <div className="text-xs text-muted-foreground">
                                       {"at API prices: "}<ApiEquivalentAmount value={row.apiEquivalent} />
                                     </div>

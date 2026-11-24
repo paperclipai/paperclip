@@ -8,7 +8,7 @@ import { ApiEquivalentAmount } from "./ApiEquivalentAmount";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const value = (overrides: Partial<ApiEquivalent> = {}): ApiEquivalent =>
-  ({ cents: 1480, reportedCents: 1480, listPriceCents: 0, unpricedTokens: 0, unpricedModels: [], ...overrides });
+  ({ cents: 1480, reportedCents: 1480, listPriceCents: 0, unpricedTokens: 0, unpricedEvents: 0, unpricedModels: [], ...overrides });
 
 describe("ApiEquivalentAmount", () => {
   let container: HTMLDivElement;
@@ -32,6 +32,12 @@ describe("ApiEquivalentAmount", () => {
     act(() => root.render(<ApiEquivalentAmount value={value({ cents: 0, reportedCents: 0, unpricedTokens: 1000 })} />));
     expect(container.textContent).toContain("Not priced");
     expect(container.textContent).not.toContain("$0.00");
+  });
+
+  it("shows runs without captured usage as not priced", () => {
+    act(() => root.render(<ApiEquivalentAmount value={value({ cents: 0, reportedCents: 0, unpricedEvents: 2 })} />));
+    expect(container.textContent).toContain("Not priced");
+    expect(container.textContent).toContain("2 runs without usage");
   });
 
   it("renders a dash without a value", () => {

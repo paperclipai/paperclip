@@ -44,6 +44,7 @@ export interface DashboardSummary {
     monthUtilizationPercent: number;
     monthApiEquivalentCents?: number;
     monthApiEquivalentUnpricedTokens?: number;
+    monthApiEquivalentUnpricedEvents?: number;
   };
   pendingApprovals: number;
   budgets: {

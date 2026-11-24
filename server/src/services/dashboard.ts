@@ -103,7 +103,7 @@ export function dashboardService(db: Db) {
 
       const monthSpendCents = Number(monthSpend);
       const monthApiEquivalent = await retryIdempotentDatabaseOperation(() => apiEquivalentByAgent(db, companyId, { from: monthStart, to: now }));
-      const { cents: monthApiEquivalentCents, unpricedTokens: monthApiEquivalentUnpricedTokens } = sumApiEquivalents(monthApiEquivalent.values());
+      const { cents: monthApiEquivalentCents, unpricedTokens: monthApiEquivalentUnpricedTokens, unpricedEvents: monthApiEquivalentUnpricedEvents } = sumApiEquivalents(monthApiEquivalent.values());
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed or shutdown-interrupted run whose retry succeeded is
@@ -212,6 +212,7 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
           monthApiEquivalentCents,
           monthApiEquivalentUnpricedTokens,
+          monthApiEquivalentUnpricedEvents,
         },
         pendingApprovals,
         budgets: {

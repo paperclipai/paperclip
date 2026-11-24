@@ -134,6 +134,30 @@ describeEmbeddedPostgres("API-equivalent cost", () => {
     expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ reportedCents: 200, listPriceCents: 2000 });
   });
 
+  it("does not add late usage deltas that the run's reported total already covers", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { costUsd: 4 });
+    await db.insert(costEvents).values([
+      event(companyId, agentId, { heartbeatRunId, inputTokens: MTOK }),
+      event(companyId, agentId, { heartbeatRunId, idempotencyKey: `heartbeat:${heartbeatRunId}:late:receipt-1`, outputTokens: MTOK }),
+    ]);
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ cents: 400, reportedCents: 400, listPriceCents: 0 });
+  });
+
+  it("falls back to the next price field when one is out of range", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { cacheAdjustedCostUsd: "1e999999", costUsd: 1.25 });
+    await db.insert(costEvents).values(event(companyId, agentId, { heartbeatRunId }));
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)?.reportedCents).toBe(125);
+  });
+
+  it("counts a run without captured usage as unpriced instead of free", async () => {
+    const { companyId, agentId } = await seed();
+    const heartbeatRunId = await run(companyId, agentId, { accountingClosureTimedOut: true });
+    await db.insert(costEvents).values(event(companyId, agentId, { heartbeatRunId }));
+    expect((await apiEquivalentByAgent(db, companyId)).get(agentId)).toMatchObject({ cents: 0, unpricedEvents: 1 });
+  });
+
   it("reports tokens on unknown models as unpriced instead of zero cost", async () => {
     const { companyId, agentId } = await seed();
     await db.insert(costEvents).values(event(companyId, agentId, { model: "mystery-model", inputTokens: 600, outputTokens: 400 }));

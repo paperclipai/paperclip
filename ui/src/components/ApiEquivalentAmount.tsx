@@ -5,19 +5,23 @@ import { Badge } from "./ui/badge";
 export const API_EQUIVALENT_TOOLTIP =
   "At public API list prices. Uses the price Claude Code reported when available. Not an invoice.";
 
-export function formatApiEquivalent(value?: Pick<ApiEquivalent, "cents" | "unpricedTokens">): string {
+export function formatApiEquivalent(value?: Pick<ApiEquivalent, "cents" | "unpricedTokens"> & { unpricedEvents?: number }): string {
   if (!value) return "—";
-  if (value.cents === 0 && value.unpricedTokens > 0) return "Not priced";
+  if (value.cents === 0 && (value.unpricedTokens > 0 || (value.unpricedEvents ?? 0) > 0)) return "Not priced";
   return formatCents(value.cents);
 }
 
-export function unpricedTokensNote(unpricedTokens?: number): string {
-  return unpricedTokens ? `${formatTokens(unpricedTokens)} tokens not priced` : "";
+export function unpricedTokensNote(unpricedTokens?: number, unpricedEvents?: number): string {
+  const parts = [
+    unpricedTokens ? `${formatTokens(unpricedTokens)} tokens not priced` : "",
+    unpricedEvents ? `${unpricedEvents} ${unpricedEvents === 1 ? "run" : "runs"} without usage` : "",
+  ];
+  return parts.filter(Boolean).join(" · ");
 }
 
 export function ApiEquivalentAmount({ value }: { value?: ApiEquivalent }) {
   if (!value) return <span className="text-muted-foreground">—</span>;
-  const note = unpricedTokensNote(value.unpricedTokens);
+  const note = unpricedTokensNote(value.unpricedTokens, value.unpricedEvents);
   return (
     <span className="inline-flex flex-wrap items-center justify-end gap-1" title={API_EQUIVALENT_TOOLTIP}>
       <span className="whitespace-nowrap font-mono tabular-nums">{formatApiEquivalent(value)}</span>
