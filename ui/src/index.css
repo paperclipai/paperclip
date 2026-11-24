@@ -1,4 +1,5 @@
 @import "./motion-tokens.css";
+@import "./interaction-motion.css";
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
@@ -1658,9 +1659,8 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
    The shadcn PopoverContent class string carries `animate-in`, `zoom-in-95`
    and friends, but those utilities come from the tailwindcss-animate plugin,
    which this project does not install — there is no `enter`/`exit` keyframe in
-   the build, so they are inert. Rather than take on that dependency for one
-   surface (it would newly animate every dialog, dropdown and tooltip in the
-   app), the quicklook defines its own motion here.
+   the build, so they are inert. Other popovers get their motion from
+   interaction-motion.css; the quicklook opts out of that and keeps its own here.
 
    The scale is deliberately shallow. `--radix-popover-content-transform-origin`
    pins the origin to the corner nearest the trigger, so the card reads as

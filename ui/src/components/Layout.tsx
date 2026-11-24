@@ -61,6 +61,8 @@ import {
   rememberContextualSidebarOrigin,
   type ContextualSidebarSurface,
 } from "../lib/shell-navigation";
+import { usePageEnterMotion } from "../hooks/usePageEnterMotion";
+import { pageMotionKey } from "../lib/page-motion";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -163,6 +165,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const onboardingTriggered = useRef(false);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
+  usePageEnterMotion(mainContentRef, pageMotionKey(companyPathSegments));
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);

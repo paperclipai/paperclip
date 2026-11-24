@@ -61,6 +61,8 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
+import { usePageEnterMotion } from "../hooks/usePageEnterMotion";
+import { pageMotionKey } from "../lib/page-motion";
 import { cn } from "../lib/utils";
 import { classifyShellRoute } from "../lib/shell-navigation";
 import { NotFoundPage } from "../pages/NotFound";
@@ -156,6 +158,7 @@ export function Layout() {
   const onboardingTriggered = useRef(false);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
+  usePageEnterMotion(mainContentRef, pageMotionKey(companyPathSegments));
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);

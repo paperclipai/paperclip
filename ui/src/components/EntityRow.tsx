@@ -143,14 +143,14 @@ export function EntityRow({
 
   if (to) {
     return (
-      <Link to={to} className={cn("no-underline text-inherit", shellClasses)} onClick={onClick}>
+      <Link to={to} data-slot="entity-row" className={cn("no-underline text-inherit", shellClasses)} onClick={onClick}>
         {body}
       </Link>
     );
   }
 
   return (
-    <div className={shellClasses} onClick={onClick}>
+    <div data-slot="entity-row" className={shellClasses} onClick={onClick}>
       {body}
     </div>
   );
