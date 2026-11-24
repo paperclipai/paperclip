@@ -1068,6 +1068,19 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
+
+**Responding from chat.** Slack and Telegram can show Accept and Reject for
+simple binary confirmations on endpoints that support actions. Microsoft Teams
+notifications direct the reviewer to the Paperclip task. To respond to a
+document-bound confirmation or give a required rejection reason, open the card
+in Paperclip. The notification includes an **Open in Paperclip** link when the
+instance has a usable public URL.
+
+When requesting approval for a document revision from a chat conversation,
+tell the reviewer to open the Paperclip card and review the targeted revision.
+If `supersedeOnUserComment` is enabled, a later freeform reply can expire the
+pending request. Check the card's recorded outcome before continuing.
+
 Resolver governance:
 
 - **Omit `resolverPolicy` for a normal interaction.** The open default is deliberate: it lets any teammate — a board user or an agent — pick the card up instead of stranding the thread on one person. Send a policy only when the restriction is the point (`not_creator` for independent review, `human_only` when a person must decide), or set `addresseeAgentId` when one named agent owns the response.
