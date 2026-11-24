@@ -34,7 +34,7 @@ import { groupedActions } from "./tool-access/catalog/action-summary.js";
 import { createConnectionSetupPolicy, assertSupportedConnection } from "./tool-access/connections/setup-policy.js";
 import { createOrganizationGrantStore } from "./tool-access/connections/organization-grant.js";
 import { createAgentGrantStore } from "./tool-access/connections/agent-grant.js";
-import { createPersonalConnectionIdentity, createPersonalConnectionOwner } from "./tool-access/connections/personal-identity.js";
+import { createOtherUsersArchivedPersonalConnectionCheck, createPersonalConnectionIdentity } from "./tool-access/connections/personal-identity.js";
 import { createOAuthStateStore } from "./tool-access/oauth/state.js";
 import { createOAuthCatalogCompletion } from "./tool-access/oauth/catalog-completion.js";
 import { createOAuthAuthorizationStart } from "./tool-access/oauth/authorization-start.js";
@@ -852,7 +852,7 @@ export function toolAccessService(
   const setupPolicy = createConnectionSetupPolicy(db);
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
   const fixedPersonalIdentityForReconnect = createPersonalConnectionIdentity(db);
-  const personalConnectionOwnerUserId = createPersonalConnectionOwner(db);
+  const isOtherUsersArchivedPersonalConnection = createOtherUsersArchivedPersonalConnectionCheck(db);
   const runtimeSlots = createToolRuntimeSlots(db, runtimeSupervisor);
   const { ensureRuntimeSlot } = runtimeSlots;
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
@@ -1982,14 +1982,10 @@ export function toolAccessService(
       input.applicationId &&
       existingApplication &&
       existingApplication.status !== "archived" &&
-      retainedConnection?.status === "archived" &&
-      retainedConnection.credentialPolicy === "per_user"
+      retainedConnection &&
+      await isOtherUsersArchivedPersonalConnection(retainedConnection, actor)
     ) {
-      const connectingUserId = connectionActorUserId(actor);
-      const archivedOwnerUserId = await personalConnectionOwnerUserId(retainedConnection);
-      if (connectingUserId && archivedOwnerUserId && archivedOwnerUserId !== connectingUserId) {
-        retainedConnection = undefined;
-      }
+      retainedConnection = undefined;
     }
     let applicationName = existingApplication?.name ?? requestedName;
     let name = retainedConnection?.name ?? requestedName;

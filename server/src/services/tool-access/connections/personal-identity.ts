@@ -40,15 +40,25 @@ function fixedPersonalOwnerUserId(
   return retainedGrant?.subjectUserId ?? null;
 }
 
-export function createPersonalConnectionOwner(db: Db) {
-  return async function personalConnectionOwnerUserId(
+export function createOtherUsersArchivedPersonalConnectionCheck(db: Db) {
+  /**
+   * True when the connection is an archived personal connection that belongs
+   * to a user other than the connecting user.
+   */
+  return async function isOtherUsersArchivedPersonalConnection(
     connection: typeof toolConnections.$inferSelect,
-  ): Promise<string | null> {
-    if (connection.credentialPolicy !== "per_user") return null;
-    return fixedPersonalOwnerUserId(
+    actor?: ActorInfo,
+  ): Promise<boolean> {
+    if (connection.status !== "archived" || connection.credentialPolicy !== "per_user") {
+      return false;
+    }
+    const connectingUserId = connectionActorUserId(actor);
+    if (!connectingUserId) return false;
+    const ownerUserId = fixedPersonalOwnerUserId(
       connection,
       await personalGrantsForConnection(db, connection),
     );
+    return ownerUserId !== null && ownerUserId !== connectingUserId;
   };
 }
 
