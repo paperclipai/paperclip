@@ -35,6 +35,7 @@ import {
   ToggleField,
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
+import { PaperclipVersionSection } from "../components/PaperclipVersionSection";
 
 export function CompanySettings() {
   const {
@@ -451,6 +452,8 @@ export function CompanySettings() {
           errorMessage={governanceMutation.error ? describeError(governanceMutation.error).body : null}
         />
       </div>
+      <PaperclipVersionSection />
+
       <AgentObservabilitySettingsSection companyId={selectedCompanyId!} />
 
       <InstanceGeneralSettings embedded />
