@@ -188,6 +188,18 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+const TOOL_REPORTED_CODE = /^[a-z][a-z0-9_]{2,79}$/;
+
+export function toolReportedError(detail: string): ToolGatewayHttpError {
+  const candidates = [
+    /\(code: ([a-z][a-z0-9_]{2,79})[,)]/.exec(detail)?.[1],
+    /"code"\s*:\s*"([a-z][a-z0-9_]{2,79})"/.exec(detail)?.[1],
+    /^([a-z][a-z0-9_]{2,79}):/.exec(detail.trim())?.[1],
+  ];
+  const code = candidates.find((candidate): candidate is string => !!candidate && TOOL_REPORTED_CODE.test(candidate)) ?? "assigned_tool_error";
+  return new ToolGatewayHttpError(422, `${code}: The connected tool reported an error.`, "tool_error");
+}
+
 async function buildAssignedCatalog(identity: string, listing: readonly AssignedListingEntry[]): Promise<AssignedCatalog> {
   const tools = new Map<string, AssignedCatalogTool>();
   const unavailable: Array<{ tool: string; reason: string }> = [];
@@ -447,19 +459,25 @@ export async function createAssignedMcpTools(input: {
       if (!permits(descriptor) || !permits(descriptor, currentWorkMode)) throw new Error("paperclip_runner_tool_mode_denied");
       // Reauthorize through the existing gateway on every call. Discovery is
       // not a grant: revocation, policy, approval, and audit remain server-owned.
-      const result = await input.gateway.executeTool({
-        gatewayPublicId: input.gatewayPublicId,
-        sessionToken: input.bearerToken,
-        tool: descriptor.name,
-        parameters,
-      });
+      let result: Awaited<ReturnType<ToolGatewayService["executeTool"]>>;
+      try {
+        result = await input.gateway.executeTool({
+          gatewayPublicId: input.gatewayPublicId,
+          sessionToken: input.bearerToken,
+          tool: descriptor.name,
+          parameters,
+        });
+      } catch (error) {
+        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") throw toolReportedError(error.message);
+        throw error;
+      }
       if (result.status !== "completed" && result.status !== "replayed") {
         throw new Error("assigned_mcp_tool_execution_incomplete");
       }
       // The gateway normally throws provider errors. Keep a malformed or older
       // provider response from being reported as successful through PRP.
       if (result.result && typeof result.result === "object" && "isError" in result.result && result.result.isError === true) {
-        throw new ToolGatewayHttpError(502, "The assigned tool returned an error.", "tool_error");
+        throw toolReportedError(JSON.stringify(result.result));
       }
       return result.result;
     },

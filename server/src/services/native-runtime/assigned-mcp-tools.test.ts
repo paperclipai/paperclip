@@ -439,7 +439,7 @@ describe("assigned MCP runner tools", () => {
     expect(discovery).toEqual({ tools: [assigned.definitions()[0]], nextOffset: null });
   });
 
-  it.each(["approval_required", "connection_revoked", "tool_error"])("preserves %s through the call wrapper", async reason => {
+  it.each(["approval_required", "connection_revoked"])("preserves %s through the call wrapper", async reason => {
     const f = fixture([descriptor("write", "write")]);
     const assigned = await createAssignedMcpTools(f);
     const error = new ToolGatewayHttpError(403, "Denied", reason);
@@ -686,12 +686,26 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).toHaveBeenCalledOnce();
   });
 
-  it.each(["tool_error", "approval_required", "connection_revoked"])("propagates %s without converting it to success", async reason => {
+  it.each(["approval_required", "connection_revoked"])("propagates %s without converting it to success", async reason => {
     const f = fixture([descriptor("recall")]);
     const error = new ToolGatewayHttpError(403, "Gateway refused execution", reason);
     f.executeTool.mockRejectedValue(error);
     const assigned = await createAssignedMcpTools(f);
     await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toBe(error);
+  });
+
+  it.each([
+    ["Two reads are already running; wait for them to finish. (code: read_concurrency_limit, retryable)", "read_concurrency_limit"],
+    ['{"object":"error","status":400,"code":"validation_error","message":"Bad property"}', "validation_error"],
+    ["rate_limited: slow down", "rate_limited"],
+    ["Something went wrong", "assigned_tool_error"],
+  ])("reports a tool's own error with its stable code instead of a server failure: %s", async (detail, code) => {
+    const f = fixture([descriptor("recall")]);
+    f.executeTool.mockRejectedValue(new ToolGatewayHttpError(502, detail, "tool_error"));
+    const assigned = await createAssignedMcpTools(f);
+    await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toMatchObject({
+      status: 422, reasonCode: "tool_error", message: `${code}: The connected tool reported an error.`,
+    });
   });
 
   it("propagates discovery denial", async () => {
@@ -706,7 +720,8 @@ describe("assigned MCP runner tools", () => {
     const assigned = await createAssignedMcpTools(f);
     const call = { tool: assigned.definitions()[0]!.name as string, arguments: {} };
     f.executeTool.mockResolvedValueOnce({ status: "completed", result: { isError: true, content: [] } });
-    await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error" });
+    await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error", status: 422,
+      message: "assigned_tool_error: The connected tool reported an error." });
     f.executeTool.mockResolvedValueOnce({ status: "pending", result: {} });
     await expect(assigned.execute(call)).rejects.toThrow("assigned_mcp_tool_execution_incomplete");
     f.executeTool.mockResolvedValueOnce({ status: "replayed", result: { memory: "synthetic" } });

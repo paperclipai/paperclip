@@ -7494,7 +7494,11 @@ export function createToolGatewayService(
   }
 
   function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string) {
-    const message = String(result.content || result.error);
+    const content = Array.isArray(result.content)
+      ? result.content.map((item) => (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+        ? (item as { text: string }).text : "")).filter(Boolean).join("\n")
+      : result.content;
+    const message = String(content || result.error);
     return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
   }
 
