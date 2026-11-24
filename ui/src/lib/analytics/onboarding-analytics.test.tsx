@@ -3,7 +3,9 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, type BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { blocksAgentCreate } from "@/lib/onboarding-connection-test";
+import { isReportableAdapterLoginFailure } from "@/components/AgentConfigForm";
 import {
   captureProductAnalyticsEvent,
   resetProductAnalyticsForTest,
@@ -11,7 +13,12 @@ import {
   syncProductAnalytics,
   type ProductAnalyticsClient,
 } from "./product-analytics";
-import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "./onboarding-analytics";
+import {
+  captureAgentChatMessageSent,
+  captureOnboardingStepCompleted,
+  captureOnboardingStepFailed,
+  useOnboardingAnalytics,
+} from "./onboarding-analytics";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -256,5 +263,80 @@ describe("onboarding funnel events", () => {
     wizard.rerender({ open: true, step: 4, connectOutcome: "subscription" });
     act(() => wizard.result.current.dismissed(4));
     expect(client.capture).not.toHaveBeenCalled();
+  });
+
+  it("captures structured onboarding failures and drops unsafe provider strings", async () => {
+    await startAnalytics();
+    captureOnboardingStepFailed({
+      step: "connect_model",
+      reason: "api_key_save_failed",
+      provider: "Anthropic",
+      method: "api_key",
+    });
+    captureOnboardingStepFailed({
+      step: "connect_model",
+      reason: "subscription_login_failed",
+      provider: "secret token=sk-123",
+      method: "subscription",
+    });
+    captureOnboardingStepFailed({
+      step: "launch",
+      reason: "greeting_failed",
+    });
+    expect(captured()).toEqual([
+      ["onboarding_step_failed", { step: "connect_model", reason: "api_key_save_failed", provider: "anthropic", method: "api_key" }],
+      ["onboarding_step_failed", { step: "connect_model", reason: "subscription_login_failed", method: "subscription" }],
+      ["onboarding_step_failed", { step: "launch", reason: "greeting_failed" }],
+    ]);
+  });
+
+  it("captures agent chat messages with onboarding_chat vs agent_chat surface only", async () => {
+    await startAnalytics();
+    captureAgentChatMessageSent("onboarding_chat");
+    captureAgentChatMessageSent("agent_chat");
+    expect(captured()).toEqual([
+      ["agent_chat_message_sent", { surface: "onboarding_chat" }],
+      ["agent_chat_message_sent", { surface: "agent_chat" }],
+    ]);
+  });
+
+  it("blocksAgentCreate flags fail results and warn/pass results with missing-auth checks", () => {
+    const base = {
+      adapterType: "codex_local",
+      testedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(blocksAgentCreate({ ...base, status: "fail", checks: [] })).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "warn",
+        checks: [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "warn", message: "Auth required" }],
+      }),
+    ).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "pass",
+        checks: [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "warn", message: "Auth required" }],
+      }),
+    ).toBe(true);
+    expect(
+      blocksAgentCreate({
+        ...base,
+        status: "warn",
+        checks: [{ code: "other_warning", level: "warn", message: "Non-blocking warning" }],
+      }),
+    ).toBe(false);
+    expect(blocksAgentCreate({ ...base, status: "pass", checks: [] })).toBe(false);
+  });
+
+  it("isReportableAdapterLoginFailure covers start/poll/timeout failures and excludes cancellation and retries", () => {
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "failed", hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "timed_out", hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: undefined, hasFailure: true })).toBe(true);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "cancelled", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: true, status: "failed", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: false, retrying: false, status: "failed", hasFailure: true })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "waiting_for_user", hasFailure: false })).toBe(false);
   });
 });
