@@ -95,3 +95,22 @@ it("serves only RE2-compatible patterns for every Paperclip tool on the swarm ro
     return problem ? [`${entry.path}: ${problem}: ${entry.pattern}`] : [];
   })).toEqual([]);
 });
+
+it("tells the model in plain words which rule a value broke when the CLI never saw the pattern", async () => {
+  const bridge = await startRunnerToolBridge({
+    preserveToolNames: true, schemaPatternDialect: "re2",
+    tools: [{ name: "read_document", inputSchema: { type: "object", properties: { key: taskDocumentKeySchema }, required: ["key"], additionalProperties: false } }],
+    handler: async () => ({ ok: true }),
+  });
+  bridges.push(bridge);
+  const response = await fetch(bridge.url, {
+    method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "read_document", arguments: { key: "notes.md" } } }),
+  });
+  const result = (await response.json() as { result: { isError?: boolean; content: Array<{ text: string }> } }).result;
+  expect(result.isError).toBe(true);
+  const text = result.content[0]!.text;
+  expect(text).toMatch(/^Invalid tool input: \/key /);
+  // The rule the served schema no longer carried, as the schema's own words.
+  expect(text).toContain("key: Stable document identifier, not a filename or path");
+});
