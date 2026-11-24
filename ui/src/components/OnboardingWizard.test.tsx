@@ -370,6 +370,20 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockAdaptersApi.list.mockReset().mockResolvedValue([]);
     mockEnvironmentsApi.probe.mockReset().mockResolvedValue({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "platform-lease" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+    // Upstream #22695 gates the Connect step on browser sign-in availability:
+    // with no login environment mocked, `browserSignInUnavailable` is true and
+    // the Connect button does nothing, so no hire or probe ever fires. Mirror
+    // the login-panel describe's sandbox environment (daytona, PTY-capable)
+    // so the step has a login environment to sign in through.
+    mockEnvironmentsApi.list.mockResolvedValue([{
+      id: "env-sandbox-1", name: "Sandbox", description: null, driver: "sandbox", status: "active",
+      config: { provider: "daytona" }, envVars: {}, metadata: null,
+      createdAt: new Date(0), updatedAt: new Date(0),
+    }]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities([], { sandboxProviders: { daytona: { supportsLoginPty: true } } }),
+    );
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "env-sandbox-1" });
     localHealth.get.mockResolvedValue({ deploymentMode: "authenticated" });
     managedApi.checkLocalLogin.mockReset().mockResolvedValue({
       status: "sign_in_required",
