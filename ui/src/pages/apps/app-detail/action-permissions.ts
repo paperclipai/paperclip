@@ -1,3 +1,5 @@
+import { googleWorkspaceToolTitle } from "@paperclipai/shared";
+
 /**
  * Apply one permission to a set of actions in a single change.
  *
@@ -24,4 +26,8 @@ export function actionPermissionMutation(
     }
   }
   return { enabled, askFirst };
+}
+
+export function actionLabel(entry: { toolName: string; title?: string | null }): string {
+  return googleWorkspaceToolTitle(entry.toolName, entry.title) ?? entry.toolName;
 }

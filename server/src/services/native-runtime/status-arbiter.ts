@@ -1,9 +1,11 @@
 import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, type CompletionReviewStageEntry } from "../issue-execution-policy.js";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
+import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
+import { planNotProducedDecision } from "./plan-mode-status.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
   NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS } from "./native-agent-blocker.js";
 
@@ -55,7 +57,7 @@ export type NativeStatusEffect =
     }
   | {
       kind: "bind_blocker";
-      owner: { agentId: string } | "board";
+      owner: IssueUnblockDescriptor["owner"];
       action: string;
     }
   | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
@@ -98,11 +100,15 @@ export interface NativeStatusDecision {
   toStatus: NativeAuthoritativeIssueStatus;
   reasonCode: string | null;
   unblockDescriptor: {
-    owner: { agentId: string } | "board";
+    owner: IssueUnblockDescriptor["owner"];
     action: string;
   } | null;
   effects: NativeStatusEffect[];
   blockerOwnerKind?: string;
+}
+
+function humanBlockerOwner(blocker: NativeEvidenceAssessment["blocker"]): IssueUnblockDescriptor["owner"] {
+  return blocker?.ownerUserId ? { userId: blocker.ownerUserId } : "board";
 }
 
 /**
@@ -231,6 +237,8 @@ export function arbitrateNativeStatus(input: {
   publishedExternalReview?: boolean;
   /** Server-verified accepted plan request and normal provider terminal. */
   planWaitAuthorized?: boolean;
+  /** A Plan-mode run settled with no unanswered plan revision to review. */
+  planNotProduced?: boolean;
   monitorWaitAuthorized?: boolean;
   caseHandoffAuthorized?: boolean;
   /** The saved timer already admitted another run and this run no longer owns checkout. */
@@ -519,7 +527,7 @@ export function arbitrateNativeStatus(input: {
     (["done", "blocked"].includes(input.assessment.reportedDisposition) || unfinishedResponseWait || input.assessment.continuation?.kind === "monitor")
   ) {
     const owner = input.assessment.blocker?.boardOwned
-      ? ("board" as const)
+      ? humanBlockerOwner(input.assessment.blocker)
       : { agentId: input.agentId };
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -712,7 +720,7 @@ export function arbitrateNativeStatus(input: {
     input.assessment.blocker
   ) {
     const owner = input.assessment.blocker.boardOwned
-      ? ("board" as const)
+      ? humanBlockerOwner(input.assessment.blocker)
       : { agentId: input.agentId };
     if (input.assessment.blocker.scope === "task_wide") {
       return {
@@ -731,11 +739,11 @@ export function arbitrateNativeStatus(input: {
             owner,
             action: input.assessment.blocker.unblockAction,
           },
-          {
+          ...(input.assessment.blocker.ownerUserId ? [] : [{
             kind: "notify_owner",
             agentId: input.agentId,
             reason: "task_wide_blocker_bound",
-          },
+          } as const]),
         ],
       };
     }
@@ -749,13 +757,13 @@ export function arbitrateNativeStatus(input: {
       // authorized, productive track exists. Bind the actual unblock request
       // without waking the same agent to repeat the blocked work or old title.
       unblockDescriptor: {
-        owner: "board",
+        owner: humanBlockerOwner(input.assessment.blocker),
         action: input.assessment.blocker.unblockAction,
       },
       effects: [
         {
           kind: "bind_blocker",
-          owner: "board",
+          owner: humanBlockerOwner(input.assessment.blocker),
           action: input.assessment.blocker.unblockAction,
         },
       ],
@@ -848,6 +856,12 @@ export function arbitrateNativeStatus(input: {
       unblockDescriptor: null,
       effects: [],
     };
+  }
+  // Before the passive board/response waits: a Plan-mode run, assigned or
+  // comment-started, with no plan to review must not rest as a silent wait.
+  if (input.planNotProduced === true && !input.isConversation && input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake") {
+    return { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, ...planNotProducedDecision(input) };
   }
   if (
     input.assessment.reportedDisposition === "yielded" &&

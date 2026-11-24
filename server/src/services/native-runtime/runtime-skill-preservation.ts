@@ -268,13 +268,19 @@ export async function migrateRuntimeSkillAssets(db: Db, options: { companyId?: s
     .where(and(retainedRuntimeSkillsSql(), options.companyId ? eq(heartbeatRuns.companyId, options.companyId) : undefined,
       options.after ? gt(heartbeatRuns.id, options.after) : undefined)).orderBy(asc(heartbeatRuns.id))
     .limit(Math.max(1, Math.min(50, options.limit ?? 10)));
-  const results: Array<{ runId: string; status: "candidate" | "preserved"; preserved?: number }> = [];
+  const results: Array<{ runId: string; status: "candidate" } | { runId: string; status: "preserved"; preserved: number }
+    | { runId: string; status: "unsaved"; code: `runtime_skill_source_absent:${RuntimeSkillSourceAbsent["reason"]}` }> = [];
   await withSkillPackageReadScope(db, async () => {
     for (const row of rows) {
       options.signal?.throwIfAborted();
       if (!options.apply) { results.push({ runId: row.id, status: "candidate" }); continue; }
-      const result = await preserveRuntimeSkillAssets(db, { companyId: row.companyId, runId: row.id, signal: options.signal }, storage);
-      results.push({ runId: row.id, status: "preserved", preserved: result.preserved });
+      try {
+        const result = await preserveRuntimeSkillAssets(db, { companyId: row.companyId, runId: row.id, signal: options.signal }, storage);
+        results.push({ runId: row.id, status: "preserved", preserved: result.preserved });
+      } catch (error) {
+        if (!(error instanceof RuntimeSkillSourceAbsent)) throw error;
+        results.push({ runId: row.id, status: "unsaved", code: `runtime_skill_source_absent:${error.reason}` });
+      }
     }
   });
   return { inspected: rows.length, after: rows.at(-1)?.id ?? null, results };

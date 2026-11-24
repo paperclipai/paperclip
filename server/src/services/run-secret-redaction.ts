@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -167,6 +167,32 @@ export function createRunSecretRedactionRegistry(db: Db) {
     return valuesForRuns(rows);
   }
 
+  async function notificationValuesForIssue(companyId: string, issueId: string) {
+    const maxRuns = 128;
+    const maxValues = 64;
+    const maxMaterialBytes = 64 * 1024;
+    const boundedSnapshot = sql`case when octet_length(coalesce((${heartbeatRuns.contextSnapshot}->'paperclipSecretRedactions')::text, '')) <= 16384
+      then ${registrySnapshot} else null end`;
+    const rowsById = new Map<string, { contextSnapshot: unknown }>();
+    for (const [binding, order] of [
+      [sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`, desc(heartbeatRuns.createdAt)],
+      [sql`${heartbeatRuns.contextSnapshot}->'paperclipIssue'->>'id' = ${issueId}`, sql`${heartbeatRuns.createdAt} desc nulls last`],
+    ]) {
+      const rows = await db.select({ id: heartbeatRuns.id, contextSnapshot: boundedSnapshot }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), binding))
+        .orderBy(order).limit(maxRuns + 1);
+      if (rows.length > maxRuns || rows.some(row => row.contextSnapshot === null)) throw new Error("Task notification redaction budget exceeded");
+      for (const row of rows) rowsById.set(row.id, row);
+      if (rowsById.size > maxRuns) throw new Error("Task notification redaction budget exceeded");
+    }
+    const rows = [...rowsById.values()];
+    const entries = new Map(rows.flatMap(row => registryEntries(row.contextSnapshot)).map(entry => [entry.fingerprintSha256, entry]));
+    if (entries.size > maxValues || [...entries.values()].reduce((bytes, entry) => bytes + Buffer.byteLength(JSON.stringify(entry.material)), 0) > maxMaterialBytes) {
+      throw new Error("Task notification redaction budget exceeded");
+    }
+    return valuesForRuns(rows);
+  }
+
   return {
     redactionValuesForRun: async (companyId: string, runId: string) => valuesForRuns(await db
       .select({ contextSnapshot: registrySnapshot }).from(heartbeatRuns)
@@ -205,6 +231,8 @@ export function createRunSecretRedactionRegistry(db: Db) {
       const disclosure = await valuesForRun(companyId, runId, viewerUserId);
       return redactRegisteredSecretValues(withoutSqlRunError(value), disclosure.values, disclosure.credentialConnectionName);
     },
+    redactForIssueNotification: async <T>(companyId: string, issueId: string, value: T): Promise<T> =>
+      redactRegisteredSecretValues(value, await notificationValuesForIssue(companyId, issueId)),
     redactForIssue: async <T>(companyId: string, issueId: string, value: T): Promise<T> =>
       redactRegisteredSecretValues(value, await valuesForIssue(companyId, issueId)),
   };

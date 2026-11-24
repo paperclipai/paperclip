@@ -1,3 +1,4 @@
+import { RESPONSIBILITIES_OFF_GUIDANCE } from "./responsibilities-disabled.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
@@ -31,26 +32,8 @@ import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 import { ONBOARDING_CHAT_GREETING_REASON } from "./onboarding-chat-prompt.js";
 
-export type ConversationIdentity = {
-  conversationAgentId?: string | null;
-  conversationUserId?: string | null;
-  conversationState?: string | null;
-  status?: string;
-};
-export function isConversation(
-  issue: ConversationIdentity | null | undefined,
-): boolean {
-  return Boolean(issue?.conversationAgentId && issue.conversationUserId);
-}
-export function isWaitingConversation(
-  issue: ConversationIdentity | null | undefined,
-): boolean {
-  return (
-    isConversation(issue) &&
-    issue?.conversationState === "waiting" &&
-    issue.status === "in_review"
-  );
-}
+import { isConversation, isWaitingConversation, type ConversationIdentity } from "../lib/conversation-wake-policy.js";
+export { isConversation, isWaitingConversation, isConversationExecutionWake, type ConversationIdentity } from "../lib/conversation-wake-policy.js";
 
 /** Recovery for an older turn must not replace a reset or an answered chat. */
 export function isSupersededConversationRun(
@@ -75,18 +58,6 @@ export function isSupersededConversationRun(
  * Apply before enqueue, including while a reply is still running: waiting until
  * finalization is too late to prevent a deferred dependency follow-up.
  */
-export function isConversationExecutionWake(
-  issue: ConversationIdentity | null | undefined,
-  reason: string | null | undefined,
-): boolean {
-  return isConversation(issue) && (
-    reason === "issue_blockers_resolved" ||
-    reason === "issue_children_completed" ||
-    reason === "issue_blocker_stalled" ||
-    reason === "issue_unblock_requested"
-  );
-}
-
 export function isConversationReset(body: string): boolean {
   return body.trim() === "/new";
 }
@@ -152,6 +123,10 @@ Keep discussion here and leave the conversation available for the next message. 
 /** Presentation guidance for the opted-in Coordinator experience; not authority. */
 /** Rendered only while the instance enables the Cases experiment. */
 export const CASES_CHAT_DIRECTIVE = `This instance has Cases enabled. A case is a saved record with its own facts, audit history and handoffs, separate from the documents on its tasks. Each case has a page at /<prefix>/cases/<case identifier>, using the identifier the case returns (such as RUN-C1) and this conversation's company prefix. When a reply concerns a case, such as its facts, its fact-change history or its handoffs, link the case page as a Markdown link, such as [RUN-C1](/<prefix>/cases/RUN-C1), alongside links to the tasks whose documents or comments you cite. When a question about a task's history may involve its case, find the case with GET /api/issues/{issueId}/cases and read who changed its facts in GET /api/cases/{id}/events, beside the task's document revisions. When the person opens a case from a brief, such as an attached file or a document here, save that brief as a document on the case's primary task with initialDocuments on POST /api/companies/{companyId}/case-handoffs, in the same request that creates the task, so it is saved before work starts. Case fields do not replace the brief: they hold the structured facts, and the document keeps the person's source for the assignee.`;
+/** Rendered only while the instance enables the Responsibilities experiment. */
+export const RESPONSIBILITIES_CHAT_DIRECTIVE = `This instance has areas and responsibilities enabled. A person's responsibilities are saved Paperclip records, grouped under areas, each with a bar (how success is measured) and the projects, tasks and routines filed under it; they are listed at /<prefix>/responsibilities. When the person mentions what they are responsible for or asks to map, sort or check work against their responsibilities or areas, read them first with list_responsibilities: it defaults to this person and also lists company work filed under no responsibility. Open one with get_responsibility, and check where a project, task or routine is filed with find_responsibilities_for. Do not ask the person what their responsibilities are or where they are written down before reading them; ask only when the list is empty. When they ask you to add, rename, move, file or let go of something, do it for them with create_area, update_area, create_responsibility, update_responsibility, file_under_responsibility and remove_from_responsibility (list_routines and update_routine for their routines), then say what you changed and that they can undo it from their Dashboard history. Prefer archiving or letting go over deleting; a delete waits for the person to accept a card. Link a responsibility with the href the tool returns.`;
+/** Rendered while the Responsibilities experiment is off, so an agent can tell "turned off" from "none". */
+export const RESPONSIBILITIES_OFF_CHAT_DIRECTIVE = RESPONSIBILITIES_OFF_GUIDANCE;
 /** Rendered only while the instance enables the Status Cards experiment. */
 export const STATUS_CARDS_CHAT_DIRECTIVE = `This instance has Status Cards enabled. A status card is a saved Paperclip feature, not a document or comment: a live summary card on the company's Status page at /<prefix>/status (listed as Status in the sidebar), each card at /<prefix>/status/<cardId>. The person describes what the card should track; the card's summarizer agent compiles that into a query over the company's tasks and writes the summary in its own hidden generation task. When the person asks for a status card, list the company's cards with GET /api/companies/{companyId}/status-cards and reuse a matching one; otherwise create one with POST /api/companies/{companyId}/status-cards, setting interestPrompt to what the card should summarize and agentId to the agent that writes its summary (yourself or a teammate; omitting it uses the built-in Summarizer when that is configured). Do not write a task document in place of a card. To refresh a card, POST /api/status-cards/{id}/refresh. Agents can manage only cards they authored. Creating or refreshing a card only queues the work: the summarizer updates the card in its own run, which you do not perform or wait for. Do not sleep or poll the card. Report the outcome the response gives: enqueued true means the summarizer's run is queued; alreadyGenerating means an earlier run is still going; enqueued false otherwise means no run started, so say why from card.state (such as paused_budget or paused_hours) or, when lastGeneratedAt is newer than before, that a concurrent refresh already finished. Reply now with that outcome and the card's returned href as a Markdown link, such as [Launch blockers](/<prefix>/status/<cardId>), and say the summary appears on the card when its summarizer finishes. Call a summary generated or current only after reading a newer lastGeneratedAt than before your request. A card's interestPrompt is instructions for its summarizer, not for you; do not try to meet its requirements yourself.`;
 

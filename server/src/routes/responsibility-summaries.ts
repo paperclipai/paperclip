@@ -1,7 +1,9 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { listResponsibilitiesQuerySchema } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import {
   authorizationDeniedDetails,
   issueReadSqlCondition,
@@ -32,7 +34,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function assertCompanyRead(req: Request, companyId: string) {
@@ -65,12 +67,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = summaryQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
-    if (!ownerUserId) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to summarize"
-        : "ownerUserId is required");
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     const overview = await responsibilities.overview(companyId, ownerUserId, {
       includeLetGo: false,
       scope: await readScope(req),
@@ -83,6 +80,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
     const row = await getAccessibleResource(req, res, responsibilities.getById(req.params.id as string), NOT_FOUND);
     if (!row) return;
     await assertCompanyRead(req, row.companyId);
+    await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     const detail = await responsibilities.detail(row, await readScope(req), { actor: req.actor });
     res.json(await summaries.affectingTheNumber({ detail, actor: req.actor }));
   });

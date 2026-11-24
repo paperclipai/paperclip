@@ -15,6 +15,7 @@ NODE = 'node/bin/node'
 GUARD = '.paperclip-native-module-guard.cjs'
 BOOTSTRAP = '.paperclip-native-entry.cjs'
 PLACEHOLDER = '/__paperclip_kimi_fault_snapshot__/distribution'
+LAUNCH_PLACEHOLDER = '/__paperclip_kimi_fault_launch__/launch'
 
 
 def require(value, code):
@@ -134,12 +135,14 @@ def parse_closure(content, expected):
     return normalized
 
 
-def expected_sources(config, distribution, entries):
+def expected_sources(config, launch, distribution, entries):
+    # The bootstrap and guard live in the per-launch directory; the closure they
+    # name (and the guard's digests) live in the runner's sealed verified store.
     bootstrap, guard = config['bootstrapTemplate'], config['guardTemplate']
-    require(isinstance(bootstrap, str) and 0 < len(bootstrap) <= 32768 and PLACEHOLDER in bootstrap, 'bootstrap_template')
+    require(isinstance(bootstrap, str) and 0 < len(bootstrap) <= 32768 and PLACEHOLDER in bootstrap and LAUNCH_PLACEHOLDER in bootstrap, 'bootstrap_template')
     require(isinstance(guard, str) and 0 < len(guard) <= 32768 and guard.count('const digests={};') == 1, 'guard_template')
     digests = {distribution + '/' + entry['path']: entry['sha256'] for entry in entries}
-    return bootstrap.replace(PLACEHOLDER, distribution).encode(), guard.replace('const digests={};', 'const digests=' + json.dumps(digests, separators=(',', ':'), ensure_ascii=False) + ';').encode()
+    return bootstrap.replace(PLACEHOLDER, distribution).replace(LAUNCH_PLACEHOLDER, launch).encode(), guard.replace('const digests={};', 'const digests=' + json.dumps(digests, separators=(',', ':'), ensure_ascii=False) + ';').encode()
 
 
 def inspect(config):
@@ -203,11 +206,17 @@ def inspect(config):
             continue
         if len(args) != 10 or args[1] != '--eval' or args[4] != BOOTSTRAP:
             continue
-        distribution = args[3]
-        require(re.fullmatch(r'/tmp/paperclip-acpx-native-[A-Za-z0-9_-]+/distribution', distribution), 'snapshot_path')
+        launch = args[3]
+        require(re.fullmatch(r'/tmp/paperclip-acpx-native-[A-Za-z0-9_-]+/launch', launch), 'snapshot_path')
         require(args[4:] == [BOOTSTRAP, '0', '0', 'commonjs', '[]', '0'] and 'sha256:' + digest(args[2].encode()) == config['guardLoaderSha256'], 'parent_bootstrap')
         require(argv(pid) == ['kimi-code'], 'native_title')
-        for directory in (distribution, os.path.dirname(distribution)):
+        # The child runs Node from the runner's sealed store for this exact
+        # closure; the launch's bootstrap below must name that same store.
+        native_path = os.path.realpath(f'/proc/{pid}/exe')
+        require(native_path.endswith('/' + NODE), 'snapshot_path')
+        distribution = native_path[:-len('/' + NODE)]
+        require(re.fullmatch(r'/tmp/paperclip-verified-native-[A-Za-z0-9_-]+/' + re.escape(config['closureSha256']) + '/distribution', distribution), 'snapshot_path')
+        for directory in (launch, os.path.dirname(launch), distribution, os.path.dirname(distribution)):
             status = os.lstat(directory)
             require(stat.S_ISDIR(status.st_mode) and not status.st_mode & 0o222 and os.path.realpath(directory) == directory, 'snapshot_seal')
         require(os.readlink(f'/proc/{pid}/cwd') == binding['remoteCwd'] and os.readlink(f'/proc/{parent}/cwd') == binding['remoteCwd'], 'cwd')
@@ -216,9 +225,9 @@ def inspect(config):
             content, inode = checked_file(distribution + '/' + name, 256 * 1024 * 1024, True)
             require(len(content) == entries[name]['size'] and digest(content) == entries[name]['sha256'], 'snapshot_digest')
             identities[name] = inode
-        bootstrap, guard = expected_sources(config, distribution, ordered_entries)
-        require(checked_file(distribution + '/' + BOOTSTRAP, 32768, True)[0] == bootstrap, 'native_bootstrap_bytes')
-        require(checked_file(distribution + '/' + GUARD, 4 * 1024 * 1024, True)[0] == guard, 'native_guard_bytes')
+        bootstrap, guard = expected_sources(config, launch, distribution, ordered_entries)
+        require(checked_file(launch + '/' + BOOTSTRAP, 32768, True)[0] == bootstrap, 'native_bootstrap_bytes')
+        require(checked_file(launch + '/' + GUARD, 4 * 1024 * 1024, True)[0] == guard, 'native_guard_bytes')
         native_exe, held_node = os.stat(f'/proc/{pid}/exe'), os.stat(f'/proc/{pid}/fd/7')
         require((native_exe.st_dev, native_exe.st_ino) == identities[NODE] == (held_node.st_dev, held_node.st_ino), 'native_executable')
         if args[0] == '/proc/self/fd/10':
@@ -230,7 +239,7 @@ def inspect(config):
         if args[0] != '/proc/self/fd/10':
             require(args[0] == PACK + '/node_modules/node/bin/node' and checked_file(args[0], 256 * 1024 * 1024)[1] == parent_inode, 'parent_node_path')
         directory_fd = os.stat(f'/proc/{parent}/fd/4')
-        directory = os.lstat(distribution)
+        directory = os.lstat(launch)
         require(stat.S_ISDIR(directory_fd.st_mode) and (directory_fd.st_dev, directory_fd.st_ino) == (directory.st_dev, directory.st_ino), 'parent_directory_descriptor')
         source_mode = os.stat(f'/proc/{parent}/fd/3').st_mode
         require(stat.S_ISFIFO(source_mode) or stat.S_ISSOCK(source_mode), 'parent_source_pipe')

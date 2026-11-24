@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
+import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -239,6 +240,10 @@ export async function remoteWorkspaceReplacementEvidence(
 export function nativeReplacementPending() {
   return and(
     eq(heartbeatRuns.status, "failed"),
+    // An exact chat Retry is authorized only through its own chat action and
+    // the user's Retry intent. A system successor cannot hold that authority,
+    // so admission would always refuse it. Keep the task's hold for the user.
+    sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ? 'chatFailedRunRetry')`,
     eq(nativeRunFinalizations.phase, "terminal_failure"),
     or(inArray(
       nativeRunFinalizations.failureCode,
@@ -778,17 +783,8 @@ export async function reconcileSafeNativeReplacements(
         }
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
-        const predecessorContext = { ...record(run.contextSnapshot) };
-        // History comes from the failed source run. Consumed wake fields must
-        // not grant this automatic retry fresh comment/resume authority.
-        for (const key of [
-          "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
-          "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
-          "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
-          "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
-        ]) delete predecessorContext[key];
         const context = {
-          ...predecessorContext,
+          ...freshSessionRetryContext(record(run.contextSnapshot)),
           issueId: task.id,
           retryOfRunId: run.id,
           wakeReason: NATIVE_SAFE_REPLACEMENT_REASON,

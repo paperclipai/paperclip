@@ -52,6 +52,7 @@ async function readDrafts(ids: string[], view: DraftView | undefined, http: Goog
 export const listDrafts = defineTool({
   definition: {
     name: "list_drafts",
+    title: "List drafts",
     description: "Lists the signed-in user's Gmail drafts one page at a time, optionally filtered by a Gmail search query. Returns recipients, subject and bodies by default.",
     inputSchema: {
       type: "object",
