@@ -237,6 +237,48 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     expect(new Set(acknowledged)).toEqual(new Set(f.stale.map(request => request.deliveryId)));
   }, 300_000);
 
+  it("reads a waiting inline request again once a reply is published, without a hint", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const client = db.$client, issueId = f.runs[0]!.issueId;
+    const [{ main, resource }] = await client.unsafe(`select id as main, resource_id as resource from chat_conversations
+      where issue_id = $1 and external_thread_id = 'github:paperclipai/paperclip:1'`, [issueId]);
+    const [{ conversation }] = await client.unsafe(`insert into chat_conversations (company_id, endpoint_id, issue_id, resource_id,
+        external_conversation_id, external_label, external_thread_id)
+      values ($1, $2, $3, $4, 'github:paperclipai/paperclip:1:rc:5001', 'thread', 'github:paperclipai/paperclip:1:rc:5001')
+      returning id as conversation`, [f.companyId, f.endpointId, issueId, resource]);
+    const [{ delivery }] = await client.unsafe(`insert into chat_deliveries (company_id, endpoint_id, provider_event_id,
+        deduplication_key, event_kind, normalized_event, conversation_id, state)
+      values ($1, $2, 'inline-wait', 'inline-wait', 'message', '{}', $3, 'processed') returning id as delivery`,
+    [f.companyId, f.endpointId, conversation]);
+    const [{ comment }] = await client.unsafe(`insert into issue_comments (company_id, issue_id, body)
+      values ($1, $2, 'Fixed') returning id as comment`, [f.companyId, issueId]);
+    await client.unsafe(`insert into chat_message_links (company_id, endpoint_id, conversation_id, delivery_id, comment_id,
+        provider_message_id, direction) values ($1, $2, $3, $4, $5, 'inline-wait-in', 'inbound')`,
+    [f.companyId, f.endpointId, conversation, delivery, comment]);
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: conversation,
+      deliveryId: delivery, kind: "github_response_comment", providerActionId: `github_response:${delivery}`,
+      payload: { agentId: f.agentId }, status: "processed",
+      result: { id: "9001", url: "https://github.com/paperclipai/paperclip/pull/1#discussion_r9001", final: false,
+        versionAt: new Date(Date.UTC(2026, 9, 28)).toISOString() } });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, nativeIssueId: issueId, issueId,
+      scopeKind: "issue", status: "succeeded", runtimeMode: "native", nativePhase: "committed",
+      contextSnapshot: { issueId, wakeCommentId: comment }, createdAt: new Date(Date.UTC(2026, 9, 28) + 3_000_000),
+      resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+          continuation: { kind: "response_wake", idempotencyKey: "inline-wait" } },
+        presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none",
+          commentAction: "none", reasonCodes: ["yielded_control_plane_wait"] } } });
+    await start(); await advance(5_000);
+    expect(acknowledged).not.toContain(delivery);
+    await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: main,
+      kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+      payload: { operation: "comment", session: { companyId: f.companyId, issueId, runId: f.runs[0]!.runId } },
+      result: { id: "9002", url: "https://github.com/paperclipai/paperclip/pull/1#issuecomment-9002" } });
+    await companyHint(f.companyId); await advance(31_000);
+    expect(acknowledged).toContain(delivery);
+  }, 300_000);
+
   it("acknowledges every owed request of a page when one run's requester provenance changed", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     const f = await seed("received");
