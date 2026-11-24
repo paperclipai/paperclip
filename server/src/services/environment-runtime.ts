@@ -1665,6 +1665,31 @@ function createSandboxEnvironmentDriver(
     });
   }
 
+  /** One automatic re-qualification per environment and company at a time,
+   * so a burst of runs behind one stale proof boots one probe sandbox. */
+  const requalifications = new Map<string, Promise<{ environment: Environment | null; reason: string | null }>>();
+  function requalifyStaleSandboxSnapshot(environmentId: string, companyId: string) {
+    const key = `${environmentId}:${companyId}`;
+    const pending = requalifications.get(key);
+    if (pending) return pending;
+    const run = (async () => {
+      const environments = environmentService(db);
+      const current = await environments.getById(environmentId);
+      if (!current || current.driver !== "sandbox") return { environment: null, reason: null };
+      const { probeEnvironment } = await import("./environment-probe.js");
+      const result = await probeEnvironment(db, current, {
+        companyId, pluginWorkerManager, applyCustomImageTemplate: true,
+        acquireSandboxRuntimeLease: true, assertCompanyBinding: true,
+      });
+      const reason = result.ok
+        ? (typeof result.details?.platformQualificationDiagnostic === "string" ? result.details.platformQualificationDiagnostic : null)
+        : (typeof result.details?.error === "string" ? result.details.error : result.summary);
+      return { environment: await environments.getById(environmentId), reason };
+    })().finally(() => { requalifications.delete(key); });
+    requalifications.set(key, run);
+    return run;
+  }
+
   return {
     driver: "sandbox",
 
@@ -1693,7 +1718,16 @@ function createSandboxEnvironmentDriver(
       if (input.adapterType === "paperclip_runner" && !usesManagedCloudSandboxImage(configuredEnvironment, selectedTemplate.value)) {
         pinnedSnapshotId = qualifiedSandboxSnapshotId(configuredEnvironment, input.companyId, parsed.config, selectedTemplate.value);
         if (!pinnedSnapshotId && hasSandboxSnapshotQualification(configuredEnvironment, input.companyId)) {
-          throw new Error("sandbox_snapshot_qualification_required: The snapshot qualification is missing or stale. Open the agent's Harness / Runtime page and select Run test before running Paperclip Runner.");
+          // A saved proof goes stale whenever its snapshot, config or captured
+          // image changes, or a probe is interrupted. Re-run the same check the
+          // agent's Run test performs instead of waiting for a person to click it.
+          const requalified = await requalifyStaleSandboxSnapshot(configuredEnvironment.id, input.companyId);
+          if (requalified.environment) {
+            pinnedSnapshotId = qualifiedSandboxSnapshotId(requalified.environment, input.companyId, parsed.config, selectedTemplate.value);
+          }
+          if (!pinnedSnapshotId) {
+            throw new Error(`sandbox_snapshot_qualification_required: Paperclip could not re-check this sandbox image before starting Paperclip Runner.${requalified.reason ? ` ${requalified.reason}` : ""}`);
+          }
         }
       }
       if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease, archiveOnRelease: storedParsed.config.archiveOnRelease };
