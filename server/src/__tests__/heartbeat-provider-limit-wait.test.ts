@@ -12,6 +12,7 @@ import { registerServerAdapter, unregisterServerAdapter } from "../adapters/inde
 import { heartbeatService } from "../services/heartbeat.js";
 import { createProviderLimitWait, releaseProviderLimitWaits } from "../services/heartbeat/provider-limit-wait.js";
 import { agentService } from "../services/agents.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -369,9 +370,41 @@ describePostgres("heartbeat provider usage limit wait", () => {
         } as never).deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false });
       };
       expect(await deferAs()).toBe(true);
-      await db.update(aiProviderDefaults).set({ grantId: personal[1].grantId, updatedAt: new Date() })
-        .where(eq(aiProviderDefaults.companyId, f.companyId));
+      // A task already waiting on account A, saved by an earlier hold.
+      const [wait] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "cancelled",
+        invocationSource: "automation", triggerDetail: "system", errorCode: "provider_limit_wait",
+        startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(Date.now() - 60_000),
+        resultJson: { providerLimitWait: { grantId: personal[0].grantId } }, contextSnapshot: { issueId: f.issueId } }).returning();
+      const [waiting] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "scheduled_retry",
+        invocationSource: "automation", triggerDetail: "system", retryOfRunId: wait.id, scheduledRetryAttempt: 1,
+        scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(Date.now() + 24 * 60 * 60_000),
+        contextSnapshot: { issueId: f.issueId } }).returning();
+
+      // The user picks account B as their default.
+      await aiConnectionService(db).setDefault(f.companyId, userId, personal[1].grantId);
       expect(await deferAs()).toBe(false);
+      const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.id));
+      expect(released.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("ignores a limit on an account that expired or needs a new sign-in", async () => {
+      for (const status of ["expired", "needs_reauthorization"] as const) {
+        const f = await heldFixture();
+        await db.update(connectionGrants).set({ status }).where(eq(connectionGrants.id, f.accounts[0].grantId));
+        expect((await deferDirect(f)).deferred).toBe(false);
+      }
+    });
+
+    it("clears a limit only after a success on the same account", async () => {
+      const f = await heldFixture();
+      const succeededOn = (account: Account) => ({ status: "succeeded", startedAt: new Date(Date.now() - 2 * 60_000),
+        finishedAt: new Date(Date.now() - 60_000), contextSnapshot: { aiConnection: { grantId: account.grantId } } });
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...succeededOn(f.accounts[1]) });
+      expect((await deferDirect(f)).deferred).toBe(true);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...succeededOn(f.accounts[0]) });
+      expect((await deferDirect(f)).deferred).toBe(false);
     });
 
     it("stops holding work once the limited account is revoked", async () => {

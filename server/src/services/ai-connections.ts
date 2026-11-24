@@ -1,4 +1,7 @@
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
+import { releaseProviderLimitWaits } from "./heartbeat/provider-limit-wait.js";
+import { publishActivity } from "./activity-log.js";
+import type { ActivityPublication } from "../types/activity-publication.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
@@ -181,7 +184,9 @@ export function aiConnectionService(db: Db) {
     userId: string,
     grantId: string,
   ) {
-    return db.transaction(async (tx) => {
+    // Released waits are announced only after the default change commits.
+    const publications: ActivityPublication[] = [];
+    await db.transaction(async (tx) => {
       const [row] = await tx
         .select({ connection: toolConnections, grant: connectionGrants })
         .from(connectionGrants)
@@ -211,13 +216,25 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
+      const [previous] = await tx.select({ grantId: aiProviderDefaults.grantId }).from(aiProviderDefaults).where(and(
+        eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId),
+        eq(aiProviderDefaults.provider, metadata.provider),
+      ));
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
           target: [aiProviderDefaults.companyId, aiProviderDefaults.userId, aiProviderDefaults.provider],
           set: { grantId, updatedAt: new Date() },
         });
+      // Work held for a limit on the previous default rechecks against the new one.
+      if (previous?.grantId && previous.grantId !== grantId) {
+        await releaseProviderLimitWaits(tx as unknown as Db, {
+          companyId, reason: "ai_connection_changed", grantIds: [previous.grantId],
+          actor: { actorType: "user", actorId: userId }, publications,
+        });
+      }
     });
+    publications.forEach(publishActivity);
   }
   async function readableAccount(companyId: string, userId: string, connectionId: string, grantId?: string) {
     if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
