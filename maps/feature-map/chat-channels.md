@@ -51,7 +51,7 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 Automated: the chat channel integration suites ([Slack](../../server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts), [Discord](../../server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts), [Teams](../../server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts), [Telegram](../../server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts), [GitHub](../../server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts), and [shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)) use provider fixtures; they do not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
-Monitor continuation coverage lives in [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+Monitor continuation coverage lives in [GitHub review workflow](../../server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts), [Slack interactions and files](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts),
 and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts). In a disposable live thread, request work that needs deferred repository
 preparation. Verify a useful continuation explanation, automatic resumption, and
 the final result in that same thread. A successful provider turn alone is insufficient.

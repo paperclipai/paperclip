@@ -30,7 +30,7 @@ const benchmark = String.raw`  it("measures equivalent completed accepted-respon
     const { appendFileSync } = await import("node:fs");
     const output = process.env.PAPERCLIP_PRESENTATION_BENCHMARK_OUTPUT;
     if (!output) throw new Error("Benchmark output directory is required");
-    const { nativeResponsePresentationWork: baselineWork } = await import("../services/native-runtime/native-response-presentation-work.baseline.js");
+    const { nativeResponsePresentationWork: baselineWork } = await import("../../services/native-runtime/native-response-presentation-work.baseline.js");
     const { createDatabaseResponseCapture, installDatabaseResponseCapture } = await import("@paperclipai/db/response-capture");
     const schema = await import("@paperclipai/db");
     appendFileSync(output + "/child-runtime.jsonl",

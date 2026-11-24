@@ -279,7 +279,7 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
-    it.each(["snapshot_callback", "snapshot_revoked_principal", "callback", "restart", "paused_endpoint", "deleted_comment"])(
+    it.each(["snapshot_callback", "snapshot_restart", "snapshot_race", "snapshot_unknown_stop", "snapshot_wrong_allocation", "snapshot_revoked_principal", "snapshot_changed_generation", "snapshot_changed_source", "callback", "restart", "race", "unknown_stop", "wrong_allocation", "paused_endpoint", "revoked_principal", "deleted_comment", "changed_generation", "foreign_scope", "changed_source", "revoked_before_valid"])(
       "reconsiders the same GitHub reply after stopped native workspace cleanup (%s)", async scenario => {
         const snapshotScenario = scenario.startsWith("snapshot_");
         const safetyScenario = snapshotScenario ? scenario.slice("snapshot_".length) : scenario;
@@ -580,12 +580,8 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       expect(review.assessment?.summary).toBe(assessment.summary);
     });
 
-    it.each([
-      { scenario: "completed", reason: "external_chat_response_waiting" as const },
-      { scenario: "failed", reason: "external_chat_response_waiting" as const },
-      { scenario: "missing_decision", reason: "preserved_result_status_unproven" as const },
-      { scenario: "uncommitted_native", reason: "external_chat_response_waiting" as const },
-    ])(
+    it.each((["completed", "failed", "missing_decision", "comment_requested", "missing_semantic", "legacy", "uncommitted_native", "pending_publication", "missing_decision_then_missing", "uncommitted_then_failed", "malformed_null", "malformed_scalar", "malformed_schema", "malformed_action"] as const)
+      .flatMap(scenario => ["external_chat_response_waiting", "preserved_result_status_unproven"].map(reason => ({ scenario, reason }))))(
       "keeps GitHub response maintenance truthful for a new request: $scenario ($reason)", async ({ scenario, reason }) => {
       const pendingPresentation = scenario.startsWith("missing_decision") || scenario.startsWith("uncommitted") || scenario.startsWith("malformed");
       const f = await publicationRetryFixture();
