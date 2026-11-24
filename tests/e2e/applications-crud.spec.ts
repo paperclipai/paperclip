@@ -101,7 +101,9 @@ test.describe.serial("applications lifecycle", () => {
     await expect(openConnection).toBeVisible();
 
     // The not-connected app has no connection, so the health sweep never touches
-    // it and its Connect action stay deterministic.
+    // it and its Connect action stay deterministic. Not-connected apps are paged
+    // with the catalog, so search for it rather than rely on the first page.
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill(notConnectedName);
     const notConnectedRow = connectorList
       .getByRole("listitem")
       .filter({ has: page.getByRole("heading", { name: notConnectedName, exact: true }) });
@@ -110,6 +112,7 @@ test.describe.serial("applications lifecycle", () => {
     await expect(notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill("");
     await openConnection.click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/${connected.id}/permissions$`),
@@ -117,6 +120,7 @@ test.describe.serial("applications lifecycle", () => {
     );
 
     await gotoApps(page, seed.prefix);
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill(notConnectedName);
     await notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` }).click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/permissions$`),
