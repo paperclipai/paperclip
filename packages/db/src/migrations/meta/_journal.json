@@ -3529,6 +3529,13 @@
       "when": 1795544784796,
       "tag": "0505_nice_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 515,
+      "version": "7",
+      "when": 1795552269147,
+      "tag": "0515_claude_project_trust",
+      "breakpoints": true
     }
   ]
 }
