@@ -3524,10 +3524,10 @@
       "breakpoints": true
     },
     {
-      "idx": 505,
+      "idx": 507,
       "version": "7",
       "when": 1795469468403,
-      "tag": "0505_project_provider_authorizations",
+      "tag": "0507_project_provider_authorizations",
       "breakpoints": true
     }
   ]
