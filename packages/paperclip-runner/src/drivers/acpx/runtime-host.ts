@@ -23,7 +23,7 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { antigravityRouteChangeRefusal, antigravitySwarmLaunchEnvironment, antigravitySwarmTools, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmBinding, antigravitySwarmLaunchEnvironment, type AntigravitySwarmChannel, antigravitySwarmTools, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
 
 import type {
   AcpRuntimeOptions,
@@ -209,6 +209,8 @@ export interface AcpxRuntimePortOpenOptions {
   stateDirectory: string;
   /** The Antigravity CLI's private `--gemini-dir` for this run (swarm route only). */
   antigravityStateDirectory?: string;
+  /** Swarm route only: the Google channel and the connection account's digest (antigravitySwarmBinding). */
+  antigravitySwarm?: { channel: AntigravitySwarmChannel; accountDigest: string | null };
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
   readOnly?: boolean;
@@ -456,6 +458,7 @@ export class AcpxRuntimeHost {
       const refusal = antigravitySwarmRouteRefusal({ environment: options.environment ?? {} });
       if (refusal) throw refusal;
     }
+    const swarmBinding = swarmRoute ? antigravitySwarmBinding(options.environment ?? {}) : null;
     let swarmStateDirectory: string | null = null;
     const installation = await runAbortableAdmissionStage(
       options.signal,
@@ -467,7 +470,7 @@ export class AcpxRuntimeHost {
             ? verifyAntigravitySwarmInstallation(() => {
               if (swarmStateDirectory === null) throw new Error("Antigravity CLI state directory is not prepared");
               return swarmStateDirectory;
-            })
+            }, { channel: swarmBinding!.channel })
             : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
@@ -728,6 +731,7 @@ export class AcpxRuntimeHost {
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,
             ...(swarmStateDirectory === null ? {} : { antigravityStateDirectory: swarmStateDirectory }),
+            ...(swarmBinding === null ? {} : { antigravitySwarm: swarmBinding }),
             providerSessionKey: binding.profileSessionKey,
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,

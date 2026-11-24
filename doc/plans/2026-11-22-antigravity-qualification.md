@@ -97,6 +97,26 @@ It is the route for native `/swarm` (experimental, off by default; see
   environment `AGY_CLI_DISABLE_AUTO_UPDATE=1`. The endpoint, `--gemini-dir`,
   modes and other flags are driver policy and are not pinned here.
 
+## Swarm channel (2026-11-24)
+
+The swarm route runs Google's Antigravity CLI (`agy acp`). On one paid sign-in,
+the CLI's default channel (`daily-cloudcode-pa`, the one Google's app and CLI
+use) offered 27 models, including Gemini 4 Neon at four levels, and answered a
+Neon prompt. Google's stable endpoint (`cloudcode-pa`) offered 13 models and
+no Neon, and its CLI quota pool (project `default-cli-project`, consumer
+sign-in) was exhausted while the same account's ordinary route answered.
+
+- The deployment chooses the channel with the server environment variable
+  `PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL`: `provider_default` (default; no
+  endpoint override, so the pinned CLI uses Google's default channel, which is
+  not Google's stable channel and can change with less notice) or `stable`.
+- The swarm's start step names the channel, and the run's diagnostics record
+  it and whether the CLI's own sign-in is the agent's Google connection
+  (`matches`, `does_not_match` or `unknown`). The CLI shows its account only in
+  its own log; the Runner compares digests and never records the account.
+- A usage limit on the swarm route holds only further swarms (quota scope
+  `antigravity_cli`); ordinary work on the same account continues.
+
 ## Routes to Neon
 
 State as of the end of 2026-11-22. "Admitted" means the patched server returned

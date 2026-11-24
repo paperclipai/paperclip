@@ -164,6 +164,14 @@ describe("Antigravity CLI swarm guard (replaces the registry admission receipt)"
       expect(error.diagnostic).toContain("gpt-oss-120b-medium");
     });
 
+    it("names the fix when the deployment pinned Google's stable channel", () => {
+      const guard = createAntigravitySwarmGuard({ model: "gemini-4-neon-low", instructions: INSTRUCTIONS, workspace: WORKSPACE, channel: "stable" });
+      guard.initialize(initializeResult());
+      guard.sessionRequest(sessionRequest());
+      expect(() => guard.sessionResult(STABLE_ENDPOINT_SESSION)).toThrow(
+        "Swarm is not available with Gemini 4 Neon (Low) on Google's stable channel, so nothing was changed: an admin can switch swarms to Google's default channel, or choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.");
+    });
+
     it("admits every Neon level the daily endpoint lists, reading family and thinking level back separately", () => {
       for (const [level, cliLevel] of [["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"]]) {
         const guard = open(`gemini-4-neon-${level}`, DAILY_ENDPOINT_SESSION);

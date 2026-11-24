@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,12 +35,30 @@ export function bindAntigravityTransportRetirement(bundle: RunnerdTransport): Ru
   return bundle.transport;
 }
 
+/**
+ * The Google channel a trusted /swarm's Antigravity CLI talks to, owned by the
+ * deployment: `provider_default` (the default; Google's daily channel, which
+ * Google's own app and CLI use and which can change with less notice) or
+ * `stable` (Google's stable endpoint, which may offer fewer models).
+ */
+export const ANTIGRAVITY_SWARM_CHANNEL_ENV = "PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL";
+export function antigravitySwarmChannel(env: NodeJS.ProcessEnv = process.env): "provider_default" | "stable" {
+  return env[ANTIGRAVITY_SWARM_CHANNEL_ENV]?.trim().toLowerCase() === "stable" ? "stable" : "provider_default";
+}
+
+/** Same digest as the Runner's antigravityAccountDigest: a one-way, non-identifying account comparison. */
+export function antigravityAccountDigest(email: string): string {
+  return createHash("sha256").update(`paperclip.antigravity-account.v1:${email.trim().toLowerCase()}`, "utf8").digest("hex");
+}
+
 /** Only explicit run credentials may enter Antigravity's isolated runtime. */
 export async function prepareAntigravityRunnerCredentials(input: {
   environment: NodeJS.ProcessEnv;
   remote: boolean;
   managedHome?: string;
   lifecycleMode?: "per_turn" | "warm";
+  /** The connection's Google account; only its digest reaches the Runner. */
+  accountEmail?: string;
 }): Promise<{ environment: NodeJS.ProcessEnv; home: string | null; credential?: string }> {
   const environment = { ...input.environment };
   for (const key of [AUTH_SECRET, "GEMINI_HOME", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN"]) delete environment[key];
@@ -59,7 +77,13 @@ export async function prepareAntigravityRunnerCredentials(input: {
   } catch {
     throw new Error("The selected Google Antigravity account is unavailable. Reconnect the Google account, then retry.");
   }
-  environment[AUTH_SECRET] = credential;
+  // Run facts bound to this credential for the swarm route (channel, account
+  // digest). The Runner's credential sanitizer drops them before any write, so
+  // the staged token and its writeback comparison are unchanged.
+  environment[AUTH_SECRET] = JSON.stringify({ ...JSON.parse(credential) as Record<string, unknown>, paperclip: {
+    swarmChannel: antigravitySwarmChannel(),
+    ...(input.accountEmail ? { accountSha256: antigravityAccountDigest(input.accountEmail) } : {}),
+  } });
   return { environment, home, credential };
 }
 

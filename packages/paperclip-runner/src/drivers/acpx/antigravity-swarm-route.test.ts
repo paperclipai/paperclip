@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME } from "../../contracts/completion-result.js";
-import { antigravityRouteChangeRefusal, antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
+import { antigravityAccountDigest, antigravityRouteChangeRefusal, antigravitySwarmBinding, antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { createAcpxModeBinding, resolveAcpxProviderMode } from "./provider-mode.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -33,15 +33,32 @@ describe("Antigravity swarm route selection", () => {
       .toMatchObject({ code: "ANTIGRAVITY_SWARM_UNAVAILABLE", message: expect.stringMatching(/Gemini API key/) });
   });
 
-  it("launches with private CLI state, the stable endpoint, self-update off and no registry credentials", () => {
+  it("launches on the CLI's own default channel unless the deployment pins stable, with private state and log, self-update off and no registry credentials", () => {
+    // Google's default channel is what Google's app and CLI use; on 2026-11-24 only it offered Gemini 4 Neon.
     expect(antigravitySwarmArguments("/home/run/antigravity-cli")).toEqual([
-      "--gemini-dir", "/home/run/antigravity-cli", "--cloud_code_endpoint", "https://cloudcode-pa.googleapis.com", "--disable-telemetry",
+      "--gemini-dir", "/home/run/antigravity-cli", "--log-file", "/home/run/antigravity-cli/cli.log", "--disable-telemetry",
+    ]);
+    expect(antigravitySwarmArguments("/home/run/antigravity-cli", "stable")).toEqual([
+      "--gemini-dir", "/home/run/antigravity-cli", "--log-file", "/home/run/antigravity-cli/cli.log",
+      "--cloud_code_endpoint", "https://cloudcode-pa.googleapis.com", "--disable-telemetry",
     ]);
     const environment = antigravitySwarmLaunchEnvironment(
       { HOME: "/private/home", GEMINI_HOME: "/private", AGY_ACP_FORCE_FILE_STORAGE: "1", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "s", GEMINI_API_KEY: "k", PATH: "/usr/bin" },
       { agentHomeDirectory: "/private", platform: "linux" });
     expect(environment).toEqual({ HOME: "/private/home", PATH: "/usr/bin", AGY_CLI_DISABLE_AUTO_UPDATE: "1" });
     expect(antigravitySwarmLaunchEnvironment({ HOME: "/private/home" }, { agentHomeDirectory: "/private", platform: "darwin", realHome: "/Users/owner" }).HOME).toBe("/Users/owner");
+  });
+
+  it("reads the channel and the connection account digest the controller bound to the credential, defaulting safely", () => {
+    const digest = antigravityAccountDigest("Owner@Example.test");
+    expect(digest).toBe(antigravityAccountDigest(" owner@example.test "));
+    // Pinned: the server's antigravityAccountDigest pins the same value for the connection account.
+    expect(antigravityAccountDigest("owner@example.test")).toBe("0fde1d32467703827f511884b66298187e2944f4bfe260303f893a0af908f81e");
+    const bound = (paperclip: unknown) => ({ PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: JSON.stringify({ refresh_token: "r", paperclip }) });
+    expect(antigravitySwarmBinding(bound({ swarmChannel: "stable", accountSha256: digest }))).toEqual({ channel: "stable", accountDigest: digest });
+    expect(antigravitySwarmBinding(bound({ swarmChannel: "daily", accountSha256: "nope" }))).toEqual({ channel: "provider_default", accountDigest: null });
+    expect(antigravitySwarmBinding({ PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "not json" })).toEqual({ channel: "provider_default", accountDigest: null });
+    expect(antigravitySwarmBinding({})).toEqual({ channel: "provider_default", accountDigest: null });
   });
 
   it("keeps every Paperclip operation that creates or hands off work out of a swarm turn, as the production catalog names them", () => {

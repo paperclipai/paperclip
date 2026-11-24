@@ -1,11 +1,12 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, open as openFile, readdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
 import { userInfo } from "node:os";
 import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { retireAntigravityProcess } from "./antigravity-process.js";
 import { antigravityOutsideChange } from "./antigravity-swarm-paths.js";
+import { antigravityAccountDigest, antigravitySwarmChannelLabel, antigravitySwarmLogFile } from "./antigravity-swarm-route.js";
 import {
   ANTIGRAVITY_CLI_SESSION_MODE, ANTIGRAVITY_SWARM_MCP_SERVER, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError,
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
@@ -252,6 +253,33 @@ function failed(code: string, message: string): AcpRuntimeTurnResult {
 const line = (id: string, title: string): AcpRuntimeEvent =>
   ({ type: "tool_call", tag: "tool_call", toolCallId: `paperclip-swarm-${id}`, text: title, title, kind: "other", status: "completed" });
 
+export type AntigravityCliAccountMatch = "matches" | "does_not_match" | "unknown";
+const CLI_LOG_TAIL_BYTES = 512 * 1024;
+
+/**
+ * Whether the Google account the CLI signed in with is the agent's connection
+ * account. The CLI exposes its sign-in only in its own log (`applyAuthResult:
+ * email=…`; ACP `initialize` carries no account). Both sides are compared as
+ * digests inside the Runner; neither account is returned, logged or stored.
+ */
+export async function antigravityCliAccountMatch(logFile: string, connectionDigest: string | null): Promise<AntigravityCliAccountMatch> {
+  if (!connectionDigest) return "unknown";
+  let text = "";
+  try {
+    const file = await openFile(logFile, "r");
+    try {
+      const { size } = await file.stat();
+      const length = Math.min(size, CLI_LOG_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally { await file.close(); }
+  } catch { return "unknown"; }
+  const signedIn = [...text.matchAll(/applyAuthResult: email=([^\s,]+@[^\s,]+),/g)].at(-1)?.[1];
+  if (!signedIn) return "unknown";
+  return antigravityAccountDigest(signedIn) === connectionDigest ? "matches" : "does_not_match";
+}
+
 export async function openAntigravitySwarmRuntime(
   options: AcpxRuntimePortOpenOptions,
   dependencies: AntigravitySwarmRuntimeDependencies = {},
@@ -279,7 +307,8 @@ export async function openAntigravitySwarmRuntime(
   if (!bridge) throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm needs Paperclip's own tools, which are not available for this run.");
   const home = options.launchEnvironment.HOME ?? userInfo().homedir;
   const instructions = [options.systemInstructions, ANTIGRAVITY_SWARM_INSTRUCTIONS].filter(Boolean).join("\n\n");
-  const guard = createAntigravitySwarmGuard({ model, instructions, workspace: options.cwd });
+  const channel = options.antigravitySwarm?.channel ?? "provider_default";
+  const guard = createAntigravitySwarmGuard({ model, instructions, workspace: options.cwd, channel });
 
   options.assertWorkspaceHeld?.();
   const lifetime = options.credentialFenceFds && options.activateCredentialFenceOwner
@@ -323,6 +352,7 @@ export async function openAntigravitySwarmRuntime(
 
   let sessionId: string;
   let receipt: AntigravitySwarmReceipt;
+  let cliAccount: AntigravityCliAccountMatch = "unknown";
   // A Stop during admission retires the CLI at once; every await re-checks it.
   const abortAdmission = () => { void retire().catch(() => undefined); };
   options.signal?.addEventListener("abort", abortAdmission, { once: true });
@@ -365,6 +395,9 @@ export async function openAntigravitySwarmRuntime(
     await connection.drain();
     guard.assertSwarmCommand();
     receipt = guard.receipt();
+    cliAccount = options.antigravityStateDirectory
+      ? await antigravityCliAccountMatch(antigravitySwarmLogFile(options.antigravityStateDirectory), options.antigravitySwarm?.accountDigest ?? null)
+      : "unknown";
     if (protocolFailure) throw protocolFailure;
     options.signal?.throwIfAborted();
   } catch (error) {
@@ -376,7 +409,8 @@ export async function openAntigravitySwarmRuntime(
   }
 
   options.signal?.removeEventListener("abort", abortAdmission);
-  const status: Json = { antigravitySwarmReceipt: receipt };
+  // Diagnostics only: the channel and whether the CLI's own sign-in is the agent's connection account (never the account itself).
+  const status: Json = { antigravitySwarmReceipt: { ...receipt, channel, cliAccountMatchesConnection: cliAccount } };
   let turns = 0;
   let active: { cancel(reason?: string): Promise<void>; result: Promise<AcpRuntimeTurnResult> } | null = null;
   let closed = false;
@@ -408,7 +442,10 @@ export async function openAntigravitySwarmRuntime(
     let transcript = "";
     let stop: AntigravitySwarmError | null = null;
     const halt = (error: AntigravitySwarmError) => { stop ??= error; connection.notify("session/cancel", { sessionId }); wake?.(); };
-    events.push(line("setup", `Swarm started in the task folder with ${receipt.modelName} (Antigravity CLI ${receipt.agentVersion}). Helper changes inside the task folder are approved automatically; anything else is blocked.`));
+    events.push(line("setup", `Swarm started in the task folder with ${receipt.modelName} on ${antigravitySwarmChannelLabel(channel)} (Antigravity CLI ${receipt.agentVersion}). Helper changes inside the task folder are approved automatically; anything else is blocked.`));
+    if (cliAccount === "does_not_match") {
+      events.push(line("account", "This swarm runs on the Google account signed in to this computer, which is different from this agent's Google connection."));
+    }
 
     updateListener = params => {
       try { guard.observe(params); } catch (error) {

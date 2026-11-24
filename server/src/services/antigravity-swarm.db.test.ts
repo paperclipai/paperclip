@@ -374,10 +374,14 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     expect(await automatic(f, run.id, "issue_commented")).toEqual({ commentId: f.comment.id, request: "two helpers" });
   });
 
-  it("strips a /swarm prefix the request comment may still carry", async () => {
+  it("uses the recorded comment as the request verbatim: the composer already removed the one /swarm the user typed", async () => {
+    // `/swarm /swarm explain this command` arrives as the body `/swarm explain this command`.
     const f = await seed();
-    await db.update(issueComments).set({ body: "/swarm  write a.txt" }).where(eq(issueComments.id, f.comment.id));
-    expect(await resolve(f, { runId: (await insertRun(f, {})).id })).toMatchObject({ request: "write a.txt" });
+    await db.update(issueComments).set({ body: "/swarm explain this command" }).where(eq(issueComments.id, f.comment.id));
+    expect(await resolve(f, { runId: (await insertRun(f, {})).id })).toMatchObject({ request: "/swarm explain this command" });
+    const g = await seed();
+    await db.update(issueComments).set({ body: "/swarm" }).where(eq(issueComments.id, g.comment.id));
+    expect(await resolve(g, { runId: (await insertRun(g, {})).id })).toMatchObject({ request: "/swarm" });
   });
 
   it("lets a later user /swarm replace the request with its own text", async () => {
@@ -484,7 +488,7 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     const ids: Record<string, string> = {};
     for (const [index, label] of order.entries()) {
       const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user",
-        authorUserId: USER, body: label.startsWith("S") ? `/swarm request ${label}` : `ordinary ${label}`,
+        authorUserId: USER, body: label.startsWith("S") ? `request ${label}` : `ordinary ${label}`,
         createdAt: new Date(base + index * 1000) }).returning();
       ids[label] = comment!.id;
       if (label.startsWith("S")) await recordAntigravitySwarmRequest(db, { companyId: f.company.id, issueId: f.issue.id, commentId: comment!.id, userId: USER });
@@ -537,8 +541,8 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
 
   it.each([
     ["no request", "   ", /no request/],
-    ["only the command", "/swarm   ", /no request/],
-    ["a request longer than the swarm accepts", `/swarm ${"x".repeat(16_001)}`, /too long/],
+    ["no request after the command", "   ", /no request/],
+    ["a request longer than the swarm accepts", "x".repeat(16_001), /too long/],
   ])("refuses a recorded /swarm with %s instead of running ordinary work", async (_name, body, message) => {
     const f = await seed();
     await db.update(issueComments).set({ body }).where(eq(issueComments.id, f.comment.id));

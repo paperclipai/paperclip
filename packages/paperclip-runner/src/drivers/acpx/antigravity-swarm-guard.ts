@@ -126,6 +126,8 @@ export interface AntigravitySwarmReceipt {
 
 export interface AntigravitySwarmGuardOptions {
   model: string;
+  /** The Google channel the CLI was launched on; a refusal on `stable` names the fix. */
+  channel?: "provider_default" | "stable";
   instructions: string;
   workspace: string;
 }
@@ -210,8 +212,10 @@ export function createAntigravitySwarmGuard(options: AntigravitySwarmGuardOption
         // model, so a missing entry means the CLI does not serve it (seen live: Google's
         // stable endpoint, which this route uses, offers no Gemini 4 Neon).
         const suggestion = defaultFamilyName(value);
-        throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE",
-          `Swarm is not available with ${antigravitySwarmModelName(model)} yet, so nothing was changed: choose another model for this agent${suggestion ? `, such as ${suggestion},` : ""} and send /swarm again.`,
+        const another = `choose another model for this agent${suggestion ? `, such as ${suggestion},` : ""} and send /swarm again`;
+        throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", options.channel === "stable"
+          ? `Swarm is not available with ${antigravitySwarmModelName(model)} on Google's stable channel, so nothing was changed: an admin can switch swarms to Google's default channel, or ${another}.`
+          : `Swarm is not available with ${antigravitySwarmModelName(model)} yet, so nothing was changed: ${another}.`,
           { category: "model_unavailable",
             diagnostic: `The Antigravity CLI offered ${offered.length} models and not ${model}: ${offered.slice(0, MAX_DIAGNOSTIC_MODELS).map(entry => entry.id).join(", ") || "none"}` });
       }

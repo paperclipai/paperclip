@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
-import { openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
+import { antigravityCliAccountMatch, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
+import { antigravityAccountDigest } from "./antigravity-swarm-route.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 
@@ -99,6 +100,19 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(clientMessages().map(message => message.method)).not.toEqual(expect.arrayContaining(["session/set_mode"]));
   });
 
+  it("tells whether the CLI's own sign-in is the agent's Google connection, comparing digests only", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agy-account-")));
+    roots.push(root);
+    const log = join(root, "cli.log");
+    writeFileSync(log, "I1124 15:50:23.723290 24 server_oauth.go:221] applyAuthResult: email=owner@example.test, authMethod=consumer, quotaProject=\n");
+    expect(await antigravityCliAccountMatch(log, antigravityAccountDigest("Owner@Example.test"))).toBe("matches");
+    expect(await antigravityCliAccountMatch(log, antigravityAccountDigest("someone-else@example.test"))).toBe("does_not_match");
+    expect(await antigravityCliAccountMatch(log, null)).toBe("unknown");
+    expect(await antigravityCliAccountMatch(join(root, "missing.log"), antigravityAccountDigest("owner@example.test"))).toBe("unknown");
+    writeFileSync(log, "no sign-in yet\n");
+    expect(await antigravityCliAccountMatch(log, antigravityAccountDigest("owner@example.test"))).toBe("unknown");
+  });
+
   it("runs a native swarm whose files land in the task folder, in plain steps, with coordinator-reported usage", async () => {
     const run = await runTurn("success");
     expect(run.result).toMatchObject({ status: "completed" });
@@ -107,7 +121,7 @@ describe("Antigravity CLI swarm runtime", () => {
       "Started helper writer-a: Write a.txt containing exactly 'A' in the current workspace directory",
       "Checked on the helpers", "Files changed in the task folder: a.txt, b.txt",
     ]));
-    expect(run.titles).toContainEqual(expect.stringMatching(/^Swarm started in the task folder with Gemini 3\.8 Flash \(Low\) \(Antigravity CLI 1\.5\.15\)\. /));
+    expect(run.titles).toContainEqual(expect.stringMatching(/^Swarm started in the task folder with Gemini 3\.8 Flash \(Low\) on Google's default channel \(Antigravity CLI 1\.5\.15\)\. /));
     expect(run.titles.some(title => /approved automatically/.test(title))).toBe(true);
     expect(run.text).not.toContain("/swarm board");
     expect(run.clientMessages().find(message => message.method === "session/prompt").params.prompt[0].text).toMatch(/^\/swarm /);

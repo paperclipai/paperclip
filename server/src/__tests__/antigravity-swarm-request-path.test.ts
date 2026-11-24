@@ -30,7 +30,7 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  it("sends byte for byte the recorded comment minus the command, never a merged wake's agent comment or the description", async () => {
+  it("sends byte for byte the recorded comment (the request the composer sent), never a merged wake's agent comment or the description", async () => {
     const [company] = await db.insert(companies).values({ name: "Swarm", issuePrefix: `P${randomUUID().slice(0, 4)}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Gemma", adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } }).returning();
@@ -38,7 +38,7 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
       status: "todo", assigneeAgentId: agent!.id }).returning();
     const request = "two helpers write a.txt and b.txt\n\n- keep   the spacing\n- then verify";
     const [comment] = await db.insert(issueComments).values({ companyId: company!.id, issueId: issue!.id, authorType: "user",
-      authorUserId: USER, body: `/swarm ${request}` }).returning();
+      authorUserId: USER, body: request }).returning();
     await recordAntigravitySwarmRequest(db, { companyId: company!.id, issueId: issue!.id, commentId: comment!.id, userId: USER });
     const [agentComment] = await db.insert(issueComments).values({ companyId: company!.id, issueId: issue!.id, authorType: "agent",
       authorAgentId: agent!.id, body: AGENT_COMMENT, createdAt: new Date(Date.now() + 1000) }).returning();
@@ -76,7 +76,7 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
     // What the Runner adds to the prompt before the turn: handoff, wake attachments, queued messages.
     modelEnvelope.task.prompt = `Earlier session handoff.\n\n${modelEnvelope.task.prompt}\n\nQueued: ${AGENT_COMMENT}`;
     const sent = `/swarm ${antigravitySwarmRequestText(JSON.stringify(modelEnvelope))}`;
-    expect(sent).toBe(comment!.body);
+    expect(sent).toBe(`/swarm ${comment!.body}`);
     expect(sent).not.toContain(AGENT_COMMENT);
     expect(sent).not.toContain(DESCRIPTION);
   });

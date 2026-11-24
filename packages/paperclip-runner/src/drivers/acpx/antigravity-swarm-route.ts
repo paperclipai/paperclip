@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
@@ -17,9 +18,53 @@ export function antigravitySwarmStateDirectory(agentHomeDirectory: string): stri
   return join(agentHomeDirectory, "antigravity-cli");
 }
 
-/** Driver-owned CLI flags: private state, stable endpoint, no telemetry. Self-update is off through the pinned environment. */
-export function antigravitySwarmArguments(stateDirectory: string): string[] {
-  return ["--gemini-dir", stateDirectory, "--cloud_code_endpoint", ANTIGRAVITY_CLI_STABLE_ENDPOINT, "--disable-telemetry"];
+/**
+ * Which Google channel the CLI talks to. `provider_default` passes no endpoint,
+ * so the pinned CLI uses its own default (Google's daily channel, the one
+ * Google's own app and CLI use, which can change with less notice); `stable`
+ * pins Google's stable endpoint (which, on 2026-11-24, offered no Gemini 4 Neon).
+ * The deployment chooses it (server env PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL).
+ */
+export type AntigravitySwarmChannel = "provider_default" | "stable";
+
+/** Plain words for the channel, for the swarm's start step and diagnostics. */
+export function antigravitySwarmChannelLabel(channel: AntigravitySwarmChannel): string {
+  return channel === "stable" ? "Google's stable channel" : "Google's default channel";
+}
+
+/** The CLI's own log inside its private state; it records which Google account the CLI signed in with. */
+export function antigravitySwarmLogFile(stateDirectory: string): string {
+  return join(stateDirectory, "cli.log");
+}
+
+/** Driver-owned CLI flags: private state and log, the channel, no telemetry. Self-update is off through the pinned environment. */
+export function antigravitySwarmArguments(stateDirectory: string, channel: AntigravitySwarmChannel = "provider_default"): string[] {
+  return ["--gemini-dir", stateDirectory, "--log-file", antigravitySwarmLogFile(stateDirectory),
+    ...(channel === "stable" ? ["--cloud_code_endpoint", ANTIGRAVITY_CLI_STABLE_ENDPOINT] : []), "--disable-telemetry"];
+}
+
+/** A one-way, non-identifying form of a Google account for comparing the CLI's sign-in with the connection. */
+export function antigravityAccountDigest(email: string): string {
+  return createHash("sha256").update(`paperclip.antigravity-account.v1:${email.trim().toLowerCase()}`, "utf8").digest("hex");
+}
+
+/**
+ * Run facts the controller binds to the selected Google credential (the
+ * `paperclip` member of the credential document; the credential sanitizer drops
+ * it before anything is written): the swarm channel and the connection
+ * account's digest. Absent or malformed facts fall back to the provider default
+ * channel and an unknown account.
+ */
+export function antigravitySwarmBinding(environment: NodeJS.ProcessEnv): { channel: AntigravitySwarmChannel; accountDigest: string | null } {
+  let facts: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET ?? "{}") as Record<string, unknown>;
+    if (parsed?.paperclip && typeof parsed.paperclip === "object" && !Array.isArray(parsed.paperclip)) facts = parsed.paperclip as Record<string, unknown>;
+  } catch { /* the route refusal reports a missing credential */ }
+  return {
+    channel: facts.swarmChannel === "stable" ? "stable" : "provider_default",
+    accountDigest: typeof facts.accountSha256 === "string" && /^[a-f0-9]{64}$/.test(facts.accountSha256) ? facts.accountSha256 : null,
+  };
 }
 
 /**
@@ -44,9 +89,10 @@ export function antigravitySwarmRouteRefusal(input: { environment: NodeJS.Proces
  */
 export async function verifyAntigravitySwarmInstallation(
   stateDirectory: () => string,
-  options: Omit<AntigravityCliLaunchOptions, "arguments"> = {},
+  options: Omit<AntigravityCliLaunchOptions, "arguments"> & { channel?: AntigravitySwarmChannel } = {},
 ): Promise<VerifiedAcpxInstallation> {
-  const pinned = await resolveAntigravityCliLaunch(options).catch((error: unknown) => {
+  const { channel, ...launchOptions } = options;
+  const pinned = await resolveAntigravityCliLaunch(launchOptions).catch((error: unknown) => {
     // The runtime-missing and unsupported-platform messages are written for people; keep them visible.
     if (error instanceof AntigravityCliRuntimeError) throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", `Swarm is not available on this computer: ${error.message}`);
     throw error;
@@ -56,7 +102,7 @@ export async function verifyAntigravitySwarmInstallation(
     agentServerPackageJsonPath: null,
     agentRuntimePackageJsonPath: null,
     async openCommand(open?: { signal?: AbortSignal }) {
-      const launch = await resolveAntigravityCliLaunch({ ...options, arguments: antigravitySwarmArguments(stateDirectory()) });
+      const launch = await resolveAntigravityCliLaunch({ ...launchOptions, arguments: antigravitySwarmArguments(stateDirectory(), channel) });
       if (launch.commandDigest !== pinned.commandDigest) throw new Error("Antigravity CLI installation changed during admission");
       return launch.installation.openCommand(open);
     },

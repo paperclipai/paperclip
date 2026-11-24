@@ -1357,6 +1357,23 @@ describe("issue comment reopen routes", () => {
     expect(mockSwarm.record).not.toHaveBeenCalled();
   });
 
+  it("returns the original receipt for an accepted /swarm resent after the setting was turned off, starting nothing twice", async () => {
+    // The first send committed but its response was lost; then the swarm setting was turned off.
+    mockSwarm.refusal.mockResolvedValue("Swarm is not turned on for this Paperclip.");
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any
+      : getTableName(table as Parameters<typeof getTableName>[0]) === "activity_log" ? { where: async () => [{ id: "activity-1" }] } as any : selectFrom(table));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "two helpers", nativeCommand: "swarm", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBe("comment-1");
+    expect(mockSwarm.record).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("accepts a swarm request only from a signed-in user", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     const res = await request(await installActor(createApp(), { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1" }))

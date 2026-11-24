@@ -10662,6 +10662,8 @@ export async function executePaperclipNativeSession(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
+  /** The Google account of an Antigravity subscription grant (Runner compares only its digest). */
+  managedAiAccountEmail?: string;
   managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   onTaskDispatched?: () => Promise<void> | void;
@@ -16487,6 +16489,8 @@ export async function createRunnerdBackend(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
+  /** The Google account of an Antigravity subscription grant (Runner compares only its digest). */
+  managedAiAccountEmail?: string;
   managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -18615,7 +18619,7 @@ async function createRunnerdBackendWithinSessionClaim(
   if (grokCredential) effectiveRunnerEnvironmentBase = grokCredential.environment;
   const antigravityCredential = isAntigravity ? await prepareAntigravityRunnerCredentials({
     environment: effectiveRunnerEnvironmentBase, remote: Boolean(remoteTarget), managedHome: input.managedAiCredentialHome,
-    lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+    lifecycleMode: input.execution.session.lifecyclePolicy.mode, accountEmail: input.managedAiAccountEmail,
   }) : null;
   if (antigravityCredential) effectiveRunnerEnvironmentBase = antigravityCredential.environment;
   // The server-held tool authority owns this credential. Do not deliver a

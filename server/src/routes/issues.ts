@@ -19365,7 +19365,13 @@ export function issueRoutes(
       const swarmRequested = req.body.nativeCommand === ANTIGRAVITY_SWARM_COMMAND;
       if (swarmRequested) {
         if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
-        const refusal = issue.conversationAgentId
+        // A resend of an already accepted request returns its original receipt below; availability
+        // applies only to new requests (the setting may have changed since the first send).
+        const [accepted] = req.body.clientRequestId ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorUserId, req.actor.userId), eq(issueComments.clientRequestId, req.body.clientRequestId),
+        )) : [];
+        const refusal = accepted ? null : issue.conversationAgentId
           ? "Swarm works in task comments, not in chats."
           : await antigravitySwarmCommentRefusal(db, issue)
             ?? antigravitySwarmRequestRefusal(antigravitySwarmRequestFromComment(String(req.body.body ?? "")));

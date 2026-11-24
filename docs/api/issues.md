@@ -261,10 +261,12 @@ Agent @-mentions are context only and do not trigger heartbeats. Normal comment 
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "/swarm write the tests for the parser", "nativeCommand": "swarm" }
+{ "body": "write the tests for the parser", "nativeCommand": "swarm", "clientRequestId": "<uuid>" }
 ```
 
-The optional `nativeCommand` field accepts only `"swarm"`. It asks the task's Google Antigravity assignee to run the comment as a swarm with helpers. The swarm's only instruction is the comment text, without a leading `/swarm`. Comment text alone is never read as a command: without `nativeCommand`, `/swarm` is ordinary text.
+The optional `nativeCommand` field accepts only `"swarm"`. It asks the task's Google Antigravity assignee to run the comment as a swarm with helpers. With `nativeCommand`, `body` is the request itself, used verbatim (trimmed) as the swarm's only instruction: do not include the `/swarm` command (the board composer removes the one the user typed). Nothing strips another one, so a body of `/swarm explain this` asks the swarm about `/swarm explain this`. Comment text alone is never read as a command: without `nativeCommand`, `/swarm` is ordinary text.
+
+A resend with the same `clientRequestId` returns the original comment, even if the checks below would now refuse a new request (for example after the setting was turned off). Nothing is posted or started twice.
 
 Only a signed-in board user can send `nativeCommand`. Any other caller, such as an agent, gets `403` with `Only a signed-in user can start a swarm`.
 
@@ -276,10 +278,10 @@ The endpoint refuses these requests with `422` and `{ "error": "<message>", "cod
 | The instance setting is off | `Swarm is not turned on for this Paperclip. An instance admin can turn on "Google Antigravity swarm" in Settings, Experimental.` |
 | The assignee is not a Google Antigravity agent | `Swarm works only for tasks assigned to a Google Antigravity agent.` |
 | The task is in Plan mode | `Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.` |
-| Nothing follows `/swarm` | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
-| More than 16,000 characters follow `/swarm` | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
+| `body` is empty | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
+| `body` is longer than 16,000 characters | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
 
-A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
+Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
 ### Discard a Queued Comment
 

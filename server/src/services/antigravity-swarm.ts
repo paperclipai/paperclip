@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
+import { SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
 import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -55,9 +55,14 @@ export function requestedAntigravitySwarmCommentId(context: unknown): string | n
   return typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
 }
 
-/** The swarm's instruction from a recorded request comment: its text, without a leading /swarm it may still carry. */
+/**
+ * The swarm's instruction from a recorded request comment: its text, verbatim.
+ * With `nativeCommand: "swarm"` the comment body IS the request; the composer
+ * removes the one leading `/swarm` the user typed, and nothing strips another
+ * (`/swarm /swarm explain this` asks the swarm about `/swarm explain this`).
+ */
 export function antigravitySwarmRequestFromComment(body: string): string {
-  return (parseLeadingUserCommand(body, ["swarm"])?.argument ?? body).trim();
+  return body.trim();
 }
 
 /** A request the swarm cannot run: nothing to do, or longer than the swarm accepts. */
