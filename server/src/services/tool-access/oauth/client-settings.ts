@@ -37,9 +37,65 @@ export function oauthClientConfig(provider: string) {
   };
 }
 
+function httpsUrl(value: string | null | undefined): URL | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function instanceClientTokenUrlAllowed(
+  connection: typeof toolConnections.$inferSelect,
+  provider: string,
+  tokenUrl: string | null | undefined,
+): boolean {
+  const target = httpsUrl(tokenUrl);
+  if (!target) return false;
+  const sourceTemplateKey = connection.config.sourceTemplateKey;
+  if (typeof sourceTemplateKey !== "string" || !sourceTemplateKey || provider !== sourceTemplateKey) return false;
+  const app = getConnectableAppDefinition(sourceTemplateKey);
+  if (!app) return false;
+  let method: ReturnType<typeof connectionMethodForConnection>;
+  try {
+    method = connectionMethodForConnection(app, connection);
+  } catch {
+    return false;
+  }
+  if (method.auth !== "oauth" || !method.ownershipModes.includes("customer")) return false;
+  const defaults = method.defaults ?? {};
+  if (defaults.tokenEndpoint) {
+    return httpsUrl(defaults.tokenEndpoint)?.href === target.href;
+  }
+  const fixedHosts = [defaults.serverUrl, defaults.discoveryUrl, defaults.metadataUrl, defaults.authorizationEndpoint]
+    .map((value) => httpsUrl(value))
+    .filter((url): url is URL => url !== null)
+    .map((url) => url.host.toLowerCase());
+  return fixedHosts.includes(target.host.toLowerCase());
+}
+
+const REFUSED_DEPLOYMENT_CLIENT_MESSAGE =
+  "The sign-in app set up for this Paperclip server can only be used with the app it was set up for. Add a client ID and secret for this server to the connection, then sign in again.";
+
+export function refusedDeploymentClientError(provider: string) {
+  if (!oauthClientConfig(provider).clientId) return null;
+  return unprocessable(REFUSED_DEPLOYMENT_CLIENT_MESSAGE, { code: "oauth_instance_client_endpoint_mismatch" });
+}
+
+export function manualOAuthClientRequiredError(provider: string, message: string) {
+  const refused = Boolean(oauthClientConfig(provider).clientId);
+  return unprocessable(refused ? REFUSED_DEPLOYMENT_CLIENT_MESSAGE : message, {
+    code: "oauth_manual_client_required",
+    ...(refused ? { reason: REFUSED_DEPLOYMENT_CLIENT_MESSAGE } : {}),
+  });
+}
+
 export function configuredOAuthClientForConnection(
   connection: typeof toolConnections.$inferSelect,
   provider: string,
+  tokenUrl: string | null | undefined,
 ) {
   if (isSmokeLabOAuthFixture(connection) && provider === "smoke_lab") {
     return {
@@ -49,7 +105,10 @@ export function configuredOAuthClientForConnection(
       clientSecret: null,
     };
   }
-  return oauthClientConfig(provider);
+  const configured = oauthClientConfig(provider);
+  return instanceClientTokenUrlAllowed(connection, provider, tokenUrl)
+    ? configured
+    : { ...configured, clientId: null, clientSecret: null };
 }
 
 export function credentialScope(

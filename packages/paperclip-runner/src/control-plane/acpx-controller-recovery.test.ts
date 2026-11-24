@@ -54,6 +54,7 @@ function sidecarSource(root: string, selectedProfile = profile, agent = "claude"
     " const lines=rl.createInterface({input:process.stdin}); lines.on('close',()=>process.exit(0)); lines.on('line', line => {",
     "  const r=JSON.parse(line), p=r.params || {};",
     "  fs.appendFileSync(root+'/commands.jsonl',r.command+'\\n');",
+    "  if(r.command==='session.open'&&p.expectedIdentity&&fs.existsSync(root+'/reload-refusal')){send({protocolVersion,id:r.id,ok:false,error:{code:fs.readFileSync(root+'/reload-refusal','utf8'),message:'The saved conversation cannot be reloaded in this process.',retryable:false}});return;}",
     "  if(r.command==='session.open'&&fs.existsSync(root+'/startup-failure.json')){send({protocolVersion,id:r.id,ok:false,error:{code:'ACPX_SESSION_ENSURE_FAILED',message:'Internal error',retryable:false,providerFailure:JSON.parse(fs.readFileSync(root+'/startup-failure.json','utf8'))}});return;}",
     "  switch(r.command) {",
     "   case 'initialize': reply(r,{protocolVersion,sidecarPid:process.pid,profile:{agent:" + JSON.stringify(agent) + "},capabilities:{persistentSessions:true,exactModelVerification:true,permissions:'runner_policy',semanticTools:'runner_bridge',structuredInput:'paperclip.question_set.v1'}});break;",
@@ -144,9 +145,9 @@ async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidat
       sidecarScript: script, sidecarScriptSha256: digest(script) },
     environment: { PATH: process.env.PATH },
   });
-  const child = bounded?.child as ChildProcess | undefined
-    ?? spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:ticket},stdio:["ignore","ignore","pipe"],detached:true});
-  const exit = once(child,"exit");
+  const launchRunner = (runnerTicket: string) => spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:runnerTicket},stdio:["ignore","ignore","pipe"],detached:true});
+  let child = bounded?.child as ChildProcess | undefined ?? launchRunner(ticket);
+  let exit = once(child,"exit");
   child.stderr!.on("data",bytes=>{diagnostics=(diagnostics+String(bytes)).slice(-4096);});
   let commandNumber=0;
   async function command(type:string,payload:Record<string,unknown>={}) {
@@ -196,6 +197,19 @@ async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidat
       controller=create();await controller.start(port);
     },
     launches:()=>readFileSync(resolve(root,"launches.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)),
+    /** Kills the Runner and every provider it launched, then starts a replacement Runner on the same state. */
+    restartRunner:async()=>{
+      try{process.kill(-child.pid!,"SIGKILL");}catch{}
+      await exit;
+      for(const line of readFileSync(resolve(root,"launches.jsonl"),"utf8").trim().split("\n")){
+        try{process.kill((JSON.parse(line) as {pid:number}).pid,"SIGKILL");}catch{}
+      }
+      const replacementTicket=controller.issueBootstrapTicket(5_000);
+      await controller.flushCheckpoint();
+      child=launchRunner(replacementTicket);
+      exit=once(child,"exit");
+      child.stderr!.on("data",bytes=>{diagnostics=(diagnostics+String(bytes)).slice(-4096);});
+    },
     cleanup:async()=>{
       await controller.stop();
       if(child.exitCode===null && child.signalCode===null){try{process.kill(-child.pid!,"SIGKILL");}catch{}}
@@ -521,5 +535,24 @@ it("requires a surviving provider when requesting a live snapshot after explicit
     const result=await run.command("session.snapshot",{includePendingRuntimeRequests:true});
     expect(result).toMatchObject({status:"failed",result:{result:{message:"ACPX request snapshot requires the surviving provider"}}});
     expect(run.launches()).toHaveLength(1);
+  }finally{await run.cleanup();}
+},60000);
+
+it("names a refused reload of the saved conversation after provider death so the server replaces it",async()=>{
+  const run=await fixture();
+  try{
+    await run.ready();
+    // The Runner and its provider die together. The replacement Runner
+    // reloads the saved conversation in a new provider process, and the
+    // sidecar refuses that reload by name.
+    writeFileSync(resolve(run.root,"reload-refusal"),"ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE");
+    await run.restartRunner();
+    const restored=await run.command("session.snapshot");
+    expect(restored,JSON.stringify(restored)).toMatchObject({status:"failed",result:{result:{
+      code:"command_execution_failed",classification:"provider_state_incompatible",
+    }}});
+    expect(JSON.stringify(restored)).not.toContain("native_session_interrupted");
+    expect(run.launches()).toHaveLength(2);
+    expect(readFileSync(resolve(run.root,"commands.jsonl"),"utf8").trim().split("\n").slice(-2)).toEqual(["initialize","session.open"]);
   }finally{await run.cleanup();}
 },60000);

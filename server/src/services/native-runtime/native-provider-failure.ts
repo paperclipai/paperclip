@@ -1,5 +1,8 @@
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { antigravityModelRefusalMessage, readProviderFailure, type AntigravityAuthRoute, type ProviderFailure } from "@paperclipai/shared";
+
+/** The runner driver's provider code for a model Google refused for the connection. */
+const ANTIGRAVITY_MODEL_UNAVAILABLE_CODE = "antigravity_model_unavailable";
 
 // Shared by every provider whose selected model is rejected, so it names no specific connection.
 export const NATIVE_MODEL_REJECTION_MESSAGE =
@@ -233,8 +236,30 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
   } catch { return null; }
 }
 
+const TRANSIENT_PROVIDER_REFUSALS: ReadonlySet<string> = new Set<ProviderFailure["category"]>(["overloaded", "rate_limit"]);
+
+/** An accepted done report outlives a later transient provider refusal in the same turn. */
+export function nativeAcceptedResultOutlivesProviderFailure(input: {
+  terminal: Pick<PrpTerminalState, "turnTerminalState" | "runTerminalState" | "reportedWorkDisposition">;
+  providerFailure: { errorCode: string } | null;
+  providerExplanation: ProviderFailure | null;
+}): boolean {
+  if (input.terminal.runTerminalState !== "failed" || input.terminal.turnTerminalState !== "failed" ||
+      input.terminal.reportedWorkDisposition !== "done") return false;
+  if (input.providerFailure) return input.providerFailure.errorCode === NATIVE_PROVIDER_OVERLOADED_CODE;
+  const failure = input.providerExplanation;
+  return failure !== null && failure.retryability === "transient" && TRANSIENT_PROVIDER_REFUSALS.has(failure.category);
+}
+
 /** Observe only events accepted by the bound control-plane persistence port. */
-export function createNativeProviderFailureObservation(provider: { kind: string; model?: string | null }) {
+export function createNativeProviderFailureObservation(
+  provider: { kind: string; model?: string | null; agent?: string },
+  options: {
+    /** Google Antigravity's connection route, known only where the run's credentials were resolved. */
+    antigravityRoute?: AntigravityAuthRoute;
+  } = {},
+) {
+  const antigravity = provider.kind === "acpx" && provider.agent === "antigravity";
   let rejectedTurnId: string | null = null;
   /** A Codex API-key turn whose configured model the Responses API does not serve (404). */
   let missingModelTurnId: string | null = null;
@@ -252,6 +277,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         && event.payload.status === "failed") {
         const failure = readProviderFailure(record(event.payload.error).providerFailure);
         if (failure && !providerFailures.has(event.turnId)) providerFailures.set(event.turnId, failure);
+        // Antigravity's owned patch types Google's 503 as a transient overload:
+        // it takes the same bounded capacity retry as Codex's serverOverloaded.
+        if (antigravity && failure?.category === "overloaded" && failure.retryability === "transient") {
+          overloadedTurnId = event.turnId;
+        }
       }
       if ((provider.kind !== "codex" && provider.kind !== "opencode") ||
           event.sourceKind !== "runner" || event.eventType !== "turn.failed" || !event.turnId) return;
@@ -305,11 +335,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       if (turnId === overloadedTurnId) return {
         errorCode: NATIVE_PROVIDER_OVERLOADED_CODE,
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
-        diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
+        diagnostic: antigravity ? { provider: "antigravity", category: "server_overloaded" } : { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
       // Every model rejection shares one result; only its closed diagnostic differs.
-      const modelRejection = <T>(diagnostic: T) => ({
-        errorCode: "native_provider_model_rejected" as const, errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic,
+      const modelRejection = <T>(diagnostic: T, errorMessage: string = NATIVE_MODEL_REJECTION_MESSAGE) => ({
+        errorCode: "native_provider_model_rejected" as const, errorMessage, diagnostic,
       });
       if (turnId === missingModelTurnId) return modelRejection({ ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
       if (turnId === rejectedTurnId) return modelRejection({ ...NATIVE_MODEL_REJECTION_DIAGNOSTIC });
@@ -317,7 +347,12 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       // action-required rejection qualifies; a transient one may succeed on retry.
       if (!modelUnavailableTurn(turnId)) return null;
       const failure = providerFailures.get(turnId)!;
-      return modelRejection(failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category });
+      // Antigravity's typed refusal names the configured model and the fix for
+      // its connection route. Without the route (a run recovered after a
+      // restart), the shared message stays accurate.
+      const message = antigravity && failure.providerCode === ANTIGRAVITY_MODEL_UNAVAILABLE_CODE && provider.model && options.antigravityRoute
+        ? antigravityModelRefusalMessage(provider.model, options.antigravityRoute) : undefined;
+      return modelRejection(failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category }, message);
     },
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {

@@ -257,6 +257,7 @@ const slotTime = {
 export const suggestTime = defineTool({
   definition: {
     name: "suggest_time",
+    title: "Suggest a meeting time",
     description: "Finds periods in a time range when all the given people are free, from their calendars' busy times. Each suggestion is a whole free period at least durationMinutes long, earliest first. Free periods are not split into meeting-length slots.",
     inputSchema: {
       type: "object",

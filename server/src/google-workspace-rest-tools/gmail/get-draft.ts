@@ -61,6 +61,7 @@ export function getDraftResult(draft: GmailRestDraftFull, input: GetDraftArgs, b
 export const getDraft = defineTool({
   definition: {
     name: "get_draft",
+    title: "Read a draft",
     description: "Gets one draft email from the signed-in user's Gmail by draft ID. Draft IDs come from list_drafts.",
     inputSchema: {
       type: "object",

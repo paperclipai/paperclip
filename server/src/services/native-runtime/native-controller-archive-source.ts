@@ -17,6 +17,9 @@ export type SettledControllerArchiveOwner = {
   filesystemIndependence?: { source: OriginalHarnessVolumeCapability; scopeDigest: string; factsDigest: string };
 };
 const fileDigest = (value: string) => createHash("sha256").update(value).digest("hex");
+export class NativeControllerArchiveSourceUnsettled extends Error {
+  constructor(readonly state: string) { super("native_controller_archive_source_unsettled"); }
+}
 
 export function nativeControllerArchiveProfileDigest(value: unknown) {
   const profile = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -32,22 +35,24 @@ export function nativeControllerArchiveCoordinatorDigest(value: {
 }
 
 export async function assertSettledControllerArchiveSource(db: Db, owner: SettledControllerArchiveOwner) {
-  function fail(): never { throw new Error("native_controller_archive_source_unsettled"); }
-  if (owner.controllerDigest === null && !owner.filesystemIndependence) fail();
+  function fail(state: string): never { throw new NativeControllerArchiveSourceUnsettled(state); }
+  if (owner.controllerDigest === null && !owner.filesystemIndependence) fail("controller_fingerprint_missing");
   if (owner.filesystemIndependence) {
     await assertOriginalHarnessVolumeSource(owner.filesystemIndependence.source);
     await (await import("./native-harness-filesystem-independence.js")).assertNativeHarnessFilesystemArchiveSource(db, owner);
   }
   await db.execute(sql`set local lock_timeout = '1s'`);
-  if (!await tryLockNativeWorkspaceFinalization(db, owner)) fail();
+  if (!await tryLockNativeWorkspaceFinalization(db, owner)) fail("finalization_busy");
   const [task] = await db.select().from(issues).where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("update");
-  if (!task || task.executionRunId || task.checkoutRunId) fail();
+  if (!task || task.executionRunId || task.checkoutRunId) fail("task_active");
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, owner.companyId), eq(nativeRunFinalizations.issueId, owner.issueId),
     eq(nativeRunFinalizations.runId, owner.runId))).for("update");
-  if (!coordinator || coordinator.leaseOwner || coordinator.nextAttemptAt
-    || !(coordinator.phase === "terminal_failure" || coordinator.phase === "committed" && coordinator.resultId)
-    || nativeControllerArchiveCoordinatorDigest(coordinator) !== owner.coordinatorDigest) fail();
+  if (!coordinator) fail("coordinator_missing");
+  if (coordinator.leaseOwner) fail("coordinator_leased");
+  if (coordinator.nextAttemptAt) fail("coordinator_retry_scheduled");
+  if (!(coordinator.phase === "terminal_failure" || coordinator.phase === "committed" && coordinator.resultId)) fail("coordinator_unsettled");
+  if (nativeControllerArchiveCoordinatorDigest(coordinator) !== owner.coordinatorDigest) fail("coordinator_changed");
   const [selection] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.id, owner.selectedSessionId),
     eq(agentTaskSessions.companyId, owner.companyId), eq(agentTaskSessions.agentId, owner.agentId),
     eq(agentTaskSessions.lastRunId, owner.selectedLastRunId))).for("share");
@@ -57,20 +62,21 @@ export async function assertSettledControllerArchiveSource(db: Db, owner: Settle
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, owner.runId),
     eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.nativeIssueId, owner.issueId),
     eq(heartbeatRuns.nativeSessionId, owner.sessionId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
-  if (!selection || !selectedRun || !run?.finishedAt
+  if (!selection || !selectedRun) fail("session_selection_changed");
+  if (!run?.finishedAt
     || (owner.filesystemIndependence ? !["failed", "succeeded"].includes(run.status)
       || run.status === "succeeded" && (coordinator.phase !== "committed" || !coordinator.resultId) : run.status !== "failed")
-    || nativeControllerArchiveProfileDigest(run.runnerProfileJson) !== owner.profileDigest) fail();
+    || nativeControllerArchiveProfileDigest(run.runnerProfileJson) !== owner.profileDigest) fail("run_changed");
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
     inArray(heartbeatRuns.status, ["queued", "running"]), or(eq(heartbeatRuns.nativeIssueId, owner.issueId),
       eq(heartbeatRuns.issueId, owner.issueId), eq(heartbeatRuns.nativeSessionId, owner.sessionId)))).limit(1);
-  if (active) fail();
+  if (active) fail("turn_active");
   const selected = await findNativeSessionResumeRun(db, { companyId: owner.companyId, agentId: owner.agentId, issueId: owner.issueId,
     normalizedSessionId: owner.sessionId, beforeCreatedAt: selectedRun.createdAt, includeProgressBarrier: true });
-  if (!selected || selected.id !== owner.runId || nativeControllerArchiveProfileDigest(selected.runnerProfileJson) !== owner.profileDigest) fail();
+  if (!selected || selected.id !== owner.runId || nativeControllerArchiveProfileDigest(selected.runnerProfileJson) !== owner.profileDigest) fail("resume_source_changed");
   const material = await readLegacyNativeControllerArchiveDigests(selected);
   if ((material.controllerDigest ?? null) !== owner.controllerDigest
-    || (material.supervisorDigest ?? null) !== owner.supervisorDigest) fail();
+    || (material.supervisorDigest ?? null) !== owner.supervisorDigest) fail("controller_files_changed");
 }
 
 export async function archiveSettledFailedNativeController(db: Db, input: {
@@ -84,7 +90,7 @@ export async function archiveSettledFailedNativeController(db: Db, input: {
   if (material.controller === undefined) return "source_already_absent" as const;
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, selected.companyId),
     eq(nativeRunFinalizations.issueId, selected.issueId), eq(nativeRunFinalizations.runId, source.id)));
-  if (!coordinator) throw new Error("native_controller_archive_source_unsettled");
+  if (!coordinator) throw new NativeControllerArchiveSourceUnsettled("coordinator_missing");
   const owner: SettledControllerArchiveOwner = { kind: "settled_controller_archive", companyId: selected.companyId,
     issueId: selected.issueId, agentId: selected.agentId, runId: source.id, sessionId: selected.sessionId,
     selectedSessionId: selected.id, selectedLastRunId: selected.lastRunId,

@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, executionWorkspaces, executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLease } from "@paperclipai/shared";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readWorkspaceFilesUnavailable, WORKSPACE_FILES_UNAVAILABLE_MESSAGE } from "./workspace-files-unavailable.js";
 
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "metadata">;
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -65,6 +66,9 @@ export function matchPreparedRemoteWorkspaceSource<T extends PreparedSourceBindi
 
 export async function inspectRemoteWorkspacePersistence(db: Db | Transaction, workspace: Workspace) {
   const authority = readRemoteWorkspaceAuthority(workspace.metadata);
+  if (authority && !authority.snapshotId && readWorkspaceFilesUnavailable(workspace.metadata)) {
+    return { ready: false, reason: WORKSPACE_FILES_UNAVAILABLE_MESSAGE, authority, filesUnavailable: true };
+  }
   if (!authority || authority.dirty || authority.writerRunId || !authority.snapshotId) {
     return { ready: false, reason: "The workspace still has unsaved work or an unfinished writer.", authority };
   }
@@ -84,6 +88,9 @@ export async function cleanupRemoteWorkspaceAllocation(input: {
   ));
   if (!workspace || !["archived", "cleanup_failed"].includes(workspace.status)) throw new Error("remote_workspace_cleanup_binding_changed");
   const persistence = await inspectRemoteWorkspacePersistence(input.db, workspace);
+  if ("filesUnavailable" in persistence && !persistence.authority?.location && !persistence.authority?.writerRunId) {
+    return { cleaned: true, warnings: [] as string[] };
+  }
   if (!persistence.ready || !persistence.authority) throw new Error(persistence.reason ?? "remote_workspace_saved_state_required");
   const location = persistence.authority.location;
   if (location) {

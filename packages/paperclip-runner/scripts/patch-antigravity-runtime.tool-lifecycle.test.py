@@ -46,7 +46,8 @@ def _paperclip_tool_lifecycle_regressions():
       return schema.ReadTextFileResponse(content=Path(path).read_bytes().decode("utf-8"))
 
   class Adapter(AgyAdapter):
-    async def _maybe_send_usage_update(self, session_id):
+    # 1.5.2 observes usage through the live agent, which this fixture omits.
+    async def _observe_usage(self, session_id):
       pass
 
   def forbidden(*args, **kwargs):
@@ -58,7 +59,7 @@ def _paperclip_tool_lifecycle_regressions():
     adapter._client = client
     info = SessionInfo(agent=SimpleNamespace(), stack=contextlib.AsyncExitStack(), cwd=str(workspace), current_model_id="offline")
     adapter._sessions[sid] = info
-    runner = ToolRunner(tools=[tools.make_client_view_file(client, str(workspace)), tools.make_client_create_file(client, str(workspace)), tools.make_client_edit_file(client, str(workspace))])
+    runner = ToolRunner(tools=[tools.make_client_view_file(client, [str(workspace)]), tools.make_client_create_file(client, [str(workspace)]), tools.make_client_edit_file(client, [str(workspace)])])
     runner.set_context(ToolContext(SimpleNamespace(conversation_id=sid)))
     wire = []
 
@@ -100,8 +101,11 @@ def _paperclip_tool_lifecycle_regressions():
     assert proof.read_bytes() == exact.encode("utf-8")
     assert json.loads(response.response_json) == {"result": None}
     terminal, update, response = await call("client_view_file", "read-call", {"absolute_path": str(proof)})
-    assert terminal.content == exact and update.raw_output == exact
-    assert json.loads(response.response_json) == {"result": exact}
+    # 1.5.2 returns numbered lines under a header; the same native result must
+    # reach the step, the ACP update and the harness response unchanged.
+    assert exact.strip() in terminal.content
+    assert update.raw_output == terminal.content
+    assert json.loads(response.response_json) == {"result": terminal.content}
     edited = "replacement\n"
     await call("client_edit_file", "edit-call", {"target_file": str(proof), "code_content": edited})
     assert proof.read_bytes() == edited.encode("utf-8")
@@ -128,7 +132,7 @@ def _paperclip_tool_lifecycle_regressions():
     await pending
     await drain()
     assert "pending-call" not in opened
-    assert [u for u in client.updates if u.tool_call_id == "pending-call" and u.status == "completed"][0].raw_output == "still independent\n"
+    assert "still independent" in [u for u in client.updates if u.tool_call_id == "pending-call" and u.status == "completed"][0].raw_output
 
     # Native errors close only the failing call, including permission identity.
     def native_step(call_id, status, error="", calls=True):

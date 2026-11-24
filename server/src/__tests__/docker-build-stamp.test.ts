@@ -86,7 +86,7 @@ describe("Application image Runner", () => {
   it("takes the Runner build and its stamp from runner-artifacts, and checks them before any application build", () => {
     const build = stageBody(dockerfile, "build");
     expect(build).toContain("FROM base AS build");
-    const source = build.search(/^COPY \. \.$/m);
+    const source = build.search(/^COPY --exclude=docker\/remote-runtimes \. \.$/m);
     const output = build.search(/^COPY --from=runner-artifacts \/runner-package\/dist \/app\/packages\/paperclip-runner\/dist$/m);
     const stamp = build.search(
       /^COPY --from=runner-artifacts \/runner-package\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json \/app\/packages\/paperclip-runner\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json$/m,

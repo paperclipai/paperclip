@@ -2199,6 +2199,13 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "agent_setup_progress.updated") {
+    // A person's own agent checked off a setup step; the open setup page shows it.
+    const progressId = readString(payload.progressId);
+    if (progressId) queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(progressId) });
+    return;
+  }
+
   if (event.type === "agent.runtime_state.updated") {
     // The server saved a new provider rate-limit snapshot for this agent.
     const agentId = readString(payload.agentId);

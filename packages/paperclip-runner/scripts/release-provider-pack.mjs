@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import profiles from "../acpx-profiles.json" with { type: "json" };
 import distributions from "../cursor-distributions.json" with { type: "json" };
+import antigravityDistributions from "../antigravity-distributions.json" with { type: "json" };
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 as kimiClosures } from "../src/drivers/acpx/kimi-closure-pins.ts";
 
 const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
@@ -8,7 +9,7 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
     : JSON.stringify(value);
 
 /** Release assembly must reject a self-consistent pack built for another release. */
-export function verifyReleaseProviderPack(identity, sourceRevision, target = "linux-x64", expected = { profiles, distributions, kimiClosures }) {
+export function verifyReleaseProviderPack(identity, sourceRevision, target = "linux-x64", expected = { profiles, distributions, kimiClosures, antigravityDistributions }) {
   const { profiles: releaseProfiles, distributions: releaseDistributions } = expected;
   const payload = identity?.payload;
   if (identity?.schema !== "paperclip-runner/remote-provider-pack/v1" || !payload
@@ -62,5 +63,30 @@ export function verifyReleaseProviderPack(identity, sourceRevision, target = "li
       throw new Error("Remote provider-pack Kimi identity does not match this release");
     }
   }
+  const antigravityProfile = releaseProfiles.profiles.antigravity;
+  verifyReleaseAntigravity(payload, antigravityProfile, expected.antigravityDistributions
+    ?? (antigravityProfile?.commandDigest === profiles.profiles.antigravity.commandDigest ? antigravityDistributions : undefined));
   return identity;
+}
+
+/** A released profile requires exactly one ordinary entry; a pending one at
+ * most one candidate. Either way the closure is the release's frozen PATCHED
+ * Linux closure, never the vendor closure. */
+function verifyReleaseAntigravity(payload, profile, frozen) {
+  const ordinary = payload.providers?.antigravity, candidate = payload.candidateProviders?.antigravity;
+  const mismatch = () => { throw new Error("Remote provider-pack Antigravity identity does not match this release"); };
+  if (!profile) return ordinary || candidate ? mismatch() : undefined;
+  const pending = profile.qualificationStatus === "pending";
+  const entry = pending ? candidate : ordinary;
+  if ((pending ? ordinary : candidate) || (!pending && !entry)) mismatch();
+  if (!entry) return;
+  const platform = frozen?.platforms?.["linux-x64"];
+  if (frozen?.schema !== "paperclip.antigravity_distribution.v1" || frozen.version !== profile.agentServerVersion
+    || platform?.provisioning !== "verified-closure" || !/^[a-f0-9]{64}$/.test(platform.closureSha256 ?? "")
+    || platform.closureSha256 === platform.vendorClosureSha256
+    || entry.version !== profile.agentServerVersion || entry.profileDigest !== profile.commandDigest
+    || entry.closureDigest !== `sha256:${platform.closureSha256}`
+    || entry.qualification !== (pending ? "pending" : "qualified") || entry.path !== "provider-assets/antigravity/linux-x64"
+    || Object.keys(entry).sort().join(",") !== "closureDigest,path,profileDigest,qualification,sha256,version"
+    || !/^sha256:[a-f0-9]{64}$/.test(entry.sha256 ?? "")) mismatch();
 }

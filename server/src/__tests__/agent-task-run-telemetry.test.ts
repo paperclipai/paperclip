@@ -382,6 +382,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     { adapterConfig: {}, adapterType: "codex_local" },
     { adapterConfig: { provider: "acpx", acpxAgent: "claude" }, adapterType: "claude_local" },
     { adapterConfig: { provider: "opencode" }, adapterType: "opencode_local" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "copilot" }, adapterType: "copilot_runtime" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "antigravity" }, adapterType: "antigravity_runtime" },
   ])("reports a Paperclip runner agent's underlying harness $adapterType as adapterType", async ({ adapterConfig, adapterType }) => {
     await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
@@ -471,7 +473,7 @@ describe("agentRunFailureCause", () => {
 });
 
 describe("Paperclip runner adapter_type coverage", () => {
-  it.each(["agent.task_run", "agent.task_completed"] as const)("lists every runner harness in the %s adapter_type contract except the known gaps", (event) => {
+  it.each(["agent.task_run", "agent.task_completed"] as const)("lists every runner harness in the %s adapter_type contract", (event) => {
     const contract = Object.keys(PAPERCLIP_ENUM_DESCRIPTIONS[event].adapter_type);
     const harnesses = [
       ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
@@ -480,14 +482,33 @@ describe("Paperclip runner adapter_type coverage", () => {
       ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })),
     ];
 
-    expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([
-      "acpx:copilot",
-      "antigravity_runtime",
-      "aws_agentcore",
-      "claude_managed",
-      "grok_bot",
-      "muse",
-      "openai_dot",
+    expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([]);
+  });
+
+  it("reports each runner harness as its expected adapter_type", () => {
+    const reported = Object.fromEntries([
+      ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
+        .filter((provider) => provider !== "acpx")
+        .map((provider) => [provider, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })]),
+      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => [`acpx:${value}`, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })]),
     ]);
+
+    expect(reported).toEqual({
+      codex: "codex_local",
+      opencode: "opencode_local",
+      claude_managed: "claude_managed",
+      aws_agentcore: "aws_agentcore",
+      grok_bot: "grok_bot",
+      muse: "muse",
+      openai_dot: "openai_dot",
+      cursor_cloud: "cursor_cloud",
+      "acpx:grok": "grok_local",
+      "acpx:claude": "claude_local",
+      "acpx:cursor": "cursor",
+      "acpx:copilot": "copilot_runtime",
+      "acpx:pi": "pi_local",
+      "acpx:kimi": "kimi_local",
+      "acpx:antigravity": "antigravity_runtime",
+    });
   });
 });

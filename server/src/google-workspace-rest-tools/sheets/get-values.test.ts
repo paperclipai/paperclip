@@ -84,16 +84,12 @@ describe("get_values tool", () => {
     [{ spreadsheetId: SPREADSHEET_ID, range: "Q1 Plan!A1" }, /must be quoted/],
     [{ spreadsheetId: "../other", range: "A1" }, /spreadsheet ID/],
     [{ spreadsheetId: SPREADSHEET_ID }, /range/],
-    [{ spreadsheetId: SPREADSHEET_ID, range: "Sheet1!A1", valueRenderOption: "FORMULA" }, null],
+    [{ spreadsheetId: SPREADSHEET_ID, range: "Sheet1!A1", valueRenderOption: "FORMULA" }, /unknown argument "valueRenderOption"/],
   ])("validates %j before sending", async (args, message) => {
     const { fetch, calls } = fakeGoogle(() => json(EMPTY_VALUES));
     const result = await getValues.call(args, createGoogleHttp({ accessToken: "t", fetch }));
-    if (message) {
-      expect(result.isError).toBe(true);
-      expect(text(result)).toMatch(message);
-      expect(calls).toHaveLength(0);
-    } else {
-      expect(calls[0]!.url.searchParams.get("valueRenderOption")).toBe("FORMATTED_VALUE");
-    }
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(message);
+    expect(calls).toHaveLength(0);
   });
 });
