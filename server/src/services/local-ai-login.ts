@@ -190,6 +190,7 @@ export function localAiLoginService(db: Db) {
           return;
         }
         if (session.expiresAt.getTime() > Date.now()) return;
+        await stopBrowserLoginUnderLock(id);
         await rm(loginHome(id), { recursive: true, force: true });
         await tx.update(adapterAuthSessions).set({
           status: session.connectionId ? "authenticated" : session.failureReason === RETIREMENT_PENDING ? "cancelled" : "timed_out",
@@ -299,11 +300,11 @@ export function localAiLoginService(db: Db) {
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
     const launched = await db.transaction(async tx => {
       const [current] = await tx.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update");
-      if (current?.status !== "waiting_for_user") return false;
+      if (current?.status !== "waiting_for_user" || !current.expiresAt || current.expiresAt.getTime() <= Date.now()) return false;
       ensureBrowserLogin(attempt.sessionId, intent.provider);
       return true;
     });
-    if (!launched) throw unprocessable("This sign-in was cancelled. Start sign-in again.");
+    if (!launched) throw unprocessable("This sign-in has ended. Start sign-in again.");
     return attempt;
   }
 
