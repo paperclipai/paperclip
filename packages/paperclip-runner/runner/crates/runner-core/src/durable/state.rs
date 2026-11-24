@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -1110,7 +1112,14 @@ fn canonical_json(value: &Value) -> String {
 #[derive(Clone, Debug)]
 pub struct DurableStateStore {
     path: PathBuf,
+    /// Cumulative ACK cursor in the state file, shared by clones of this
+    /// store. `UNKNOWN_DURABLE_ACK` until this process has loaded or saved it.
+    durable_acked_source_seq: Arc<AtomicU64>,
+    #[cfg(test)]
+    saves: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+const UNKNOWN_DURABLE_ACK: u64 = u64::MAX;
 
 impl DurableStateStore {
     pub fn exists(&self) -> bool {
@@ -1142,7 +1151,22 @@ impl DurableStateStore {
         verify_private_directory(state_dir)?;
         Ok(Self {
             path: state_dir.join(STATE_FILE),
+            durable_acked_source_seq: Arc::new(AtomicU64::new(UNKNOWN_DURABLE_ACK)),
+            #[cfg(test)]
+            saves: Arc::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn save_count(&self) -> usize {
+        self.saves.load(Ordering::Acquire)
+    }
+
+    /// The cumulative ACK cursor that the state file holds, when this process
+    /// knows it.
+    pub(crate) fn durable_acked_source_seq(&self) -> Option<u64> {
+        Some(self.durable_acked_source_seq.load(Ordering::Acquire))
+            .filter(|cursor| *cursor != UNKNOWN_DURABLE_ACK)
     }
 
     pub fn path(&self) -> &Path {
@@ -1206,6 +1230,9 @@ impl DurableStateStore {
         }
         if changed {
             self.save(&state)?;
+        } else {
+            self.durable_acked_source_seq
+                .store(state.acked_source_seq, Ordering::Release);
         }
         Ok((state, true))
     }
@@ -1220,6 +1247,9 @@ impl DurableStateStore {
             ));
         }
         let (temporary, mut file) = create_private_temporary_file(&self.path)?;
+        // A failed replacement may or may not have reached the file.
+        self.durable_acked_source_seq
+            .store(UNKNOWN_DURABLE_ACK, Ordering::Release);
         let result = (|| -> Result<(), DurableRunnerError> {
             file.write_all(&bytes)
                 .and_then(|_| file.sync_all())
@@ -1246,6 +1276,11 @@ impl DurableStateStore {
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
+        } else {
+            self.durable_acked_source_seq
+                .store(state.acked_source_seq, Ordering::Release);
+            #[cfg(test)]
+            self.saves.fetch_add(1, Ordering::AcqRel);
         }
         result
     }

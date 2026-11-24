@@ -455,9 +455,20 @@ fn record_recoverable_transport_failure(state: &mut DurableState, reason: &str) 
 #[derive(Default)]
 struct CumulativeAckPersistence {
     advanced_since_save: usize,
+    empty_outbox_rides_next_save: bool,
 }
 
 impl CumulativeAckPersistence {
+    /// For the connected loop, whose next provider batch, command, lifecycle
+    /// change or park saves the full state anyway. An ACK that empties the
+    /// outbox rides that save instead of adding one of its own.
+    fn riding_next_save() -> Self {
+        Self {
+            advanced_since_save: 0,
+            empty_outbox_rides_next_save: true,
+        }
+    }
+
     fn apply(
         &mut self,
         state: &mut DurableState,
@@ -466,9 +477,14 @@ impl CumulativeAckPersistence {
         protocol_version: u64,
     ) -> Result<(), DurableRunnerError> {
         let previous = state.acked_source_seq;
+        let backpressure = state.backpressure;
         state.apply_ack(acked_source_seq, protocol_version)?;
         if acked_source_seq == previous {
             return Ok(());
+        }
+        // Count advances past the cursor on disk; any other save resets it.
+        if store.durable_acked_source_seq() == Some(previous) {
+            self.advanced_since_save = 0;
         }
         self.advanced_since_save = self.advanced_since_save.saturating_add(1);
         // ACKs are cumulative and replay-safe: after a crash, an older durable
@@ -476,9 +492,13 @@ impl CumulativeAckPersistence {
         // and return the same or a newer ACK. Persist often enough to bound that
         // replay, but do not rewrite a large outbox once for every frame in a
         // burst. Command and lifecycle mutations independently save the full
-        // current state before authority can change; an incomplete batch may
-        // safely replay from its older durable cursor.
-        if self.advanced_since_save >= CUMULATIVE_ACK_PERSIST_INTERVAL || state.outbox.is_empty() {
+        // current state before authority can change, and a host park saves the
+        // exact cut it reports; an incomplete batch may safely replay from its
+        // older durable cursor. Leaving backpressure changes lifecycle, so it
+        // is saved at once.
+        let empty_outbox_saves_now = state.outbox.is_empty()
+            && (!self.empty_outbox_rides_next_save || state.backpressure != backpressure);
+        if self.advanced_since_save >= CUMULATIVE_ACK_PERSIST_INTERVAL || empty_outbox_saves_now {
             store.save(state)?;
             self.advanced_since_save = 0;
         }
@@ -952,7 +972,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         }
         let mut sent_source_seq = state.acked_source_seq;
         let replayed_through_source_seq = state.highest_source_seq();
-        let mut ack_persistence = CumulativeAckPersistence::default();
+        let mut ack_persistence = CumulativeAckPersistence::riding_next_save();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
         let mut authority_rotation = None;
@@ -1549,6 +1569,11 @@ fn process_host_control<E: CommandExecutor>(
             if !ready {
                 control.channel.reply(&request, "conflict")?;
                 return Ok(HostAction::None);
+            }
+            // A relaunch from disk must match the exact cut this reply
+            // reports, including an ACK that was riding the next save.
+            if store.durable_acked_source_seq() != Some(state.acked_source_seq) {
+                store.save(state)?;
             }
             control.park_id = Some(id.clone());
             control.channel.reply(&request, "parked")?;
@@ -2365,40 +2390,50 @@ fn commit_executor_events<E: CommandExecutor>(
 ) -> Result<(), DurableRunnerError> {
     let mut events = events.into_iter().peekable();
     while events.peek().is_some() {
-        let mut durable_prefix = 0;
-        let committed = (|| -> Result<(), DurableRunnerError> {
-            // Keep each PRP event's durable save. Only coalesce provider queue
-            // acknowledgements, bounded below the retained receipt window so
-            // a crash before the prefix ACK can replay every event exactly.
-            for event in events.by_ref().take(128) {
-                if !state.has_executor_event_receipt(
-                    &event.executor_event_id,
-                    &event.event_type,
-                    event.priority,
-                    &event.payload,
-                )? {
-                    state.enqueue_executor_event(
+        // Group commit: enqueue a bounded batch, then make all of it durable
+        // with one save before the provider may release any of it. The batch
+        // stays below the retained receipt window, so a crash between this
+        // save and the provider acknowledgement replays every event exactly.
+        let mut accepted = 0;
+        let mut enqueued = false;
+        let mut rejected = Ok(());
+        for event in events.by_ref().take(128) {
+            let committed = match state.has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &event.payload,
+            ) {
+                Ok(true) => Ok(()),
+                Ok(false) => state
+                    .enqueue_executor_event(
                         config,
                         event.executor_event_id,
                         event.event_type,
                         event.priority,
                         event.payload,
-                    )?;
-                    store.save(state)?;
-                }
-                durable_prefix += 1;
+                    )
+                    .map(|_| enqueued = true),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = committed {
+                rejected = Err(error);
+                break;
             }
-            Ok(())
-        })();
-        // Even when a later save/validation fails, remove only the already
-        // durable prefix. A failed provider ACK leaves that prefix replayable;
-        // it must not hide the original commit/identity error, if any.
-        let acknowledged = if durable_prefix > 0 {
-            executor.acknowledge_events(durable_prefix)
-        } else {
-            Ok(())
+            accepted += 1;
+        }
+        // A rejected event still leaves the accepted prefix durable and
+        // releasable. A failed save releases nothing: the provider keeps the
+        // whole batch for replay.
+        let saved = if enqueued { store.save(state) } else { Ok(()) };
+        let acknowledged = match (&saved, accepted) {
+            (Ok(()), 1..) => executor.acknowledge_events(accepted),
+            _ => Ok(()),
         };
-        committed?;
+        // A failed provider ACK leaves that prefix replayable; it must not
+        // hide the original commit/identity error, if any.
+        saved?;
+        rejected?;
         acknowledged?;
     }
     Ok(())
@@ -5754,6 +5789,209 @@ mod tests {
                 .collect::<Vec<_>>(),
             (1..=131).collect::<Vec<_>>()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn provider_batch_commits_with_one_durable_save() {
+        for size in [8_usize, 48] {
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-runner-group-commit-{size}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let mut config = config(directory.clone());
+            config.max_outbox_bytes = 1024 * 1024;
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = RetainingEventExecutor {
+                events: (1..=size)
+                    .map(|index| PolledEvent {
+                        executor_event_id: format!("provider-event-{index}"),
+                        event_type: "item.delta".to_owned(),
+                        priority: EventPriority::P2,
+                        payload: json!({"index": index}),
+                    })
+                    .collect(),
+                fail_acknowledgement: false,
+                acknowledgements: Vec::new(),
+            };
+
+            let saves = store.save_count();
+            poll_executor_events(&mut state, &store, &config, &mut executor).unwrap();
+
+            assert_eq!(
+                store.save_count() - saves,
+                1,
+                "a batch of {size} events must commit with one save"
+            );
+            assert_eq!(executor.acknowledgements, vec![size]);
+            let (reloaded, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(reloaded.outbox, state.outbox);
+            assert_eq!(reloaded.highest_source_seq(), size as u64);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn streamed_rounds_save_once_when_the_ack_rides_the_next_batch() {
+        // One event per poll, each ACKed before the next poll, as in a
+        // streamed turn over the connected loop.
+        const ROUNDS: u64 = 20;
+        for (persistence, expected_saves) in [
+            (CumulativeAckPersistence::riding_next_save(), ROUNDS),
+            (CumulativeAckPersistence::default(), 2 * ROUNDS),
+        ] {
+            let mut persistence = persistence;
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-runner-streamed-rounds-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = RetainingEventExecutor {
+                events: VecDeque::new(),
+                fail_acknowledgement: false,
+                acknowledgements: Vec::new(),
+            };
+            let saves = store.save_count();
+            for round in 1..=ROUNDS {
+                executor.events.push_back(PolledEvent {
+                    executor_event_id: format!("streamed-{round}"),
+                    event_type: "item.delta".to_owned(),
+                    priority: EventPriority::P2,
+                    payload: json!({"index": round}),
+                });
+                poll_executor_events(&mut state, &store, &config, &mut executor).unwrap();
+                persistence.apply(&mut state, &store, round, 2).unwrap();
+            }
+            assert_eq!((store.save_count() - saves) as u64, expected_saves);
+
+            let (mut reloaded, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(reloaded.highest_source_seq(), ROUNDS);
+            if persistence.empty_outbox_rides_next_save {
+                // The last ACK waits for the next save. Recovery replays that
+                // event under its original identity, and the controller's
+                // same cumulative ACK removes it again.
+                assert_eq!(reloaded.acked_source_seq, ROUNDS - 1);
+                assert_eq!(reloaded.outbox.len(), 1);
+                assert_eq!(reloaded.outbox[0].source_seq, ROUNDS);
+                assert!(reloaded
+                    .has_executor_event_receipt(
+                        &format!("streamed-{ROUNDS}"),
+                        "item.delta",
+                        EventPriority::P2,
+                        &json!({"index": ROUNDS}),
+                    )
+                    .unwrap());
+                reloaded.apply_ack(ROUNDS, 2).unwrap();
+                assert!(reloaded.outbox.is_empty());
+            } else {
+                assert_eq!(reloaded.acked_source_seq, ROUNDS);
+                assert!(reloaded.outbox.is_empty());
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn leaving_backpressure_saves_the_emptying_ack_at_once() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-backpressure-ack-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        state
+            .enqueue_event(
+                &config,
+                "provider.notice.recorded",
+                EventPriority::P1,
+                json!({}),
+            )
+            .unwrap();
+        state.backpressure = true;
+        state.lifecycle = "backpressure".to_owned();
+        store.save(&state).unwrap();
+
+        CumulativeAckPersistence::riding_next_save()
+            .apply(&mut state, &store, 1, 2)
+            .unwrap();
+
+        let (reloaded, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(reloaded.acked_source_seq, 1);
+        assert!(!reloaded.backpressure);
+        assert_eq!(reloaded.lifecycle, "ready");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn host_park_saves_the_ack_that_was_riding_the_next_save() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct ParkableExecutor;
+        impl CommandExecutor for ParkableExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(true)
+            }
+        }
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-host-park-ack-{}", uuid::Uuid::new_v4()));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        state
+            .enqueue_event(
+                &config,
+                "provider.notice.recorded",
+                EventPriority::P1,
+                json!({}),
+            )
+            .unwrap();
+        store.save(&state).unwrap();
+        CumulativeAckPersistence::riding_next_save()
+            .apply(&mut state, &store, 1, 2)
+            .unwrap();
+        assert_eq!(store.durable_acked_source_seq(), Some(0));
+
+        let (socket, mut host) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(host.try_clone().unwrap());
+        let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+        let park = json!({"op":"park","id":"park-1","identity":{
+            "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+            "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+        },"lastControllerCommandSeq":0,"ackedSourceSeq":1});
+        writeln!(host, "{park}").unwrap();
+        let action = process_host_control(
+            &mut control,
+            &mut state,
+            &store,
+            &mut ParkableExecutor,
+            false,
+            Some(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(matches!(action, HostAction::Park));
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap()["status"],
+            "parked"
+        );
+
+        // A Runner relaunched from disk sees the exact cut it reported.
+        let (reloaded, _) = DurableStateStore::new(&config.state_dir)
+            .unwrap()
+            .load_or_create(&config)
+            .unwrap();
+        assert_eq!(reloaded.acked_source_seq, 1);
+        assert!(reloaded.outbox.is_empty());
+        assert!(host_park_checkpoint_is_settled(&reloaded));
         fs::remove_dir_all(directory).unwrap();
     }
 
