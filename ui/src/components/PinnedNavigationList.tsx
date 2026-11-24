@@ -45,7 +45,7 @@ function PinnedItem({ item, userId, onUnpin }: { item: PinnedNavigationItem; use
       className="absolute right-10 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>
     {handle}
   </>;
-  return <SortablePinnedRow id={item.key} label={item.label} className="group/coordinator-pin relative"
+  return <SortablePinnedRow id={item.key} label={item.label} data-pin-key={item.key} className="group/coordinator-pin relative"
     handleClassName="right-3 size-7 group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100" handleIconClassName="size-3.5">
     {handle => item.project ? <SidebarProjectTasks project={item.project} userId={userId}>{row(handle)}</SidebarProjectTasks> : row(handle)}
   </SortablePinnedRow>;

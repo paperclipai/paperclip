@@ -38,16 +38,16 @@ const taskPinKey = (companyId: string, id: string) => `task:${companyId}:${id}`;
 const projectPinKey = (project: Project) => `project:${project.companyId}:${project.id}`;
 
 const moreDestinations = [
-  { label: "Search", to: "/search", icon: Search },
-  { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
-  { label: "Projects", to: "/projects", icon: FolderOpen },
-  { label: "Routines", to: "/routines", icon: Repeat },
-  { label: "Artifacts", to: "/artifacts", icon: Boxes },
-  { label: "Agents", to: "/agents/all", icon: Network },
-  { label: "Skills", to: "/skills", icon: Boxes },
-  { label: "Connectors", to: "/apps", icon: Unplug },
-  { label: "Audit", to: "/activity", icon: History },
-  { label: "Settings", to: "/settings", icon: Settings },
+  { label: "Search", to: "/search", icon: Search, group: "work" },
+  { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard, group: "work" },
+  { label: "Projects", to: "/projects", icon: FolderOpen, group: "work" },
+  { label: "Routines", to: "/routines", icon: Repeat, group: "work" },
+  { label: "Artifacts", to: "/artifacts", icon: Boxes, group: "work" },
+  { label: "Agents", to: "/agents/all", icon: Network, group: "work" },
+  { label: "Skills", to: "/skills", icon: Boxes, group: "setup" },
+  { label: "Connectors", to: "/apps", icon: Unplug, group: "setup" },
+  { label: "Audit", to: "/activity", icon: History, group: "setup" },
+  { label: "Settings", to: "/settings", icon: Settings, group: "setup" },
 ] as const;
 
 export function buildPinnedNavigationItems(
@@ -156,9 +156,19 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const base = responsibilitiesHome
       ? moreDestinations.filter((item) => item.to !== "/dashboard")
       : moreDestinations;
-    return experimental?.enableCases ? [...base, { label: "Cases", to: "/cases", icon: Boxes }] : base;
+    return experimental?.enableCases ? [...base, { label: "Cases", to: "/cases", icon: Boxes, group: "cases" } as const] : base;
   }, [experimental?.enableCases, responsibilitiesHome]);
+  const morePages = useMemo(() => destinations.filter(item => !pinKeys.has(item.to)), [destinations, pinKeys]);
   const [moreOpen, setMoreOpen] = useState(false);
+  const navigationRef = useRef<HTMLElement>(null);
+  const focusAfterPin = useRef<string | null>(null);
+  const morePins = { ...pins, toggle: (key: string) => {
+    const index = morePages.findIndex(item => item.to === key);
+    const neighbor = morePages[index + 1] ?? morePages[index - 1];
+    if (neighbor) focusAfterPin.current = `[data-more-page="${CSS.escape(neighbor.to)}"] a`;
+    else { focusAfterPin.current = `[data-pin-key="${CSS.escape(key)}"] a`; setMoreOpen(false); }
+    pins.toggle(key);
+  } };
   const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
   const { entries: recentTasks, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
@@ -171,6 +181,14 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });
   const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations,
     pinnedTasks, session.isSuccess ? projects : undefined), [pinnedNavigation.pins, agents.data, destinations, pinnedTasks, projects, session.isSuccess]);
+  useEffect(() => {
+    const selector = focusAfterPin.current;
+    if (!selector) return;
+    const link = moreContentRef.current?.querySelector<HTMLElement>(selector) ?? navigationRef.current?.querySelector<HTMLElement>(selector);
+    if (!link) return;
+    focusAfterPin.current = null;
+    link.focus();
+  }, [orderedPins, morePages]);
   // Only project IDs and visit times are kept in memory. Labels and task lists
   // always come from the authorized API, scoped to the current person/company.
   const scope = `${companyId}:${userId}`;
@@ -201,7 +219,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       <SidebarCompanyMenu showChevron={false} />
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" className="design-sidebar-search" aria-label="Global search" onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))}><Search aria-hidden /></Button></TooltipTrigger><TooltipContent side="right">Search tasks, agents, projects</TooltipContent></Tooltip>
     </div>
-    <nav className="design-sidebar-navigation" aria-label="Workspace navigation">
+    <nav ref={navigationRef} className="design-sidebar-navigation" aria-label="Workspace navigation">
       <div className="design-sidebar-primary">
         {newTaskButton}
         <div className="design-sidebar-primary my-2">
@@ -215,20 +233,20 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
-        <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
+        {morePages.length > 0 && <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span>More</span></button></FlyoutTrigger>
           <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label="More workspace pages">
-            {destinations.map(({ label, to, icon: Icon }, index) => <div key={to}>
-                {index === 6 || index === 10 ? <div role="separator" className="my-1 border-t border-border" /> : null}
+            {morePages.map(({ label, to, icon: Icon, group }, index) => <div key={to} data-more-page={to}>
+                {index > 0 && morePages[index - 1]!.group !== group ? <div role="separator" className="my-1 border-t border-border" /> : null}
                 <div className="group/navigation-pin relative flex items-center rounded-sm transition-colors hover:bg-accent">
                   <Link to={to} onClick={() => { setMoreOpen(false); if (isMobile) setSidebarOpen(false); }} className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1.5 pr-10 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
                     <Icon className="size-4 shrink-0 text-muted-foreground" />{label}
                   </Link>
-                  <NavigationPinButton pinKey={to} label={label} pins={pins} className="right-0.5 size-8 rounded-sm opacity-0 transition-opacity group-hover/navigation-pin:opacity-100 group-focus-within/navigation-pin:opacity-100 pointer-coarse:opacity-100" />
+                  <NavigationPinButton pinKey={to} label={label} pins={morePins} className="right-0.5 size-8 rounded-sm opacity-0 transition-opacity group-hover/navigation-pin:opacity-100 group-focus-within/navigation-pin:opacity-100 pointer-coarse:opacity-100" />
                 </div>
               </div>)}
           </FlyoutContent>
-        </Flyout>
+        </Flyout>}
       </div>
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
       {session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
