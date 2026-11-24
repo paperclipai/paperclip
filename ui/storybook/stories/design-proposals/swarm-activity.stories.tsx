@@ -51,7 +51,7 @@ function TodayView() {
   const view = completed();
   return (
     <Thread request={view.request}>
-      <SwarmTurn view={view}><TaskChatRunnerActivityGroup item={phase} /></SwarmTurn>
+      <SwarmTurn view={view}><TaskChatRunnerActivityGroup item={phase} defaultExpanded /></SwarmTurn>
     </Thread>
   );
 }
@@ -81,6 +81,17 @@ function Summary({ view, open, narrow }: { view: SwarmView; open?: boolean; narr
     <Thread request={view.request} narrow={narrow}>
       <Legend />
       <SwarmTurn view={view}><SummaryCard view={view} defaultOpen={open} /></SwarmTurn>
+    </Thread>
+  );
+}
+
+function NarrowBoth() {
+  const blocked = runningWithBlocked();
+  const view = running();
+  return (
+    <Thread request={view.request} narrow>
+      <SwarmTurn view={blocked}><SummaryCard view={blocked} annotate={false} /></SwarmTurn>
+      <InlineDirection view={view} annotate={false} />
     </Thread>
   );
 }
@@ -170,5 +181,5 @@ export const States: Story = { name: "10 · States · starting to finished", ren
 export const LongSwarmInline: Story = { name: "11 · Long swarm · inline", render: () => <Inline view={longSwarm()} /> };
 export const LongSwarmPanel: Story = { name: "12 · Long swarm · panel messages", render: () => <Panel view={longSwarm()} tab="messages" /> };
 export const LongSwarmSummary: Story = { name: "13 · Long swarm · summary expanded", render: () => <Summary view={longSwarm()} open /> };
-export const Narrow: Story = { name: "14 · Narrow · summary and inline", render: () => <><Summary view={runningWithBlocked()} narrow /><Inline view={running()} narrow /></> };
+export const Narrow: Story = { name: "14 · Narrow · summary and inline", render: () => <NarrowBoth /> };
 export const NeedsGoogle: Story = { name: "15 · Would need Google to expose", render: () => <Panel view={longSwarm()} tab="helpers" google /> };

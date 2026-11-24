@@ -10,12 +10,12 @@ export function starting(): SwarmView {
 }
 
 export function running(): SwarmView {
-  return { ...deriveRealSwarm(9, "running"), request: REQUEST };
+  return { ...deriveRealSwarm(8, "running"), request: REQUEST };
 }
 
 export function runningWithBlocked(): SwarmView {
   const view = running();
-  const post: SwarmPost = { seq: 10, author: "logic-writer", text: BLOCKED_TEXT, at: view.posts.at(-1)!.at, kind: "blocked" };
+  const post: SwarmPost = { seq: 9, author: "logic-writer", text: BLOCKED_TEXT, at: view.posts.at(-1)!.at, kind: "blocked" };
   return {
     ...view,
     helpers: view.helpers.map((helper) => (helper.name === "logic-writer" ? { ...helper, state: "blocked", action: "Blocked: tried to change a file outside the task folder" } : helper)),
@@ -28,12 +28,12 @@ export function stopping(): SwarmView {
 }
 
 export function stopped(): SwarmView {
-  return { ...deriveRealSwarm(9, "stopped"), request: REQUEST, reason: "You stopped the swarm. Files the helpers already wrote stay in the task folder." };
+  return { ...deriveRealSwarm(8, "stopped"), request: REQUEST, reason: "You stopped the swarm. Files the helpers already wrote stay in the task folder." };
 }
 
 export function failed(): SwarmView {
   return {
-    ...deriveRealSwarm(9, "stopped"),
+    ...deriveRealSwarm(8, "stopped"),
     request: REQUEST,
     status: "failed",
     reason: "The helpers did not finish in time, so Paperclip stopped the swarm. Files they already wrote stay in the task folder.",
