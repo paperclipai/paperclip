@@ -65,7 +65,7 @@ function fixture(failures: Error[] = [], options: {
     if (failure) throw failure;
     return [{ date: new Date().toISOString().slice(0, 10), status: "succeeded", count: 2 }];
   });
-  const db = { select, execute: (query: SQL) => dialect.sqlToQuery(query).sql.includes("run_events") ? Promise.resolve([]) : execute(query) } as unknown as Db;
+  const db = { select, execute: (query: SQL) => dialect.sqlToQuery(query).sql.includes("final_receipt") ? Promise.resolve([]) : execute(query) } as unknown as Db;
   return { service: dashboardService(db), reads, companyParameters, parameters, select, execute, activityQueries };
 }
 
