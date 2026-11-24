@@ -1025,10 +1025,11 @@ export function heartbeatService(
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
+  /** This server still executes, stops or settles the run's process. */
+  const isRunExecutionLive = (id: string) => activeRunExecutions.has(id) || runningProcesses.has(id)
+    || adapterExecutionControls.has(id) || processRunCancellationSettlements.has(id) || failedProcessRunCancellations.has(id);
   const recoverLegacyAccountingReceipt = (companyId: string, runId: string) =>
-    recoverLegacyProcessSettlement(db, companyId, runId, id =>
-      !activeRunExecutions.has(id) && !runningProcesses.has(id) && !adapterExecutionControls.has(id)
-      && !processRunCancellationSettlements.has(id) && !failedProcessRunCancellations.has(id));
+    recoverLegacyProcessSettlement(db, companyId, runId, id => !isRunExecutionLive(id));
   const reconcileCostAccounting = createCostAccountingReconciler(db, budgetHooks, async () => {
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
@@ -4491,6 +4492,7 @@ export function heartbeatService(
 
   return {
     recoverLegacyAccountingReceipt,
+    isRunExecutionLive,
     stopInvocationsForAgents,
     agentInvocationStopBlocker,
     waitForRunExecutionDrain: async (

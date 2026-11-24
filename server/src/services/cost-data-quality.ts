@@ -1,12 +1,14 @@
-import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { CostDataQualityItem, CostDataQualityReport } from "@paperclipai/shared";
 import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
 import { withAccountingReadSnapshot } from "./accounting-transaction.js";
+import { OWNER_SETTLEMENT_WAIT_MS, ownerSettlementEligible } from "./run-cost-accounting.js";
 
 const PAGE_SIZE = 25;
 // A display distinction, never authority to acknowledge missing usage as zero.
-export const RECEIPT_WAIT_MS = 15 * 60 * 1000;
+// It is the wait before an owner may settle such a run with an estimate.
+export const RECEIPT_WAIT_MS = OWNER_SETTLEMENT_WAIT_MS;
 
 /** Safe explanations for cost readers: bounded metadata only, never raw errors,
  * credential identities, prompts, environments, or untrusted provider payloads. */
@@ -51,7 +53,14 @@ export async function costDataQualityReport(db: Db, companyId: string, canRetry:
     const items = (rows: readonly CostDataQualityItem[]) => rows.slice(0, PAGE_SIZE).map(row => ({
       ...row, occurredAt: new Date(row.occurredAt).toISOString(),
     }));
-    return { canRetry, events: items(Array.from(events)), runs: items(Array.from(runs)),
+    // The settlement endpoint refuses the other runs for a durable reason.
+    const runItems = items(Array.from(runs));
+    const runIds = runItems.flatMap(row => row.runId ? [row.runId] : []);
+    const settleable = new Set(runIds.length === 0 ? [] : (await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds), ownerSettlementEligible(now))))
+      .map(row => row.id));
+    return { canRetry, events: items(Array.from(events)),
+      runs: runItems.map(row => ({ ...row, settleable: row.runId !== null && settleable.has(row.runId) })),
       hasMoreEvents: events.length > PAGE_SIZE, hasMoreRuns: runs.length > PAGE_SIZE };
   });
 }

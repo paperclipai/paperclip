@@ -170,6 +170,7 @@ import {
   resolveBudgetIncidentSchema,
   repairAccountingSchema,
   retryAccountingSchema,
+  settleRunAccountingSchema,
   importBillingInvoiceSchema,
   importProviderCostsSchema,
   adjustCostSchema,
@@ -6295,6 +6296,20 @@ registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/
   description: "Requires company cost-read and board write access. Viewers and agents cannot retry. Replays accounting evidence only; never starts provider work or invents missing usage. A board user retries with Retry cost recording on the run's row on the [Costs page](/<prefix>/activity/costs).",
   request: { params: z.object({ companyId: z.string() }), body: jsonBody(retryAccountingSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({ method: "get", path: "/api/companies/{companyId}/costs/runs/{runId}/settlement", tags: ["costs"],
+  summary: "Preview settling a run whose final usage receipt is missing",
+  description: "Company owners only. Returns the usage Paperclip recorded, the held reservation, a proposed estimate and a review revision. Refuses a run that may still be working, one whose recovery or environment cleanup is still running, one that stopped less than 15 minutes ago, and one that accounting records without an estimate. Reads only.",
+  request: { params: z.object({ companyId: z.string(), runId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/runs/{runId}/settlement", tags: ["costs"],
+  summary: "Settle a stopped run's cost with an owner-approved estimate",
+  description: "Company owners only. The owner confirms that the run stopped; the estimate is not a provider charge and the run may have spent more. Paperclip first tries to recover the receipt itself. Otherwise it records one estimated charge at no less than the recorded usage, keeps the recorded usage as an audited correction, releases the run's reservation and clears its pending accounting. The idempotency key replays the same decision; a later provider receipt is kept for review and never charged again. An owner settles a run with Settle with an estimate on its row on the [Costs page](/<prefix>/activity/costs).",
+  request: { params: z.object({ companyId: z.string(), runId: z.string().uuid() }), body: jsonBody(settleRunAccountingSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/subscriptions/refresh", tags: ["costs"],

@@ -9,6 +9,7 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { AgentAvatar } from "./AgentAvatar";
 import { useToastActions } from "../context/ToastContext";
+import { RunCostSettlementDialog } from "./RunCostSettlementDialog";
 
 const explanations: Record<CostDataQualityReason, { label: string; description: string }> = {
   unknown_billing: {
@@ -42,6 +43,7 @@ export function CostDataQualityNotice({ companyId, from, to, reportKey, unpriced
   unpricedCount: number; pendingCount: number; unknownBillingCount: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [settlingRunId, setSettlingRunId] = useState<string | null>(null);
   const unavailableCount = unpricedCount + pendingCount;
   const hasCostGaps = unavailableCount > 0 || unknownBillingCount > 0;
   const detailsId = useId();
@@ -67,6 +69,16 @@ export function CostDataQualityNotice({ companyId, from, to, reportKey, unpriced
       client.invalidateQueries({ queryKey: ["cost-subscriptions", companyId] });
     },
   });
+  function settled(result: { settledBy: "owner_estimate" | "recovered_receipt" }) {
+    pushToast({
+      title: "Run cost settled.",
+      body: result.settledBy === "owner_estimate" ? "Paperclip recorded your estimate. The agent was not rerun."
+        : "Paperclip recovered the run's usage and recorded it instead of your estimate. The agent was not rerun.",
+      tone: "success",
+    });
+    client.invalidateQueries({ queryKey: ["costs", companyId] });
+    client.invalidateQueries({ queryKey: key });
+  }
   const label = unavailableCount > 0
     ? `${unavailableCount} run ${unavailableCount === 1 ? "cost" : "costs"} unavailable`
     : `${unknownBillingCount} billing ${unknownBillingCount === 1 ? "type" : "types"} unknown`;
@@ -102,9 +114,11 @@ export function CostDataQualityNotice({ companyId, from, to, reportKey, unpriced
           {item.runId && item.agentId && <Link className="text-primary underline underline-offset-4 hover:text-primary/80" to={`/agents/${item.agentId}/runs/${item.runId}`}>View run</Link>}
           {item.reason === "retryable" && item.runId && data?.canRetry && <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs font-normal underline hover:text-primary/80" disabled={retry.isPending}
             onClick={() => { retry.reset(); retry.mutate(item.runId!); }}>Retry cost recording</Button>}
+          {item.settleable && item.runId && data?.canSettle && <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs font-normal underline hover:text-primary/80"
+            onClick={() => setSettlingRunId(item.runId)}>Settle with an estimate</Button>}
         </div>
       </div>
-      <p>{explanation.description}</p>
+      <p>{explanation.description}{item.settleable && " A company owner can settle it with an estimate."}</p>
       {retry.variables === item.runId && retry.isPending && <p role="status">Recording saved costs…</p>}
       {retry.variables === item.runId && retry.error && <p role="status">Cost recording failed. Try again shortly.</p>}
     </li>;
@@ -133,5 +147,7 @@ export function CostDataQualityNotice({ companyId, from, to, reportKey, unpriced
         {(data.hasMoreEvents || data.hasMoreRuns) && <p className="text-xs">Showing the 25 most recent entries in each category. Select a shorter date range to inspect more.</p>}
       </>}
     </div>}
+    {settlingRunId && <RunCostSettlementDialog key={settlingRunId} companyId={companyId} runId={settlingRunId} open
+      onOpenChange={value => { if (!value) setSettlingRunId(null); }} onSettled={settled} />}
   </div>;
 }
