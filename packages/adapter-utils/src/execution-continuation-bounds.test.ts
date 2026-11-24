@@ -5,6 +5,7 @@ import {
   CONTINUATION_PROMPT_ACTIONS_MAX_BYTES,
   CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES,
   CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES,
+  CONTINUATION_PROMPT_RECOVERY_MAX_BYTES,
   CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS,
   CONTINUATION_PROMPT_MESSAGES_MAX_BYTES,
 } from "./execution-continuation-bounds.js";
@@ -110,5 +111,23 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(bounded.humanResponses?.map((response) => response.id)).toEqual(["i-0", "i-1", "i-2"]);
     expect(bounded.coverage.omitted?.interactionOutcomes).toBe(3);
     expect(bounded.coverage.omitted?.humanResponses).toBe(3);
+  });
+
+  it("budgets the escaped size the prompt delivers for markup-heavy history", () => {
+    // 90,000 raw bytes, about 540 KB once every < is rendered as a unicode escape.
+    const bounded = boundExecutionContinuationForPrompt(envelope({ messages: [message("m-1", "<".repeat(90_000))] }));
+    const escaped = JSON.stringify(bounded.messages).replace(/[<>]/g, "123456");
+    expect(Buffer.byteLength(escaped)).toBeLessThanOrEqual(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES);
+    expect(bounded.messages[0]?.bodyTruncated).toBe(true);
+  });
+
+  it("keeps recovery decisions inside their budget with references for older ones", () => {
+    const recoveryOutcomes = Array.from({ length: 40 }, (_, index) => ({
+      recoveryActionId: `recovery-${index}`, decision: { evidence: "e".repeat(5_000) },
+    }));
+    const bounded = boundExecutionContinuationForPrompt(envelope({ recoveryOutcomes }));
+    expect(bytes(bounded.recoveryOutcomes)).toBeLessThanOrEqual(CONTINUATION_PROMPT_RECOVERY_MAX_BYTES);
+    expect(bounded.recoveryOutcomes?.at(-1)).toEqual(recoveryOutcomes.at(-1));
+    expect(bounded.coverage.omitted?.recoveryOutcomes).toBeGreaterThan(0);
   });
 });

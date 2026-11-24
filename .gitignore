@@ -54,7 +54,7 @@ diagnostics/
 # Editor / tool temp files
 *.tmp
 .vscode/
-.claude/settings.local.json
+**/.claude/settings.local.json
 .paperclip-local/
 .paperclip-runtime/
 /.idea/

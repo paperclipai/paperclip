@@ -1015,6 +1015,7 @@ export class PaperclipRunnerToolAuthority {
           company: { id: this.binding.companyId }, actor: redactedActor(context.actor),
           activeTask: redactedTask(context.issue), childTasks: [], childReviewOutcomes: [],
           run: { id: context.run.id, status: context.run.status, invocationSource: context.run.invocationSource },
+          ...(input.view === "full" ? runExecutionContinuation(await this.#runExecutionContinuationSnapshot(), this.binding.issueId) : {}),
           };
           return input.view === "full" ? nativeTaskContextPage(taskContext, input) : fitNativeTaskContext(taskContext);
         }

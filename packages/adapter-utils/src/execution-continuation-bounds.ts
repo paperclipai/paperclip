@@ -12,6 +12,7 @@ export const CONTINUATION_PROMPT_MESSAGES_MAX_BYTES = 96_000;
 export const CONTINUATION_PROMPT_ACTIONS_MAX_BYTES = 64_000;
 export const CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES = 32_000;
 export const CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES = 64_000;
+export const CONTINUATION_PROMPT_RECOVERY_MAX_BYTES = 32_000;
 /** A single long message keeps its start and its latest direction. */
 export const CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS = 16_000;
 /** A required message that still does not fit keeps a short excerpt. */
@@ -21,10 +22,16 @@ type Message = ExecutionContinuationEnvelope["messages"][number];
 type CompletedAction = NonNullable<ExecutionContinuationEnvelope["completedActions"]>[number];
 type InteractionOutcome = ExecutionContinuationEnvelope["interactionOutcomes"][number];
 type HumanResponse = NonNullable<ExecutionContinuationEnvelope["humanResponses"]>[number];
+type RecoveryOutcome = NonNullable<ExecutionContinuationEnvelope["recoveryOutcomes"]>[number];
 
 export type ContinuationPromptOmissions = NonNullable<ExecutionContinuationEnvelope["coverage"]["omitted"]>;
 
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+// Measure what the prompt delivers: its renderer escapes every < and > as a
+// six-character unicode escape, five bytes more than the character itself.
+const bytes = (value: unknown) => {
+  const json = JSON.stringify(value) ?? "";
+  return Buffer.byteLength(json, "utf8") + 5 * (json.match(/[<>]/g)?.length ?? 0);
+};
 // One element in a JSON array costs its own bytes plus a separator.
 const elementBytes = (value: unknown) => bytes(value) + 1;
 
@@ -132,12 +139,14 @@ export function boundExecutionContinuationForPrompt(
   const actions = continuation.completedActions ?? [];
   const outcomes = Array.isArray(continuation.interactionOutcomes) ? continuation.interactionOutcomes : [];
   const responses = continuation.humanResponses ?? [];
+  const recoveries = continuation.recoveryOutcomes ?? [];
   // Long bodies are clipped only when the messages together exceed the budget.
   const messagesFit = bytes(continuation.messages) <= CONTINUATION_PROMPT_MESSAGES_MAX_BYTES;
   const actionsFit = bytes(actions) <= CONTINUATION_PROMPT_ACTIONS_MAX_BYTES;
   const outcomesFit = bytes(outcomes) <= CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES;
   const responsesFit = bytes(responses) <= CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES;
-  if (messagesFit && actionsFit && outcomesFit && responsesFit) return continuation;
+  const recoveriesFit = bytes(recoveries) <= CONTINUATION_PROMPT_RECOVERY_MAX_BYTES;
+  if (messagesFit && actionsFit && outcomesFit && responsesFit && recoveriesFit) return continuation;
   const messages = messagesFit
     ? { messages: continuation.messages, omitted: 0, clipped: 0, oldestIncludedMessageId: continuation.messages[0]?.id ?? null }
     : boundMessages(continuation);
@@ -157,12 +166,18 @@ export function boundExecutionContinuationForPrompt(
     : boundNewestFirst(responses, CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES, (response: HumanResponse) => ({
       ...response, result: { resultOmitted: true },
     }));
+  const boundedRecoveries = recoveriesFit
+    ? { items: recoveries, compacted: 0, dropped: 0 }
+    : boundNewestFirst(recoveries, CONTINUATION_PROMPT_RECOVERY_MAX_BYTES, (recovery: RecoveryOutcome) => ({
+      recoveryActionId: recovery.recoveryActionId, decision: { resultOmitted: true },
+    }));
   return {
     ...continuation,
     messages: messages.messages,
     ...(continuation.completedActions ? { completedActions: boundedActions.items } : {}),
     ...(Array.isArray(continuation.interactionOutcomes) ? { interactionOutcomes: boundedOutcomes.items } : {}),
     ...(continuation.humanResponses ? { humanResponses: boundedResponses.items } : {}),
+    ...(continuation.recoveryOutcomes ? { recoveryOutcomes: boundedRecoveries.items } : {}),
     coverage: {
       ...continuation.coverage,
       omitted: {
@@ -173,6 +188,7 @@ export function boundExecutionContinuationForPrompt(
         completedActionResults: boundedActions.compacted,
         interactionOutcomes: boundedOutcomes.dropped + boundedOutcomes.compacted,
         humanResponses: boundedResponses.dropped + boundedResponses.compacted,
+        recoveryOutcomes: boundedRecoveries.dropped + boundedRecoveries.compacted,
       },
     },
   };
@@ -186,9 +202,10 @@ export function continuationPromptOmissionNote(omitted: ContinuationPromptOmissi
     omitted.completedActionResults > 0 ? `the results of ${omitted.completedActionResults} completed actions` : null,
     (omitted.interactionOutcomes ?? 0) > 0 ? `the results of ${omitted.interactionOutcomes} older interactions` : null,
     (omitted.humanResponses ?? 0) > 0 ? `the contents of ${omitted.humanResponses} older human answers` : null,
+    (omitted.recoveryOutcomes ?? 0) > 0 ? `the decisions of ${omitted.recoveryOutcomes} older recovery actions` : null,
   ].filter((part): part is string => part !== null);
   return `This history is bounded to fit one turn: ${parts.join(", ")} are omitted here. `
-    + "Earlier messages can be read with get_task_history (limit up to 200). The complete continuation, including every completed action, interaction and human answer with its recorded result, "
+    + "Earlier messages can be read with get_task_history (limit up to 200). The complete continuation, including every completed action, interaction, human answer and recovery decision with its recorded result, "
     + "is the executionContinuation field of get_task_context with view=full; read it in pages until nextOffset is null. "
     + "Retrieve only what the current request needs. An omitted answer still applies to its own question; read it before acting on that question. "
     + "An omitted action or result is still completed: do not repeat it.";
