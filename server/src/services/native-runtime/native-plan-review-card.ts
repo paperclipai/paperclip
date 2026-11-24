@@ -3,6 +3,7 @@ import { documentRevisions, issueThreadInteractions, issues, type Db } from "@pa
 import { logActivity, publishActivity } from "../activity-log.js";
 import { documentService } from "../documents.js";
 import { HttpError } from "../../errors.js";
+import { logger } from "../../middleware/logger.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../../lib/conversation-wake-policy.js";
@@ -55,6 +56,7 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     status: issueThreadInteractions.status,
     payload: issueThreadInteractions.payload,
     createdAt: issueThreadInteractions.createdAt,
+    createdByAgentId: issueThreadInteractions.createdByAgentId,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, binding.companyId),
     eq(issueThreadInteractions.issueId, binding.issueId),
@@ -64,14 +66,21 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     const target = record(record(payload).target);
     return target.type === "issue_document" && typeof target.revisionId === "string" ? target.revisionId : null;
   };
-  // A pending question, or a card the agent opened for this revision without
-  // naming it, already covers the revision. A card bound to an older revision
-  // does not: the new card replaces it.
+  // A card covers the revision when it is a plan review of it: bound to this
+  // revision (the server's and Codex/Claude cards), or the plain confirmation
+  // the assigned agent opened itself after writing it (ACPX agents open their
+  // plan card without a target). A pending question also gives the user the
+  // next action. A card bound to an older revision does not: the new one
+  // replaces it.
   const covers = (card: (typeof cards)[number]) => {
     if (card.kind === "ask_user_questions") return card.status === "pending";
+    // Governed-action cards (tool calls, secrets, connections, quality
+    // reviews) are about something else and never stand in for a plan review.
+    const payload = record(card.payload);
+    if (["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => payload[key] != null)) return false;
     const revisionId = targetRevision(card.payload);
     if (revisionId) return revisionId === revision.id;
-    return card.createdAt >= revision.createdAt;
+    return card.createdByAgentId === binding.agentId && card.createdAt >= revision.createdAt;
   };
   const pending = cards.find(card => card.status === "pending" && active.has(card.id) && covers(card));
   if (pending) return { kind: "pending" as const, interactionId: pending.id };
@@ -106,11 +115,18 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
   // person wrote is theirs already.
   if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" };
 
+  const interactions = issueThreadInteractionService(db);
+  // Withdraw review cards bound to an older plan revision. Answering one is
+  // already refused as a stale target; this only tidies the thread, so a row
+  // it cannot read must not stop the current card from opening.
+  await interactions.expireStaleRequestConfirmationsForIssueDocument(
+    { id: binding.issueId, companyId: binding.companyId }, plan, { agentId: binding.agentId, runId: binding.runId },
+  ).catch((error: unknown) => logger.warn({ issueId: binding.issueId, error }, "Could not withdraw stale plan review cards"));
   let inserted = false;
   const publications: Parameters<typeof publishActivity>[0][] = [];
   let interactionId: string;
   try {
-    const interaction = await issueThreadInteractionService(db).create(
+    const interaction = await interactions.create(
       { id: binding.issueId, companyId: binding.companyId },
       {
         kind: "request_confirmation",
@@ -140,6 +156,9 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
       } as never,
       { agentId: binding.agentId, runId: binding.runId },
       {
+        // Leave the agent's other pending cards (tool approvals, questions)
+        // answerable; stale plan reviews were expired above.
+        supersedePendingSiblingInteractions: false,
         // Only the call that inserted the card records it; a concurrent or
         // repeated settle replays the same card and logs nothing.
         afterInsertInTransaction: async (tx, row) => {
@@ -168,8 +187,10 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
     interactionId = interaction.id;
   } catch (error) {
     // A concurrent settle opened it first (same key, other run), the plan
-    // moved on, or the task closed. Whatever now covers the revision wins.
-    if (!(error instanceof HttpError) || ![409, 422].includes(error.status)) throw error;
+    // moved on, the task closed, or the agent may no longer write here.
+    // Whatever now covers the revision wins; a refused card must not fail the
+    // run's settlement. Database errors still surface, so finalization retries.
+    if (!(error instanceof HttpError) || error.status >= 500) throw error;
     return await coveringCard(db, binding, revision, conversationMode) ?? { kind: "not_applicable" };
   }
   for (const publication of publications) publishActivity(publication);

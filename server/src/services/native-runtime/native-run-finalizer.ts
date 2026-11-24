@@ -1687,6 +1687,12 @@ export async function finalizeNativeRun(input: {
       !readNativeReviewAssignmentContext(run.contextSnapshot)
       ? await ensureNativePlanReviewCard(input.db, {
           companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }).catch((error: unknown) => {
+          // The run already succeeded; a card that could not be opened must
+          // not fail its settlement. The task settles in its response wait and
+          // the stranded-task pass opens the card (idempotently) later.
+          logger.warn({ runId: run.id, issueId: authoritativeIssue.id, error }, "Plan review card could not be opened at settle; recovery will retry");
+          return null;
         })
       : null;
     const governanceGate = await pendingNativeGovernance({

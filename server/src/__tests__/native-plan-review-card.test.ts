@@ -283,6 +283,27 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
         .where(eq(issueThreadInteractions.id, row.id));
       await t.writePlan(runId);
     }, kind: "created" },
+    ...(["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"] as const).flatMap(key =>
+      (["pending", "accepted", "rejected"] as const).map((status): Scenario => ({
+        name: `plan saved, an unrelated ${key} card (${status}) opened after it`,
+        setup: async (t, runId) => {
+          await t.writePlan(runId);
+          await db.insert(issueThreadInteractions).values({
+            companyId: t.companyId, issueId: t.issueId, kind: "request_confirmation", status,
+            continuationPolicy: "wake_assignee", sourceRunId: runId, createdByAgentId: t.agentId,
+            payload: { version: 1, prompt: "Allow this?", [key]: { id: "governed" } },
+          });
+        },
+        kind: "created",
+      }))),
+    { name: "plan saved, a confirmation someone else opened after it", setup: async (t, runId) => {
+      await t.writePlan(runId);
+      await db.insert(issueThreadInteractions).values({
+        companyId: t.companyId, issueId: t.issueId, kind: "request_confirmation", status: "rejected",
+        continuationPolicy: "none", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "Unrelated?" },
+      });
+    }, kind: "created" },
     { name: "revision already answered with Request changes, no new revision", setup: async (t, runId) => {
       await t.writePlan(runId);
       await ensureNativePlanReviewCard(db, t.binding(runId));
@@ -310,6 +331,9 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     // A repeat settle changes nothing, and at most one review card is pending.
     await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({
       kind: kind === "created" ? "pending" : kind });
-    expect((await t.cards()).filter(card => card.status === "pending").length).toBeLessThanOrEqual(1);
+    const planReviews = (await t.cards()).filter(card => card.status === "pending" &&
+      (card.payload as { target?: { key?: string } }).target?.key === "plan");
+    expect(planReviews.length).toBeLessThanOrEqual(1);
+    if (kind === "created") expect(planReviews).toHaveLength(1);
   });
 });

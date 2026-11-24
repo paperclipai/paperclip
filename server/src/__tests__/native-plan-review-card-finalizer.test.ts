@@ -20,6 +20,21 @@ import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-
 import { documentService } from "../services/documents.js";
 import { recoveryService } from "../services/recovery/service.js";
 
+const cardFailure = vi.hoisted(() => ({ next: false }));
+vi.mock("../services/native-runtime/native-plan-review-card.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/native-runtime/native-plan-review-card.js")>();
+  return {
+    ...actual,
+    ensureNativePlanReviewCard: async (...args: Parameters<typeof actual.ensureNativePlanReviewCard>) => {
+      if (cardFailure.next) {
+        cardFailure.next = false;
+        throw new Error("connection reset while opening the card");
+      }
+      return actual.ensureNativePlanReviewCard(...args);
+    },
+  };
+});
+
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PLAN_REVIEW_FINALIZER_TEST_DATABASE_URL");
 
 // The live failure: the Antigravity process was killed mid Plan-mode run; the
@@ -137,6 +152,22 @@ describe("Plan-mode run settle opens the plan review", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ kind: "request_confirmation", status: "pending" });
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("settles the run when opening the card fails, and the next recovery pass opens it", async () => {
+    cardFailure.next = true;
+    const settled = await settleRun({ workMode: "planning", writePlan: true });
+
+    expect(settled.cards).toHaveLength(0);
+    expect(settled.issue.status).toBe("in_progress");
+    expect(settled.decision.reasonCode).toBe("response_wake_waiting_for_input");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, settled.runId));
+    expect(run).toMatchObject({ status: "succeeded" });
+
+    await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) })
+      .reconcileStrandedAssignedIssues({ companyId, issueId: settled.issueId });
+    const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, settled.issueId));
+    expect(cards).toEqual([expect.objectContaining({ kind: "request_confirmation", status: "pending" })]);
   });
 
   it("leaves a Standard-mode response wait unchanged", async () => {
