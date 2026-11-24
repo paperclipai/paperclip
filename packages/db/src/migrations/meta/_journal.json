@@ -3522,6 +3522,13 @@
       "when": 1795469468402,
       "tag": "0504_lucky_pepper_potts",
       "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1795544784796,
+      "tag": "0505_nice_rawhide_kid",
+      "breakpoints": true
     }
   ]
 }

@@ -1,18 +1,20 @@
 import { useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
+import { Folder, FolderOpen } from "lucide-react";
 import type { Issue, Project } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
+import { TruncatedText } from "./TruncatedText";
 import { StatusIcon } from "./StatusIcon";
 
-export function SidebarProjectTasks({ project, userId, children, renderTask }: {
+export function SidebarProjectTasks({ project, userId, renderRow, className, renderTask }: {
   project: Pick<Project, "id" | "companyId" | "name">;
   userId?: string | null;
-  children: ReactNode;
+  renderRow: (toggle: ReactNode) => ReactNode;
+  className?: string;
   renderTask?: (task: Issue) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -24,16 +26,21 @@ export function SidebarProjectTasks({ project, userId, children, renderTask }: {
     }, { signal }),
     enabled: expanded,
   });
-  return <div>
-    <div className="flex min-w-0 items-center">
-      <div className="relative min-w-0 flex-1">{children}</div>
-      <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} ${project.name}`} aria-expanded={expanded} aria-controls={contentId}
-        className="mr-2 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => setExpanded(previous => !previous)}>
-        <ChevronRight aria-hidden className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
+  const FolderIcon = expanded ? FolderOpen : Folder;
+  return <div className="design-sidebar-primary">
+    {renderRow(
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={expanded ? contentId : undefined}
+        onClick={() => setExpanded(previous => !previous)}
+        className={cn("design-sidebar-item design-sidebar-project-toggle flex items-center gap-2.5 rounded-lg py-1.5 text-left font-medium focus-visible:outline-ring", className)}
+      >
+        <FolderIcon aria-hidden className="size-4 shrink-0" />
+        <TruncatedText className="min-w-0 flex-1 truncate">{project.name}</TruncatedText>
       </button>
-    </div>
-    {expanded && <div id={contentId} className="ml-5 border-l border-border pl-1">
+    )}
+    {expanded && <div id={contentId} className="design-sidebar-primary ms-2">
       {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">Loading tasks…</p>
         : error ? <p className="px-3 py-2 text-xs text-muted-foreground" role="alert">Couldn’t load tasks.</p>
           : tasks?.length ? tasks.map(task => <div key={task.id}>{renderTask ? renderTask(task)

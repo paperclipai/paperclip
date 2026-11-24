@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { getPriority } from "node:os";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { getPriority, tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   BACKGROUND_PRIORITY,
@@ -14,8 +15,10 @@ import {
   selectBuildGapPackages,
   SERIAL_BUILD_GAPS,
   shouldRunReleaseRegistryTests,
+  shouldRunRunnerRustTypecheck,
+  typecheckUiIncremental,
 } from "../ci-typecheck-lane.mjs";
-import { PROJECTS, selectTestProjects } from "../typecheck-test-projects.mjs";
+import { PROJECTS, orderProjectsLpt, selectTestProjects } from "../typecheck-test-projects.mjs";
 
 const plan = () =>
   planLane({
@@ -81,12 +84,21 @@ test("every check of the sequential job is planned with exact DAG dependencies",
   for (const name of ["paperclipai", "@paperclipai/ui"]) assert.ok(byName.has(`typecheck ${name}`), name);
   assert.deepEqual(byName.get("typecheck paperclipai").needs, [PREPARE_RUNNER_VENDOR]);
   assert.equal(byName.get("typecheck @paperclipai/ui").needs, undefined);
+  assert.equal(byName.get("typecheck @paperclipai/ui").command, "node");
+  assert.deepEqual(byName.get("typecheck @paperclipai/ui").args, ["scripts/ci-typecheck-lane.mjs", "--typecheck-ui"]);
   assert.deepEqual(byName.get("typecheck @paperclipai/ui").env, { GOMAXPROCS: "2" });
   assert.deepEqual(byName.get("release registry tests").args, ["run", "test:release-registry"]);
   assert.equal(byName.get("release registry tests").needs, undefined);
   assert.ok(!byName.has("CLI guidance safety"));
   const declarationReaders = tasks.filter((task) => task.needs?.includes("server declarations"));
   assert.equal(declarationReaders.length, 2 + PROJECTS.length);
+  // Longest non-incremental project (tests/runner-e2e) is scheduled first among declaration readers.
+  assert.equal(declarationReaders[0].name, "test project tests/runner-e2e");
+  // UI starts ahead of smaller build-gap packages so it overlaps with prepare runner vendor from t=0.
+  assert.ok(
+    tasks.findIndex((t) => t.name === "typecheck @paperclipai/ui") <
+      tasks.findIndex((t) => t.name === "typecheck paperclipai"),
+  );
 });
 
 test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS across 2/4/8-core runners", () => {
@@ -106,7 +118,7 @@ test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS acr
     serverLayerCheckers: 1,
     testProjectCheckers: 1,
     uiGomaxprocs: 2,
-    testProgramsConcurrency: 2,
+    testProgramsConcurrency: 3,
     testProgramsCheckers: 1,
   });
   // 8-core / 16 GiB (c8i.2xlarge): 4 concurrent tasks so all 4 server layers finish in 1 wave under 16 GiB.
@@ -117,7 +129,7 @@ test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS acr
     serverLayerCheckers: 1,
     testProjectCheckers: 1,
     uiGomaxprocs: 4,
-    testProgramsConcurrency: 3,
+    testProgramsConcurrency: 4,
     testProgramsCheckers: 1,
   });
   // 8-core / 32 GiB (m8i.2xlarge): higher checkers and concurrency.
@@ -140,7 +152,7 @@ test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS acr
   const byName = new Map(tasks.map((t) => [t.name, t]));
   assert.deepEqual(byName.get("server declarations").args.slice(-2), ["--checkers", "3"]);
   assert.deepEqual(byName.get("typecheck @paperclipai/ui").env, { GOMAXPROCS: "4" });
-  assert.ok(byName.get("typecheck test programs").args.join(" ").includes("--concurrency 3"));
+  assert.ok(byName.get("typecheck test programs").args.join(" ").includes("--concurrency 4"));
 });
 
 test("resolveScope uses CI_PLAN in PR mode, honors PAPERCLIP_CI_FULL, and fails closed", () => {
@@ -405,4 +417,84 @@ test("the PR typecheck job runs the lane after the Runner release crate restore"
     assert.ok(!beforeFallback.includes(command), command);
     assert.ok(fallback.includes(command), command);
   }
+});
+
+test("PR mode skips Runner Rust typecheck when only shared TypeScript packages changed", () => {
+  assert.equal(shouldRunRunnerRustTypecheck(null), true);
+  assert.equal(shouldRunRunnerRustTypecheck(["packages/shared/src/customer-success.ts"]), false);
+  assert.equal(shouldRunRunnerRustTypecheck(["packages/adapter-utils/src/types.ts"]), false);
+  assert.equal(shouldRunRunnerRustTypecheck(["packages/paperclip-runner/runner/crates/runner-core/src/lib.rs"]), true);
+  assert.equal(shouldRunRunnerRustTypecheck(["packages/paperclip-runner/acpx-profiles.json"]), true);
+  assert.equal(shouldRunRunnerRustTypecheck(["rust-toolchain.toml"]), true);
+  assert.equal(shouldRunRunnerRustTypecheck(["tsconfig.base.json"]), true);
+
+  const sharedPr = planLane({
+    buildGapPackages: ["@paperclipai/paperclip-runner"],
+    testLayers: ["tests"],
+    changedFiles: ["packages/shared/src/customer-success.ts"],
+  });
+  const runnerTask = sharedPr.prepare.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
+  assert.deepEqual(runnerTask.args, ["--filter", "@paperclipai/paperclip-runner", "run", "typecheck:typescript"]);
+
+  const runnerPr = planLane({
+    buildGapPackages: ["@paperclipai/paperclip-runner"],
+    testLayers: ["tests"],
+    changedFiles: ["packages/paperclip-runner/protocol/schemas/result.schema.json"],
+  });
+  const runnerFullTask = runnerPr.prepare.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
+  assert.deepEqual(runnerFullTask.args, ["--filter", "@paperclipai/paperclip-runner", "typecheck"]);
+});
+
+test("typecheckUiIncremental runs storybook catalog then incremental tsc with a portable tsBuildInfoFile", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "ui-typecheck-inc-"));
+  try {
+    const calls = [];
+    const status = typecheckUiIncremental({
+      root: tmpRoot,
+      env: { GOMAXPROCS: "2" },
+      spawnSyncImpl: (cmd, args, opts) => {
+        calls.push({ kind: "spawn", cmd, args, cwd: opts.cwd });
+        return { status: 0 };
+      },
+      runTscImpl: (args, opts) => {
+        calls.push({ kind: "tsc", args, cwd: opts.cwd, env: opts.env });
+        return { status: 0 };
+      },
+    });
+    assert.equal(status, 0);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].kind, "spawn");
+    assert.equal(calls[0].args[0], path.join(tmpRoot, "scripts", "storybook-catalog.mjs"));
+    assert.equal(calls[0].cwd, path.join(tmpRoot, "ui"));
+    assert.deepEqual(calls[1].args, [
+      "-p",
+      "tsconfig.json",
+      "--incremental",
+      "--tsBuildInfoFile",
+      "node_modules/.cache/paperclip-ui.tsbuildinfo",
+    ]);
+    assert.equal(calls[1].cwd, path.join(tmpRoot, "ui"));
+    assert.deepEqual(calls[1].env, { GOMAXPROCS: "2" });
+
+    // Catalog failure stops before tsc.
+    const failedCalls = [];
+    const failStatus = typecheckUiIncremental({
+      root: tmpRoot,
+      spawnSyncImpl: () => ({ status: 3 }),
+      runTscImpl: () => {
+        failedCalls.push("tsc");
+        return { status: 0 };
+      },
+    });
+    assert.equal(failStatus, 3);
+    assert.deepEqual(failedCalls, []);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("orderProjectsLpt schedules tests/runner-e2e first among test projects", () => {
+  const ordered = orderProjectsLpt(PROJECTS);
+  assert.equal(ordered[0], "tests/runner-e2e");
+  assert.equal(ordered.length, PROJECTS.length);
 });

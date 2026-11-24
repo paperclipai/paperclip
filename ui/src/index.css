@@ -4832,13 +4832,21 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
-.design-sidebar-pin-target > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); }
-.design-sidebar .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+.design-sidebar-project-toggle { width: calc(100% - var(--design-sidebar-item-inset) * 2); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-.design-sidebar-pin-target > button { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target > [aria-pressed] { opacity: 0; pointer-events: none; }
 .design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
-  > .design-sidebar-item { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-  > button { opacity: 1; pointer-events: auto; }
+  > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > [aria-pressed] { opacity: 1; pointer-events: auto; }
+}
+.design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: none; }
+.design-sidebar-pinned-row:is(:hover, :focus-within) {
+  > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); background: var(--design-sidebar-item-highlight); }
+  > button:not(.design-sidebar-item) { opacity: 1; pointer-events: auto; }
+}
+@media (pointer: coarse) {
+  .design-sidebar-pinned-row > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+  .design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: auto; }
 }
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
