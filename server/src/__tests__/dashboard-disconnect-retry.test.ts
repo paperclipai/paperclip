@@ -65,7 +65,8 @@ function fixture(failures: Error[] = [], options: {
     if (failure) throw failure;
     return [{ date: new Date().toISOString().slice(0, 10), status: "succeeded", count: 2 }];
   });
-  const db = { select, execute } as unknown as Db;
+  // The API-equivalent month read is not part of the activity recovery under test.
+  const db = { select, execute: (query: SQL) => dialect.sqlToQuery(query).sql.includes("run_events") ? Promise.resolve([]) : execute(query) } as unknown as Db;
   return { service: dashboardService(db), reads, companyParameters, parameters, select, execute, activityQueries };
 }
 
