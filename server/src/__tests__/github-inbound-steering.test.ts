@@ -118,6 +118,7 @@ describe("GitHub inbound steering", () => {
       correlationId: f.followup.id, message: expect.stringContaining(f.followup.body) }));
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
     expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
+    expect(receipt.payload).toMatchObject({ taskKey: f.issue.id });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
     expect(run.contextSnapshot?.wakeCommentIds).toContain(f.followup.id);
     const [identity] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, run.activeIdentityContextId!));

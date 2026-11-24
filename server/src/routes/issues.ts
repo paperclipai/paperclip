@@ -16606,11 +16606,6 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
-          // Provider turns use the task identifier as their session key. Board
-          // messages must resume that same session instead of creating a UUID-keyed fork.
-          if (wakeIssueId === issue.id && issue.externalConversationState && issue.identifier) {
-            wakeup.contextSnapshot = { ...wakeup.contextSnapshot, taskKey: issue.identifier };
-          }
           wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {
@@ -20079,9 +20074,6 @@ export function issueRoutes(
               : currentIssue.id;
           const key = `${agentId}:${wakeIssueId}`;
           if (wakeups.has(key)) return;
-          if (wakeIssueId === currentIssue.id && issue.externalConversationState && currentIssue.identifier) {
-            wakeup.contextSnapshot = { ...wakeup.contextSnapshot, taskKey: currentIssue.identifier };
-          }
           wakeups.set(key, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {

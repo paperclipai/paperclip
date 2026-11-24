@@ -483,6 +483,21 @@ describePostgres("heartbeat run state database wiring", () => {
     expect((await state.listRuns(companyId)).map((row) => row.id)).toEqual([run.id]);
   });
 
+  it("keeps each agent's task session separate on the same issue", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const [reviewer] = await db.insert(agents).values({ companyId, name: "Reviewer", adapterType: "codex_local" }).returning();
+    const [stranger] = await db.insert(agents).values({ companyId, name: "Stranger", adapterType: "codex_local" }).returning();
+    await state.upsertTaskSession({ companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: issue.id,
+      sessionParamsJson: { sessionId: "assignee-session", cwd: "/saved-workspace" }, sessionDisplayId: "assignee-session",
+      lastRunId: null, lastError: null });
+    await state.upsertTaskSession({ companyId, agentId: reviewer.id, adapterType: reviewer.adapterType, taskKey: issue.id,
+      sessionParamsJson: { sessionId: "reviewer-session", cwd: "/saved-workspace" }, sessionDisplayId: "reviewer-session",
+      lastRunId: null, lastError: null });
+    expect(await state.resolveSessionBeforeForWakeup(agent, issue.id)).toBe("assignee-session");
+    expect(await state.resolveSessionBeforeForWakeup(reviewer, issue.id)).toBe("reviewer-session");
+    expect(await state.resolveSessionBeforeForWakeup(stranger, issue.id)).toBeNull();
+  });
+
   it("subtracts prior cumulative usage while excluding the current run", async () => {
     const { companyId, agent, state } = await fixture();
     await db.insert(heartbeatRuns).values({

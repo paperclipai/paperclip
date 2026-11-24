@@ -83,7 +83,7 @@ export function createSlackBoardMessages(db: Db, options: BoardMessageOptions) {
             idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
             requestedByActorType: "user", requestedByActorId: userId,
             payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
-            contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
+            contextSnapshot: { issueId, taskId: issueId, taskKey: issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
           });
           await lease.commit(async (tx) => {
             await notifyChatPublicationWork(tx);

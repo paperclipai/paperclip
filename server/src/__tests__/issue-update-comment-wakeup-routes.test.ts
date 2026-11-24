@@ -387,7 +387,7 @@ describe("issue update comment wakeups", () => {
     }));
   });
 
-  it.each([null, "active"] as const)("includes the new comment and shared session key in assignment wakes (external: %s)", async (externalConversationState) => {
+  it.each([null, "active"] as const)("includes the new comment without an identifier session key in assignment wakes (external: %s)", async (externalConversationState) => {
     const existing = makeIssue({ externalConversationState });
     const assigneeAdapterOverrides = { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true } };
     const updated = makeIssue({
@@ -441,9 +441,14 @@ describe("issue update comment wakeups", () => {
           taskId: existing.id,
           commentId: "comment-1",
           wakeCommentId: "comment-1",
-          ...(externalConversationState ? { taskKey: existing.identifier } : {}),
           source: "issue.update",
         }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        contextSnapshot: expect.not.objectContaining({ taskKey: expect.anything() }),
       }),
     );
   });
@@ -753,15 +758,20 @@ describe("issue update comment wakeups", () => {
           taskId: existing.id,
           commentId: "comment-3",
           wakeCommentId: "comment-3",
-          ...(externalConversationState ? { taskKey: existing.identifier } : {}),
           wakeReason: "issue_commented",
           source: "issue.comment",
         }),
       }),
     );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        contextSnapshot: expect.not.objectContaining({ taskKey: expect.anything() }),
+      }),
+    );
   });
 
-  it("retains the Slack session key when reopening strips the read-only conversation projection", async () => {
+  it("reopening does not force an identifier session key when stripping the read-only conversation projection", async () => {
     const existing = makeIssue({ externalConversationState: "active", status: "done", assigneeAgentId: ASSIGNEE_AGENT_ID });
     const updated = makeIssue({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });
     mockIssueService.getById.mockResolvedValue(existing);
@@ -771,7 +781,10 @@ describe("issue update comment wakeups", () => {
     expect(res.status).toBe(201);
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
-      contextSnapshot: expect.objectContaining({ source: "issue.comment.reopen", taskKey: existing.identifier, wakeCommentId: "comment-reopen-slack" }),
+      contextSnapshot: expect.objectContaining({ source: "issue.comment.reopen", wakeCommentId: "comment-reopen-slack" }),
+    }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      contextSnapshot: expect.not.objectContaining({ taskKey: expect.anything() }),
     }));
   });
 
