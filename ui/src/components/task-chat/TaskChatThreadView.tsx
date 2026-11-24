@@ -70,6 +70,12 @@ interface TaskChatThreadViewProps {
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
   /** Renders an interrupt action beside a queued human message. */
   renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode;
+  /**
+   * Renders per-comment plugin slot outlets (commentAnnotation /
+   * commentContextMenuItem) below a message bubble. The live thread binds
+   * it to the plugin slot context; harness fixtures omit it.
+   */
+  renderCommentSlots?: (item: TaskChatMessageItem) => ReactNode;
   /** Requeues a blocked task from its no-live-execution-path failure surfaces. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
@@ -107,6 +113,7 @@ function renderItem(
   attachments: IssueAttachment[] = [],
   onOpenSkill?: (skillId: string, name: string) => void,
   onOpenBrowser?: (browserId: string) => void,
+  renderCommentSlots?: (item: TaskChatMessageItem) => ReactNode,
 ) {
   switch (item.kind) {
     case "pending_question": return <CoordinatorChatPendingQuestion item={item.question} />;
@@ -156,6 +163,7 @@ function renderItem(
               attachments,
               onOpenSkill,
               onOpenBrowser,
+              undefined,
             )
           }
         />
@@ -188,7 +196,16 @@ function renderItem(
           attachments={attachments}
         />
       );
-      return appViews && !item.attachedTurn?.standaloneHeader ? <>{appViews}{bubble}</> : bubble;
+      const content = appViews && !item.attachedTurn?.standaloneHeader ? <>{appViews}{bubble}</> : bubble;
+      const commentSlots = renderCommentSlots?.(item);
+      return commentSlots ? (
+        <>
+          {content}
+          {commentSlots}
+        </>
+      ) : (
+        content
+      );
     }
     case "marker":
       return (
@@ -325,6 +342,7 @@ export function TaskChatThreadView({
   renderBrief,
   renderMessageActions,
   renderQueuedAction,
+  renderCommentSlots,
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending = false,
   onRetryFailedRun,
@@ -365,6 +383,7 @@ export function TaskChatThreadView({
         runRetry ?? onTryAgainNoLiveExecutionPath,
         runRetry ? retryFailedRunId === runId : tryAgainNoLiveExecutionPathPending,
         retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+        renderCommentSlots,
       );
     };
     const renderedItems = streamlined
@@ -419,7 +438,7 @@ export function TaskChatThreadView({
     );
   }, [
     visibleItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
-    renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
+    renderInteraction, renderBrief, renderMessageActions, renderQueuedAction, renderCommentSlots,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
   ]);

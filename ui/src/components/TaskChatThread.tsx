@@ -118,6 +118,7 @@ import {
   shouldHideInteractionCard,
 } from "@/lib/issue-thread-interactions";
 import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
+import { PluginSlotOutlet } from "@/plugins/slots";
 import type {
   FeedbackVoteValue,
   IssueDocument,
@@ -523,6 +524,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
+    companyPrefix = null,
+    projectId,
     linkedRuns,
     liveRuns,
     activeRun,
@@ -2969,6 +2972,57 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  // Per-comment plugin slots (commentAnnotation below the bubble,
+  // commentContextMenuItem as an inline row), with the SDK-documented
+  // context. Settled comments only: a pending optimistic echo has no
+  // server comment id yet, and deleted comments never reach the adapter.
+  const renderCommentSlots = useCallback(
+    (item: TaskChatMessageItem) => {
+      if (
+        !companyId ||
+        item.origin !== "comment" ||
+        item.optimistic === "pending" ||
+        // A locally queued comment the server has not saved yet carries an
+        // optimistic id (the same marker IssueDetail checks); plugins must
+        // not receive it. A persisted queued comment has a real id and
+        // keeps its slots.
+        (item.optimistic === "queued" && item.id.startsWith("optimistic-")) ||
+        item.streaming
+      ) {
+        return null;
+      }
+      const context = {
+        companyId,
+        companyPrefix: companyPrefix ?? null,
+        projectId: projectId ?? null,
+        entityId: item.id,
+        entityType: "comment" as const,
+        parentEntityId: issueId ?? null,
+      };
+      return (
+        <>
+          <PluginSlotOutlet
+            slotTypes={["commentContextMenuItem"]}
+            entityType="comment"
+            context={context}
+            className="mt-1 flex flex-wrap items-center gap-1.5"
+            itemClassName="inline-flex"
+            missingBehavior="placeholder"
+          />
+          <PluginSlotOutlet
+            slotTypes={["commentAnnotation"]}
+            entityType="comment"
+            context={context}
+            className="mt-2 space-y-2"
+            itemClassName="rounded-md"
+            missingBehavior="placeholder"
+          />
+        </>
+      );
+    },
+    [companyId, companyPrefix, projectId, issueId],
+  );
+
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
@@ -3441,6 +3495,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         renderBrief={renderBrief}
                         renderMessageActions={renderMessageActions}
                         renderQueuedAction={renderQueuedAction}
+                    renderCommentSlots={renderCommentSlots}
                         onTryAgainNoLiveExecutionPath={
                           issueStatus === "blocked" &&
                           !requiresExecutionReconciliation(
