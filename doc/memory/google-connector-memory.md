@@ -100,9 +100,11 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 ## Still open
 
-- **Reviewer sign-in with the real code.** Not tested yet; only the owner
-  holds the code. It also decides whether the reviewer's `member` role can
-  add a Google connection or must be raised.
+- **Reviewer sign-in with the real review code.** The login is switched on
+  and the review code exists, but the code has not been given to Google's
+  reviewers and nobody has signed in with it yet. Only the owner holds it.
+  This test also decides whether the reviewer's `member` role can add a
+  Google connection or must be raised.
 - **Disconnect and "Delete data" on the REST build.** Verified on the
   earlier build only.
 - **Company deletion race.** A late activity entry can fail a company
@@ -136,9 +138,11 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 1. Owner signs in as the reviewer on the staging tester; then test connect,
    an agent task, disconnect and "Delete data" as the reviewer.
-2. Deploy to production on the owner's go: app first, then broker. Set the
-   reviewer login switch in the production environment before that deploy
-   (already set Nov 23) so the existing reviewer login is not cleared.
+2. Deploy to production on the owner's go: app first, then broker. The
+   production GitHub Environment already has the reviewer login switch set
+   to on (November 23), so no action is needed there. Without that switch,
+   a production deploy would turn the production tester's reviewer login
+   off.
 3. Get a quote from the security lab.
 4. Record the demo video and prepare the reply to Google.
 5. Update the Console declaration to the 14 when submitting.
@@ -168,9 +172,11 @@ Staging tester state (November 23):
   stack for the alternate client, for the Workspace group only.
 - Never set the alternate stack list before its client secret exists: the
   Google bootstrap step then fails and blocks every staging deploy.
-- **Reviewer login is on.** The deploy owns the switch
-  (`CLOUD_HARNESS_REVIEWER_LOGIN_ENABLED` in the GitHub Environment). The
-  reviewer account is a `member` of the workspace. A wrong code is refused.
+- **Reviewer login is switched on, not yet handed over.** The deploy owns
+  the switch (`CLOUD_HARNESS_REVIEWER_LOGIN_ENABLED` in the GitHub
+  Environment). The reviewer account is a `member` of the workspace. A
+  wrong review code is refused. Sign-in with the real review code is not
+  tested (see "Still open").
 
 Passed live on the tester, on REST against real Google (November 23):
 
@@ -179,7 +185,8 @@ Passed live on the tester, on REST against real Google (November 23):
   recent), Docs (create, read, insert text, insert an image by link),
   Sheets (create, write, read, add a row, metadata), Slides (create, read,
   add a text box), Calendar (list, create, read, update, search, suggest a
-  time, delete). Two agent runs, 41 steps, all passed after two fixes.
+  time, delete). Two agent runs, 41 steps. The first run had one failure
+  (`list_threads`, below); after the fix every step passed.
 - The connection survived the switch from Google's MCP servers with no
   reconnect, and a token refresh worked after the broker began binding
   grants to their instance.
@@ -200,10 +207,11 @@ Found while testing, and fixed:
 - A cancelled sign-in left a second connection marked "Finish setup".
 - The Activity feed showed gateway tool names with part of the connection id.
 
-Reviewer login: Google's reviewers could not use our normal sign-in, so we
-gave them **a custom password** for the Paperclip login. Any reviewer
-environment needs that again. The password itself goes only through the review
-channel.
+Reviewer login: Google's reviewers could not use our normal sign-in, so the
+tester has a separate sign-in page with **a review code** (eight digits), for
+one dedicated reviewer account. The production tester got one in September.
+The staging tester has its own, created November 23. A review code goes to
+the reviewers only through the review channel.
 
 ## Google apps (Cloud projects)
 
@@ -279,7 +287,7 @@ only**; production still runs the old broker.
 - Revocation is on for Google profiles, with a ledger of provider grants.
 - A per-stack alternate Google client exists (for the tester). It is chosen
   only from the enrolled stack id.
-- The scoped reviewer password login allows the production and the staging
+- The scoped reviewer login (review code) allows the production and the staging
   tester hosts.
 
 Changes made in the broker (staging):
