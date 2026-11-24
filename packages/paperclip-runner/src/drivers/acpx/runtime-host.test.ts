@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
+import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -1109,6 +1111,32 @@ describe("ACPX runtime host", () => {
       expect(listed.result.tools.filter(tool => tool._meta?.["anthropic/alwaysLoad"] === true).map(({ name }) => name))
         .toEqual(agent === "claude" ? ["set_task_title", "paperclip_finish", "paperclip_block"] : []);
     } finally { await host.close({ reason: "tool preload verified" }); }
+  });
+
+  it("gives the Antigravity Plan-mode gate the bridge's served catalog, finish and block included", async () => {
+    const fixture = await hostFixture();
+    let opened: AcpxRuntimePortOpenOptions | undefined;
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "deny-all",
+      environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      semanticTools: { tools: [{ name: "write_document", inputSchema: { type: "object", properties: {} } }], handler: async () => ({}) },
+    }, fixture.dependencies({ openRuntime: async options => { opened = options; return runtimePort(); } }));
+    try {
+      const bridge = urlBridge(opened!.mcpServers.find(server => server.runnerOwned)!);
+      const response = await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.bearerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+      const served = ((await response.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map(tool => tool.name);
+      expect(served).toEqual(expect.arrayContaining(["paperclip_finish", "paperclip_block"]));
+      expect([...opened!.paperclipTools!].sort()).toEqual(served.map(canonicalRunnerToolName).sort());
+      const policy = { paperclipServerOwned: bridge.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER, paperclipTools: new Set(opened!.paperclipTools) };
+      const call = (tool: string, server = bridge.name) => ({ raw: { toolCall: { title: `${server}_${tool}`, kind: "other",
+        _meta: { mcp: { tool, server }, is_mcp_tool_call: true } } } });
+      expect(antigravityPlanModeAllows(call("paperclip_finish"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("paperclip_block"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("write_document"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("delete_company"), policy)).toBe(false);
+      expect(antigravityPlanModeAllows({ raw: { toolCall: { title: "Run write_to_file?", kind: "edit" } } }, policy)).toBe(false);
+    } finally { await host.close({ reason: "plan catalog verified" }); }
   });
 
   it("forwards semantic receipt capture through the real runtime host and authenticated bridge", async () => {

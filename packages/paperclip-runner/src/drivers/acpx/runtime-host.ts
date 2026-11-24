@@ -726,8 +726,9 @@ export class AcpxRuntimeHost {
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
             ],
-            ...(toolBridge ? { paperclipTools: (options.semanticTools?.tools ?? []).flatMap(tool =>
-              typeof tool.name === "string" ? [canonicalRunnerToolName(tool.name)] : []) } : {}),
+            // The bridge's own served catalog: the run's tools plus the
+            // reserved finish and block tools it adds itself.
+            ...(toolBridge ? { paperclipTools: toolBridge.toolNames.map(canonicalRunnerToolName) } : {}),
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),
