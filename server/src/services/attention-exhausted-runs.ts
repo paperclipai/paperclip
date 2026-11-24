@@ -41,10 +41,11 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
           and hold.source_issue_id = coalesce(${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId})
           and hold.evidence->>'runId' = ${heartbeatRuns.id}::text and hold.cause = 'native_provider_usage_limit'
           and hold.status in ('resolved','cancelled'))`,
+      boundTaskId: sql<string | null>`coalesce(${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId})`,
       // Preserve JSON types and issueId/taskId fallback semantics without
       // transferring prompts, transcripts, or the rest of the run context.
       contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-        'issueId', coalesce(to_jsonb(${heartbeatRuns.issueId}),to_jsonb(${heartbeatRuns.nativeIssueId}),${heartbeatRuns.contextSnapshot} -> 'issueId'),
+        'issueId', ${heartbeatRuns.contextSnapshot} -> 'issueId',
         'taskId', ${heartbeatRuns.contextSnapshot} -> 'taskId'
       )`,
       createdAt: heartbeatRuns.createdAt,

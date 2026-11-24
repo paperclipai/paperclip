@@ -1,4 +1,4 @@
-import { groupProviderLimits, scheduledProviderWaits, providerHoldRuns, providerLimitForHold } from "./attention-provider-limits.js";
+import { groupProviderLimits, recoveredProviderRuns, scheduledProviderWaits, providerHoldRuns, providerLimitForHold } from "./attention-provider-limits.js";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -2464,7 +2464,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       ]);
       const scheduledByRun = new Map(scheduled.map(run => [run.id, run.limit]));
       const failedRows = [...exhausted, ...scheduled];
-      const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
+      const failedIssueIds = failedRows.map((row) => row.boundTaskId ?? readRunIssueId(row.contextSnapshot));
       const [failedIssueMap, failedImageMap, failedRunsWithNewerRun] = await Promise.all([
         loadIssues(failedIssueIds),
         loadImages(db, companyId, failedIssueIds, readCondition),
@@ -2476,7 +2476,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }))),
       ]);
       for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
+        const issueId = run.boundTaskId ?? readRunIssueId(run.contextSnapshot);
         const scheduledLimit = scheduledByRun.get(run.id);
         if (!scheduledLimit && failedRunsWithNewerRun.has(run.id)) continue;
 
@@ -2636,10 +2636,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
       const knownLimitRuns = new Set(collected.flatMap(item => item.providerLimit ? [item.providerLimit.runId] : []));
-      for (const run of exhausted) {
-        const task = failedIssueMap.get(readRunIssueId(run.contextSnapshot) ?? "");
-        if (run.providerLimited && task && (run.settledProviderHold || ["done", "cancelled"].includes(task.status))) knownLimitRuns.add(run.id);
-      }
+      const unresolvedErrors = erroredAgents.flatMap(agent => agent.lastRunId && !knownLimitRuns.has(agent.lastRunId)
+        ? [agent.lastRunId] : []);
+      for (const run of await recoveredProviderRuns(db, companyId, unresolvedErrors, readCondition)) knownLimitRuns.add(run.id);
       for (const agent of erroredAgents) {
         if (agent.lastRunId && knownLimitRuns.has(agent.lastRunId) && agent.lastError && agent.errorReason
           && (agent.errorReason === agent.lastError || agent.errorReason === agent.lastError.slice(0, 499) + "…")) continue;
@@ -2838,7 +2837,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
 
-      const summary: AttentionSummary = { companyId, waitingCount, nextSnoozeAt, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
+      const waiting = { ...(waitingCount ? { waitingCount } : {}), ...(nextSnoozeAt ? { nextSnoozeAt } : {}) };
+      const summary: AttentionSummary = { companyId, ...waiting, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
       if (summaryOnly) return { ...summary, nextCursor: null, items: visibleItems };
 
       const sort = options.sort ?? "activity";
@@ -2916,8 +2916,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        waitingCount,
-        nextSnoozeAt,
+        ...waiting,
         // The badge is the "For you" count. It has no day boundary: an open
         // card stays in it until a person answers it.
         deskBadgeCount: viewCounts.mine,

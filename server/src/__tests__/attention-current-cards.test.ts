@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentRuntimeState,
+  heartbeatRuns,
   approvals,
   companies,
   companyMemberships,
@@ -228,6 +230,22 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
   async function list(companyId: string, userId: string, view?: AttentionFeedView) {
     return (await attentionService(db).list(companyId, { userId, view })).items;
   }
+
+  it("clears an agent's last provider error when the task finishes without another run", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const issueId = await insertIssue({ companyId });
+    const error = "Provider usage limit reached";
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: workerId, issueId, scopeKind: "issue",
+      error, errorCode: "native_provider_usage_limit", status: "failed" }).returning();
+    await db.insert(agentRuntimeState).values({ agentId: workerId, companyId, lastRunId: run!.id, lastError: error, adapterType: "process" });
+    await db.update(agents).set({ status: "error", errorReason: error }).where(eq(agents.id, workerId));
+    const errors = async () => (await list(companyId, SCOTT, "company")).filter(item => item.sourceKind === "agent_error_alert");
+    expect(await errors()).toHaveLength(1);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    expect(await errors()).toHaveLength(0);
+    await db.update(agents).set({ errorReason: "Different failure" }).where(eq(agents.id, workerId));
+    expect(await errors()).toHaveLength(1);
+  });
 
   function find(items: AttentionItem[], sourceId: string) {
     return items.find((item) => item.subject.id === sourceId) ?? null;

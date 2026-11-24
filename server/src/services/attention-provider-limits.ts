@@ -33,8 +33,21 @@ export async function scheduledProviderWaits(db: Db, companyId: string) {
       { providerLimitResetAt: row.resetAt, providerLimitAutomatic: true, providerLimitEstimated: !row.reported }, "");
     if (!row.account && row.origin) limit.episode = createHash("sha256").update(row.origin).digest("hex");
     limit.resetAt = row.due!.toISOString();
-    return { ...row, contextSnapshot: { issueId: row.taskId }, exhaustionMessage: null, limit };
+    return { ...row, boundTaskId: row.taskId, contextSnapshot: { issueId: row.taskId }, exhaustionMessage: null, limit };
   });
+}
+
+/** Some native limit failures never emit a bounded-retry exhaustion receipt. */
+export async function recoveredProviderRuns(db: Db, companyId: string, runIds: string[], readCondition: SQL) {
+  if (!runIds.length) return [];
+  return db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(issues, and(eq(issues.companyId, companyId), sql`${issues.id}::text = ${taskId}`))
+    .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds),
+      eq(heartbeatRuns.errorCode, "native_provider_usage_limit"), readCondition,
+      or(inArray(issues.status, ["done", "cancelled"]), resumed, sql`exists(
+        select 1 from ${issueRecoveryActions} hold where hold.company_id = ${heartbeatRuns.companyId}
+          and hold.source_issue_id = ${issues.id} and hold.evidence->>'runId' = ${heartbeatRuns.id}::text
+          and hold.cause = 'native_provider_usage_limit' and hold.status in ('resolved','cancelled'))`)));
 }
 
 export async function providerHoldRuns(db: Db, companyId: string, runIds: string[]) {
