@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   authUsers,
   companyMemberships,
@@ -352,10 +353,24 @@ const support = externalDatabaseUrl
       expect(selection.memberId).toBe(members[4].id);
     });
     it.each([
-      { state: "pending", matchingCall: true, blocked: "uncertain_control_plane_action" },
-      { state: "undispatched", matchingCall: false, blocked: "uncertain_provider_action" },
-      { state: "undispatched", matchingCall: true, blocked: null },
-    ])("uses the upload receipt for Claude-to-Codex failover ($state, matchingCall=$matchingCall)", async ({ state, matchingCall, blocked }) => {
+      { scenario: "pending API mutation", blocked: "uncertain_control_plane_action" },
+      { scenario: "different API receipt", blocked: "uncertain_provider_action" },
+      { scenario: "undispatched API mutation", blocked: null },
+      { scenario: "failed task document read", blocked: null },
+      { scenario: "failed artifact download with a settled install history", blocked: null },
+      { scenario: "failed artifact download with an unconfirmed install", blocked: "uncertain_provider_action" },
+      { scenario: "failed artifact download with mismatched install identities", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read in an external namespace", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read from a different source", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read in a preconfigured home", blocked: "uncertain_provider_action" },
+      { scenario: "requalified failed task document read", blocked: null },
+      { scenario: "requalification after the sweep restored the original block", blocked: null },
+      { scenario: "requalification after an unexplained block change", blocked: "uncertain_provider_action" },
+      { scenario: "requalification after a user change", blocked: "uncertain_provider_action" },
+      { scenario: "requalification with a newer task run", blocked: "uncertain_provider_action" },
+      { scenario: "requalification with a changed workspace", blocked: "uncertain_provider_action" },
+      { scenario: "requalification superseded by an operator hold", blocked: "uncertain_provider_action" },
+    ])("checks $scenario before Claude-to-Codex failover", async ({ scenario, blocked }) => {
       const source = await seed();
       const userId = `quota-${randomUUID()}`;
       await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -392,26 +407,125 @@ const support = externalDatabaseUrl
       expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId,
         agentId: source.agentId, credentialIdentity: runtime.sessionIdentity,
         retryNotBefore: new Date(Date.now() + 60 * 60_000).toISOString() })).toBe(true);
-      const callId = "failed-attachment-upload";
-      const callKey = createHash("sha256").update(matchingCall ? `tool-use:${callId}` : "different-call").digest("hex");
+      const callId = "fixture-call";
       const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
-      await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
-        [callKey]: { state, operationId: "create_issue_attachment", digest: "a".repeat(64) },
-      } } }).where(eq(heartbeatRuns.id, source.runId));
-      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
-        payload: { executionId: callId, name: "call_api", transport: "mcp", status: "running" } });
-      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
-        payload: { executionId: callId, name: "call_api", transport: "mcp", status: "failed" } });
+      if (scenario.includes("API")) {
+        const callKey = createHash("sha256").update(scenario === "different API receipt" ? "different-call" : `tool-use:${callId}`).digest("hex");
+        const state = scenario === "pending API mutation" ? "pending" : "undispatched";
+        await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
+          [callKey]: { state, operationId: "create_issue_attachment", digest: "a".repeat(64) },
+        } } }).where(eq(heartbeatRuns.id, source.runId));
+        await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
+          payload: { executionId: callId, name: "call_api", transport: "mcp", status: "running" } });
+        await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
+          payload: { executionId: callId, name: "call_api", transport: "mcp", status: "failed" } });
+      } else {
+        const runnerInstanceId = randomUUID();
+        const nativeSessionId = randomUUID();
+        await db.update(heartbeatRuns).set({ runnerInstanceId, nativeSessionId,
+          runnerProfileJson: { ...failedRun!.runnerProfileJson, nativeExecutionInput: {
+            ...failedRun!.runnerProfileJson!.nativeExecutionInput as Record<string, unknown>,
+            provider: { kind: "acpx", agent: "claude" },
+            binding: { executionWorkspaceId: scenario.includes("changed workspace") ? randomUUID() : source.runId },
+            homeMode: scenario.includes("preconfigured") ? "preconfigured" : "isolated",
+          } },
+        }).where(eq(heartbeatRuns.id, source.runId));
+        const download = scenario.includes("artifact download");
+        const name = download ? "download_artifact" : "list_task_documents";
+        const namespace = scenario.includes("external namespace") ? "external" : "paperclip";
+        for (const [offset, status] of (["running", "failed"] as const).entries()) {
+          const eventType = status === "running" ? "tool.execution.started" : "tool.execution.completed";
+          const sourceInstanceId = status === "failed" && scenario.includes("different source") ? randomUUID() : runnerInstanceId;
+          const sourceSeq = offset + 1;
+          const output = status === "running" ? null : download ? "Paperclip semantic operation failed"
+            : "Invalid tool input: missing required field: taskId. This call included only: issueId.";
+          const prpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: source.runId,
+            sourceInstanceId, sourceEventId: `fixture:${sourceSeq}`, sourceSeq, normalizedSessionId: nativeSessionId,
+            turnId: "provider-turn", itemId: callId, eventType, emittedAt: new Date().toISOString(), priority: 1,
+            payload: { schema: "paperclip.tool.execution.v1", executionId: callId, transport: "mcp", name, namespace,
+              operation: "execute", readOnly: false, status, output, outputBytes: output?.length ?? 0, outputTruncated: false, outputDigest: null } };
+          await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
+            nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+        }
+        if (download) {
+          const identity = { artifactId: randomUUID(), destination: "fixture.txt", byteSize: 1, sha256: "b".repeat(64) };
+          const outcome = scenario.includes("unconfirmed") ? "unconfirmed" : "completed";
+          await db.insert(activityLog).values([
+            { companyId: source.companyId, runId: source.runId, actorType: "agent", actorId: source.agentId,
+              entityType: "issue", entityId: source.issueId, action: "runner.artifact_install", details: { ...identity, outcome: "started" } },
+            { companyId: source.companyId, runId: source.runId, actorType: "agent", actorId: source.agentId,
+              entityType: "issue", entityId: source.issueId, action: "runner.artifact_install",
+              details: { ...identity, outcome, ...(scenario.includes("mismatched") ? { destination: "different.txt" } : {}) } },
+          ]);
+        }
+      }
       const now = new Date();
+      const requalify = scenario.startsWith("requalif");
+      const verifyStoppedSession = async () => ({ evidence: {}, retire: () => true });
+      const runReplacement = () => reconcileSafeNativeReplacements(db, now, {
+        verifyStoppedSession,
+        ...(requalify ? { requalifyQuotaFailure: { companyId: source.companyId, runIds: [source.runId] } } : {}),
+      });
+      if (requalify) {
+        const time = (offset: number) => new Date(now.getTime() + offset);
+        const [task] = await db.update(issues).set({ status: "blocked", blockedTransitionAt: time(-3_000) })
+          .where(eq(issues.id, source.issueId)).returning();
+        await db.update(nativeRunFinalizations).set({ failureDetail: {
+          replacementDenied: "uncertain_provider_action",
+        } }).where(eq(nativeRunFinalizations.runId, source.runId));
+        const hold = { companyId: source.companyId, sourceIssueId: source.issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId, nextAction: "Reconcile the previous run." };
+        await db.insert(issueRecoveryActions).values([
+          { ...hold, cause: "native_provider_usage_limit", fingerprint: "failed-run-projection", status: "cancelled", outcome: "cancelled",
+            createdAt: time(-4_000), evidence: { runId: source.runId, nativeFailureBlock: { runId: source.runId, statusVersion: task!.statusVersion } } },
+          { ...hold, cause: "uncertain_provider_action", fingerprint: `native-replacement:${source.runId}`, status: "resolved", outcome: "blocked",
+            createdAt: time(-2_500), resolvedAt: time(-2_000), evidence: { runId: source.runId,
+              automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked", runId: source.runId } } },
+        ]);
+        if (scenario.startsWith("requalification after")) {
+          await db.update(issues).set({ status: "todo" }).where(eq(issues.id, source.issueId));
+          await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, source.issueId));
+          if (!scenario.includes("unexplained")) {
+            await db.insert(activityLog).values({ companyId: source.companyId, agentId: source.agentId, actorType: "system",
+              actorId: "system", entityType: "issue", entityId: source.issueId, action: "issue.continued_automatically", createdAt: time(-1_000),
+              details: { status: "todo", previousStatus: "blocked", violation: "unknown_block", outcome: "not_started", attempt: 1 } });
+          }
+          if (scenario.includes("user change")) {
+            await db.insert(activityLog).values({ companyId: source.companyId, actorType: "user", actorId: userId, entityType: "issue",
+              entityId: source.issueId, action: "issue.updated", createdAt: time(-500), details: { status: "blocked" } });
+          }
+        }
+        if (scenario.includes("newer task run")) {
+          await db.insert(heartbeatRuns).values({ companyId: source.companyId, agentId: source.agentId, scopeKind: "issue",
+            issueId: source.issueId, status: "cancelled", createdAt: new Date(now.getTime() + 1) });
+        }
+        if (scenario.includes("operator hold")) {
+          await db.insert(issueRecoveryActions).values({ ...hold, cause: "operator_hold", fingerprint: "operator", status: "active" });
+        }
+        expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession })).toMatchObject({ scanned: 0, scheduled: 0 });
+      }
       if (blocked) {
-        expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession: async () => ({ evidence: {}, retire: () => true }) }))
-          .toMatchObject({ scheduled: 0 });
+        expect(await runReplacement()).toMatchObject({ scheduled: 0 });
         const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
         expect(owner?.failureDetail?.replacementDenied).toBe(blocked);
+        if (requalify) {
+          const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `native-replacement:${source.runId}`));
+          expect(hold?.outcome).toBe("blocked");
+        }
         return;
       }
-      expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession: async () => ({ evidence: {}, retire: () => true }) }))
-        .toMatchObject({ scheduled: 1 });
+      expect(await runReplacement()).toMatchObject({ scheduled: 1 });
+      if (requalify) {
+        const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `native-replacement:${source.runId}`));
+        const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(hold).toMatchObject({ status: "resolved", outcome: "handed_back" });
+        const [original] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.sourceIssueId, source.issueId), eq(issueRecoveryActions.fingerprint, "failed-run-projection"),
+        ));
+        expect(original).toMatchObject({ status: "cancelled", outcome: "cancelled" });
+        expect(owner?.failureDetail?.replacementDenied).toBeUndefined();
+        expect(await runReplacement()).toMatchObject({ scanned: 0, scheduled: 0 });
+      }
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
       expect(successor).toMatchObject({ issueId: source.issueId, status: "scheduled_retry", scheduledRetryAt: now,
         contextSnapshot: { forceFreshSession: true, aiRouterSelection: { memberId: codexId, binding: { provider: "openai" } },
