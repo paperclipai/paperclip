@@ -80,10 +80,18 @@ function boundMessages(continuation: ExecutionContinuationEnvelope, maxBytes: nu
     const message = all[index]!;
     // The objective keeps its exact body when it fits: the prompt omits the
     // separate objective field while this message is displayed.
+    // The objective comes first and always stays: shorter excerpts down to a
+    // bare reference keep it inside even the smallest scaled budget, so the
+    // renderer never falls back to the separate objective field.
     tryKeep(index, [
       ...(id === objectiveId ? [message] : []),
       clipBody(message, CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS),
       clipBody(message, REQUIRED_MESSAGE_MIN_BODY_CHARS),
+      ...(id === objectiveId ? [
+        clipBody(message, 500),
+        clipBody(message, 100),
+        { ...message, body: "[content omitted; read the full message with get_task_history]", bodyTruncated: true },
+      ] : []),
     ]);
   }
   for (let index = all.length - 1; index >= 0; index -= 1) {
@@ -187,8 +195,17 @@ export function boundExecutionContinuationForPrompt(
     : boundNewestFirst(recoveries, caps.recoveries, (recovery: RecoveryOutcome) => ({
       recoveryActionId: recovery.recoveryActionId, decision: { resultOmitted: true },
     }));
+  // The standalone objective repeats the latest request; when it is shown on
+  // its own it gets a share of the message budget too.
+  const objectiveMaxChars = Math.max(100, Math.floor(caps.messages / 4 / 6));
+  const objective = typeof continuation.objective === "string" && continuation.objective.length > objectiveMaxChars
+    ? `${continuation.objective.slice(0, Math.floor(objectiveMaxChars * 0.7))}
+[content omitted; read the full request with get_task_history]
+${continuation.objective.slice(-Math.ceil(objectiveMaxChars * 0.3))}`
+    : continuation.objective;
   return {
     ...continuation,
+    objective,
     messages: messages.messages,
     ...(continuation.completedActions ? { completedActions: boundedActions.items } : {}),
     ...(Array.isArray(continuation.interactionOutcomes) ? { interactionOutcomes: boundedOutcomes.items } : {}),

@@ -5,6 +5,7 @@ import {
   CONTINUATION_PROMPT_ACTIONS_MAX_BYTES,
   CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES,
   CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES,
+  CONTINUATION_PROMPT_MAX_BYTES,
   CONTINUATION_PROMPT_RECOVERY_MAX_BYTES,
   CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS,
   CONTINUATION_PROMPT_MESSAGES_MAX_BYTES,
@@ -148,5 +149,16 @@ describe("boundExecutionContinuationForPrompt", () => {
     const bounded = boundExecutionContinuationForPrompt(envelope({ humanResponses: [answer] }));
     expect(bounded.humanResponses?.[0]?.result).toEqual({ resultOmitted: true });
     expect(bounded.coverage.omitted?.humanResponses).toBe(1);
+  });
+
+  it("keeps a markup-heavy objective inside the smallest scaled budget and bounds the standalone objective", () => {
+    const request = "<".repeat(100_000);
+    const bounded = boundExecutionContinuationForPrompt(envelope({
+      messages: [message("m-0", "older"), message("m-1", request)], objective: request,
+      objectiveSource: { kind: "comment", id: "m-1", revision: null },
+    }), { maxBytes: 32_000 });
+    expect(bounded.messages.map((entry) => entry.id)).toContain("m-1");
+    expect(bytes(bounded.messages)).toBeLessThanOrEqual(Math.floor(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES * 32_000 / CONTINUATION_PROMPT_MAX_BYTES));
+    expect(bytes(bounded.objective)).toBeLessThan(6_000);
   });
 });
