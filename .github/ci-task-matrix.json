@@ -337,7 +337,8 @@
   ],
   "canary_dry_run": [
     {
-      "task": "ci:canary"
+      "task": "ci:canary",
+      "forceOnGlobalInputs": false
     }
   ],
   "e2e_shards": [
