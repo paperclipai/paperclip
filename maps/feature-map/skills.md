@@ -26,6 +26,12 @@ Agent access: [companion](../agent-access-map/skills.md).
 
 Open `/skills`, Discover, or `/skills/sources`; project import is available through the library’s import flow. In Streamlined UI, Installed, Discover and My Skills are route links styled as tabs beneath the toolbar, with no secondary navigation rail. Sources stays separate under New → Manage sources. Legacy UI retains the Skills sidebar.
 
+Agent API discovery distinguishes importing existing SKILL.md content from
+creating newly authored content. The source-import entry documents allowed local
+skill directories and supported remote sources without changing source checks or
+company skill policy. Its [protocol regression](../../server/src/__tests__/skill-import-discovery.test.ts)
+checks discovery and metadata delivery, not a completed agent import journey.
+
 ### `studio`
 
 Use New skill or `/skills/studio/:skillId`; writable copies and source-backed originals differ. In Streamlined UI, `/skills/studio` uses the shared Skills toolbar and card collection with My Skills active and Recently updated sorting; opening a card enters Studio.
@@ -43,19 +49,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `library-sources`
 
-Automated: [library UI](../../ui/src/pages/CompanySkills.test.tsx) and [source service](../../server/src/__tests__/skill-sources.test.ts) cover their respective layers.
+Automated: [source service](../../server/src/__tests__/skill-sources.test.ts) covers server source handling (mocked `CompanySkills` UI tests were removed; verify library UI manually).
 
 Manual: Install a fixture, locate it in Installed, inspect its source and files, and reload. Import a source update and compare versions before accepting it. Check a source requiring unavailable repository access and verify the failure is explicit.
 
 ### `studio`
 
-Automated: [Studio](../../ui/src/pages/SkillStudio.test.tsx) covers UI behavior; model-driven skill testing remains a separate manual result.
+Automated: none for mocked UI (`SkillStudio` component tests were removed; verify Studio UI via Storybook/manual checks); model-driven skill testing remains a separate manual result.
 
 Manual: Create or fork a disposable skill, edit instructions, save, and reload. Run a bounded test, respond to any question, and inspect the output. Verify the saved version matches what was tested and failed saves retain the draft.
 
 ### `agent-enablement`
 
-Automated: [policy service](../../server/src/__tests__/company-skill-policy-service.test.ts) and [agent skills state](../../ui/src/pages/agent-skills/AgentSkillsTab.test.ts) cover policy/state contracts.
+Automated: [policy service](../../server/src/__tests__/company-skill-policy-service.test.ts) covers server policy contracts (mocked `AgentSkillsTab` UI tests were removed; verify agent skills UI manually).
 
 The [version-cache regression](../../server/src/__tests__/skill-version-cache.test.ts)
 checks that listing assignments does not create repository caches, validate every
@@ -136,7 +142,7 @@ Capability ID: `skills/testing`.
 Scope: ui
 Storybook: Studio test inputs/configuration, running, question/approval, result and failed test states.
 Production: Run bounded test of actual saved version with correct selected account/environment; inspect persisted test detail and eligible interaction response.
-Sources: Source: [SkillStudio.tsx](../../ui/src/pages/SkillStudio.tsx), [companySkills.ts](../../ui/src/api/companySkills.ts). Tests: [SkillStudio.test.tsx](../../ui/src/pages/SkillStudio.test.tsx), [company-skill-test-runs-service.test.ts](../../server/src/__tests__/company-skill-test-runs-service.test.ts)
+Sources: Source: [SkillStudio.tsx](../../ui/src/pages/SkillStudio.tsx), [companySkills.ts](../../ui/src/api/companySkills.ts). Tests: [company-skill-test-runs-service.test.ts](../../server/src/__tests__/company-skill-test-runs-service.test.ts)
 
 ### Documentation scope: Skills, Skill Studio, and teams
 

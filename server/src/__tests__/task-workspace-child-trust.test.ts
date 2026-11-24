@@ -29,7 +29,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, f.workspace.id));
     await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
-    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId, assigneeAgentId: f.agentId,
+    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId as string, assigneeAgentId: f.agentId as string,
       executionPolicy: policy, createdByAgentId: f.agentId, workspaceSelectionActor: f.actor,
       workspaceSelection: { kind: "existing" as const, workspaceId: f.workspace.id } };
     return { ...f, project, policy, input };
@@ -42,21 +42,28 @@ const support = await getEmbeddedPostgresTestSupport();
         title: "Intermediate task", assigneeAgentId: f.agentId, executionPolicy: f.policy }).returning();
       f.input.parentId = parent.id;
     }
-    const input = scenario === "omitted_policy" ? { ...f.input, executionPolicy: undefined } : f.input;
+    const baseInput = scenario === "omitted_policy" ? { ...f.input, executionPolicy: undefined } : f.input;
+    // Descendant trust is the subject here, so keep the deeper placement (board-style nesting).
+    const input = scenario === "descendant" ? { ...baseInput, parentDepthPolicy: "allow_nested" as const } : baseInput;
+    // The selection passes trust checks, but the workspace belongs to an
+    // ancestor, so the child still gets its own workspace instead of sharing it.
     await expect(issueService(db).create(f.companyId, input)).resolves.toMatchObject({
-      parentId: f.input.parentId, executionWorkspaceId: f.workspace.id,
+      parentId: f.input.parentId, executionWorkspaceId: null,
     });
   });
   it("allows a parent run to patch an authorized child's existing workspace settings", async () => {
     const f = await fixture();
     const child = await issueService(db).create(f.companyId, { ...f.input, status: "backlog", responsibleUserId: f.userId });
+    // Bind the child as an older release did, so the patch path still sees a bound workspace.
+    await db.update(issues).set({ executionWorkspaceId: f.workspace.id, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, child.id));
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = { ...f.actor, onBehalfOfMemberships: [{ companyId: f.companyId, status: "active", membershipRole: "operator" }] };
       next();
     });
-    app.use("/api", issueRoutes(db));
+    app.use("/api", issueRoutes(db, {} as unknown as Parameters<typeof issueRoutes>[1]));
     app.use(errorHandler);
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();

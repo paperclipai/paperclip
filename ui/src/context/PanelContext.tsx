@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { createContext, useCallback, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 import type { SidePanelContentMode } from "@/components/side-panel";
 
 const STORAGE_KEY = "paperclip:panel-visible";
@@ -7,6 +8,8 @@ interface PanelContextValue {
   panelContent: ReactNode | null;
   panelContentMode: SidePanelContentMode;
   panelVisible: boolean;
+  panelShowsArtifact: boolean;
+  setPanelShowsArtifact: (showsArtifact: boolean) => void;
   openPanel: (content: ReactNode, options?: { contentMode?: SidePanelContentMode }) => void;
   closePanel: () => void;
   setPanelVisible: (visible: boolean) => void;
@@ -44,7 +47,14 @@ function writePreference(visible: boolean) {
 export function PanelProvider({ children }: { children: ReactNode }) {
   const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
   const [panelContentMode, setPanelContentMode] = useState<SidePanelContentMode>("padded");
-  const [panelVisible, setPanelVisibleState] = useState(readPreference);
+  const [panelShowsArtifact, setPanelShowsArtifact] = useState(false);
+  const [classicPanelVisible, setPanelVisibleState] = useState(readPreference);
+  const [coordinatorPanelVisible, setCoordinatorPanelVisible] = useState(false);
+  const { enabled: coordinatorWorkspaceEnabled, userId } = useCoordinatorWorkspaceEnabled();
+  // The experiment has an on-demand panel. Its visibility never overwrites
+  // the classic workspace preference, including when the experiment is off.
+  const panelVisible = coordinatorWorkspaceEnabled ? coordinatorPanelVisible : classicPanelVisible;
+  useLayoutEffect(() => setCoordinatorPanelVisible(false), [coordinatorWorkspaceEnabled, userId]);
   const [panelMaximizeRequested, setPanelMaximizeRequested] = useState(false);
 
   const requestPanelMaximize = useCallback(() => {
@@ -66,17 +76,21 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setPanelVisible = useCallback((visible: boolean) => {
-    setPanelVisibleState(visible);
-    writePreference(visible);
-  }, []);
+    if (coordinatorWorkspaceEnabled) setCoordinatorPanelVisible(visible);
+    else { setPanelVisibleState(visible); writePreference(visible); }
+  }, [coordinatorWorkspaceEnabled]);
 
   const togglePanelVisible = useCallback(() => {
+    if (coordinatorWorkspaceEnabled) {
+      setCoordinatorPanelVisible(previous => !previous);
+      return;
+    }
     setPanelVisibleState((prev) => {
       const next = !prev;
       writePreference(next);
       return next;
     });
-  }, []);
+  }, [coordinatorWorkspaceEnabled]);
 
   return (
     <PanelContext.Provider
@@ -84,6 +98,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         panelContent,
         panelContentMode,
         panelVisible,
+        panelShowsArtifact,
+        setPanelShowsArtifact,
         openPanel,
         closePanel,
         setPanelVisible,

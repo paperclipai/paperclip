@@ -7,7 +7,15 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
-import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
+import {
+  DEFAULT_PARALLEL_WORKERS,
+  IGNORED_SPECS,
+  SERIAL_SPECS,
+  isSerialE2eSpec,
+  listE2eSpecs,
+  partitionE2eShards,
+  selectE2eShard,
+} from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
@@ -57,7 +65,7 @@ function readWorkflowJobs(workflow) {
 function runStackScope(stack, prBaseRef) {
   const workflow = readFileSync(routingWorkflow, "utf8");
   const match = workflow.match(
-    /      - name: Select PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\s*$/,
+    /      - name: Select PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)(?=\n      - name:|$)/,
   );
   assert.ok(match, "routing workflow must define the PR CI scope script");
   const script = match[1]
@@ -89,6 +97,17 @@ function runStackScope(stack, prBaseRef) {
   }
 }
 
+function runAggregate(block, fullCi, overrides = {}) {
+  const code = block.split("          node --input-type=module <<'NODE'\n")[1].split("\n          NODE")[0]
+    .split("\n").map((line) => line.slice(10)).join("\n");
+  const names = /needs: \[([^\]]+)\]/.exec(block)[1].split(", ");
+  const results = Object.fromEntries(names.map((name) => [name, { result: overrides[name]
+    ?? (name === "gate" || name === "policy" || fullCi ? "success" : "skipped") }]));
+  return spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", env: {
+    ...process.env, FULL_CI: String(fullCi), CI_PLAN: "", CI_RESULTS: JSON.stringify(results),
+  } });
+}
+
 test("the e2e shards form a complete, non-overlapping partition", () => {
   const specs = listE2eSpecs();
   assert.ok(specs.length > 0, "expected a non-empty e2e spec set");
@@ -113,6 +132,32 @@ test("the ignored spec list matches playwright.config.ts testIgnore", () => {
   assert.deepEqual([...configured].sort(), [...IGNORED_SPECS].sort());
 });
 
+test("the serial spec list matches playwright.config.ts SERIAL_SPECS and never mixes with parallel specs", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  const match = config.match(/export const SERIAL_SPECS = \[([\s\S]*?)\];/);
+  assert.ok(match, "expected a SERIAL_SPECS array in playwright.config.ts");
+  const configured = [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+  assert.deepEqual([...configured].sort(), [...SERIAL_SPECS].sort());
+
+  const specs = listE2eSpecs();
+  const durations = loadShardDurations(durationsManifest);
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations);
+  assert.equal(shards.length, SHARD_COUNT);
+  for (const shard of shards) {
+    const serialCount = shard.files.filter(isSerialE2eSpec).length;
+    assert.ok(
+      serialCount === 0 || serialCount === shard.files.length,
+      `shard must not mix serial and parallel specs: ${shard.files.join(", ")}`,
+    );
+  }
+});
+
+test("playwright.config.ts supports skipping the UI build when PAPERCLIP_E2E_SKIP_UI_BUILD=1", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  assert.match(config, /PAPERCLIP_E2E_SKIP_UI_BUILD/);
+  assert.match(config, /ui-dist.*index\.html/);
+});
+
 test("the duration manifest only names specs that still exist", () => {
   const durations = loadShardDurations(durationsManifest);
   assert.ok(Object.keys(durations).length > 0, "expected a populated duration manifest");
@@ -125,25 +170,25 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
-  // New specs use the scheduler's median estimate until measured durations exist.
   const fallbackWeight = defaultSuiteWeight(durations);
-  const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
-  );
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations, {
+    parallelWorkers: DEFAULT_PARALLEL_WORKERS,
+  });
+  const wallWeights = shards.map((shard) => {
+    const serialSum = shard.files.reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0);
+    return shard.mode === "parallel" ? serialSum / DEFAULT_PARALLEL_WORKERS : serialSum;
+  });
 
-  const heaviest = Math.max(...weights);
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  // Round-robin/count-based sharding would strand the ~168s smoke-lab spec on
-  // one runner alongside other specs. Assert the weighted split stays within
-  // 15% of an even cut so a future spec-time regression surfaces here instead
-  // of on the PR critical path. A single indivisible spec (smoke-lab) can
-  // legitimately exceed the even cut on its own, so the bound is floored at
-  // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
-  const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
+  const heaviest = Math.max(...wallWeights);
+  const totalWall = wallWeights.reduce((sum, weight) => sum + weight, 0);
+  const largestSerialSpec = Math.max(
+    0,
+    ...specs.filter(isSerialE2eSpec).map((file) => durations[file] ?? fallbackWeight),
+  );
+  const bound = Math.max((totalWall / SHARD_COUNT) * 1.15, largestSerialSpec);
   assert.ok(
     heaviest <= bound,
-    `heaviest shard ${heaviest}ms exceeds the balance bound (${bound}ms)`,
+    `heaviest shard ${Math.round(heaviest)}ms exceeds the balance bound (${Math.round(bound)}ms)`,
   );
 });
 
@@ -178,22 +223,19 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
     /^ {4}needs: \[gate, (?:policy, )?e2e_shards\]$/m,
     "the aggregate must depend on the runner gate, optional policy gate, and shard matrix",
   );
-  assert.match(
-    aggregate,
-    /test "\$E2E_SHARDS_RESULT" = "success"/,
-    "the aggregate must fail unless every shard succeeded",
-  );
+  assert.equal(runAggregate(aggregate, true).status, 0);
+  assert.equal(runAggregate(aggregate, false).status, 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(runAggregate(aggregate, true, { e2e_shards: result }).status, 0);
+  }
 
   const shards = jobs.get("e2e_shards");
   assert.ok(shards, "pr-trusted.yml must define the `e2e_shards` matrix job");
-  const matrixEntries = [
-    ...shards.matchAll(
-      /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
-    ),
-  ].map((match) => ({
-    shardIndex: Number(match.groups.shardIndex),
-    shardCount: Number(match.groups.shardCount),
-    shardLabel: match.groups.shardLabel,
+  const matrixEntries = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
+    .e2e_shards.map((entry) => ({
+    shardIndex: entry.shard_index,
+    shardCount: entry.shard_count,
+    shardLabel: entry.shard_label,
   }));
 
   assert.equal(matrixEntries.length, SHARD_COUNT, "the shard matrix must define exactly SHARD_COUNT entries");
@@ -208,11 +250,11 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("runner selection has reserved AWS capacity and executes metadata checks only", () => {
+test("runner authorization uses reserved capacity and executes metadata checks only", () => {
   const workflow = readFileSync(routingWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow.split(/^jobs:\n/m)[1]);
   assert.deepEqual([...jobs.keys()], ["gate"]);
-  assert.match(jobs.get("gate"), /^ {4}runs-on: \$\{\{ vars\.AWS_CI_ENABLED[\s\S]*paperclip-ci-routing-x64/m);
+  assert.match(jobs.get("gate"), /runs-on\/fleet=paperclip-ci-routing-x64\/env=public-ci/);
   assert.doesNotMatch(jobs.get("gate"), /uses:|actions\/checkout|secrets\./);
   assert.match(workflow, /^ {6}runner:\n {8}value: \$\{\{ jobs\.gate\.outputs\.runner \}\}$/m);
   assert.match(workflow, /^ {6}full_ci:\n {8}value: \$\{\{ jobs\.gate\.outputs\.full_ci \}\}$/m);
@@ -238,10 +280,11 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
     "verify_serialized_server",
     "canary_dry_run",
     "e2e_shards",
+    "verify_runner_e2e_support",
   ]) {
     assert.match(
       jobs.get(jobId),
-      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' \}\}$/m,
+      /^ {4}if: \$\{\{ (?:always\(\) && !cancelled\(\) && needs\.gate\.result == 'success' && )?needs\.gate\.outputs\.full_ci == 'true' && /m,
       `${jobId} must run only when the gate selects full CI`,
     );
   }
@@ -255,28 +298,28 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support\]$/m,
   );
-  assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
-  assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
-  assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
-  // Runner verification must participate in the legacy aggregate required
-  // check, or a runner regression could be merged while `verify` succeeds.
-  assert.match(verify, /RUNNER_VERIFICATION_RESULT: \$\{\{ needs\.verify_paperclip_runner\.result \}\}/);
-  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "success"/);
-  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "skipped"/);
-  assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
-  // Both halves of the docker-context lane's gating: the result must be
-  // wired into the aggregate's env AND asserted successful on full CI —
-  // dropping either would let `verify` pass after the lane fails.
-  assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
-  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
-  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
+  assert.equal(runAggregate(verify, true).status, 0);
+  assert.equal(runAggregate(verify, false).status, 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(runAggregate(verify, true, { test_selection: result }).status, 0,
+      "an optional selector cannot block the successful original matrix");
+  }
+  for (const job of ["gate", "policy", "typecheck_release_registry", "general_tests", "verify_paperclip_runner",
+    "build", "docker_context_integrity", "sandbox_provider_tests", "verify_serialized_server", "canary_dry_run", "verify_runner_e2e_support"]) {
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      assert.notEqual(runAggregate(verify, true, { [job]: result }).status, 0, `${job}: ${result}`);
+    }
+    if (job !== "gate" && job !== "policy") {
+      assert.notEqual(runAggregate(verify, false, { [job]: "success" }).status, 0, job);
+    }
+  }
 
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
-  assert.match(e2e, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
-  assert.match(e2e, /false\) test "\$E2E_SHARDS_RESULT" = "skipped"/);
+  assert.notEqual(runAggregate(e2e, true, { policy: "failure" }).status, 0);
+  assert.notEqual(runAggregate(e2e, false, { e2e_shards: "success" }).status, 0);
 });
 
 test("the stacked PR scope selector runs full CI only where intended", () => {

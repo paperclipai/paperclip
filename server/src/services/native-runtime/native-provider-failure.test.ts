@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
+import { antigravityModelRefusalMessage } from "@paperclipai/shared";
+import { createNativeProviderFailureObservation, nativeAcceptedResultOutlivesProviderFailure, nativeProviderUsageLimitFromEvent, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -19,6 +20,65 @@ const terminal: PrpTerminalState = {
 const observation = () => createNativeProviderFailureObservation({ kind: "codex", model });
 
 describe("native provider failure observation", () => {
+  it.each(["acpx", "codex", "opencode"])("retains a typed explanation for %s without granting recovery authority", kind => {
+    const observed = createNativeProviderFailureObservation({ kind });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "new-provider", phase: "turn",
+      category: "unknown", message: "An unfamiliar provider rejection.", retryability: "unknown" };
+    const failed = { ...event, payload: { status: "failed", error: { providerFailure } } };
+    observed.observe({ ...failed, sourceKind: "control_plane" });
+    expect(observed.providerFailureForTerminal("turn", terminal)).toBeNull();
+    observed.observe(failed);
+    expect(observed.providerFailureForTerminal("turn", terminal)).toEqual(providerFailure);
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("other-turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+  it.each(["opencode", "codex"])("classifies an action-required model_unavailable failure from %s as a model rejection", kind => {
+    const observed = createNativeProviderFailureObservation({ kind });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn",
+      category: "model_unavailable", message: "vendor/private-model is not a valid model ID", retryability: "requires_action", httpStatus: 400 };
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure } } });
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
+    expect(JSON.stringify(result)).not.toContain("private-model");
+    // A closed diagnostic only, and the classified turn is not also reported as unclassified.
+    expect(result?.diagnostic).toEqual(expect.objectContaining({ provider: kind }));
+    expect(JSON.stringify(result?.diagnostic)).not.toContain("not a valid model");
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+  it.each(["transient", "unknown"])("does not treat a %s model_unavailable failure as a model rejection", retryability => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode" });
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn", category: "model_unavailable", message: "busy", retryability } } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
+  it("classifies the API-key 404 for the configured model as a model rejection (codex 0.160.0 shape)", () => {
+    const apiKeyFailure = (message: string, info: unknown = { httpConnectionFailed: { httpStatusCode: 404 } }) => ({ ...event, payload: { status: "failed", error: {
+      message, codexErrorInfo: info, additionalDetails: null, misalignment: null } } });
+    const real = `unexpected status 404 Not Found: The model \`${model}\` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a5833f01da2716ce-IAH, request id: req_584e320775c34b2c9c6d98af40e0ea3d`;
+    const observed = observation();
+    observed.observe(apiKeyFailure(real));
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toEqual({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic: NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+    expect(JSON.stringify(result)).not.toContain(model);
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    // Another model's 404, another status, or a retryable turn is not this rejection.
+    for (const [message, info, recoverable] of [
+      [real.replace(model, "other-model"), undefined, false],
+      [real, { httpConnectionFailed: { httpStatusCode: 500 } }, false],
+      [real, "other", false],
+      // Codex reports its retried 404s with this kind and willRetry; they never end the turn.
+      [real, { responseStreamDisconnected: { httpStatusCode: 404 } }, false],
+      [real, undefined, true],
+    ] as const) {
+      const other = observation();
+      const failed = apiKeyFailure(message, info);
+      other.observe(recoverable ? { ...failed, payload: { ...failed.payload, recoverable: true } } : failed);
+      expect(other.forTerminal("turn", terminal)).toBeNull();
+    }
+  });
   it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
     const observed = createNativeProviderFailureObservation({ kind: "codex" });
     observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: "Private arbitrary response" } } });
@@ -184,6 +244,45 @@ describe("native provider failure observation", () => {
     expect(readNativeTurnFailureDiagnostic({ ...expected, signal: "SIGTERM" })).toEqual({ ...expected, signal: "SIGTERM" });
   });
 
+  it("records an OpenCode upstream provider failure's closed fields without its message or code", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn",
+      category: "unknown", message: "Private upstream explanation", providerCode: "private_provider_type",
+      httpStatus: 502, retryability: "unknown" };
+    observed.observe({ ...event, payload: { status: "failed", error: {
+      name: "UnknownError", data: { message: "Private upstream body" }, providerFailure,
+    } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("turn", terminal)).toEqual(providerFailure);
+    const diagnostic = observed.unclassifiedTurnFailure("turn", terminal);
+    expect(diagnostic).toEqual({
+      provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "unknown", providerFailureRetryability: "unknown", httpStatus: 502,
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/private/i);
+    expect(readNativeTurnFailureDiagnostic(diagnostic)).toEqual(diagnostic);
+    // A malformed provider failure adds nothing, and a persisted record keeps only known values.
+    const malformed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    malformed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { ...providerFailure, category: "private" } } } });
+    expect(malformed.unclassifiedTurnFailure("turn", terminal)).toEqual({ provider: "opencode", category: "turn_failed" });
+    expect(readNativeTurnFailureDiagnostic({ provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "private", providerFailureRetryability: "unknown", httpStatus: 502 }))
+      .toEqual({ provider: "opencode", category: "turn_failed" });
+    expect(readNativeTurnFailureDiagnostic({ provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "overloaded", providerFailureRetryability: "private", httpStatus: 42 }))
+      .toEqual({ provider: "opencode", category: "turn_failed", providerFailureCategory: "overloaded" });
+  });
+
+  it("names the OpenCode empty-response failure the driver writes", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    observed.observe({ ...event, payload: { status: "failed", error: {
+      code: "opencode_empty_response", message: "OpenCode ended the turn without a final response.", retryable: false,
+    } } });
+    const diagnostic = observed.unclassifiedTurnFailure("turn", terminal);
+    expect(diagnostic).toEqual({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response" });
+    expect(readNativeTurnFailureDiagnostic(diagnostic)).toEqual(diagnostic);
+  });
+
   it.each([{ kind: "claude", model }, { kind: "codex" }, { kind: "codex", model: "other" }])(
     "does not apply a rejection to another selected provider/model (%j)", (provider) => {
       const observed = createNativeProviderFailureObservation(provider);
@@ -191,4 +290,94 @@ describe("native provider failure observation", () => {
       expect(observed.forTerminal("turn", terminal)).toBeNull();
     },
   );
+});
+
+describe("Google Antigravity provider failures", () => {
+  const antigravity = (route?: "api_key" | "subscription", modelId = "gemini-4-neon-high") =>
+    createNativeProviderFailureObservation({ kind: "acpx", agent: "antigravity", model: modelId }, route ? { antigravityRoute: route } : {});
+  const failed = (providerFailure: Record<string, unknown>): PrpEvent => ({ ...event, payload: { status: "failed", error: { providerFailure: {
+    schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", ...providerFailure } } } });
+  const refused = failed({ category: "model_unavailable", message: "The selected model is not available for this connection.",
+    providerCode: "antigravity_model_unavailable", httpStatus: 429, retryability: "requires_action" });
+
+  it("names the refused model and the fix for an API key", () => {
+    const observed = antigravity("api_key");
+    observed.observe(refused);
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toMatchObject({ errorCode: "native_provider_model_rejected",
+      errorMessage: antigravityModelRefusalMessage("gemini-4-neon-high", "api_key") });
+    expect(result?.errorMessage).toContain("Gemini 4 Neon (High) is not available with this Gemini API key.");
+    expect(result?.errorMessage).not.toMatch(/antigravity_model_unavailable|RESOURCE_EXHAUSTED|429/);
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+  });
+
+  it("names the refused model and the fix for a Google sign-in", () => {
+    const observed = antigravity("subscription", "gemini-3.8-flash-high");
+    observed.observe(refused);
+    expect(observed.forTerminal("turn", terminal)?.errorMessage)
+      .toBe(antigravityModelRefusalMessage("gemini-3.8-flash-high", "subscription"));
+  });
+
+  it("keeps the shared message when the connection route is unknown (recovered after restart)", () => {
+    const observed = antigravity();
+    observed.observe(refused);
+    expect(observed.forTerminal("turn", terminal)).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
+  });
+
+  it("takes the bounded capacity retry for a transient overload (503)", () => {
+    const observed = antigravity("api_key");
+    observed.observe(failed({ category: "overloaded", message: "This model is currently experiencing high demand.",
+      providerCode: "UNAVAILABLE", httpStatus: 503, retryability: "transient" }));
+    expect(observed.forTerminal("turn", terminal)).toEqual({ errorCode: "native_provider_overloaded",
+      errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE, diagnostic: { provider: "antigravity", category: "server_overloaded" } });
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+  });
+
+  it("leaves rate limits, quotas and rejected keys to their own plain-language paths", () => {
+    for (const failure of [
+      { category: "rate_limit", message: "Slow down", httpStatus: 429, retryAt: "2026-01-01T00:01:00.000Z", retryability: "transient" },
+      { category: "quota_exhausted", message: "Quota exhausted", httpStatus: 429, retryability: "requires_action" },
+      { category: "authentication", message: "API key not valid. Please pass a valid API key.", httpStatus: 400, retryability: "requires_action" },
+    ]) {
+      const observed = antigravity("api_key");
+      const input = failed(failure);
+      observed.observe(input);
+      expect(observed.forTerminal("turn", terminal)).toBeNull();
+      expect(observed.providerFailureForTerminal("turn", terminal)).toMatchObject({ category: failure.category, message: failure.message });
+      expect(nativeProviderUsageLimitFromEvent(input)).toBe(failure.category !== "authentication");
+    }
+  });
+
+  it("does not turn another ACPX harness's overload into an Antigravity capacity retry", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "acpx", agent: "claude", model: "m" });
+    observed.observe(failed({ provider: "claude", category: "overloaded", message: "Overloaded", httpStatus: 529, retryability: "transient" }));
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
+});
+
+describe("an accepted finish followed by a provider refusal", () => {
+  const done: PrpTerminalState = { ...terminal, reportedWorkDisposition: "done" };
+  const outlives = (providerFailure: Record<string, unknown>, end: PrpTerminalState = done) => {
+    const observed = createNativeProviderFailureObservation({ kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low" }, { antigravityRoute: "subscription" });
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", message: "No capacity available for model gemini-3.8-flash-low on the server", ...providerFailure } } } });
+    return nativeAcceptedResultOutlivesProviderFailure({ terminal: end,
+      providerFailure: observed.forTerminal("turn", end), providerExplanation: observed.providerFailureForTerminal("turn", end) });
+  };
+
+  it("keeps the finish after a transient capacity refusal or rate limit", () => {
+    expect(outlives({ category: "overloaded", httpStatus: 503, providerCode: "UNAVAILABLE", retryability: "transient" })).toBe(true);
+    expect(outlives({ category: "rate_limit", httpStatus: 429, retryability: "transient" })).toBe(true);
+  });
+
+  it("keeps real failures and unfinished work as failures", () => {
+    expect(outlives({ category: "model_unavailable", providerCode: "antigravity_model_unavailable", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "quota_exhausted", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "authentication", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "overloaded", retryability: "unknown" })).toBe(false);
+    expect(outlives({ category: "timeout", retryability: "transient" })).toBe(false);
+    // Only an accepted done report outlives the refusal; other reports keep the capacity retry.
+    expect(outlives({ category: "overloaded", retryability: "transient" }, { ...done, reportedWorkDisposition: "needs_review" })).toBe(false);
+    expect(outlives({ category: "overloaded", retryability: "transient" }, { ...done, runTerminalState: "cancelled", turnTerminalState: "cancelled" })).toBe(false);
+  });
 });

@@ -9,6 +9,7 @@ import {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { readAgentReportingChain } from "./agent-reporting-chain.js";
 import { builtInAgentMarkersEqual, readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 
 export function hashToken(token: string) {
@@ -19,7 +20,7 @@ export function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
 
-const CONFIG_REVISION_FIELDS = [
+export const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
   "title",
@@ -74,6 +75,8 @@ export interface ClaudeLoginContext {
 }
 
 export interface UpdateAgentOptions {
+  expectedConfigurationRevision?: string;
+  expectedConfiguration?: Pick<AgentConfigurationRecord, "adapterType" | "adapterConfig" | "runtimeConfig" | "defaultEnvironmentId">;
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
@@ -87,6 +90,10 @@ export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, t
 export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  createdByAgentId?: string | null;
+  createdByAgentCompanyId?: string;
+  interactionTexts?: readonly string[];
+  initialBudgetPolicyUserId?: string;
   setupOnly?: boolean;
   setupAgentId?: string;
   runnerResolved?: boolean;
@@ -96,6 +103,8 @@ export interface CreateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
+
+type AgentEligibilityRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">;
 
 interface AgentShortnameRow {
   id: string;
@@ -159,7 +168,7 @@ export function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) 
 }
 
 export function changedPendingApprovalConfigFields(
-  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleRequiredPluginIds">,
+  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleRequiredPluginIds" | "harnessVerifiedDigest" | "harnessVerifiedAt">,
   data: Partial<typeof agents.$inferInsert>,
 ) {
   return CONFIG_REVISION_FIELDS.filter((field) =>
@@ -322,10 +331,11 @@ export function agentRecordQueries(db: Db) {
   }
 
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
-    const { lifecycleOperation, lifecycleRequiredPluginIds, ...publicRow } = row;
+    // The harness verification digest is server-only reuse state, never an API field.
+    const { lifecycleOperation, lifecycleRequiredPluginIds, harnessVerifiedDigest, harnessVerifiedAt, ...publicRow } = row;
     return withUrlKey({
       ...publicRow,
-      permissions: normalizeAgentPermissions(row.permissions),
+      permissions: normalizeAgentPermissions(row.permissions, { role: row.role }),
     });
   }
 
@@ -339,7 +349,7 @@ export function agentRecordQueries(db: Db) {
     };
   }
 
-  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows = rows) {
+  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows: AgentEligibilityRow[] = rows) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
@@ -356,12 +366,17 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
+  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: AgentEligibilityRow[]) {
     return normalizeAgentRows([row], allCompanyRows)[0]!;
   }
 
   async function listCompanyAgentRows(companyId: string) {
     return db.select().from(agents).where(eq(agents.companyId, companyId));
+  }
+
+  async function listCompanyAgentEligibilityRows(companyId: string): Promise<AgentEligibilityRow[]> {
+    return db.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      status: agents.status, reportsTo: agents.reportsTo }).from(agents).where(eq(agents.companyId, companyId));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -403,11 +418,11 @@ export function agentRecordQueries(db: Db) {
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [companyRows, hydrated] = await Promise.all([
-      listCompanyAgentRows(row.companyId),
+    const [chainRows, hydrated] = await Promise.all([
+      readAgentReportingChain(db, row),
       hydrateAgentSpend([row]).then((rows) => rows[0]!),
     ]);
-    return normalizeAgentRow(hydrated, companyRows);
+    return normalizeAgentRow(hydrated, chainRows);
   }
 
   async function ensureManager(companyId: string, managerId: string) {
@@ -471,6 +486,6 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, hydrateAgentSpend,
+  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, listCompanyAgentEligibilityRows, hydrateAgentSpend,
     getById, ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed };
 }

@@ -11,6 +11,16 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
+it("redacts a routine caller run token on ordinary HTTP routes", async () => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  await request(app).get("/api/health").set("X-Paperclip-Source-Run-Token", "private-routine-caller-token");
+  expect(chunks.join("")).not.toContain("private-routine-caller-token");
+});
+
 describe("HTTP logger redaction", () => {
   it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
@@ -329,7 +339,7 @@ describe("HTTP logger redaction", () => {
         createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
       );
       routes.post("/chat-webhooks/:publicId/:provider", (req, _res, next) => {
-        req.params.extra = privateFile;
+        (req.params as Record<string, string>).extra = privateFile;
         req.log.warn({ req }, "Webhook fixture rejected");
         const error = Object.assign(new Error(`SDK echoed ${privateText}`), {
           name: privateFile,
@@ -414,6 +424,7 @@ describe("HTTP logger redaction", () => {
       'req.headers["x-telegram-bot-api-secret-token"]',
     );
     expect(HTTP_LOG_REDACT_PATHS).toContain("reqBody.credentials");
+    expect(HTTP_LOG_REDACT_PATHS).toContain("reqBody.credentialValues");
     expect(HTTP_LOG_REDACT_PATHS).toContain("errorContext.details.credentials");
   });
 
@@ -489,6 +500,26 @@ describe("HTTP logger redaction", () => {
       "[Redacted]",
     );
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
+  });
+
+  it.each([200, 401, 403, 500])("redacts Runner tool scope credentials from HTTP %i logs", async status => {
+    const capability = "runner-tool-scope-capability-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    const path = "/mcp/native-runs/00000000-0000-4000-8000-000000000762";
+    app.post(path, (_req, res) => { res.status(status).json({ status }); });
+
+    await request(app).post(path)
+      .set("X-Paperclip-Runner-Scope-Token", "Bearer " + capability)
+      .send({}).expect(status);
+
+    expect(chunks.join("")).not.toContain(capability);
+    const log = JSON.parse(chunks.join("").trim());
+    expect(log.req.headers["x-paperclip-runner-scope-token"]).toBe("[Redacted]");
+    expect(log.req.url).toBe(path);
+    expect(log.res.statusCode).toBe(status);
   });
 
   it.each([200, 403, 500])("redacts runtime GitHub capabilities from HTTP %i logs", async (status) => {
@@ -616,6 +647,55 @@ describe("HTTP logger redaction", () => {
     });
     expect(log.req.query).toBeUndefined();
     expect(log.reqQuery).toBeUndefined();
+  });
+
+  it.each([400, 403, 409, 429, 500])("keeps tool-call arguments out of %i logs", async status => {
+    const canaries = ["recipient-canary@example.com", "mail-body-canary", "doc-text-canary"];
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((_req, _res, next) => next(new HttpError(status, "Tool call failed")));
+    app.use(errorHandler);
+    const paths = [
+      "/api/tool-gateway/tools/call",
+      "/api/tool-gateway/gateways/gateway-1/mcp",
+      "/mcp/gateways/public-gateway-1",
+      "/mcp/native-runs/run-1",
+      "/mcp/runtime-tools",
+      "/mcp/runner",
+      "/api/mcp/project-tools",
+      "/api/issues/issue-1/mcp-app-views/view-1/tool-calls",
+      "/api/tool-connections/connection-1/test-calls",
+      "/API/Tool-Gateway/Tools/Call/",
+    ];
+    for (const path of paths) {
+      const response = await request(app).post(path).send({
+        toolName: "gmail.create_draft",
+        parameters: { to: [canaries[0]], body: canaries[1] },
+        params: { arguments: { text: canaries[2] } },
+      });
+      expect(response.status).toBe(status);
+    }
+    const output = chunks.join("");
+    for (const canary of canaries) expect(output).not.toContain(canary);
+    const logs = chunks.flatMap(chunk => chunk.trim().split("\n").filter(Boolean).map(line => JSON.parse(line)));
+    expect(logs).toHaveLength(paths.length);
+    for (const log of logs) expect(log.reqBody).toBe("[REDACTED]");
+  });
+
+  it("keeps request bodies on other failed routes", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((_req, _res, next) => next(new HttpError(409, "Conflict")));
+    app.use(errorHandler);
+    await request(app).post("/api/tool-gateway/sessions").send({ agentId: "agent-1" });
+    const log = JSON.parse(chunks.join("").trim()) as { reqBody: unknown };
+    expect(log.reqBody).toEqual({ agentId: "agent-1" });
   });
 
   it("redacts failed secret payload values from structured request logs", async () => {
@@ -848,4 +928,37 @@ describe("HTTP logger redaction", () => {
       });
     },
   );
+
+  it("redacts a credentialValues envelope at the serialization boundary", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const logger = pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream);
+
+    // No recursive redactor runs here on purpose: this exercises the path list
+    // as the backstop it is documented to be. fast-redact's censor is
+    // "[Redacted]" (pino's default), not redactSensitive's "[REDACTED]", so
+    // assert the secret is gone rather than pinning the marker.
+    logger.error(
+      {
+        errorContext: { name: "Error", message: "OAuth authorization expired." },
+        reqBody: {
+          galleryKey: "github",
+          name: "GitHub",
+          credentialValues: { "credentials.authorization": "github_pat_canary" },
+        },
+        reqParams: {},
+      },
+      "POST /api/companies/company-1/tools/apps/connect 502 — OAuth authorization expired.",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const output = chunks.join("");
+    expect(output).not.toContain("github_pat_canary");
+    expect(output).toContain('"galleryKey":"github"');
+  });
 });

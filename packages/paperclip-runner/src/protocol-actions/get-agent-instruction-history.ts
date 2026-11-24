@@ -27,7 +27,7 @@ export const getAgentInstructionHistoryAction = {
   },
   "documentation": {
     "title": "Get agent instruction history",
-    "description": "List bounded canonical instruction revision metadata, including actor, source run, and restore origin. Use read_agent_instructions with entryFile and revisionId to inspect exact historical content.",
+    "description": "List instruction revisions saved before Paperclip stopped recording instruction history, with actor, source run, and restore origin. Current saves keep only the current file and add no revision, so an empty list means Paperclip retains no earlier version to restore. Use read_agent_instructions with entryFile and revisionId to inspect a listed revision's exact content.",
     "note": null
   },
   "examples": {
@@ -50,7 +50,7 @@ export const getAgentInstructionHistoryAction = {
       "operationId": "get_agent_instruction_history",
       "version": 1,
       "title": "Get agent instruction history",
-      "description": "List bounded canonical instruction revision metadata, including actor, source run, and restore origin. Use read_agent_instructions with entryFile and revisionId to inspect exact historical content.",
+      "description": "List instruction revisions saved before Paperclip stopped recording instruction history, with actor, source run, and restore origin. Current saves keep only the current file and add no revision, so an empty list means Paperclip retains no earlier version to restore. Use read_agent_instructions with entryFile and revisionId to inspect a listed revision's exact content.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [

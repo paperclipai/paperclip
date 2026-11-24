@@ -31,6 +31,7 @@ function managedEnv(raw: string | undefined = MANAGED_RAW) {
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
   const db = {
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
     select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
@@ -84,11 +85,48 @@ describe("applyManagedExperimentalOverlay", () => {
 });
 
 describe("instanceSettingsService managed overlay", () => {
+  it.each(["team.staging.paperclip.app", "team.paperclip.app"])(
+    "enables private Notebook through managed config without changing stored opt-out on %s",
+    async (primaryHost) => {
+      const row = settingsRow({ enablePaperclipNotebook: false });
+      const { db, persistedSets } = stubDb(row);
+      const service = instanceSettingsService(db, { runtimeEnv: {
+        PAPERCLIP_PRIMARY_HOST: primaryHost,
+        ...managedEnv(JSON.stringify({
+          v: 1, mode: "cloud", catalogVersion: "test",
+          features: { enablePaperclipNotebook: true }, plugins: { autoInstall: [] },
+        })),
+      } });
+      expect(await service.getExperimental()).toMatchObject({
+        enablePaperclipNotebook: true,
+        managedKeys: { enablePaperclipNotebook: { managed: true, managedBy: "paperclip-cloud" } },
+      });
+      expect((await service.get()).experimental.enablePaperclipNotebook).toBe(true);
+      expect(persistedSets).toHaveLength(0);
+      expect(row.experimental).toEqual({ enablePaperclipNotebook: false });
+      expect((await instanceSettingsService(db, { runtimeEnv: {} }).getExperimental()).enablePaperclipNotebook).toBe(false);
+    },
+  );
+
+  it("persists an explicit self-hosted Notebook opt-in and disable across service recreation", async () => {
+    const row = settingsRow({});
+    const { db, persistedSets } = stubDb(row);
+    expect((await instanceSettingsService(db, { runtimeEnv: {} }).getExperimental()).enablePaperclipNotebook).toBe(false);
+    for (const enabled of [true, false]) {
+      const service = instanceSettingsService(db, { runtimeEnv: {} });
+      const updated = await service.updateExperimental({ enablePaperclipNotebook: enabled });
+      Object.assign(row, persistedSets.at(-1));
+      expect(updated.experimental.enablePaperclipNotebook).toBe(enabled);
+      expect((row.experimental as Record<string, unknown>).enablePaperclipNotebook).toBe(enabled);
+      expect((await instanceSettingsService(db, { runtimeEnv: {} }).getExperimental()).enablePaperclipNotebook).toBe(enabled);
+    }
+  });
+
   it.each(["team.staging.paperclip.app", "team.paperclip.app", undefined])(
     "enforces every Cloud-enabled flag over old tenant values on %s",
     async (primaryHost) => {
       const features = Object.fromEntries(Object.entries(INSTANCE_FEATURE_CATALOG)
-        .filter(([, entry]) => entry.tier === "managed")
+        .filter(([key, entry]) => entry.tier === "managed" && key !== "enableAgentChat")
         .map(([key]) => [key, true]));
       const stored = Object.fromEntries(Object.keys(features).map((key) => [key, false]));
       const { db, persistedSets } = stubDb(settingsRow(stored));
@@ -104,10 +142,10 @@ describe("instanceSettingsService managed overlay", () => {
       expect((await service.get()).experimental).toMatchObject(features);
       expect((await service.getExperimental()).managedKeys).toMatchObject(
         Object.fromEntries(Object.keys(features)
-          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators")
+          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp")
           .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
       );
-      for (const key of Object.keys(features)) {
+      for (const key of Object.keys(features).filter((key) => key !== "enablePublicMcp")) {
         await expect(service.updateExperimental({ [key]: false })).rejects.toMatchObject({
           status: 403,
           details: { code: "settings_operator_managed" },
@@ -117,6 +155,17 @@ describe("instanceSettingsService managed overlay", () => {
       expect(await instanceSettingsService(db, { runtimeEnv }).getExperimental()).toMatchObject(features);
     },
   );
+
+  it("accepts an old client's write of the retired assistant connections key while Cloud manages it", async () => {
+    const { db } = stubDb(settingsRow({}));
+    const runtimeEnv = managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "test",
+      features: { enablePublicMcp: true, enableStatusCards: true }, plugins: { autoInstall: [] },
+    }));
+    const service = instanceSettingsService(db, { runtimeEnv });
+    const updated = await service.updateExperimental({ enablePublicMcp: false, enablePaperclipNotebook: true });
+    expect(updated.experimental).toMatchObject({ enablePublicMcp: true, enablePaperclipNotebook: true });
+  });
 
   it("keeps sandbox policy enforced on staging after a tenant tries to disable it", async () => {
     const row = settingsRow({ enableManagedSandboxOnly: false });

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 /** Controller-owned, secret-bearing options; excluded from all durable descriptors. */
 export interface ProviderObservabilityLaunch {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   compatibilityKey: string;
   otelConfig?: Record<string, unknown>;
   environment: Readonly<Record<string, string>>;
@@ -20,14 +20,14 @@ export const AGENT_OBSERVABILITY_ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
   "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES",
-  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG", "PAPERCLIP_OBSERVABILITY_OPENCODE",
 ] as const;
 
 export function providerObservabilityEnvironment(source: NodeJS.ProcessEnv | undefined, agent: string): NodeJS.ProcessEnv {
   if (!source || !["codex", "claude"].includes(agent)) return {};
   const result: NodeJS.ProcessEnv = {};
   const names: readonly string[] = agent === "claude" ? AGENT_OBSERVABILITY_ENV_KEYS.filter(key => key !== "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG")
-    : ["OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG"];
+    : ["OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG"];
   for (const key of names) if (source[key] !== undefined) {
     // Codex carries two percent-encoded header maps. A valid 16-KiB company
     // header set can exceed 64 KiB after encoding and duplication.
@@ -74,6 +74,7 @@ export function redactObservabilityDiagnostic(message: string, environment: Node
     values.add(value);
     for (const item of value.split(",")) {
       const encoded = item.slice(item.indexOf("=") + 1);
+      values.add(encoded);
       try { values.add(decodeURIComponent(encoded)); } catch { values.add(encoded); }
     }
   }

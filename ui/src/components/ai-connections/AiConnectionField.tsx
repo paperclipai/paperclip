@@ -10,10 +10,13 @@ import {
   type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
+import { useQueryView } from "@/components/QueryView";
 import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
+import { aiConnectionDisplayLabel, isAiConnectionCompatibleForSelection } from "./model";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -24,6 +27,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function aiProviderForAdapter(
   adapterType: string,
@@ -33,8 +38,10 @@ export function aiProviderForAdapter(
       claude_local: "anthropic",
       codex_local: "openai",
       opencode_local: "openrouter",
+      pi_local: "openrouter",
       grok_local: "xai",
       copilot_runtime: "github",
+      antigravity_runtime: "google",
       gemini_local: "google",
       hermes_local: "openrouter",
     } as Record<string, AiProvider>
@@ -53,6 +60,7 @@ export function AiConnectionField({
   readOnly = false,
   preferAdvanced = false,
   routerAdapterType,
+  onUseHarnessAuth,
 }: {
   companyId: string;
   agentId?: string;
@@ -66,8 +74,12 @@ export function AiConnectionField({
   readOnly?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
+  onUseHarnessAuth?: () => void;
 }) {
-  const provider = aiProviderForAdapter(adapterType);
+  const piProvider = adapterType === "pi_local" ? model?.split("/")[0] : undefined;
+  const provider = adapterType === "pi_local" && ["anthropic", "openai", "google", "openrouter"].includes(piProvider ?? "")
+    ? piProvider as AiProvider
+    : adapterType === "pi_local" && value && value.mode !== "router" ? value.provider : aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -87,7 +99,13 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
+  const accountsView = useQueryView(accounts);
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const pendingAccount = pendingAdoption?.mode === "responsible_user"
+    ? personalDefault
+    : pendingAdoption && pendingAdoption.mode !== "router"
+      ? accounts.data?.connections.find(account => account.id === pendingAdoption.connectionId && account.grantId === pendingAdoption.grantId)
+      : undefined;
   const selectDefault = useMutation({
     mutationFn: async (result: NonNullable<typeof savedAccount>) => {
       // Reconnect retains the existing default and its access. A new account
@@ -124,7 +142,7 @@ export function AiConnectionField({
     );
   return (
     <div className="space-y-4">
-      {value && value.mode !== "router" && (adapterType !== "opencode_local" || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
+      {value && value.mode !== "router" && !isAiConnectionCompatibleForSelection(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
           This connection does not support the current harness and model. Choose
           a compatible connection before saving.
@@ -132,7 +150,7 @@ export function AiConnectionField({
       )}
       {(compatiblePools.length > 0 || value?.mode === "router") && <label className="block space-y-1 text-sm">
         AI connection
-        <select className="block w-full rounded-md border bg-background px-3 py-2" disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
+        <select className={cn("block w-full rounded-md border bg-background px-3 py-2", ANALYTICS_MASK_CLASS)} disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
           if (event.target.value) changeBinding({ mode: "router", connectionId: event.target.value });
           else changeBinding({ mode: "responsible_user", provider, method });
         }}>
@@ -144,6 +162,8 @@ export function AiConnectionField({
       </label>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
+        model={model}
+        onUseHarnessAuth={onUseHarnessAuth}
         requirement={{ companyId, provider }}
         connections={accounts.data?.connections ?? []}
         value={value}
@@ -151,14 +171,14 @@ export function AiConnectionField({
         agentId={agentId ?? ""}
         agentName={agentName}
         readOnly={readOnly}
-        loading={accounts.isPending}
-        error={accounts.error?.message}
+        loading={accounts.isPending || accountsView.kind === "reconnecting"}
+        error={accountsView.kind === "error" ? describeError(accounts.error).body : undefined}
         onChange={(binding) =>
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
-        onRetry={() => void accounts.refetch()}
+        onRetry={accountsView.retry}
       />}
       <Dialog
         open={Boolean(pendingAdoption)}
@@ -166,19 +186,17 @@ export function AiConnectionField({
           if (!open) setPendingAdoption(undefined);
         }}
       >
-        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
+        <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)} onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
-            <DialogTitle>{pendingAdoption?.mode === "router" ? `Use ${accounts.data?.pools?.find(pool => pool.id === pendingAdoption.connectionId)?.name ?? "this pool"}?` : `Adopt Connections for ${agentName}`}</DialogTitle>
+            <DialogTitle className={ANALYTICS_MASK_CLASS}>{pendingAdoption?.mode === "router" ? `Use ${accounts.data?.pools?.find(pool => pool.id === pendingAdoption.connectionId)?.name ?? "this pool"}?` : `Adopt Connections for ${agentName}`}</DialogTitle>
             <DialogDescription>
               {pendingAdoption?.mode === "router" ? "Reset existing sessions that use an account outside this pool." : "Saving validates access to the selected connection. Existing sessions keep their account or require an explicit reset before adoption."}
             </DialogDescription>
           </DialogHeader>
-          {pendingAdoption?.mode !== "router" && <p className="text-sm">
+          {pendingAdoption?.mode !== "router" && <p className={cn("text-sm", ANALYTICS_MASK_CLASS)}>
             {pendingAdoption?.mode === "responsible_user"
-              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === provider)?.name ?? "Not connected"}. Other users use their own default.`
-              : accounts.data?.connections.find(
-                  (account) => account.id === pendingAdoption?.connectionId,
-                )?.name}
+              ? `Responsible user’s default. For you: ${pendingAccount ? aiConnectionDisplayLabel(pendingAccount) : "Not connected"}. Other users use their own default.`
+              : pendingAccount && aiConnectionDisplayLabel(pendingAccount)}
           </p>}
           {pendingAdoption?.mode !== "router" && <p className="text-xs text-muted-foreground">
             After adoption, missing credentials block execution. Previous
@@ -203,7 +221,7 @@ export function AiConnectionField({
         </DialogContent>
       </Dialog>
       <Dialog open={connecting} onOpenChange={(open) => { if (!selectDefault.isPending) setConnecting(open); }}>
-        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
+        <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)} onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
             <DialogDescription>
@@ -227,7 +245,7 @@ export function AiConnectionField({
           </label>}
           {savedAccount ? <div className="space-y-4">
             {selectDefault.error ? <>
-              <p role="alert" className="text-sm text-destructive">{selectDefault.error.message}</p>
+              <p role="alert" className="text-sm text-destructive">{describeError(selectDefault.error).body}</p>
               <Button onClick={() => selectDefault.mutate(savedAccount)}>Retry default selection</Button>
             </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
           </div> :
@@ -242,6 +260,7 @@ export function AiConnectionField({
             agentIds={agentId ? [agentId] : []}
             allAgents={allAgents}
             environmentId={environmentId}
+            loginAgentId={agentId}
             onCancel={() => setConnecting(false)}
             onComplete={(result) => {
               setSavedAccount(result);

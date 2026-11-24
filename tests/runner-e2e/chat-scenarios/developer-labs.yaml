@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: developer-labs
+status: planned
+scenarios:
+  - id: developer-labs.component-reference
+    capabilities:
+      - developer-labs/design
+    context: >-
+      The person is a developer in an owned checkout; design docs and Storybook exist, but
+      neither is an agent business API.
+    query: >-
+      Show me the standard question card before I design a new interaction.
+    expected_outcome: >-
+      The agent points to the existing design or Storybook example and describes its relevant
+      states. The developer opens the fixture through its supported surface. A rendered
+      component is useful reference evidence, not proof that the real authorization and
+      continuation workflow works.
+  - id: developer-labs.interaction-fixture
+    capabilities:
+      - developer-labs/interaction-labs
+    context: >-
+      A local developer lab exposes synthetic question, denial and collaboration states; no real
+      provider work is needed.
+    query: >-
+      Show me how chat looks when a tool request is denied.
+    expected_outcome: >-
+      The response identifies the appropriate synthetic lab state and its limitation. The
+      browser displays the denial and available user action without issuing a real tool call.
+      The scenario is classified as presentation guidance, not a successful live denial or
+      chat-task acceptance test.
+  - id: developer-labs.long-thread-performance
+    capabilities:
+      - developer-labs/performance
+    context: >-
+      An owned local checkout has the documented long-thread fixture with fixed synthetic
+      content and a declared measurement environment.
+    query: >-
+      Check whether our chat slows down on a very long conversation.
+    expected_outcome: >-
+      The developer uses the existing fixture and measurement tooling, retaining environment and
+      data size with the observed timings. Chat describes measured behavior and limitations
+      rather than claiming real-user performance from one synthetic run. The fixture is not used
+      to invent model latency or production throughput.
+  - id: developer-labs.gated-lab
+    capabilities:
+      - developer-labs/route-gates
+      - navigation-preferences/fallbacks
+    context: >-
+      A production build lacks the requested developer-only route; an old link is supplied.
+    query: >-
+      Open the task-chat interaction lab from this link.
+    expected_outcome: >-
+      The browser and answer make the development-only limitation clear and offer the
+      appropriate owned-checkout path. They do not reveal a disabled internal surface or
+      silently redirect to an unrelated production task. A historical route is not represented
+      as an enabled feature.

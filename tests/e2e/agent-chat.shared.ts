@@ -25,11 +25,16 @@ export async function setup(request: APIRequestContext) {
   const original = await json(
     await request.get("/api/instance/settings/experimental"),
   );
-  await json(
-    await request.patch("/api/instance/settings/experimental", {
-      data: { enableAgentChat: true, enableClassicTaskInterface: false },
-    }),
-  );
+  const needsExperimentalPatch =
+    original.enableAgentChat !== true ||
+    original.enableClassicTaskInterface !== false;
+  if (needsExperimentalPatch) {
+    await json(
+      await request.patch("/api/instance/settings/experimental", {
+        data: { enableAgentChat: true, enableClassicTaskInterface: false },
+      }),
+    );
+  }
   const agents = [];
   for (const name of ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])
     agents.push(
@@ -113,21 +118,26 @@ export async function setup(request: APIRequestContext) {
           ),
         });
       } finally {
-        const runs = await json(
-          await request.get(`/api/companies/${company.id}/live-runs`),
-        );
-        for (const run of runs)
-          await json(
-            await request.post(`/api/heartbeat-runs/${run.id}/cancel`),
+        try {
+          const runs = await json(
+            await request.get(`/api/companies/${company.id}/live-runs`),
           );
-        await json(
-          await request.patch("/api/instance/settings/experimental", {
-            data: {
-              enableAgentChat: original.enableAgentChat,
-              enableClassicTaskInterface: original.enableClassicTaskInterface,
-            },
-          }),
-        );
+          for (const run of runs)
+            await json(
+              await request.post(`/api/heartbeat-runs/${run.id}/cancel`),
+            );
+        } finally {
+          if (needsExperimentalPatch) {
+            await json(
+              await request.patch("/api/instance/settings/experimental", {
+                data: {
+                  enableAgentChat: original.enableAgentChat,
+                  enableClassicTaskInterface: original.enableClassicTaskInterface,
+                },
+              }),
+            );
+          }
+        }
       }
     },
   };

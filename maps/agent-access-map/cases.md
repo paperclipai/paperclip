@@ -186,6 +186,23 @@ with agent credentials.
 
 Capability ID: `cases/handoffs`.
 
+Reusable workflow extension (2026-10-21): `GET/POST /api/companies/{companyId}/workflows`
+and `GET/PATCH /api/workflows/{id}` expose company-scoped metadata/Markdown prompts.
+Native `list_workflows`, `read_workflow`, `create_workflow`, `update_workflow` use
+the optional Cases group, including with generic API tools disabled. Writes use
+existing run/source-trust fences and mutation receipts. Bounded prompt reads use
+the native API JSON text paging path; every page checks current company access.
+Continuation pages require the first page's content snapshot; edits return 409
+and require restarting the read, so pages cannot silently combine definitions.
+Kickoff accepts either a workflow ID or inline text. Agent handoffs omit the ID
+to preserve, explicitly name an ID to adopt/refresh, or pass null to detach.
+Acceptance snapshots the prompt; transfer checks its task-document base revision
+before atomically adopting workflow/phase/instructions. Generic case updates
+cannot alter routing. Repeated visits and captured names remain in handoff history.
+The real-database/native-tool tests prove reuse, refresh, conflict/cancel/restart,
+cross-company denial, stopped writes, flag-off execution, and inline compatibility.
+Configured-provider acceptance of the extended journey is recorded separately.
+
 Review: `baseline`.
 
 API: `present` — POST /api/companies/{companyId}/case-handoffs; GET /api/cases/{id}/handoffs; POST /api/cases/{id}/handoffs/{handoffId}/retry and /cancel.

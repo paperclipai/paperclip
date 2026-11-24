@@ -28,12 +28,9 @@ test.afterEach(async ({ request }, testInfo) => {
 
 test("browses passive cases and rolled-up task documents without starting work or editing", async ({ page }, testInfo) => {
   page.setDefaultTimeout(10_000);
-  // Announcements can arrive after navigation and cover otherwise valid links.
-  // Dismiss through the ordinary Board control, including after reloads.
-  const dismissAnnouncement = page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
-    .getByRole("button", { name: "Dismiss announcement", exact: true });
-  const dismissAnnouncements = async () => { await dismissAnnouncement.click(); };
-  await page.addLocatorHandler(dismissAnnouncement, dismissAnnouncements);
+  await page.route("**/api/announcements/current", async (route) => {
+    await route.fulfill({ json: null });
+  });
   const api = page.request;
   const original = await json(await api.get("/api/instance/settings/experimental"));
   const company = await json(await api.post("/api/companies", { data: { name: `Read-only cases ${randomUUID()}` } }));
@@ -79,8 +76,17 @@ test("browses passive cases and rolled-up task documents without starting work o
   await page.setViewportSize({ width: 1440, height: 1000 });
   // The agentless dashboard offers onboarding. Start on the ordinary task
   // list so this zero-agent fixture can use Cases navigation without setup.
+  let releaseCompanies!: () => void;
+  const companiesHeld = new Promise<void>(resolve => { releaseCompanies = resolve; });
+  await page.route(url => url.pathname === "/api/companies", async route => {
+    await companiesHeld;
+    await route.continue();
+  });
   await page.goto(`/${company.issuePrefix}/issues`);
+  await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   await page.getByRole("link", { name: /^Cases\b/ }).first().click();
+  await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/cases$`));
+  releaseCompanies();
   const casePage = page.getByTestId("case-pages");
   const list = page.getByRole("region", { name: "Case list", exact: true });
   const choose = async (filter: string, option: string) => {
@@ -189,13 +195,9 @@ test("browses passive cases and rolled-up task documents without starting work o
   await expect(dialog.getByRole("button", { name: /^(edit|save|restore|delete)\b/i })).toHaveCount(0);
   await expect(dialog.locator('textarea, [contenteditable="true"]')).toHaveCount(0);
   await testInfo.attach("read-only-document-revisions", { body: await page.screenshot(), contentType: "image/png" });
-  // The handler's own click moves focus. Keep it out of this focus-restoration
-  // assertion, then resume ordinary dismissal before the next navigation.
-  await page.removeLocatorHandler(dismissAnnouncement);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(openReceipt).toBeFocused();
-  await page.addLocatorHandler(dismissAnnouncement, dismissAnnouncements);
   const auditLink = casePage.getByRole("link", { name: "View in Audit", exact: true });
   await expect(auditLink).toHaveAttribute("href", `/${company.issuePrefix}/activity?entityType=case&entityId=${receipt.id}`);
   await auditLink.click();
