@@ -2,7 +2,7 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
-import { assertProjectStorageEnvironment, listProjectWorkspaceProviders } from "../project-workspace-provider.js";
+import { assertProjectStorageEnvironment, listProjectWorkspaceProviders, projectStorageForEnvironment } from "../project-workspace-provider.js";
 import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { WorkspaceBusyDeferral } from "./retries.js";
@@ -790,6 +790,32 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   } satisfies ExecutionWorkspaceInput;
   const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, hostExecutionWorkspaceConfig);
   if (pluginTaskWorkspace && !pluginPrepared && latestWorkspaceStrategyType === "git_worktree") {
+    if (selectedEnvironmentForConfig && !projectExecutionWorkspacePolicy?.storageProviderPluginId
+      && resolvedWorkspace.projectId && resolvedWorkspace.workspaceId) {
+      const environmentStorage = projectStorageForEnvironment(
+        selectedEnvironmentForConfig,
+        await listProjectWorkspaceProviders(db, agent.companyId),
+      );
+      if (environmentStorage?.pluginId) {
+        throw new ConfigurationIncompleteFailure(
+          `This project's workspace storage (Core / local) does not support the environment "${selectedEnvironmentForConfig.name}". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+          {
+            configurationIncomplete: {
+              reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE,
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueId ?? null,
+              projectId: resolvedWorkspace.projectId,
+              storageProviderPluginId: null,
+              environmentId: selectedEnvironmentForConfig.id,
+              fingerprint: `project_storage_environment:core:${selectedEnvironmentForConfig.id}`,
+              actionUrl: `/agents/${agent.id}/runtime`,
+              missingBindings: [],
+            },
+          },
+        );
+      }
+    }
     throw new WorkspaceValidationFailure("The selected plugin environment does not support Core Git worktree preparation.",
       { reason: "plugin_workspace_strategy_unsupported" });
   }
