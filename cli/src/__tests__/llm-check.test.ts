@@ -64,7 +64,7 @@ describe("llmCheck", () => {
   });
 
   describe("Claude API key validation", () => {
-    it("uses claude-sonnet-4-6 model for the API request", async () => {
+    it("uses claude-sonnet-5-5 model for the API request", async () => {
       const mockFetch = vi.mocked(fetch);
       mockFetch.mockResolvedValueOnce(
         new Response(null, { status: 200 }),
@@ -87,8 +87,10 @@ describe("llmCheck", () => {
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            model: "claude-sonnet-4-6",
+            model: "claude-sonnet-5-5",
             max_tokens: 1,
+            thinking: { type: "between_tools" },
+            output_config: { effort: "low" },
             messages: [{ role: "user", content: "hi" }],
           }),
         }),
@@ -148,10 +150,10 @@ describe("llmCheck", () => {
       expect(result.repairHint).toBe("Run `paperclipai configure --section llm`");
     });
 
-    it("warns when API returns other error status", async () => {
+    it.each([403, 404, 429, 500, 529])("warns when API returns %i", async (status) => {
       const mockFetch = vi.mocked(fetch);
       mockFetch.mockResolvedValueOnce(
-        new Response(null, { status: 500 }),
+        new Response(null, { status }),
       );
 
       const config = createMinimalConfig({
@@ -162,7 +164,7 @@ describe("llmCheck", () => {
       const result = await llmCheck(config);
 
       expect(result.status).toBe("warn");
-      expect(result.message).toBe("Claude API returned status 500");
+      expect(result.message).toBe(`Claude API returned status ${status}`);
     });
 
     it("warns when network request fails", async () => {
