@@ -14093,6 +14093,40 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    const waitingRetry = issue.monitorNextCheckAt
+      ? null
+      : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
+    if (waitingRetry?.status === "scheduled_retry") {
+      // The banner also shows "Check now" for a scheduled retry, such as a
+      // usage wait. With no monitor, the check is that retry: it starts now
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      const retry = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id,
+        actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: retry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: retry.scheduledRetry?.runId ?? null,
+        details: { outcome: retry.outcome, message: retry.message, source: "monitor_check_now" },
+      });
+      if (retry.outcome === "no_scheduled_retry") {
+        throw conflict("Nothing is waiting to be checked on this task anymore. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "no_scheduled_check" });
+      }
+      if (retry.outcome === "gate_suppressed") {
+        throw conflict("The check could not start because the task changed. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "gate_suppressed" });
+      }
+      res.json({ ok: true, outcome: retry.outcome, message: retry.message });
+      return;
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,
