@@ -12,17 +12,19 @@
 // The script then fails if a tracked test file is in no program. tsc decides that,
 // not a glob: `include` silently drops foo.test.tsx when foo.test.ts exists.
 //
-// Usage: node scripts/typecheck-test-programs.mjs [--low-memory] [tsconfig ...]
-// Naming a tsconfig runs only that program and skips the coverage check.
+// Usage: node scripts/typecheck-test-programs.mjs [--low-memory] [--checkers <n>] [--concurrency <n>] [tsconfig ...]
+// Naming a tsconfig runs only that program and skips the coverage check unless --check-file or --force-coverage is given.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linkExcludedPlugins } from "./link-plugin-dev-sdk.mjs";
-import { LOW_MEMORY_VARIABLE, runTsc } from "./run-tsc.mjs";
+import { emitOnlyTscArgs, lowMemoryTscArgs, LOW_MEMORY_VARIABLE, runTsc } from "./run-tsc.mjs";
 import { PROJECTS } from "./typecheck-test-projects.mjs";
 
+export const DEFAULT_CONCURRENCY = 3;
 export const PROVIDER_WORKSPACE = "scripts/typecheck-sandbox-providers";
 
 export const SANDBOX_PROVIDERS = [
@@ -59,6 +61,126 @@ export const PROGRAMS = [
 
 // server/scripts/typecheck-layers.mjs reads this tree. Everything else must be in a program.
 export const CHECKED_ELSEWHERE = ["server/src/"];
+
+export const SANDBOX_PROVIDER_PROGRAMS = SANDBOX_PROVIDERS.map((directory) => `${directory}/tsconfig.test.json`);
+
+const GLOBAL_PROGRAM_INPUTS = new Set([
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "tsconfig.base.json",
+  ".npmrc",
+  "scripts/run-tsc.mjs",
+  "scripts/ci-typecheck-lane.mjs",
+  "scripts/typecheck-test-programs.mjs",
+  "scripts/typecheck-test-projects.mjs",
+]);
+
+const PLAYWRIGHT_TEST_PREFIXES = [
+  "tests/tsconfig.playwright.json",
+  "tests/ai-connections-app/",
+  "tests/ai-connections-review/",
+  "tests/canary-onboarding/",
+  "tests/hiring-ai-connections/",
+  "tests/html-preview/",
+  "tests/perf/",
+  "tests/release-smoke/",
+  "tests/storybook-visual/",
+  "ui/src/",
+];
+
+const hasPrefix = (files, prefixes) =>
+  files.some((file) => prefixes.some((prefix) => file === prefix || file.startsWith(prefix)));
+
+/**
+ * Selects the test programs, preparation needs, and coverage scope affected by `changedFiles` in PR mode.
+ * Returns full coverage when `changedFiles` is null/undefined or touches global typecheck inputs.
+ */
+export function selectTestPrograms(changedFiles, programs = PROGRAMS) {
+  if (!Array.isArray(changedFiles)) {
+    return {
+      programs: [...programs],
+      includeProviders: true,
+      includeRunnerEval: true,
+      checkCoverage: true,
+      changedTestFiles: null,
+    };
+  }
+  if (changedFiles.some((file) => GLOBAL_PROGRAM_INPUTS.has(file) || file.startsWith("patches/"))) {
+    return {
+      programs: [...programs],
+      includeProviders: true,
+      includeRunnerEval: true,
+      checkCoverage: true,
+      changedTestFiles: null,
+    };
+  }
+
+  const sharedChanged = hasPrefix(changedFiles, ["packages/shared/"]);
+  const sdkOrSharedChanged =
+    sharedChanged ||
+    hasPrefix(changedFiles, [
+      "packages/plugins/sdk/",
+      "scripts/typecheck-sandbox-providers/",
+      "scripts/link-plugin-dev-sdk.mjs",
+    ]);
+  const runnerChanged = hasPrefix(changedFiles, ["packages/paperclip-runner/", "packages/paperclip-eval-kernel/"]);
+  const cloudflareChanged = hasPrefix(changedFiles, ["packages/plugins/sandbox-providers/cloudflare/"]);
+
+  const selected = programs.filter((program) => {
+    if (program === "packages/db/tsconfig.test.json") {
+      return sharedChanged || hasPrefix(changedFiles, ["packages/db/"]);
+    }
+    if (program === "packages/kv-demo-mcp-server/tsconfig.test.json") {
+      return sdkOrSharedChanged || hasPrefix(changedFiles, ["packages/kv-demo-mcp-server/"]);
+    }
+    if (program.startsWith("packages/paperclip-runner/")) {
+      return sharedChanged || runnerChanged;
+    }
+    if (program === "packages/plugins/examples/plugin-orchestration-smoke-example/tsconfig.test.json") {
+      return sdkOrSharedChanged || hasPrefix(changedFiles, ["packages/plugins/examples/plugin-orchestration-smoke-example/"]);
+    }
+    if (program === "packages/plugins/plugin-workspace-diff/tsconfig.test.json") {
+      return sdkOrSharedChanged || hasPrefix(changedFiles, ["packages/plugins/plugin-workspace-diff/"]);
+    }
+    if (program === "packages/plugins/sdk/tsconfig.test.json") {
+      return sdkOrSharedChanged;
+    }
+    if (program.startsWith("packages/plugins/sandbox-providers/")) {
+      if (sdkOrSharedChanged) return true;
+      const directory = path.posix.dirname(program);
+      if (directory.startsWith("packages/plugins/sandbox-providers/cloudflare")) return cloudflareChanged;
+      return hasPrefix(changedFiles, [`${directory}/`]);
+    }
+    if (program === "scripts/scale-ramp/tsconfig.json") {
+      return hasPrefix(changedFiles, ["scripts/scale-ramp/", "scripts/scale-agents-ramp.ts"]);
+    }
+    if (program === "tests/runner-acceptance/tsconfig.json") {
+      return sharedChanged || runnerChanged || hasPrefix(changedFiles, ["tests/runner-acceptance/"]);
+    }
+    if (program === "tests/tsconfig.playwright.json") {
+      return sharedChanged || hasPrefix(changedFiles, PLAYWRIGHT_TEST_PREFIXES);
+    }
+    // Fail closed for any newly added program without an explicit rule.
+    return true;
+  });
+
+  const providerSet = new Set(SANDBOX_PROVIDER_PROGRAMS);
+  const includeProviders = selected.some((program) => providerSet.has(program));
+  const includeRunnerEval = selected.some((program) => program.startsWith("packages/paperclip-runner/"));
+  const changedTestFiles = changedFiles.filter(
+    (file) => /\.(test|spec)\.tsx?$/.test(file) && !CHECKED_ELSEWHERE.some((prefix) => file.startsWith(prefix)),
+  );
+  const tsconfigChanged = changedFiles.some((file) => /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/.test(file));
+
+  return {
+    programs: selected,
+    includeProviders,
+    includeRunnerEval,
+    checkCoverage: changedTestFiles.length > 0 || tsconfigChanged,
+    changedTestFiles: tsconfigChanged ? null : changedTestFiles.length > 0 ? changedTestFiles : null,
+  };
+}
 
 const PREPARE_STEPS = [
   ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],
@@ -114,6 +236,56 @@ function listProgramFiles(config, { cwd, env }) {
   };
 }
 
+function listProgramFilesAsync(config, { cwd, env }) {
+  const tsc = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const child = spawn(process.execPath, [tsc, "-p", config, "--listFilesOnly"], {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (chunk) => chunks.push(chunk));
+    child.stderr.on("data", (chunk) => chunks.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      const output = Buffer.concat(chunks).toString("utf8");
+      resolve({
+        status: signal ? 1 : (code ?? 1),
+        output,
+        files: output
+          .split("\n")
+          .filter(Boolean)
+          .map((file) => path.relative(cwd, file).split(path.sep).join("/")),
+      });
+    });
+  });
+}
+
+function runTscAsync(args, { cwd = process.cwd(), env = process.env } = {}) {
+  const tsc = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const chunks = [];
+    const child = spawn(process.execPath, [tsc, ...args, ...lowMemoryTscArgs(env), ...emitOnlyTscArgs(env)], {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (chunk) => chunks.push(chunk));
+    child.stderr.on("data", (chunk) => chunks.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      resolve({
+        status: signal ? 1 : (code ?? 1),
+        signal,
+        output: Buffer.concat(chunks).toString("utf8"),
+        durationMs: Date.now() - started,
+      });
+    });
+  });
+}
+
 function listWorkspaceConfigs(root) {
   const result = spawnSync("pnpm", ["ls", "-r", "--depth", "-1", "--json"], {
     cwd: root,
@@ -160,18 +332,105 @@ export function checkCoverage({
   return findUncheckedTests({ trackedFiles: trackedFiles(root), checkedFiles });
 }
 
+/**
+ * Parallel coverage check. When `onlyFiles` is provided, stops as soon as every
+ * tracked target test file is confirmed to belong to a typechecked program.
+ */
+export async function checkCoverageAsync({
+  root,
+  env = process.env,
+  programs = PROGRAMS,
+  includeProviders = true,
+  onlyFiles = null,
+  concurrency = Math.min(4, availableParallelism()),
+  workspaceConfigs = listWorkspaceConfigs,
+  trackedFiles = listTrackedFiles,
+  listFilesAsync = listProgramFilesAsync,
+  logError = console.error,
+}) {
+  const tracked = trackedFiles(root);
+  const checkedElsewhere = includeProviders
+    ? CHECKED_ELSEWHERE
+    : [...CHECKED_ELSEWHERE, "packages/plugins/sandbox-providers/"];
+
+  let remaining = null;
+  if (Array.isArray(onlyFiles)) {
+    const trackedSet = new Set(tracked);
+    const candidates = findUncheckedTests({
+      trackedFiles: onlyFiles.filter((file) => trackedSet.has(file)),
+      checkedFiles: [],
+      checkedElsewhere,
+    });
+    if (candidates.length === 0) return [];
+    remaining = new Set(candidates);
+  }
+
+  const providerSet = new Set(SANDBOX_PROVIDER_PROGRAMS);
+  const coveragePrograms = includeProviders ? programs : programs.filter((program) => !providerSet.has(program));
+  const projectConfigs = PROJECTS.map((project) => `${project}/tsconfig.json`);
+  let configs = [...workspaceConfigs(root), ...projectConfigs, ...coveragePrograms];
+
+  if (remaining) {
+    const targets = [...remaining];
+    const matchesTargetDir = (config) => {
+      const dir = path.posix.dirname(config);
+      if (dir === ".") return false;
+      return targets.some((file) => file.startsWith(`${dir}/`));
+    };
+    configs = [
+      ...configs.filter((config) => matchesTargetDir(config)),
+      ...configs.filter((config) => !matchesTargetDir(config)),
+    ];
+  }
+
+  const checkedFiles = [];
+  const queue = [...configs];
+  let failed = false;
+  const workerCount = Math.max(1, Math.min(concurrency, queue.length));
+  async function worker() {
+    while (!failed && !(remaining && remaining.size === 0)) {
+      const config = queue.shift();
+      if (!config) return;
+      const listing = await listFilesAsync(config, { cwd: root, env });
+      if (listing.status !== 0) {
+        logError(`typecheck:test-programs: could not list the files of ${config}\n${listing.output ?? ""}`);
+        failed = true;
+        return;
+      }
+      if (remaining) {
+        for (const file of listing.files) remaining.delete(file);
+      } else {
+        checkedFiles.push(...listing.files);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  if (failed) return null;
+  if (remaining) return [...remaining];
+  return findUncheckedTests({ trackedFiles: tracked, checkedFiles, checkedElsewhere });
+}
+
 export function prepareTestPrograms({
   root,
   env = process.env,
+  includeProviders = true,
+  includeRunnerEval = true,
+  includePluginSdk = true,
   pnpm = runPnpm,
   linkPlugins = linkExcludedPlugins,
   log = console.log,
   logError = console.error,
 }) {
-  for (const args of PREPARE_STEPS) {
+  const steps = PREPARE_STEPS.filter((args) => {
+    if (!includePluginSdk && args.includes("@paperclipai/plugin-sdk")) return false;
+    if (!includeRunnerEval && args.includes("@paperclipai/paperclip-runner")) return false;
+    return true;
+  });
+  for (const args of steps) {
     const status = pnpm(args, { cwd: root, env });
     if (status !== 0) return status;
   }
+  if (!includeProviders) return 0;
   const install = (directory, frozenArgs, resolveArgs) => {
     const cwd = path.join(root, directory);
     let status = pnpm(frozenArgs, { cwd, env });
@@ -203,6 +462,10 @@ export function typecheckTestPrograms({
   programs = PROGRAMS,
   coverage = true,
   prepare = true,
+  includeProviders = true,
+  includeRunnerEval = true,
+  includePluginSdk = true,
+  checkers,
   pnpm = runPnpm,
   linkPlugins = linkExcludedPlugins,
   run = runTsc,
@@ -211,14 +474,25 @@ export function typecheckTestPrograms({
   logError = console.error,
 }) {
   if (prepare) {
-    const prepared = prepareTestPrograms({ root, env, pnpm, linkPlugins, log, logError });
+    const prepared = prepareTestPrograms({
+      root,
+      env,
+      includeProviders,
+      includeRunnerEval,
+      includePluginSdk,
+      pnpm,
+      linkPlugins,
+      log,
+      logError,
+    });
     if (prepared !== 0) return prepared;
   }
 
+  const checkerArgs = Number.isInteger(checkers) && checkers >= 1 ? ["--checkers", String(checkers)] : [];
   let exitCode = 0;
   for (const config of programs) {
     log(`typecheck:test-programs: ${config}`);
-    const { status, signal } = run(["-p", config], { cwd: root, env });
+    const { status, signal } = run(["-p", config, ...checkerArgs], { cwd: root, env });
     if (signal) return status || 1;
     if (status !== 0) exitCode = status;
   }
@@ -237,32 +511,175 @@ export function typecheckTestPrograms({
   return exitCode;
 }
 
+export async function typecheckTestProgramsAsync({
+  root,
+  env = process.env,
+  programs = PROGRAMS,
+  coverage = true,
+  coverageFiles = null,
+  prepare = true,
+  includeProviders = true,
+  includeRunnerEval = true,
+  includePluginSdk = true,
+  concurrency = Math.max(1, Math.min(DEFAULT_CONCURRENCY, availableParallelism())),
+  checkers,
+  pnpm = runPnpm,
+  linkPlugins = linkExcludedPlugins,
+  runAsync = runTscAsync,
+  checkFilesAsync = checkCoverageAsync,
+  log = console.log,
+  logError = console.error,
+}) {
+  if (prepare) {
+    const prepared = prepareTestPrograms({
+      root,
+      env,
+      includeProviders,
+      includeRunnerEval,
+      includePluginSdk,
+      pnpm,
+      linkPlugins,
+      log,
+      logError,
+    });
+    if (prepared !== 0) return prepared;
+  }
+
+  const checkerArgs = Number.isInteger(checkers) && checkers >= 1 ? ["--checkers", String(checkers)] : [];
+  let exitCode = 0;
+  let aborted = false;
+  const queue = [...programs];
+  const workerCount = Math.max(1, Math.min(concurrency, queue.length));
+  async function worker() {
+    while (!aborted) {
+      const config = queue.shift();
+      if (!config) return;
+      const result = await runAsync(["-p", config, ...checkerArgs], { cwd: root, env });
+      const elapsed = typeof result.durationMs === "number" ? ` (${(result.durationMs / 1000).toFixed(1)}s)` : "";
+      log(`typecheck:test-programs: ${config}${elapsed}`);
+      if (result.output) {
+        const trimmed = result.output.endsWith("\n") ? result.output.slice(0, -1) : result.output;
+        if (result.status === 0 && !result.signal) log(trimmed);
+        else logError(trimmed);
+      }
+      if (result.signal) {
+        aborted = true;
+        exitCode ||= result.status || 1;
+        return;
+      }
+      if (result.status !== 0) exitCode = result.status;
+    }
+  }
+  if (programs.length > 0) {
+    await Promise.all(Array.from({ length: workerCount }, worker));
+  }
+  if (aborted) return exitCode || 1;
+  if (!coverage) return exitCode;
+
+  const unchecked = await checkFilesAsync({
+    root,
+    env,
+    includeProviders,
+    onlyFiles: coverageFiles,
+    logError,
+  });
+  if (unchecked === null) return exitCode || 1;
+  if (unchecked.length > 0) {
+    logError(
+      `typecheck:test-programs: ${unchecked.length} test files are in no typechecked program. ` +
+        `Add them to a program in scripts/typecheck-test-programs.mjs. A foo.test.tsx beside a foo.test.ts needs a new name.\n` +
+        unchecked.map((file) => `  ${file}`).join("\n"),
+    );
+    return exitCode || 1;
+  }
+  return exitCode;
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  const flags = args.filter((arg) => arg.startsWith("--"));
-  const programs = args.filter((arg) => !arg.startsWith("--"));
-  const unknownFlags = flags.filter((flag) => !["--low-memory", "--prepare-only", "--skip-prepare"].includes(flag));
+  let lowMemory = false;
+  let prepareOnly = false;
+  let skipPrepare = false;
+  let includeProviders = true;
+  let includeRunnerEval = true;
+  let includePluginSdk = true;
+  let noCoverage = false;
+  let forceCoverage = false;
+  let coverageOnly = false;
+  let concurrency = Math.max(1, Math.min(DEFAULT_CONCURRENCY, availableParallelism()));
+  let checkers;
+  const checkFiles = [];
+  const programs = [];
+  const unknownFlags = [];
+  let optionError = null;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--low-memory") lowMemory = true;
+    else if (arg === "--prepare-only") prepareOnly = true;
+    else if (arg === "--skip-prepare") skipPrepare = true;
+    else if (arg === "--no-providers") includeProviders = false;
+    else if (arg === "--no-runner-eval") includeRunnerEval = false;
+    else if (arg === "--skip-plugin-sdk") includePluginSdk = false;
+    else if (arg === "--no-coverage") noCoverage = true;
+    else if (arg === "--force-coverage") forceCoverage = true;
+    else if (arg === "--coverage-only") coverageOnly = true;
+    else if (arg === "--concurrency") {
+      concurrency = Number(args[++i]);
+      if (!Number.isInteger(concurrency) || concurrency < 1) optionError = "--concurrency requires a positive integer";
+    } else if (arg === "--checkers") {
+      checkers = Number(args[++i]);
+      if (!Number.isInteger(checkers) || checkers < 1) optionError = "--checkers requires a positive integer";
+    } else if (arg === "--check-file") {
+      const file = args[++i];
+      if (!file || file.startsWith("--")) optionError = "--check-file requires a path";
+      else checkFiles.push(file);
+    } else if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+    } else {
+      programs.push(arg);
+    }
+  }
+
   const unknown = programs.filter((program) => !PROGRAMS.includes(program));
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const env = flags.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env;
+  const env = lowMemory ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env;
+
   if (unknownFlags.length > 0) {
     console.error(`Unknown option: ${unknownFlags.join(", ")}`);
     process.exitCode = 2;
-  } else if (flags.includes("--prepare-only") && (flags.includes("--skip-prepare") || programs.length > 0)) {
+  } else if (optionError) {
+    console.error(optionError);
+    process.exitCode = 2;
+  } else if (prepareOnly && (skipPrepare || programs.length > 0)) {
     console.error("--prepare-only takes no programs and cannot be combined with --skip-prepare");
     process.exitCode = 2;
   } else if (unknown.length > 0) {
     console.error(`Unknown program: ${unknown.join(", ")}. Known programs:\n  ${PROGRAMS.join("\n  ")}`);
     process.exitCode = 2;
-  } else if (flags.includes("--prepare-only")) {
-    process.exitCode = prepareTestPrograms({ root, env });
-  } else {
-    process.exitCode = typecheckTestPrograms({
+  } else if (prepareOnly) {
+    process.exitCode = prepareTestPrograms({
       root,
       env,
-      programs: programs.length > 0 ? programs : PROGRAMS,
-      coverage: programs.length === 0,
-      prepare: !flags.includes("--skip-prepare"),
+      includeProviders,
+      includeRunnerEval,
+      includePluginSdk,
+    });
+  } else {
+    const selectedPrograms = coverageOnly ? [] : programs.length > 0 ? programs : PROGRAMS;
+    const coverage = !noCoverage && (coverageOnly || forceCoverage || checkFiles.length > 0 || programs.length === 0);
+    process.exitCode = await typecheckTestProgramsAsync({
+      root,
+      env,
+      programs: selectedPrograms,
+      coverage,
+      coverageFiles: checkFiles.length > 0 && !forceCoverage ? checkFiles : null,
+      prepare: !skipPrepare,
+      includeProviders,
+      includeRunnerEval,
+      includePluginSdk,
+      concurrency,
+      checkers,
     });
   }
 }

@@ -147,6 +147,7 @@ export function createEventResult(event: RestEvent): CallToolResult {
 export const createEvent = defineTool({
   definition: {
     name: "create_event",
+    title: "Create an event",
     description: "Creates an event on a calendar and returns it. By default Google emails an invitation to every attendee (notificationLevel ALL); pass notificationLevel NONE to create it silently.",
     inputSchema: {
       type: "object",

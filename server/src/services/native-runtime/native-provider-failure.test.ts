@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
 import { antigravityModelRefusalMessage } from "@paperclipai/shared";
-import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, nativeAcceptedResultOutlivesProviderFailure, nativeProviderUsageLimitFromEvent, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -352,5 +352,32 @@ describe("Google Antigravity provider failures", () => {
     const observed = createNativeProviderFailureObservation({ kind: "acpx", agent: "claude", model: "m" });
     observed.observe(failed({ provider: "claude", category: "overloaded", message: "Overloaded", httpStatus: 529, retryability: "transient" }));
     expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
+});
+
+describe("an accepted finish followed by a provider refusal", () => {
+  const done: PrpTerminalState = { ...terminal, reportedWorkDisposition: "done" };
+  const outlives = (providerFailure: Record<string, unknown>, end: PrpTerminalState = done) => {
+    const observed = createNativeProviderFailureObservation({ kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low" }, { antigravityRoute: "subscription" });
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", message: "No capacity available for model gemini-3.8-flash-low on the server", ...providerFailure } } } });
+    return nativeAcceptedResultOutlivesProviderFailure({ terminal: end,
+      providerFailure: observed.forTerminal("turn", end), providerExplanation: observed.providerFailureForTerminal("turn", end) });
+  };
+
+  it("keeps the finish after a transient capacity refusal or rate limit", () => {
+    expect(outlives({ category: "overloaded", httpStatus: 503, providerCode: "UNAVAILABLE", retryability: "transient" })).toBe(true);
+    expect(outlives({ category: "rate_limit", httpStatus: 429, retryability: "transient" })).toBe(true);
+  });
+
+  it("keeps real failures and unfinished work as failures", () => {
+    expect(outlives({ category: "model_unavailable", providerCode: "antigravity_model_unavailable", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "quota_exhausted", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "authentication", retryability: "requires_action" })).toBe(false);
+    expect(outlives({ category: "overloaded", retryability: "unknown" })).toBe(false);
+    expect(outlives({ category: "timeout", retryability: "transient" })).toBe(false);
+    // Only an accepted done report outlives the refusal; other reports keep the capacity retry.
+    expect(outlives({ category: "overloaded", retryability: "transient" }, { ...done, reportedWorkDisposition: "needs_review" })).toBe(false);
+    expect(outlives({ category: "overloaded", retryability: "transient" }, { ...done, runTerminalState: "cancelled", turnTerminalState: "cancelled" })).toBe(false);
   });
 });

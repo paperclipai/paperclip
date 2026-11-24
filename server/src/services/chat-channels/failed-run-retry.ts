@@ -1,4 +1,5 @@
 import { hasCommittedNativeControllerContainment } from "../native-runtime/native-failed-run-owner-release.js";
+import { nativeEffectiveTerminal } from "../native-runtime/native-accepted-outcome.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork, notifyTaskRetrySettlement } from "../deferred-execution-notifications.js";
 import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
@@ -996,7 +997,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const independentFailedInput = input.taskRetryIntentId && pendingSources?.length &&
       pendingSources.every(action => action.payload.requestedByActorType === "user") &&
       commentIds.every(id => !previousComments.has(id)) && failedRun.status === "failed" &&
-      (accepted?.resultJson.terminal as Record<string, unknown> | undefined)?.runTerminalState === "failed";
+      nativeEffectiveTerminal(accepted?.resultJson, { ...(accepted?.resultJson.terminal as Record<string, unknown> | undefined) }).runTerminalState === "failed";
     const [resultPublication] = await tx
       .select({ id: chatPublications.id })
       .from(chatPublications)

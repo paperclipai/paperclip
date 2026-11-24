@@ -299,12 +299,17 @@ test("secondary chat navigation preserves layout, separate conversations, histor
   const originalExperimental = await json(await request.get("/api/instance/settings/experimental"));
   const f = await setup(request);
   const originalWorkspace = await json(await request.get("/api/workspace-preferences/me"));
-  const workspacePath = `/api/companies/${f.company.id}/workspace-preferences/me`;
   try {
-    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: false } }));
-    await json(await request.patch("/api/instance/settings/experimental", {
-      data: { enableStreamlinedUi: true },
-    }));
+    await page.route("**/api/workspace-preferences/me", (route) =>
+      route.fulfill({
+        json: { ...originalWorkspace, coordinatorWorkspaceEnabled: false },
+      }),
+    );
+    await page.route("**/api/instance/settings/experimental", (route) =>
+      route.fulfill({
+        json: { ...originalExperimental, enableStreamlinedUi: true },
+      }),
+    );
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
     await page.locator('a[href$="/chats"]').click();
     // With no recent conversation, Chat opens the first human-created primary.
@@ -466,10 +471,6 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await page.reload();
     await expect(page.getByTestId("task-chat-human-bubble").getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
-    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
-    await json(await request.patch("/api/instance/settings/experimental", {
-      data: { enableStreamlinedUi: originalExperimental.enableStreamlinedUi },
-    }));
   }
 });

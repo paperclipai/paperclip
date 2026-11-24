@@ -649,6 +649,55 @@ describe("HTTP logger redaction", () => {
     expect(log.reqQuery).toBeUndefined();
   });
 
+  it.each([400, 403, 409, 429, 500])("keeps tool-call arguments out of %i logs", async status => {
+    const canaries = ["recipient-canary@example.com", "mail-body-canary", "doc-text-canary"];
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((_req, _res, next) => next(new HttpError(status, "Tool call failed")));
+    app.use(errorHandler);
+    const paths = [
+      "/api/tool-gateway/tools/call",
+      "/api/tool-gateway/gateways/gateway-1/mcp",
+      "/mcp/gateways/public-gateway-1",
+      "/mcp/native-runs/run-1",
+      "/mcp/runtime-tools",
+      "/mcp/runner",
+      "/api/mcp/project-tools",
+      "/api/issues/issue-1/mcp-app-views/view-1/tool-calls",
+      "/api/tool-connections/connection-1/test-calls",
+      "/API/Tool-Gateway/Tools/Call/",
+    ];
+    for (const path of paths) {
+      const response = await request(app).post(path).send({
+        toolName: "gmail.create_draft",
+        parameters: { to: [canaries[0]], body: canaries[1] },
+        params: { arguments: { text: canaries[2] } },
+      });
+      expect(response.status).toBe(status);
+    }
+    const output = chunks.join("");
+    for (const canary of canaries) expect(output).not.toContain(canary);
+    const logs = chunks.flatMap(chunk => chunk.trim().split("\n").filter(Boolean).map(line => JSON.parse(line)));
+    expect(logs).toHaveLength(paths.length);
+    for (const log of logs) expect(log.reqBody).toBe("[REDACTED]");
+  });
+
+  it("keeps request bodies on other failed routes", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((_req, _res, next) => next(new HttpError(409, "Conflict")));
+    app.use(errorHandler);
+    await request(app).post("/api/tool-gateway/sessions").send({ agentId: "agent-1" });
+    const log = JSON.parse(chunks.join("").trim()) as { reqBody: unknown };
+    expect(log.reqBody).toEqual({ agentId: "agent-1" });
+  });
+
   it("redacts failed secret payload values from structured request logs", async () => {
     const chunks: string[] = [];
     const stream = new Writable({

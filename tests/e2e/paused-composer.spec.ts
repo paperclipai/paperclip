@@ -25,10 +25,9 @@ async function pauseTask(page: Page) {
   await page.getByRole("button", { name: "Pause work", exact: true }).click({ timeout: 10_000 });
 }
 
-async function cleanupFixture(request: APIRequestContext, companyId: string, classic: boolean, primaryFailed: boolean) {
+async function cleanupFixture(request: APIRequestContext, companyId: string, primaryFailed: boolean) {
   const operations = [
     { name: "archive fixture company", run: () => request.patch(`/api/companies/${companyId}`, { data: { status: "archived" } }) },
-    { name: "restore task interface", run: () => request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }) },
   ];
   const outcomes = await Promise.allSettled(operations.map(async operation => {
     const response = await operation.run();
@@ -39,7 +38,7 @@ async function cleanupFixture(request: APIRequestContext, companyId: string, cla
   if (!failures.length) return;
   if (!primaryFailed) throw new AggregateError(failures.map(failure => new Error(`${failure.operation}: ${failure.error}`)), "Paused composer fixture cleanup failed");
   // A timeout may have disposed the request fixture. Keep that original
-  // failure while retaining both cleanup outcomes for diagnosis.
+  // failure while retaining cleanup outcomes for diagnosis.
   console.warn("Paused composer fixture cleanup failed after the primary failure", failures);
   await test.info().attach("paused-composer-cleanup-errors", {
     body: Buffer.from(JSON.stringify(failures, null, 2)), contentType: "application/json",
@@ -54,9 +53,11 @@ for (const classic of [false, true]) {
     await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
       userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
     } }));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...settings, enableClassicTaskInterface: classic,
+    } }));
     let primaryFailed = false;
     try {
-      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }));
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
         name: "Resume preview fixture", role: "engineer", adapterType: "process",
         adapterConfig: { command: "/usr/bin/true" },
@@ -93,7 +94,7 @@ for (const classic of [false, true]) {
       primaryFailed = true;
       throw error;
     } finally {
-      await cleanupFixture(request, company.id, settings.enableClassicTaskInterface, primaryFailed);
+      await cleanupFixture(request, company.id, primaryFailed);
     }
   });
 
@@ -104,9 +105,11 @@ for (const classic of [false, true]) {
     await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
       userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
     } }));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...settings, enableClassicTaskInterface: classic,
+    } }));
     let primaryFailed = false;
     try {
-      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }));
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
         name: "Paused composer fixture", role: "engineer", adapterType: "process",
         adapterConfig: { command: "/usr/bin/true" },
@@ -173,7 +176,7 @@ for (const classic of [false, true]) {
       primaryFailed = true;
       throw error;
     } finally {
-      await cleanupFixture(request, company.id, settings.enableClassicTaskInterface, primaryFailed);
+      await cleanupFixture(request, company.id, primaryFailed);
     }
   });
 }
