@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 1577,
-    "withSetup": 1577,
-    "inventory": 2142
+    "measured": 1573,
+    "withSetup": 1573,
+    "inventory": 2138
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
@@ -900,7 +900,6 @@
     "server/src/__tests__/prepared-chat-authorization.integration.test.ts": 7209,
     "server/src/__tests__/prepared-statements-driver.test.ts": 6901,
     "server/src/__tests__/prepared-statements.test.ts": 803,
-    "server/src/__tests__/primary-agent-guidance.test.ts": 4326,
     "server/src/__tests__/primary-agent.test.ts": 10405,
     "server/src/__tests__/principal-access-compatibility.test.ts": 3032,
     "server/src/__tests__/privacy-production-review.test.ts": 12611,
@@ -1032,7 +1031,6 @@
     "server/src/__tests__/scoped-deadline-work-notifications.test.ts": 2950,
     "server/src/__tests__/scoped-deadline-work.test.ts": 2998,
     "server/src/__tests__/secret-binding-discovery.test.ts": 2921,
-    "server/src/__tests__/secret-entry-guidance.test.ts": 3727,
     "server/src/__tests__/secret-provider-registry.test.ts": 917,
     "server/src/__tests__/secret-sensitive-request-error.test.ts": 6884,
     "server/src/__tests__/secrets-service-dangling-user-secret.test.ts": 8396,
@@ -1453,7 +1451,6 @@
     "server/src/services/chat-channels/slack/receipt-timing.test.ts": 940,
     "server/src/services/chat-channels/slack/signing-secret-preflight.test.ts": 7167,
     "server/src/services/chat-channels/slack/wake-authority.test.ts": 908,
-    "server/src/services/chat-communication-guidance.test.ts": 1886,
     "server/src/services/chat-control-admission-retry.test.ts": 5391,
     "server/src/services/chat-discord-adapter-patch.test.ts": 4770,
     "server/src/services/chat-discord-command-registration-store.test.ts": 7446,
@@ -1969,7 +1966,6 @@
     "server/src/services/object-run-log-store.test.ts": 9158,
     "server/src/services/offline-workspace-operation-reconciliation.test.ts": 8220,
     "server/src/services/onboarding-first-task-assets.test.ts": 2668,
-    "server/src/services/onboarding-greeting.test.ts": 1943,
     "server/src/services/online-durable-data-migration-postgres.test.ts": 9418,
     "server/src/services/online-durable-data-migration.test.ts": 8010,
     "server/src/services/online-legacy-workspace-recovery.test.ts": 6018,

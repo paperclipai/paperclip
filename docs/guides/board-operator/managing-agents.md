@@ -70,7 +70,7 @@ Edit an agent's configuration from the agent detail page:
 
 - **Adapter config** — change model, prompt template, working directory, environment variables
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
-- **Budget** — monthly spend limit. It counts billed cost, so it does not limit an agent that runs on a subscription
+- **Budget** — monthly spend limit. It counts billed cost. Usage on a provider subscription adds $0 to it
 
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
 
@@ -90,7 +90,7 @@ POST /api/agents/{agentId}/resume
 
 An agent is also paused when its recorded spend reaches its monthly budget, unless the hard stop is turned off for that budget. A budget pause opens a budget incident. Resolve it from the incident: raise the budget, or keep the agent paused. A budget pause on a monthly budget also ends when the next UTC month starts.
 
-Budgets count dollars only. Usage on a provider subscription is recorded at $0, so a budget does not pause an agent that runs on a subscription. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
+Budgets count dollars only. Usage on a provider subscription is recorded at $0, so an agent's subscription usage never reaches its budget. A hard stop on the company budget or on a project budget still stops the agent. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
 
 ## Terminating Agents
 
