@@ -584,6 +584,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
     disableForIssue: async () => null,
     reconcileTaskWatchdogs: async () => ({
       checked: 0,
+      failed: 0,
       triggered: 0,
       live: 0,
       pendingFirstRun: 0,
@@ -595,6 +596,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
     }),
     reconcileForIssueAndAncestors: async () => ({
       checked: 0,
+      failed: 0,
       triggered: 0,
       pendingFirstRun: 0,
       incomplete: 0,
