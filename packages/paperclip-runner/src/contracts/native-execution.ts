@@ -6,6 +6,7 @@ import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind }
 import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
 import { isDecodableAcpxVersion, isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
@@ -25,10 +26,10 @@ export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V2 = "paperclip.native-model-envelope.v2" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3" as const;
 export const NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS = 86_400_000;
-/** Antigravity's native swarm provider mode; its request travels in `provider.swarmRequest`. */
-export const ANTIGRAVITY_SWARM_PROVIDER_MODE = "swarm" as const;
+/** Antigravity's native swarm provider mode; its request travels in `provider.swarmRequest` (protocol/provider-schemas/acpx-sidecar.schema.json). */
+export const ANTIGRAVITY_SWARM_PROVIDER_MODE = GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE;
 /** The longest /swarm request the swarm route sends (the server refuses longer ones up front). */
-export const NATIVE_SWARM_REQUEST_MAX_CHARS = 16_000;
+export const NATIVE_SWARM_REQUEST_MAX_CHARS = GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS;
 
 export type NativeExecutionMode = "default" | "plan";
 

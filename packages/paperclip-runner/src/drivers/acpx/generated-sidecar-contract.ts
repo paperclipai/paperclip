@@ -70,6 +70,11 @@ export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
 
 export const GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE = 9007199254740991;
 
+export const GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE = "swarm";
+export const GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3";
+export const GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD = "swarmRequest";
+export const GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS = 16000;
+
 export type GeneratedAcpxBackgroundTasks = { live: number };
 
 export function readGeneratedAcpxBackgroundTasks(value: unknown): GeneratedAcpxBackgroundTasks | null {

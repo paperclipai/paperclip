@@ -11,7 +11,7 @@ import {
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
-import { NATIVE_MODEL_ENVELOPE_SCHEMA, NATIVE_SWARM_REQUEST_MAX_CHARS } from "../../contracts/native-execution.js";
+import { GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
 import { antigravitySwarmEvent } from "./antigravity-swarm-presentation.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import type { AcpxModelStatus } from "./model-verification.js";
@@ -240,9 +240,9 @@ function addUsage(total: Json | null, usage: unknown): Json | null {
 export function antigravitySwarmRequestText(turnText: string): string | null {
   let envelope: Json;
   try { envelope = record(JSON.parse(turnText)); } catch { return null; }
-  if (envelope.schema !== NATIVE_MODEL_ENVELOPE_SCHEMA) return null;
-  const request = envelope.swarmRequest;
-  return typeof request === "string" && request.trim() && request.length <= NATIVE_SWARM_REQUEST_MAX_CHARS ? request : null;
+  if (envelope.schema !== GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA) return null;
+  const request = envelope[GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD];
+  return typeof request === "string" && request.trim() && request.length <= GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS ? request : null;
 }
 
 function failed(code: string, message: string): AcpRuntimeTurnResult {

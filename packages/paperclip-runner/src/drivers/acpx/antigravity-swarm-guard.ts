@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createProviderFailure } from "../provider-failure.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE } from "./generated-sidecar-contract.js";
 
 /**
  * Google Antigravity CLI route (`agy acp`), used only for a turn the signed-in
@@ -19,7 +20,7 @@ import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
  * - none of those change later in the session;
  * - helpers share the task workspace (`inherit`); `share` and `branch` are refused.
  */
-export const ANTIGRAVITY_SWARM_MODE = "swarm";
+export const ANTIGRAVITY_SWARM_MODE = GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE;
 export const ANTIGRAVITY_CLI_AGENT_NAME = "Antigravity ACP Server";
 export const ANTIGRAVITY_CLI_SESSION_MODE = "auto";
 /** Google's stable endpoint; the CLI's default is the daily one. */

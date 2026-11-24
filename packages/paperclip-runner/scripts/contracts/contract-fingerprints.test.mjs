@@ -59,6 +59,9 @@ test("contract edits change the digest", () => {
     // A nested runtime context field, which the pack's strict parser rejects.
     [`${R}/protocol/provider-schemas/runtime-context.schema.json`, s => s.replace("\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" }",
       "\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" },\n        \"newContextField\": true")],
+    // The Antigravity swarm turn's request field: an older pack reads the request elsewhere.
+    [SIDECAR_SCHEMA, s => s.replace("\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 16000 }",
+      "\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 8000 }")],
     [SIDECAR_SCHEMA, s => s.replace("\"readOnly\": { \"type\": \"boolean\" }", "\"readOnly\": { \"type\": \"boolean\" },\n        \"newPolicyField\": { \"type\": \"boolean\" }")],
     [`${RUST}/configured_environment.rs`, s => s.replace("const RESERVED: &[&str] = &[", "const RESERVED: &[&str] = &[\"NEW_KEY\",")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
