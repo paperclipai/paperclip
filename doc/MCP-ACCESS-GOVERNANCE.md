@@ -24,6 +24,14 @@ Operator guide for Paperclip's MCP tool access surface. Audience: board users an
 
 ## Mental model
 
+Tool results from connected MCP servers retain valid native content blocks,
+including images, on the gateway's MCP protocol endpoint. This projection uses
+the result after gateway validation and redaction. The gateway does not fetch a
+second provider result. Invalid native blocks fall back to the governed text.
+Stored replay receipts remain receipts; the gateway does not repeat a tool call
+to recover an image. The selected agent harness and model must also support the
+content type.
+
 Paperclip governs MCP tool access by separating four concerns:
 
 ```
