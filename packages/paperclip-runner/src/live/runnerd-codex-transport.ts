@@ -94,6 +94,7 @@ import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import { ACPX_AUTH_JSON_FILE_ENV, acpxCredentialFileSourcePath, supportsAcpxCredentialFile } from "../drivers/acpx/credential-file.js";
 import {
   createSanitizedAwsAgentCoreEnvironment,
   createSanitizedClaudeManagedEnvironment,
@@ -3954,6 +3955,10 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
     const credentialBinding = createAcpxCredentialBinding(
       input.options.environment, input.options.acpxAgent ?? "codex", input.identity.normalizedSessionId,
     );
+    const credentialFile = acpxCredentialFileSourcePath(input.options.environment);
+    if (credentialFile !== undefined && !supportsAcpxCredentialFile(input.options.acpxAgent ?? "codex")) {
+      throw new Error("Managed credential files require the Codex or Grok ACPX profile");
+    }
     return {
       ...createSanitizedAcpxSpawnInput(
         input.options.environment,
@@ -3962,6 +3967,7 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       ...(credentialBinding === undefined ? {} : { [ACPX_CREDENTIAL_BINDING_ENV]: credentialBinding }),
       ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
+      ...(credentialFile === undefined ? {} : { [ACPX_AUTH_JSON_FILE_ENV]: credentialFile }),
       ...(input.options.acpxAgent === "antigravity" && input.options.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET } : {}),
       ...commonIdentity,

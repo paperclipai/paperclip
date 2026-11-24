@@ -246,6 +246,10 @@ fn pi_credential_environment_keys(binding: Option<&str>) -> Result<Vec<String>, 
     Ok(value.names)
 }
 
+/// Absolute path of an execution-host `auth.json` for an ACPX Codex or Grok
+/// session. See the Runner README for the seeding and write-back contract.
+pub(crate) const ACPX_AUTH_JSON_FILE_ENV: &str = "PAPERCLIP_ACPX_AUTH_JSON_FILE";
+
 impl AcpxSidecarTransport {
     pub fn start(config: &AcpxSidecarTransportConfig) -> Result<Self, LocalRunnerError> {
         Self::start_with_environment_keys(config, &[])
@@ -399,6 +403,17 @@ impl AcpxSidecarTransport {
         if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
         {
             keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
+        }
+        if std::env::var_os(ACPX_AUTH_JSON_FILE_ENV).is_some_and(|value| !value.is_empty()) {
+            // The execution host's credential file seeds the isolated provider
+            // home. Only the sidecar receives the path; it never reaches the
+            // provider. Other agents have no file credential, so fail closed.
+            if !matches!(agent, "codex" | "grok") {
+                return Err(LocalRunnerError::invalid(
+                    "Managed credential files require the Codex or Grok ACPX profile",
+                ));
+            }
+            keys.push(ACPX_AUTH_JSON_FILE_ENV);
         }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at

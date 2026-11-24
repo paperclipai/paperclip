@@ -89,6 +89,39 @@ describe("Grok isolated credentials", () => {
     expect(await readFile(join(directory, "auth-refresh.json"), "utf8")).toBe(credential);
     expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(successor);
   });
+  it("stages a host credential file and retains its refresh for write-back", async () => {
+    const directory = await home();
+    const source = join(await home(), "auth.json");
+    await writeFile(source, credential, { mode: 0o600 });
+    const lease = await stageManagedGrokCredential({ agentHomeDirectory: directory, sourcePath: source });
+    expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(credential);
+    const refreshed = credential.replace("test-token", "refreshed-token");
+    await writeFile(join(directory, "auth.json"), refreshed, { mode: 0o600 });
+    await lease.close();
+    expect(await readFile(join(directory, "auth-refresh.json"), "utf8")).toBe(refreshed);
+    expect(await readFile(source, "utf8")).toBe(credential);
+  });
+  it.each([
+    { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential },
+    { XAI_API_KEY: "test-key" },
+  ])("rejects a host credential file combined with another source", async environment => {
+    const source = join(await home(), "auth.json");
+    await writeFile(source, credential, { mode: 0o600 });
+    await expect(stageManagedGrokCredential({ agentHomeDirectory: await home(), environment, sourcePath: source }))
+      .rejects.toThrow(/ambiguous/);
+  });
+  it("rejects a host credential file that is not a Grok login", async () => {
+    const source = join(await home(), "auth.json");
+    await writeFile(source, JSON.stringify({ tokens: { account_id: "account-1", access_token: "codex" } }), { mode: 0o600 });
+    const directory = await home();
+    await expect(stageManagedGrokCredential({ agentHomeDirectory: directory, sourcePath: source })).rejects.toThrow(/malformed/);
+    await expect(stat(join(directory, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each(["codex", "grok"] as const)("never passes the host credential file path to %s", agent => {
+    const result = createSanitizedAcpxSpawnInput({ PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json", PATH: "/usr/bin" }, agent);
+    expect(result.env).not.toHaveProperty("PAPERCLIP_ACPX_AUTH_JSON_FILE");
+    expect(JSON.stringify(result.env)).not.toContain("/host/auth.json");
+  });
   it("never passes other providers, host homes or the inline credential to Grok", () => {
     const result = createSanitizedAcpxSpawnInput({ XAI_API_KEY: "selected", HOME: "/host", GROK_HOME: "/host/.grok", OPENAI_API_KEY: "other", PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential }, "grok");
     expect(result.env).toEqual({ XAI_API_KEY: "selected" });

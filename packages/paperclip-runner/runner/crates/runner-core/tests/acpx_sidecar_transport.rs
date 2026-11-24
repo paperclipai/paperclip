@@ -662,3 +662,63 @@ fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials(
     }
     transport.shutdown().unwrap();
 }
+
+#[test]
+#[cfg(unix)]
+fn host_credential_file_reaches_only_file_credential_sidecars() {
+    const CHILD: &str = "PAPERCLIP_TEST_CREDENTIAL_FILE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for agent in ["codex", "grok", "claude", "cursor"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "host_credential_file_reaches_only_file_credential_sidecars",
+                ])
+                .env_clear()
+                .env(CHILD, agent)
+                .env("PATH", "/usr/bin:/bin")
+                .env(
+                    "PAPERCLIP_ACPX_AUTH_JSON_FILE",
+                    "/host/credentials/auth.json",
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "agent={agent}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        return;
+    }
+    let agent = std::env::var(CHILD).unwrap();
+    let response = json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": 1, "ok": true, "result": { "environment": "%s" },
+    });
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!(
+                "IFS= read -r request; printf '{response}\\n' \"$PAPERCLIP_ACPX_AUTH_JSON_FILE\"; IFS= read -r next"
+            ),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(100),
+    };
+    let started = AcpxSidecarTransport::start_for_agent(&config, &agent);
+    if !matches!(agent.as_str(), "codex" | "grok") {
+        let error = started.err().expect("other agents fail closed");
+        assert!(error.to_string().contains("Codex or Grok ACPX"), "{error}");
+        return;
+    }
+    let mut transport = started.unwrap();
+    let response = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("sidecar should report its launch environment");
+    assert_eq!(response["environment"], "/host/credentials/auth.json");
+    transport.shutdown().unwrap();
+}

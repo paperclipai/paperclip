@@ -5,7 +5,7 @@ import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { readNativeSemanticReceipt, type SemanticToolResult } from "../semantic-tool-receipt.js";
 import { validateAcpxRichEvent } from "./profile-extensions.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1516,6 +1516,79 @@ describe("ACPX runtime host", () => {
       await expect(readFile(join(home, filename))).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+
+  const hostCredentialFiles = {
+    codex: { model: "gpt-5.6-sol", permissionMode: "approve-all" as const, home: "CODEX_HOME",
+      document: JSON.stringify({ tokens: { account_id: "account-1", access_token: "host-access", refresh_token: "host-refresh" }, last_refresh: "2026-01-01T00:00:00Z" }),
+      inline: "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET", apiKey: "OPENAI_API_KEY",
+      malformed: JSON.stringify({ tokens: { access_token: "no-account" } }) },
+    grok: { model: "grok-4.7", permissionMode: "approve-reads" as const, home: "GROK_HOME",
+      document: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "host-access", refresh_token: "host-refresh", expires_at: 1_767_225_600 } }),
+      inline: "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", apiKey: "XAI_API_KEY",
+      malformed: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "host-access" } }) },
+  } as const;
+
+  it.each(["codex", "grok"] as const)("seeds the isolated %s home from a host credential file without exposing its path", async agent => {
+    const fixture = await hostFixture();
+    const profile = hostCredentialFiles[agent];
+    const source = join(fixture.root, "host-auth.json");
+    await writeFile(source, profile.document, { mode: 0o600 });
+    let home = "";
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent, model: profile.model, permissionMode: profile.permissionMode,
+      environment: { PAPERCLIP_ACPX_AUTH_JSON_FILE: source }, managedCredentialSourcePath: source,
+    }, fixture.dependencies({ openRuntime: async options => {
+      home = options.launchEnvironment[profile.home]!;
+      expect(await readFile(join(home, "auth.json"), "utf8")).toBe(profile.document);
+      expect((await stat(join(home, "auth.json"))).mode & 0o777).toBe(0o600);
+      expect(options.launchEnvironment).not.toHaveProperty("PAPERCLIP_ACPX_AUTH_JSON_FILE");
+      expect(JSON.stringify(options.launchEnvironment)).not.toContain(source);
+      throw new Error("provider stopped after seeding");
+    } }))).rejects.toThrow("provider stopped after seeding");
+    await expect(readFile(join(home, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    // Seeding copies the file; it never moves or rewrites the host's copy.
+    expect(await readFile(source, "utf8")).toBe(profile.document);
+  });
+
+  it.each(["codex", "grok"] as const)("fails %s admission for an ambiguous, relative, linked or malformed host credential file", async agent => {
+    const profile = hostCredentialFiles[agent];
+    const fixture = await hostFixture();
+    const source = join(fixture.root, "host-auth.json");
+    const malformed = join(fixture.root, "malformed-auth.json");
+    const exposed = join(fixture.root, "exposed-auth.json");
+    const link = join(fixture.root, "linked-auth.json");
+    await writeFile(source, profile.document, { mode: 0o600 });
+    await writeFile(malformed, profile.malformed, { mode: 0o600 });
+    await writeFile(exposed, profile.document, { mode: 0o644 });
+    await chmod(exposed, 0o644);
+    await symlink(source, link);
+    const cases: [string, NodeJS.ProcessEnv, RegExp][] = [
+      [source, { [profile.inline]: profile.document }, /ambiguous/],
+      [source, { [profile.apiKey]: "test-key" }, /ambiguous/],
+      ["relative/auth.json", {}, /external absolute path/],
+      [malformed, {}, /malformed/],
+      [exposed, {}, /permissions are unsafe/],
+      [link, {}, /credential missing/],
+    ];
+    for (const [path, environment, error] of cases) {
+      const openRuntime = vi.fn();
+      await expect(AcpxRuntimeHost.open({
+        ...fixture.options, agent, model: profile.model, permissionMode: profile.permissionMode,
+        environment, managedCredentialSourcePath: path,
+      }, fixture.dependencies({ openRuntime }))).rejects.toThrow(error);
+      expect(openRuntime).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects a host credential file for an agent without a file credential", async () => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn();
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all",
+      environment: { ANTHROPIC_API_KEY: "test-key" }, managedCredentialSourcePath: join(fixture.root, "auth.json"),
+    }, fixture.dependencies({ openRuntime }))).rejects.toThrow("Managed credential files require the Codex or Grok ACPX profile");
+    expect(openRuntime).not.toHaveBeenCalled();
   });
 
   it.each(["subscription", "api_key"])("retains only the final subscription snapshot after Codex exits: %s", async mode => {

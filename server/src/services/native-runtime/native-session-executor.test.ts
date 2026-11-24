@@ -20303,6 +20303,7 @@ describe("runnerd provider runtime wiring", () => {
         PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
         PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
         PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/untrusted/claude",
+        PAPERCLIP_ACPX_AUTH_JSON_FILE: "/untrusted/auth.json",
       },
     });
 
@@ -20323,6 +20324,7 @@ describe("runnerd provider runtime wiring", () => {
       localTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
     ).toBeUndefined();
     expect(localTransportOptions.environment.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME).toBeUndefined();
+    expect(localTransportOptions.environment.PAPERCLIP_ACPX_AUTH_JSON_FILE).toBeUndefined();
   });
 
   it("atomically migrates legacy unscoped state only for its exact durable run identity", async () => {

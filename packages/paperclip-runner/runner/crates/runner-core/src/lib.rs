@@ -19,6 +19,7 @@ mod codex_startup_trust;
 mod codex_usage;
 mod configured_environment;
 mod credential_observer;
+mod credential_write_back;
 mod cursor_cloud_proxy;
 pub mod dot_provider_backend;
 pub mod durable;

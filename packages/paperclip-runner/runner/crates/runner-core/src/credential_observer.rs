@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::acpx_sidecar_transport::ACPX_AUTH_JSON_FILE_ENV;
+use crate::credential_write_back::{self, WriteBack};
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory,
     DurableRunnerError, EventPriority, PolledEvent,
@@ -41,6 +43,12 @@ struct State {
     revision: u64,
     armed: bool,
     pending: Option<PolledEvent>,
+    /// Execution-host credential file that receives fresher refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_file: Option<PathBuf>,
+    /// Write back only; the consumer did not opt in to update events.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    silent: bool,
 }
 
 pub(crate) struct CredentialObserver {
@@ -51,6 +59,10 @@ pub(crate) struct CredentialObserver {
     watcher: Option<RecommendedWatcher>,
     dirty: Arc<AtomicBool>,
     last_scan: Instant,
+    /// Digest of the last refreshed credential settled against the host file.
+    written: Option<String>,
+    /// Digest whose write-back failure was already reported.
+    reported: Option<String>,
 }
 
 impl CredentialObserver {
@@ -63,6 +75,8 @@ impl CredentialObserver {
             watcher: None,
             dirty: Arc::new(AtomicBool::new(true)),
             last_scan: Instant::now() - SCAN_INTERVAL,
+            written: None,
+            reported: None,
         }
     }
 
@@ -104,8 +118,15 @@ impl CredentialObserver {
                 .as_ref()
                 .is_some_and(|s| !valid_digest(&s.identity) || !valid_digest(&s.fingerprint))
             || state.pending.as_ref().is_some_and(|event| {
-                event != &update_event(&state.provider, state.revision) || state.revision == 0
+                event != &update_event(&state.provider, state.revision)
+                    || state.revision == 0
+                    || state.silent
             })
+            || state
+                .host_file
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+            || (state.silent && state.host_file.is_none())
         {
             return Err(observer_error("state has an invalid session binding"));
         }
@@ -117,7 +138,19 @@ impl CredentialObserver {
 
     pub(crate) fn configure(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
         self.restore()?;
-        if self.state.is_some() || payload.get("observeCredentials") != Some(&Value::Bool(true)) {
+        if self.state.is_some() {
+            return Ok(());
+        }
+        self.configure_with_host_file(payload, host_credential_file()?)
+    }
+
+    fn configure_with_host_file(
+        &mut self,
+        payload: &Value,
+        host_file: Option<PathBuf>,
+    ) -> Result<(), DurableRunnerError> {
+        let observe = payload.get("observeCredentials") == Some(&Value::Bool(true));
+        if !observe && host_file.is_none() {
             return Ok(());
         }
         let provider = &payload["provider"];
@@ -125,7 +158,14 @@ impl CredentialObserver {
             .get("kind")
             .or_else(|| provider.get("provider"))
             .and_then(Value::as_str);
-        let (name, path, seed) = match kind {
+        let acpx_file_agent =
+            kind == Some("acpx") && (provider["agent"] == "grok" || provider["agent"] == "codex");
+        if host_file.is_some() && kind.is_some() && !acpx_file_agent {
+            return Err(observer_error(
+                "credential file requires a Codex or Grok ACPX session",
+            ));
+        }
+        let (name, path, mut seed) = match kind {
             Some("codex") => {
                 let Some(home) = std::env::var_os("CODEX_HOME") else {
                     return Ok(());
@@ -158,8 +198,16 @@ impl CredentialObserver {
                     .join(acpx_session_directory(session))
                     .join(format!("{name}-home"))
                     .join("auth.json");
-                let seed = if name == "grok" {
-                    std::env::var("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET").ok()
+                // The staged credential is the baseline, so a refresh during
+                // provider startup is still detected and written back.
+                let seed = if let Some(file) = host_file.as_deref() {
+                    credential_write_back::read_host_credential(file)
+                        .ok()
+                        .map(|(bytes, _)| bytes)
+                } else if name == "grok" {
+                    std::env::var("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET")
+                        .ok()
+                        .map(String::into_bytes)
                 } else {
                     None
                 };
@@ -170,7 +218,6 @@ impl CredentialObserver {
         if !path.is_absolute() {
             return Err(observer_error("credential home is not absolute"));
         }
-        let mut seed = seed.map(String::into_bytes);
         let snapshot = seed
             .as_ref()
             .and_then(|bytes| parse_snapshot(name, bytes))
@@ -187,6 +234,8 @@ impl CredentialObserver {
             revision: 0,
             armed: false,
             pending: None,
+            host_file,
+            silent: !observe,
         };
         self.save(&state)?;
         self.state = Some(state);
@@ -213,11 +262,11 @@ impl CredentialObserver {
 
     pub(crate) fn poll(&mut self, force: bool) -> Result<(), DurableRunnerError> {
         self.restore()?;
-        if self
-            .state
-            .as_ref()
-            .is_none_or(|state| !state.armed || state.pending.is_some())
-        {
+        // A pending event still allows write-back; only event detection waits
+        // for its acknowledgement.
+        if self.state.as_ref().is_none_or(|state| {
+            !state.armed || (state.pending.is_some() && state.host_file.is_none())
+        }) {
             return Ok(());
         }
         if !force
@@ -229,18 +278,24 @@ impl CredentialObserver {
         self.last_scan = Instant::now();
         self.watch_directory();
         let state = self.state.as_ref().expect("configured observer");
-        let snapshot = read_snapshot(&state.provider, &state.path).or_else(|| {
+        let bytes = read_private_credential(&state.path).or_else(|| {
             fs::symlink_metadata(&state.path)
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-                .then(|| {
-                    read_snapshot(
-                        &state.provider,
-                        &state.path.with_file_name("auth-refresh.json"),
-                    )
-                })
+                .then(|| read_private_credential(&state.path.with_file_name("auth-refresh.json")))
                 .flatten()
         });
-        let Some(snapshot) = snapshot else {
+        let Some(mut bytes) = bytes else {
+            return Ok(());
+        };
+        let snapshot = parse_snapshot(&state.provider, &bytes);
+        let host_file = state.host_file.clone();
+        let provider = state.provider.clone();
+        if let Some(host_file) = host_file {
+            self.write_back(&provider, &bytes, &host_file);
+        }
+        bytes.fill(0);
+        let state = self.state.as_ref().expect("configured observer");
+        let Some(snapshot) = snapshot.filter(|_| !state.silent && state.pending.is_none()) else {
             return Ok(());
         };
         if state.snapshot.as_ref() == Some(&snapshot) {
@@ -259,6 +314,37 @@ impl CredentialObserver {
         self.save(&next)?;
         self.state = Some(next);
         Ok(())
+    }
+
+    /// Settle one refreshed credential against the host file. Failures keep the
+    /// run going: the host file is left unchanged, the failure is reported once
+    /// per credential, and the next scan retries.
+    fn write_back(&mut self, provider: &str, bytes: &[u8], host_file: &Path) {
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        if self.written.as_deref() == Some(digest.as_str()) {
+            return;
+        }
+        match credential_write_back::write_back(
+            provider,
+            bytes,
+            host_file,
+            credential_write_back::now_ms(),
+        ) {
+            Ok(WriteBack::Written | WriteBack::Kept) => {
+                self.written = Some(digest);
+                self.reported = None;
+            }
+            Ok(WriteBack::Raced) => self.dirty.store(true, Ordering::Relaxed),
+            Err(error) => {
+                if self.reported.as_deref() != Some(digest.as_str()) {
+                    eprintln!(
+                        "paperclip-runnerd: {provider} credential write-back to the host credential file failed ({:?}); retrying",
+                        error.kind()
+                    );
+                    self.reported = Some(digest);
+                }
+            }
+        }
     }
 
     pub(crate) fn pending(&self) -> Option<PolledEvent> {
@@ -393,8 +479,33 @@ fn parse_snapshot(provider: &str, bytes: &[u8]) -> Option<Snapshot> {
     })
 }
 
-#[cfg(unix)]
 fn read_snapshot(provider: &str, path: &Path) -> Option<Snapshot> {
+    let mut bytes = read_private_credential(path)?;
+    let snapshot = parse_snapshot(provider, &bytes);
+    bytes.fill(0);
+    snapshot
+}
+
+/// The execution host's credential file, when it supplied one.
+fn host_credential_file() -> Result<Option<PathBuf>, DurableRunnerError> {
+    parse_host_credential_file(std::env::var_os(ACPX_AUTH_JSON_FILE_ENV))
+}
+
+fn parse_host_credential_file(
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, DurableRunnerError> {
+    let Some(path) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(observer_error("credential file is not absolute"));
+    }
+    Ok(Some(path))
+}
+
+#[cfg(unix)]
+fn read_private_credential(path: &Path) -> Option<Vec<u8>> {
     use rustix::fs::{open, openat, Mode, OFlags};
     use std::os::unix::fs::MetadataExt;
     let parent = path.parent()?;
@@ -440,17 +551,16 @@ fn read_snapshot(provider: &str, path: &Path) -> Option<Snapshot> {
             && before.mtime() == after.mtime()
             && before.mtime_nsec() == after.mtime_nsec()
     });
-    let snapshot = if read.is_ok() && stable {
-        parse_snapshot(provider, &bytes)
+    if read.is_ok() && stable {
+        Some(bytes)
     } else {
+        bytes.fill(0);
         None
-    };
-    bytes.fill(0);
-    snapshot
+    }
 }
 
 #[cfg(not(unix))]
-fn read_snapshot(_provider: &str, _path: &Path) -> Option<Snapshot> {
+fn read_private_credential(_path: &Path) -> Option<Vec<u8>> {
     None
 }
 
@@ -481,6 +591,8 @@ mod tests {
                 revision: 0,
                 armed: false,
                 pending: None,
+                host_file: None,
+                silent: false,
             });
             observer.save(observer.state.as_ref().unwrap()).unwrap();
             Self { root, observer }
@@ -744,6 +856,214 @@ mod tests {
             assert!(observer.pending().is_none());
             observer.activate().unwrap();
             assert!(observer.pending().is_none());
+        }
+    }
+
+    fn codex_at(marker: &str, last_refresh: &str) -> Value {
+        let mut value = codex(marker);
+        value["last_refresh"] = json!(last_refresh);
+        value
+    }
+
+    fn with_host_file(f: &mut Fixture, silent: bool) -> PathBuf {
+        let host = f.root.join("host").join("auth.json");
+        fs::create_dir(host.parent().unwrap()).unwrap();
+        let state = f.observer.state.as_mut().unwrap();
+        state.host_file = Some(host.clone());
+        state.silent = silent;
+        let state = state.clone();
+        f.observer.save(&state).unwrap();
+        host
+    }
+
+    #[test]
+    fn host_file_receives_a_newer_refresh_during_the_session_before_the_event() {
+        let seed = codex_at("seed", "2026-01-01T00:00:00Z");
+        let mut f = Fixture::new("codex", &seed);
+        let host = with_host_file(&mut f, false);
+        f.write("host/auth.json", &seed);
+        f.write("auth.json", &seed);
+        f.observer.activate().unwrap();
+        assert!(f.observer.pending().is_none());
+        assert_eq!(fs::read(&host).unwrap(), serde_json::to_vec(&seed).unwrap());
+
+        let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
+        f.write("auth.json", &refreshed);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&refreshed).unwrap()
+        );
+        assert_eq!(f.observer.pending(), Some(update_event("codex", 1)));
+        let persisted = fs::read_to_string(f.root.join(STATE_FILE)).unwrap();
+        assert!(!persisted.contains("access-refreshed"));
+
+        // A later refresh is written back while the event awaits acknowledgement.
+        let later = codex_at("later", "2026-03-01T00:00:00Z");
+        f.write("auth.json", &later);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&later).unwrap()
+        );
+        assert_eq!(f.observer.pending(), Some(update_event("codex", 1)));
+        f.observer.acknowledge(1).unwrap();
+        f.observer.poll(true).unwrap();
+        assert_eq!(f.observer.pending(), Some(update_event("codex", 2)));
+
+        // Recovery keeps the host file binding.
+        let mut recovered = CredentialObserver::new(&f.root, "session");
+        recovered.restore().unwrap();
+        assert_eq!(recovered.state.as_ref().unwrap().host_file, Some(host));
+    }
+
+    #[test]
+    fn host_file_keeps_a_newer_or_different_account_credential() {
+        let mut f = Fixture::new("grok", &grok("seed"));
+        let host = with_host_file(&mut f, false);
+        let mut newer = grok("host-newer");
+        newer.as_object_mut().unwrap().values_mut().next().unwrap()["expires_at"] = json!(9999);
+        f.write("host/auth.json", &newer);
+        f.write("auth.json", &grok("seed"));
+        f.observer.activate().unwrap();
+        let mut refreshed = grok("refreshed");
+        refreshed
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()["expires_at"] = json!(5000);
+        f.write("auth.json", &refreshed);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&newer).unwrap()
+        );
+        // The provider still refreshed, so the opted-in consumer is told.
+        assert_eq!(f.observer.pending(), Some(update_event("grok", 1)));
+        f.observer.acknowledge(1).unwrap();
+
+        let other = json!({"https://issuer.example::87654321-4321-4321-4321-cba987654321":
+            {"key":"access-other", "refresh_token":"refresh-other", "expires_at": 99999}});
+        f.write("auth.json", &other);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&newer).unwrap()
+        );
+    }
+
+    #[test]
+    fn silent_host_file_binding_writes_back_without_events() {
+        let mut f = Fixture::new("grok", &grok("seed"));
+        let host = with_host_file(&mut f, true);
+        f.write("host/auth.json", &grok("seed"));
+        f.write("auth.json", &grok("seed"));
+        f.observer.activate().unwrap();
+        let mut refreshed = grok("refreshed");
+        refreshed
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()["expires_at"] = json!(5000);
+        f.write("auth.json", &refreshed);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&refreshed).unwrap()
+        );
+        assert!(f.observer.pending().is_none());
+
+        // The close handoff is written back too.
+        let mut closed = grok("closed");
+        closed.as_object_mut().unwrap().values_mut().next().unwrap()["expires_at"] = json!(6000);
+        f.write("auth-refresh.json", &closed);
+        fs::remove_file(f.root.join("auth.json")).unwrap();
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&closed).unwrap()
+        );
+        assert!(f.observer.pending().is_none());
+    }
+
+    #[test]
+    fn host_file_write_back_failure_keeps_the_session_running_and_retries() {
+        let seed = codex_at("seed", "2026-01-01T00:00:00Z");
+        let mut f = Fixture::new("codex", &seed);
+        let host = with_host_file(&mut f, true);
+        f.write("auth.json", &seed);
+        f.observer.activate().unwrap();
+        let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
+        f.write("auth.json", &refreshed);
+        // The host file is missing: nothing is created and the poll succeeds.
+        f.observer.poll(true).unwrap();
+        assert!(!host.exists());
+        f.write("host/auth.json", &seed);
+        f.observer.poll(true).unwrap();
+        assert_eq!(
+            fs::read(&host).unwrap(),
+            serde_json::to_vec(&refreshed).unwrap()
+        );
+    }
+
+    #[test]
+    fn host_file_configuration_requires_an_absolute_path_and_a_file_credential_agent() {
+        assert!(parse_host_credential_file(Some("relative/auth.json".into())).is_err());
+        assert_eq!(parse_host_credential_file(Some("".into())).unwrap(), None);
+        assert_eq!(parse_host_credential_file(None).unwrap(), None);
+
+        let f = Fixture::new("codex", &codex("seed"));
+        let host = f.root.join("host-auth.json");
+        for provider in [
+            json!({"kind":"codex"}),
+            json!({"kind":"acpx", "agent":"claude", "runtimeDirectory":f.root, "normalizedSessionId":"session"}),
+            json!({"kind":"opencode"}),
+        ] {
+            let state_dir = f.root.join(format!("state-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&state_dir).unwrap();
+            let mut observer = CredentialObserver::new(&state_dir, "session");
+            observer.loaded = true;
+            let error = observer
+                .configure_with_host_file(&json!({"provider":provider}), Some(host.clone()))
+                .unwrap_err();
+            assert!(error.to_string().contains("Codex or Grok ACPX"), "{error}");
+            assert!(observer.state.is_none());
+        }
+    }
+
+    #[test]
+    fn host_file_binding_does_not_require_the_event_opt_in() {
+        let f = Fixture::new("codex", &codex("seed"));
+        for (agent, credential) in [
+            ("codex", codex_at("seed", "2026-01-01T00:00:00Z")),
+            ("grok", grok("seed")),
+        ] {
+            let state_dir = f.root.join(agent);
+            fs::create_dir(&state_dir).unwrap();
+            fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+            let host = state_dir.join("host-auth.json");
+            fs::write(&host, serde_json::to_vec(&credential).unwrap()).unwrap();
+            fs::set_permissions(&host, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut observer = CredentialObserver::new(&state_dir, "session");
+            observer
+                .configure_with_host_file(
+                    &json!({"provider":{"kind":"acpx", "agent":agent,
+                        "runtimeDirectory":state_dir.join("runtime"), "normalizedSessionId":"session"}}),
+                    Some(host.clone()),
+                )
+                .unwrap();
+            let state = observer.state.as_ref().unwrap();
+            assert!(state.silent);
+            assert_eq!(state.host_file, Some(host));
+            assert_eq!(
+                state.snapshot,
+                parse_snapshot(agent, &serde_json::to_vec(&credential).unwrap())
+            );
+            let mut recovered = CredentialObserver::new(&state_dir, "session");
+            recovered.restore().unwrap();
+            assert!(recovered.state.as_ref().unwrap().silent);
         }
     }
 

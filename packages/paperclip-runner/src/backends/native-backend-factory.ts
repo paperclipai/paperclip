@@ -38,7 +38,8 @@ export interface NativeBackendFactoryOptions extends Omit<
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
-  acpxManagedCodexCredentialSourcePath?: string;
+  /** Host-owned auth.json for an ACPX Codex or Grok session; see the Runner README. */
+  acpxManagedCredentialSourcePath?: string;
   acpxDynamicToolHandler?: AcpxNativeSessionBackendOptions["dynamicToolHandler"];
   opencodeRuntimeDirectory?: string;
   opencodeEnvironment?: NodeJS.ProcessEnv;
@@ -104,10 +105,10 @@ export function createNativeSessionBackend(
     return createAcpxNativeSessionBackend(input, {
       runtimeDirectory: options.acpxRuntimeDirectory,
       environment: options.acpxEnvironment,
-      ...(input.provider.agent === "codex"
+      ...(input.provider.agent === "codex" || input.provider.agent === "grok"
         ? {
-            managedCodexCredentialSourcePath:
-              options.acpxManagedCodexCredentialSourcePath,
+            managedCredentialSourcePath:
+              options.acpxManagedCredentialSourcePath,
           }
         : {}),
       dynamicTools: options.dynamicTools,

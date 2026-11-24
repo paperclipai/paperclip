@@ -509,7 +509,7 @@ describe("Codex ACPX harness driver", () => {
       model: "claude-sonnet-5",
     });
     expect(
-      fixture.hostOptions?.managedCodexCredentialSourcePath,
+      fixture.hostOptions?.managedCredentialSourcePath,
     ).toBeUndefined();
     await session.close({ reason: "qualified Claude driver verified" });
   });

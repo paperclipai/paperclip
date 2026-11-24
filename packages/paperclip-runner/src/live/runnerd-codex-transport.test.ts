@@ -3629,6 +3629,18 @@ it.each([
   },
 );
 
+it.each(["codex", "grok", "claude", "cursor"] as const)("forwards a host credential file only to a %s sidecar with a file credential", agent => {
+  const prepare = () => createCapabilityRunnerdProviderEnvironment({
+    provider: "acpx",
+    options: { provider: "acpx", acpxAgent: agent, environment: { PATH: "/bin", PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json" } },
+    identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
+    codexHome: "/isolated/codex-home", runtimeContextPath: "/isolated/runtime-context.json", hasRuntimeContext: false,
+    acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
+  });
+  if (agent === "codex" || agent === "grok") expect(prepare().PAPERCLIP_ACPX_AUTH_JSON_FILE).toBe("/host/auth.json");
+  else expect(prepare).toThrow("Managed credential files require the Codex or Grok ACPX profile");
+});
+
 it("does not bind ambient candidate credentials from an inherited or caller-supplied marker", () => {
   const forged = createAcpxCredentialBinding({ CURSOR_API_KEY: "ambient-secret" }, "cursor", "session-1")!;
   vi.stubEnv("CURSOR_API_KEY", "ambient-secret");
