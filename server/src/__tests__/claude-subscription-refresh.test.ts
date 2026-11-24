@@ -174,8 +174,8 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect(await probes()).toBe("none");
   });
 
-  it("stops blocking an idle shutdown for an unsaved pair once its grant is no longer active", async () => {
-    const { service, row, account } = await connect(document(Date.now() - 60_000));
+  it.each(["revoked", "reconnected"] as const)("stops blocking an idle shutdown for an unsaved pair once its grant is %s", async ending => {
+    const { service, row, account, secretId, owner } = await connect(document(Date.now() - 60_000));
     const realService = secretModule.secretService;
     const failingVault = vi.spyOn(secretModule, "secretService").mockImplementation((...args) => ({
       ...realService(...args), rotate: async () => { throw new Error("vault is temporarily unavailable"); },
@@ -189,8 +189,9 @@ describe("Claude subscription renewal through the managed runtime", () => {
     await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
     failingVault.mockRestore();
     expect(await probes()).toBe("present");
-    // The connection is removed by a path that knows nothing about the pair.
-    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    // The grant ends, or gets a new sign-in, by a path that knows nothing about the pair.
+    if (ending === "revoked") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    else await secretService(db).rotate(secretId, { value: document(Date.now() + 28800_000, "reconnected", "reconnected-refresh") }, { userId: owner });
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(Date.now() + 31_000);

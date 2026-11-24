@@ -112,8 +112,16 @@ export async function refreshClaudeSubscription(
             }
           }
           replacement ??= { value: refreshed, base: current, secretId: secret.id, epoch: secret.aiSessionEpoch, version: secret.latestVersion };
-          pendingClaudeExchanges.set(companyId, grantId, replacement, async () => (await db.select({ status: connectionGrants.status })
-            .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId))))[0]?.status === "active");
+          // The pair is wanted while its grant is active and the saved secret
+          // is still the one it was exchanged from. A reconnect or an explicit
+          // rotation changes the secret and wins over the pair.
+          const pair = replacement;
+          pendingClaudeExchanges.set(companyId, grantId, pair, async () => {
+            const [current] = await db.select({ status: connectionGrants.status, epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+              .from(connectionGrants).innerJoin(companySecrets, and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, pair.secretId)))
+              .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId)));
+            return current?.status === "active" && current.epoch === pair.epoch && current.version === pair.version;
+          });
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
