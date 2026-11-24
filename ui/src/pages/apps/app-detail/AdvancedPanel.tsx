@@ -628,7 +628,7 @@ export function connectionAddress(connection: ToolConnection): string {
   return "Not set";
 }
 
-export function connectionTransportLabel(transport: ToolConnection["transport"]): string {
+export function connectionTransportLabel(transport: ToolConnection["transport"] | string): string {
   if (transport === "mcp_remote") return "Remote HTTP";
   if (transport === "local_stdio") return "Local command";
   return "Unknown";
