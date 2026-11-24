@@ -100,7 +100,7 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.ok(!build.includes("node scripts/verify-grok-npm-install.mjs"), "PR Build must not run the 4-min public npm install verifier");
   assert.ok(!build.includes("warm-public-install-npm-cache.mjs"), "PR Build must not warm the unused public npm install cache");
   assert.ok(build.includes("pnpm --filter @paperclipai/server build:runtime"), "PR Build still verifies production runtime bundle");
-  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY: \$\{\{ \(contains\(github\.event\.pull_request\.labels\.\*\.name, 'full-ci'\) \|\| vars\.CI_INCREMENTAL_MODE == 'full'\) && '' \|\| '1' \}\}\n\s+run: pnpm build/, "ordinary PR Build should use emit-only server compile while Typecheck checks types in parallel");
+  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY: \$\{\{ !\(contains\(github\.event\.pull_request\.labels\.\*\.name, 'full-ci'\) \|\| vars\.CI_INCREMENTAL_MODE == 'full'\) && '1' \|\| '' \}\}\n\s+run: pnpm build/, "ordinary PR Build should use emit-only server compile while full-ci and CI_INCREMENTAL_MODE=full clear PAPERCLIP_TSC_EMIT_ONLY");
   assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+scripts\/server-boot-smoke\.sh/);
   const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
   assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);

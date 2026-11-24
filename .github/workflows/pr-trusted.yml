@@ -1336,7 +1336,7 @@ jobs:
       # Full-CI / release builds emit full declarations and re-check types.
       - name: Build
         env:
-          PAPERCLIP_TSC_EMIT_ONLY: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '' || '1' }}
+          PAPERCLIP_TSC_EMIT_ONLY: ${{ !(contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
         run: pnpm build
 
       # Always verify the production runtime bundle builds cleanly (~4s).

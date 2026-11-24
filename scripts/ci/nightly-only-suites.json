@@ -812,12 +812,6 @@
       "measuredMs": 34702
     },
     {
-      "path": "server/src/__tests__/project-skill-sources.test.ts",
-      "category": "storage-integration-soak",
-      "reason": "Heavy project git skill-source sync integration soak (34.7s in run 45440355579)",
-      "measuredMs": 34700
-    },
-    {
       "path": "server/src/__tests__/agent-chat-messages.test.ts",
       "category": "channel-integration-soak",
       "reason": "External chat/voice/connector channel integration soak (34.7s in run 45238253588)",
@@ -858,12 +852,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (33.3s in run 45238253588)",
       "measuredMs": 33312
-    },
-    {
-      "path": "server/src/__tests__/github-inbound-steering.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "GitHub inbound steering channel integration soak (33.1s in run 45440355579)",
-      "measuredMs": 33061
     },
     {
       "path": "server/src/services/public-mcp/events-work.test.ts",
@@ -914,12 +902,6 @@
       "measuredMs": 31522
     },
     {
-      "path": "server/src/__tests__/heartbeat-runtime-mcp-servers.test.ts",
-      "category": "provider-adapter-soak",
-      "reason": "Runtime MCP server process-spawning integration soak (31.5s in run 45440355579)",
-      "measuredMs": 31507
-    },
-    {
       "path": "server/src/__tests__/native-session-resumption.test.ts",
       "category": "restart-lease-soak",
       "reason": "Heavy native-runtime continuation, lease, handoff, or multi-turn soak (30.9s in run 45238253588)",
@@ -942,12 +924,6 @@
       "category": "channel-integration-soak",
       "reason": "External chat/voice/connector channel integration soak (30.4s in run 45238253588)",
       "measuredMs": 30413
-    },
-    {
-      "path": "server/src/__tests__/skill-sources.test.ts",
-      "category": "storage-integration-soak",
-      "reason": "Heavy remote skill-sources sync integration soak (30.4s in run 45440355579)",
-      "measuredMs": 30396
     },
     {
       "path": "server/src/__tests__/workspace-worktree-concurrency.test.ts",
@@ -990,12 +966,6 @@
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (29.3s in run 45238253588)",
       "measuredMs": 29322
-    },
-    {
-      "path": "server/src/services/native-runtime/native-completion-feedback.test.ts",
-      "category": "restart-lease-soak",
-      "reason": "Native completion feedback lifecycle soak (29.2s in run 45440355579)",
-      "measuredMs": 29170
     },
     {
       "path": "server/src/__tests__/github-skill-source.test.ts",
@@ -1044,12 +1014,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (27.5s in run 45238253588)",
       "measuredMs": 27508
-    },
-    {
-      "path": "server/src/services/native-runtime/issue-document-batch.integration.test.ts",
-      "category": "integration-soak",
-      "reason": "Native issue-document batch integration soak (27.4s in run 45440355579)",
-      "measuredMs": 27370
     },
     {
       "path": "server/src/__tests__/mcp-tasks-demo-server.test.ts",
@@ -1110,12 +1074,6 @@
       "category": "channel-integration-soak",
       "reason": "External chat/voice/connector channel integration soak (25.6s in run 45238253588)",
       "measuredMs": 25600
-    },
-    {
-      "path": "server/src/services/native-runtime/native-session-resume.test.ts",
-      "category": "restart-lease-soak",
-      "reason": "Native session resume soak (25.5s in run 45440355579)",
-      "measuredMs": 25545
     },
     {
       "path": "server/src/__tests__/voice-recovery-work.test.ts",
@@ -1218,12 +1176,6 @@
       "category": "workspace-recovery-soak",
       "reason": "Workspace recovery disk-full soak (23s)",
       "measuredMs": 23363
-    },
-    {
-      "path": "server/src/__tests__/google-managed-connection-removal.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "Google managed connection removal integration soak (23.4s in run 45440355579)",
-      "measuredMs": 23350
     },
     {
       "path": "server/src/__tests__/heartbeat-active-run-output-watchdog.test.ts",
@@ -1544,12 +1496,6 @@
       "measuredMs": 19224
     },
     {
-      "path": "server/src/__tests__/chat-interaction-publications.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "Chat interaction publications integration soak (19.2s in run 45440355579)",
-      "measuredMs": 19155
-    },
-    {
       "path": "server/src/__tests__/agent-file-durability.test.ts",
       "category": "storage-integration-soak",
       "reason": "Agent file durability storage soak (19.1s in run 45238253588)",
@@ -1560,12 +1506,6 @@
       "category": "workspace-recovery-soak",
       "reason": "Abandoned workspace files hold soak (19.0s in run 45440355579)",
       "measuredMs": 19046
-    },
-    {
-      "path": "server/src/__tests__/company-skill-test-runs-service.test.ts",
-      "category": "storage-integration-soak",
-      "reason": "Company skill test-runs service soak (18.8s in run 45440355579)",
-      "measuredMs": 18784
     },
     {
       "path": "server/src/services/native-runtime/plugin-task-source-recovery.integration.test.ts",
@@ -1580,12 +1520,6 @@
       "measuredMs": 18587
     },
     {
-      "path": "server/src/__tests__/native-interaction-bridge.test.ts",
-      "category": "restart-lease-soak",
-      "reason": "Native interaction bridge integration soak (18.6s in run 45440355579)",
-      "measuredMs": 18552
-    },
-    {
       "path": "server/src/__tests__/heartbeat-answer-behind-settling-run.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Settling-run answer race soak (18.4s in run 45440355579)",
@@ -1596,12 +1530,6 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (18.3s in run 45238253588)",
       "measuredMs": 18316
-    },
-    {
-      "path": "server/src/services/native-runtime/native-agent-blocker.integration.test.ts",
-      "category": "integration-soak",
-      "reason": "Native agent blocker integration soak (18.3s in run 45440355579)",
-      "measuredMs": 18282
     },
     {
       "path": "server/src/__tests__/interrupted-preparation-hold-settle.test.ts",
@@ -1634,12 +1562,6 @@
       "measuredMs": 17893
     },
     {
-      "path": "server/src/__tests__/live-runs-batched-reads.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Live runs batched reads query-cost suite (17.7s in run 45440355579)",
-      "measuredMs": 17736
-    },
-    {
       "path": "server/src/__tests__/merged-pr-confirmation-work.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (17.6s in run 45238253588)",
@@ -1668,12 +1590,6 @@
       "category": "channel-integration-soak",
       "reason": "External chat/voice/connector channel integration soak (17.3s in run 45238253588)",
       "measuredMs": 17264
-    },
-    {
-      "path": "server/src/__tests__/execution-workspace-runtime-control-conflict.test.ts",
-      "category": "workspace-recovery-soak",
-      "reason": "Execution workspace runtime control conflict soak (17.1s in run 45440355579)",
-      "measuredMs": 17146
     },
     {
       "path": "server/src/services/native-runtime/runner-api-artifacts.integration.test.ts",
@@ -1766,12 +1682,6 @@
       "measuredMs": 16200
     },
     {
-      "path": "server/src/__tests__/native-connection-baseline-fixture.test.ts",
-      "category": "provider-adapter-soak",
-      "reason": "Native connection baseline fixture suite (16.1s in run 45440355579)",
-      "measuredMs": 16122
-    },
-    {
       "path": "server/src/services/native-runtime/native-provider-capacity.integration.test.ts",
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (16.1s in run 45238253588)",
@@ -1796,12 +1706,6 @@
       "measuredMs": 16024
     },
     {
-      "path": "server/src/__tests__/tool-gateway-listing-memory.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Tool gateway listing memory benchmark (15.8s in run 45440355579)",
-      "measuredMs": 15847
-    },
-    {
       "path": "server/src/__tests__/native-recovery-notice-work.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (15.7s in run 45238253588)",
@@ -1820,22 +1724,10 @@
       "measuredMs": 15340
     },
     {
-      "path": "server/src/services/heartbeat/upgrade-readiness.test.ts",
-      "category": "recovery-idle-maintenance-soak",
-      "reason": "Heartbeat upgrade readiness soak (15.3s in run 45440355579)",
-      "measuredMs": 15328
-    },
-    {
       "path": "server/src/__tests__/assigned-work-sweep-round-trips.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (15.2s in run 45238253588)",
       "measuredMs": 15224
-    },
-    {
-      "path": "server/src/__tests__/workspace-history-user-journey.test.ts",
-      "category": "workspace-recovery-soak",
-      "reason": "Workspace history user-journey integration soak (15.2s in run 45440355579)",
-      "measuredMs": 15152
     },
     {
       "path": "server/src/__tests__/heartbeat-workspace-finalize-branch.test.ts",
@@ -2232,12 +2124,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (10.4s in run 45238253588)",
       "measuredMs": 10383
-    },
-    {
-      "path": "server/src/__tests__/aws-mcp-connector.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "AWS MCP connector integration soak (10.3s in run 45440355579)",
-      "measuredMs": 10337
     },
     {
       "path": "server/src/services/native-runtime/native-harness-backup-upload-deadline.integration.test.ts",
