@@ -49,6 +49,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   });
   it.each([
     ["tool_connection.created", true],
+    ["tool_app.oauth_connected", true],
     ["chat_endpoint.created", true],
     ["tool_connection.health_check", false],
   ] as const)("masks session replay work content until sources reload after %s", (action, resets) => {

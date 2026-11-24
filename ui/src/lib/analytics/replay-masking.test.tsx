@@ -379,6 +379,106 @@ describe("session replay text masking", () => {
       .toBe(`postgres://${stars(`admin:${longPassword}`)}@db:5432/app`);
   });
 
+  it.each([
+    ["a spaced label", "API key: 8f3a9c2e41b7d605", "8f3a9c2e41b7d605"],
+    ["a spaced label after other words", "The staging private key: 8f3a9c2e41b7d605", "8f3a9c2e41b7d605"],
+    ["a session id label", "Session ID: 9f8e7d6c5b4a", "9f8e7d6c5b4a"],
+    ["a name that ends in key", "ENCRYPTION_KEY=0f1e2d3c4b5a", "0f1e2d3c4b5a"],
+    ["a camel-case key name", "signingKey: 'left right'", "left right"],
+    ["a short password name", "DB_PASS=hunter2", "hunter2"],
+    ["a PIN", "PIN: 4821", "4821"],
+    ["a passphrase", "passphrase: correct horse", "correct horse"],
+    ["a bold Markdown label in a raw file", "**Password**: hunter2", "hunter2"],
+    ["a command-line flag", "mysql --password hunter2 --host db", "hunter2"],
+    ["a quoted command-line flag", "deploy --api-key \"left right\" --region us", "\"left right\""],
+  ])("redactReplaySecrets masks %s", (_label, input, secret) => {
+    expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
+  });
+
+  describe("a secret split across the nodes of one line", () => {
+    // rrweb records one text node at a time. Markdown and syntax highlighting
+    // put a label and its value in different nodes of the same line.
+    const work = (inner: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}">${inner}</div>`;
+
+    function withVisibleWorkContent(run: () => void) {
+      document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+      try {
+        run();
+      } finally {
+        document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+      }
+    }
+
+    it("masks a value after a bold label", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p><strong>Password:</strong> hunter2</p>"), "hunter2")).toBe(" *******");
+      expect(recordedTextOf(work("<p><strong>Password:</strong> hunter2</p>"), "Password")).toBe("Password:");
+    }));
+
+    it("masks a value in inline code after its label", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p>Password: <code>hunter2</code></p>"), "hunter2")).toBe("*******");
+      expect(recordedTextOf(work("<p><strong>API key</strong>: <code>8f3a9c2e41b7d605</code></p>"), "8f3a")).toBe("****************");
+      expect(recordedTextOf(work("<ul><li>Staging token: <code>blue-green-42</code></li><li>Owner: <code>ana</code></li></ul>"), "blue-green")).toBe("*************");
+      expect(recordedTextOf(work("<ul><li>Staging token: <code>blue-green-42</code></li><li>Owner: <code>ana</code></li></ul>"), "ana")).toBe("ana");
+    }));
+
+    it("shows the sentence after an inline assignment, and masks a later secret in it", () => withVisibleWorkContent(() => {
+      const html = work("<p>Set <code>API_KEY=abc123</code> in the env file, then use password: hunter2</p>");
+      expect(recordedTextOf(html, "API_KEY")).toBe("API_KEY=******");
+      expect(recordedTextOf(html, "in the env file")).toBe(" in the env file, then use password: *******");
+    }));
+
+    it("masks a value split across syntax highlight spans", () => withVisibleWorkContent(() => {
+      const env = work("<pre><code><span>PASSWORD</span>=abc<span>$def</span>\n<span>REGION</span>=us</code></pre>");
+      expect(recordedTextOf(env, "=abc")).toBe("=***");
+      expect(recordedTextOf(env, "$def")).toBe("****");
+      expect(recordedTextOf(env, "=us")).toBe("=us");
+      const json = work("<pre><code>{<span>\"password\"</span><span>:</span> <span>\"correct horse\"</span>, <span>\"title\"</span>: <span>\"Q3 plan\"</span>}</code></pre>");
+      expect(recordedTextOf(json, "correct horse")).toBe("\"******* *****\"");
+      expect(recordedTextOf(json, "Q3 plan")).toBe("\"Q3 plan\"");
+    }));
+
+    it("reads the label through the file viewer's line-number gutter", () => withVisibleWorkContent(() => {
+      const line = work("<pre><div><span aria-hidden=\"true\">12</span><code><span>db_password</span>: <span>hunter2</span></code></div><div><span aria-hidden=\"true\">13</span><code>region: us</code></div></pre>");
+      expect(recordedTextOf(line, "hunter2")).toBe("*******");
+      expect(recordedTextOf(line, "region")).toBe("region: us");
+    }));
+
+    it("keeps a label on its own line or block", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p>Reset the password:</p><p>Open the settings page</p>"), "Open")).toBe("Open the settings page");
+      expect(recordedTextOf(work("<p>Reset the password:<br>Open the settings page</p>"), "Open")).toBe("Open the settings page");
+      expect(recordedTextOf(work("<table><tr><td>Password</td><td>rotated weekly</td></tr></table>"), "rotated")).toBe("rotated weekly");
+    }));
+
+    it("masks every candidate when sibling nodes hold the same text", () => withVisibleWorkContent(() => {
+      // rrweb passes the text and its parent, not the node, so the two
+      // " abc " nodes cannot be told apart: one follows a secret label.
+      const html = work("<p><b>Token:</b> abc <b>Owner:</b> abc </p>");
+      document.body.innerHTML = html;
+      const texts = Array.from(document.querySelector("p")!.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE) as Text[];
+      expect(texts.map(recordedText)).toEqual([" *** ", " *** "]);
+    }));
+
+    it("never shows more with line context than without it", () => {
+      // A gutter number glued to a key breaks the word boundary of the known
+      // formats. The text is still redacted by itself.
+      expect(redactReplaySecrets("sk-proj-abcdefghijklmnop1234", { before: "12", preformatted: true }))
+        .toBe(stars("sk-proj-abcdefghijklmnop1234"));
+      expect(redactReplaySecrets("password: hunter2", { before: "note: ", preformatted: false })).toBe("password: *******");
+      expect(redactReplaySecrets("plain words", { before: "note: ", preformatted: false })).toBe("plain words");
+    });
+
+    it("stays fast on a long highlighted line", () => withVisibleWorkContent(() => {
+      const spans = Array.from({ length: 3_000 }, (_unused, index) => `<span>part${index}</span> `).join("");
+      document.body.innerHTML = work(`<pre><code>${spans}</code></pre>`);
+      const texts: Text[] = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) texts.push(walker.currentNode as Text);
+      const started = performance.now();
+      for (const node of texts) recordedText(node);
+      expect(performance.now() - started).toBeLessThan(1_000);
+    }));
+  });
+
   it("redacts a large text node quickly", () => {
     // rrweb calls this for every recorded text node, so it must stay linear.
     const inputs = [
@@ -401,6 +501,11 @@ describe("session replay text masking", () => {
     "id 123e4567-e89b-12d3-a456-426614174000",
     "The token budget was 4k per run.",
     "See https://github.com/paperclipai/paperclip/pull/22820",
+    "Key findings: revenue grew 12% in Q3",
+    "Pass rate: 98% across the suite",
+    "Keyboard shortcut: Ctrl+K",
+    "OAuth: enabled for every workspace",
+    "Next step: run pnpm verify --full",
   ])("redactReplaySecrets leaves ordinary text alone: %s", (input) => {
     expect(redactReplaySecrets(input)).toBe(input);
   });

@@ -286,35 +286,61 @@ always masked.
   Slack data. Work content is the task description (task page and the first
   bubble of the task chat), the task preview description, document bodies,
   attachment and artifact previews (text, tables, patches, markdown) and the
-  file viewer. `ReplayWorkContentVisibility`
-  (`ui/src/lib/analytics/replay-work-content.tsx`) sets
-  `data-replay-work-content="visible"` on `<html>` only when the company's
-  tool connections and chat endpoints both load and none of them, in any
-  status, is Google (Gmail, Drive, Calendar, Docs and the other Workspace
-  services), Slack or an aggregator (Composio, Arcade, Executor). Slack chat
-  channels are found by `config.provider`, because a removed channel's
-  endpoint is archived (and leaves the endpoint list) while its connection
-  row stays with a custom name. Loading, a failed latest fetch (including no
-  permission to list connections, even with an older answer cached), no
-  company and replay off all keep work content masked. The check keeps its
-  own query keys (`replayWorkContentQueryKeys`). `LiveUpdatesProvider` resets
-  them on activity that can add a source (a new or edited connection, a
-  linked aggregator app, a new or edited chat channel), so work content masks
-  at once and stays masked until the lists reload. A five-minute refetch
-  covers a missed live update. `maskReplayText` (the rrweb `maskTextFn`)
-  shows work content text only when the nearest marker around it is the work
-  content marker, so customer content, secrets and editors inside work
-  content stay masked. Shown work content still passes through
-  `redactReplaySecrets`, which masks known key and token formats (OpenAI,
-  Anthropic, GitHub, Slack, AWS, Google, JWTs, private key blocks),
-  `name=value` assignments whose name says secret, auth header credentials,
-  URL passwords and long mixed-case random tokens. It reads one text node
-  at a time, so a name and value split across syntax-highlight spans are
-  caught only by the token-format and random-token rules. rrweb decides masking when it records a
-  node, so the page calls `refreshSessionReplay` (a new full snapshot) when
-  work content becomes visible. Task titles, artifact titles and file names
-  were already recorded as they are. Comments, chat messages, run output and
-  every connected-account surface stay customer content and always mask.
+  file viewer. Task titles, artifact titles and file names were already
+  recorded as they are. Comments, chat messages, run output and every
+  connected-account surface stay customer content and always mask.
+  - `ReplayWorkContentVisibility`
+    (`ui/src/lib/analytics/replay-work-content.tsx`) sets
+    `data-replay-work-content="visible"` on `<html>` only when the company's
+    tool connections and chat endpoints both hold a confirmed answer and none
+    of them, in any status, is Google (Gmail, Drive, Calendar, Docs and the
+    other Workspace services), Slack, an aggregator (Composio, Arcade,
+    Executor) or an app that reaches Google or Slack through another service
+    (Zapier, Make, GSC Wizard, Windsor.ai, by slug or server host). Slack chat
+    channels are found by `config.provider`, because a removed channel's
+    endpoint is archived (and leaves the endpoint list) while its connection
+    row stays with a custom name.
+  - Only an owner, an admin or an instance admin gets an answer. The
+    connection list hides another person's draft connection from every other
+    member, and a Google or Slack connection returns to draft when its sign-in
+    expires, so an empty list proves nothing for those members and their
+    replays keep work content masked.
+  - Loading, a failed latest fetch (even with an older answer cached), a list
+    that waits on a refresh, no company and replay off all keep work content
+    masked. The check keeps its own query keys (`replayWorkContentQueryKeys`)
+    and drops an answer when the company changes.
+  - `LiveUpdatesProvider` resets the check on the activity the server logs
+    when a source is added (`tool_app.connected`, `tool_app.oauth_connected`,
+    `tool_app.reconnected`, `tool_example.installed`,
+    `tool_connection.created`, `tool_connection.updated`,
+    `connection_installs.changed`, `chat_endpoint.created`,
+    `chat_endpoint.updated`, `chat_endpoint.reconnected`, `company.imported`),
+    so work content masks at once and stays masked until the lists reload.
+    Add an action to `SOURCE_CHANGE_ACTIONS` when a new route can add a
+    connection. The live socket closes while the tab is hidden, so the
+    provider invalidates active queries when the tab returns or the socket
+    reopens, and an invalidated list does not count until it reloads. A
+    five-minute refetch covers a missed live update.
+  - `maskReplayText` (the rrweb `maskTextFn`) shows work content text only
+    when the nearest marker around it is the work content marker, so customer
+    content, secrets and editors inside work content stay masked.
+  - Shown work content still passes through `redactReplaySecrets`. It masks
+    known key and token formats (OpenAI, Anthropic, GitHub, Slack, AWS,
+    Google, JWTs, private key blocks), the value of a `label: value` or
+    `name=value` assignment whose label says secret (`API_KEY`, `API key`,
+    `password`, `DB_PASS`, a name that ends in `key`), secret command-line
+    flags (`--password value`), auth header credentials, URL passwords and
+    long mixed-case random tokens. rrweb records one text node at a time, so
+    the function also reads the text before the node on its line: a bold
+    label, a value in inline code and a value split across syntax-highlight
+    spans are masked. It is a best effort. It does not catch a secret with no
+    label and no known format (a short password in a sentence, a lowercase
+    hex key), a value on a different line from its label, or a value in a
+    table cell under a header.
+  - rrweb decides masking when it records a node, so the page calls
+    `refreshSessionReplay` (a new full snapshot) the first time work content
+    becomes visible for a company. Text that renders while a later re-check
+    runs stays masked until it renders again.
 - The task chat container carries no mask of its own. Each header, row, live
   tail, notice and the composer carry `ANALYTICS_MASK_CLASS`, and the
   description row carries `ANALYTICS_WORK_CONTENT_CLASS`

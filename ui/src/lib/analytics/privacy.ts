@@ -67,15 +67,31 @@ function maskCharacters(text: string): string {
   return text.replace(/\S/g, "*");
 }
 
-/** Words in a field name that say it holds a secret (`API_KEY`, `dbPassword`). */
-const SECRET_NAME_WORD = /api[-_]?key|access[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|secret|passw(?:or)?d|passwd|pwd|credentials?|private[-_]?key|client[-_]?secret|session[-_]?id|cookie|connection[-_]?string|dsn|jwt|bearer/i;
+/**
+ * Words that say a label names a secret, anywhere in the label (`API_KEY`,
+ * `dbPassword`, `Client secret`).
+ */
+const SECRET_NAME_WORD = /api[-_ ]?key|access[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|token|secret|passw(?:or)?d|passwd|passphrase|pwd|credentials?|private[-_ ]?key|client[-_ ]?secret|session[-_ ]?id|cookie|connection[-_ ]?string|dsn|jwt|bearer/i;
 
 /**
- * A field name and its assignment operator: `NAME=`, `name: `, `"name": `,
- * `name := `, `name => `. It starts only at the start of a word and the name
- * is one character class, so it stays linear on long input.
+ * Words that say secret only as the last word of a label: `ENCRYPTION_KEY`,
+ * `signingKey`, `Key`, `DB_PASS`, `auth`, `PIN`. Elsewhere they are ordinary
+ * words ("Key findings: ...", "Pass rate: 98%").
  */
-const ASSIGNMENT_START = /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)["']?[ \t]*(?::=|=>|[:=])[ \t]*/g;
+const SECRET_NAME_END = /keys?$|(?:^|[^a-z])(?:pass|auth|pin|otp)$/i;
+
+function labelNamesSecret(label: string): boolean {
+  return SECRET_NAME_WORD.test(label) || SECRET_NAME_END.test(label);
+}
+
+/**
+ * A label and its assignment operator: `NAME=`, `name: `, `"name": `,
+ * `name := `, `name => `, `API key: `, `**Password**: `. The label is the
+ * last one to four words before the operator. It starts only at the start of
+ * a word and each word is one character class, so it stays linear on long
+ * input.
+ */
+const ASSIGNMENT_START = /(?<![A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]+[ \t]){0,3}[A-Za-z0-9_.-]+)["'`*]{0,3}[ \t]*(?::=|=>|[:=])[ \t]*/g;
 
 const QUOTES = new Set(['"', "'", "`"]);
 
@@ -111,18 +127,26 @@ function secretValueRange(text: string, index: number): { from: number; to: numb
 
 /**
  * Masks the whole value of every `name: value` / `name=value` /
- * `"name": "value"` assignment whose name says secret, so
+ * `"name": "value"` assignment whose label says secret, so
  * `password="correct horse battery staple"` masks in full while the next JSON
  * field and a preceding `user=bob` still show.
+ *
+ * `minValueStart` is for text that follows other text on its line (see
+ * `redactReplaySecrets`): a value that began before that index is left to the
+ * node it began in, and the scan resumes at that index.
  */
-function redactSecretAssignments(text: string): string {
+function redactSecretAssignments(text: string, minValueStart = 0): string {
   const pattern = new RegExp(ASSIGNMENT_START.source, "g");
   let result = "";
   let copied = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    if (!SECRET_NAME_WORD.test(match[1] ?? "")) continue;
+    if (!labelNamesSecret(match[1] ?? "")) continue;
     const range = secretValueRange(text, match.index + match[0].length);
+    if (range.from < minValueStart) {
+      pattern.lastIndex = Math.max(pattern.lastIndex, minValueStart);
+      continue;
+    }
     if (range.to > range.from) {
       result += text.slice(copied, range.from) + maskCharacters(text.slice(range.from, range.to));
       copied = range.to;
@@ -131,6 +155,13 @@ function redactSecretAssignments(text: string): string {
   }
   return copied === 0 ? text : result + text.slice(copied);
 }
+
+/**
+ * A command-line flag whose name says secret, with its value after a space:
+ * `--password hunter2`, `--api-key "a b"`. (`--password=hunter2` is an
+ * assignment.)
+ */
+const SECRET_FLAG = /(--[A-Za-z0-9-]*(?:password|passwd|passphrase|pwd|token|secret|api-?key|credential)[A-Za-z0-9-]*[ \t]+)("[^"\n\r]*"?|'[^'\n\r]*'?|\S+)/gi;
 
 /** `Authorization: Bearer x`, `Basic x`, `Token x`: the credential is masked. */
 const AUTH_SCHEME = /(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{8,})/g;
@@ -165,19 +196,146 @@ function looksRandom(token: string): boolean {
   return /[a-z]/.test(token) && /[A-Z]/.test(token) && /[0-9]/.test(token);
 }
 
-/**
- * Masks secrets inside text that is otherwise shown in replays: known key and
- * token formats, `name=value` assignments whose name says secret, auth header
- * credentials, URL passwords, private key blocks and long random-looking
- * tokens. Work content can hold a pasted key (a config file, a task
- * description), and the board's no-capture marker only covers fields it
- * renders as secrets.
- */
-export function redactReplaySecrets(text: string): string {
-  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters))
+/** Two redactions of `text` as one: a character is masked when either masks it. */
+function mergeMasks(text: string, first: string, second: string): string {
+  if (first === second) return first;
+  let merged = "";
+  for (let index = 0; index < text.length; index += 1) {
+    merged += first[index] === text[index] ? second[index] : first[index];
+  }
+  return merged;
+}
+
+/** Every redaction keeps the text length, so a slice of the result lines up with the input. */
+function redactSecretsInLine(text: string, minValueStart: number): string {
+  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters), minValueStart)
+    .replace(SECRET_FLAG, (_match, flag: string, value: string) => `${flag}${maskCharacters(value)}`)
     .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
     .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
     .replace(RANDOM_TOKEN, (token) => (looksRandom(token) ? maskCharacters(token) : token));
+}
+
+/** Text that sits before a text node on its line, for `redactReplaySecrets`. */
+export type ReplayLineContext = {
+  /** The text before the node on the same line. */
+  before: string;
+  /**
+   * True inside preformatted text, where a line is one statement: a secret
+   * value that began in `before` runs on through this node. In prose it does
+   * not, so the sentence after an inline `KEY=value` still shows.
+   */
+  preformatted: boolean;
+};
+
+/**
+ * Masks secrets inside text that is otherwise shown in replays: known key and
+ * token formats, `name=value` assignments whose label says secret, secret
+ * command-line flags, auth header credentials, URL passwords, private key
+ * blocks and long random-looking tokens. Work content can hold a pasted key
+ * (a config file, a task description), and the board's no-capture marker only
+ * covers fields it renders as secrets.
+ *
+ * rrweb records one text node at a time, and Markdown and syntax highlighting
+ * split a line into several nodes (`**Password:** hunter2`, a value in inline
+ * code). `context` carries the text before the node on its line, so a label
+ * in an earlier node still masks the value in this one. Context only adds
+ * masking: whatever the text masks by itself stays masked.
+ */
+export function redactReplaySecrets(text: string, context?: ReplayLineContext): string {
+  const alone = redactSecretsInLine(text, 0);
+  if (!context?.before) return alone;
+  const { before } = context;
+  const inLine = redactSecretsInLine(before + text, context.preformatted ? 0 : before.length).slice(before.length);
+  return mergeMasks(text, alone, inLine);
+}
+
+/** How much text before a node is read for its label, and how many nodes back. */
+const LINE_CONTEXT_MAX_LENGTH = 256;
+const LINE_CONTEXT_MAX_NODES = 64;
+const MAX_CONTEXT_CANDIDATES = 16;
+
+/** Elements that start a new line, so text before them is not on this line. */
+const LINE_BREAK_TAGS = new Set([
+  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BR", "DD", "DETAILS", "DIV", "DL", "DT", "FIGURE", "FOOTER",
+  "FORM", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE", "SECTION",
+  "SUMMARY", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR", "UL",
+]);
+
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+
+function startsNewLine(node: Node): boolean {
+  return node.nodeType === ELEMENT_NODE && LINE_BREAK_TAGS.has(node.nodeName.toUpperCase());
+}
+
+/** Decoration that is not part of the line's text, such as a line-number gutter. */
+function isHiddenFromText(node: Node): boolean {
+  return node.nodeType === ELEMENT_NODE && (node as Element).getAttribute("aria-hidden") === "true";
+}
+
+/** The last child that counts as text of the line, skipping decoration. */
+function lastTextChild(node: Node): Node | null {
+  let child = node.lastChild;
+  while (child && isHiddenFromText(child)) child = child.previousSibling;
+  return child;
+}
+
+/**
+ * The text before `node` on its line inside `root`: earlier text nodes, back
+ * to a line break, a block element or `root`. Bounded, so recording a long
+ * line stays linear.
+ */
+function lineTextBefore(node: Text, root: Element): string {
+  let before = "";
+  let current: Node = node;
+  for (let visited = 0; visited < LINE_CONTEXT_MAX_NODES && before.length < LINE_CONTEXT_MAX_LENGTH; visited += 1) {
+    let previous: Node | null = current.previousSibling;
+    if (!previous) {
+      const parent = current.parentNode;
+      if (!parent || parent === root || startsNewLine(parent)) break;
+      current = parent;
+      continue;
+    }
+    current = previous;
+    if (isHiddenFromText(previous)) continue;
+    if (startsNewLine(previous)) break;
+    for (let child = lastTextChild(previous); child; child = lastTextChild(previous)) {
+      previous = child;
+      if (startsNewLine(previous)) return before.slice(-LINE_CONTEXT_MAX_LENGTH);
+    }
+    current = previous;
+    if (previous.nodeType !== TEXT_NODE) continue;
+    const data = (previous as Text).data;
+    const lineBreak = Math.max(data.lastIndexOf("\n"), data.lastIndexOf("\r"));
+    if (lineBreak >= 0) {
+      before = data.slice(lineBreak + 1) + before;
+      break;
+    }
+    before = data + before;
+  }
+  return before.slice(-LINE_CONTEXT_MAX_LENGTH);
+}
+
+/**
+ * Redacts the text of a shown work content node with its line context.
+ * rrweb passes the text and its parent element, not the node, so every child
+ * text node with this text is a candidate and a character is masked when any
+ * candidate masks it.
+ */
+function redactWorkContentText(text: string, parent: HTMLElement, root: Element): string {
+  if (!/\S/.test(text)) return text;
+  const preformatted = parent.closest("pre") !== null;
+  let result = redactReplaySecrets(text);
+  let candidates = 0;
+  for (const child of Array.from(parent.childNodes)) {
+    if (child.nodeType !== TEXT_NODE || (child as Text).data !== text) continue;
+    candidates += 1;
+    // Many identical siblings: stop reading context and mask the text instead.
+    if (candidates > MAX_CONTEXT_CANDIDATES) return maskCharacters(text);
+    const before = lineTextBefore(child as Text, root);
+    if (before) result = mergeMasks(text, result, redactReplaySecrets(text, { before, preformatted }));
+  }
+  return result;
 }
 
 /**
@@ -190,12 +348,13 @@ export function redactReplaySecrets(text: string): string {
 export function maskReplayText(text: string, element?: HTMLElement | null): string {
   const nearest = element?.closest?.(ANALYTICS_MASK_TEXT_SELECTOR);
   if (
-    nearest
+    element
+    && nearest
     && nearest.classList.contains(ANALYTICS_WORK_CONTENT_CLASS)
     && !nearest.matches(STRICT_MASK_SELECTOR)
     && replayWorkContentVisible(nearest.ownerDocument)
   ) {
-    return redactReplaySecrets(text);
+    return redactWorkContentText(text, element, nearest);
   }
   return maskCharacters(text);
 }
