@@ -1,12 +1,48 @@
+import type { ReactNode } from "react";
 import type { AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 
+/** This disclosure has no dismissal or retry action. Both belong to the child cards. */
+export function InboxLimitCards({ items, renderCard }: {
+  items: readonly AttentionItem[];
+  renderCard: (item: AttentionItem) => ReactNode;
+}) {
+  const chains = items.filter(item => item.providerLimit?.grouping === "retry_chain" && item.relatedIssue);
+  const taskCount = new Set(chains.map(item => item.relatedIssue!.id)).size;
+  if (taskCount < 2) return items.map(renderCard);
+  const grouped = new Set(chains);
+  return items.map(item => {
+    if (!grouped.has(item)) return renderCard(item);
+    if (item !== chains[0]) return null;
+    return <details key="usage-limits" className="coordinator-decision-card">
+      <summary className="cursor-pointer font-medium">{taskCount} tasks hit usage limits</summary>
+      <div className="mt-3 space-y-3">{chains.map(renderCard)}</div>
+    </details>;
+  });
+}
+
 export function InboxProviderLimit({ item, evidence }: { item: AttentionItem; evidence: readonly AttentionItem[] }) {
+  const state = item.providerLimit!;
+  if (state.grouping === "retry_chain" && item.relatedIssue) {
+    const task = item.relatedIssue;
+    return <div className="space-y-2">
+      <h2><Link to={task.href!}>{task.identifier} {task.title}</Link></h2>
+      <p className="text-sm">{state.state === "needs_retry" ? "Needs retry" : state.state === "retry_requested" ? "Retry requested" : "Retry scheduled"}
+        {state.state === "scheduled" && state.retryAt && <> for <time dateTime={state.retryAt}>{new Date(state.retryAt).toLocaleString()}</time></>}
+      </p>
+      <p className="text-sm text-muted-foreground">{state.attempts} {state.attempts === 1 ? "attempt" : "attempts"} · {state.resetAt
+        ? <>Provider reset at <time dateTime={state.resetAt}>{new Date(state.resetAt).toLocaleString()}</time></>
+        : "Reset time unknown"}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        {state.state === "needs_retry" && <Button size="sm" asChild><Link to={task.href!}>Open task to retry</Link></Button>}
+        <Link to={`/agents/${state.agentId}/runs/${state.runId}`} className="text-sm underline">{state.agentName} run log</Link>
+      </div>
+    </div>;
+  }
   const members = [item, ...evidence].filter(member => member.providerLimit && member.relatedIssue);
   const tasks = [...new Map(members.map(member => [member.relatedIssue!.id, member])).values()];
   const manual = tasks.filter(task => task.providerLimit!.state === "needs_retry");
-  const state = item.providerLimit!;
   const title = manual.length
     ? `${manual.length} ${manual.length === 1 ? "task needs" : "tasks need"} a retry after the usage limit`
     : `${tasks.length} ${tasks.length === 1 ? "task paused" : "tasks paused"} by the provider usage limit`;

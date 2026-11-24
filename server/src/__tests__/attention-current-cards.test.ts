@@ -1,11 +1,12 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
   agentRuntimeState,
+  heartbeatRunEvents,
   heartbeatRuns,
   approvals,
   companies,
@@ -245,6 +246,91 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     expect(await errors()).toHaveLength(0);
     await db.update(agents).set({ errorReason: "Different failure" }).where(eq(agents.id, workerId));
     expect(await errors()).toHaveLength(1);
+  });
+
+  it("keeps unverified quota retries task-scoped through archive, exhaustion, and recovery", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const makeTask = () => insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const [first, second, third] = await Promise.all([makeTask(), makeTask(), makeTask()]);
+    const due = new Date(Date.now() + 60_000);
+    const base = { companyId, agentId: workerId, scopeKind: "issue" } as const;
+    async function start(issueId: string) {
+      const [run] = await db.insert(heartbeatRuns).values({ ...base, issueId, status: "failed",
+        errorCode: "native_provider_usage_limit" }).returning();
+      return queue(issueId, run!.id);
+    }
+    async function queue(issueId: string, parent: string) {
+      const [retry] = await db.insert(heartbeatRuns).values({ ...base, issueId, status: "scheduled_retry",
+        retryOfRunId: parent, scheduledRetryAt: due }).returning();
+      return retry!.id;
+    }
+    let retry = await start(first);
+    const secondRetry = await start(second);
+    await start(third);
+    const cards = async (view: AttentionFeedView) => (await list(companyId, SCOTT, view)).filter(item => item.providerLimit);
+    const waiting = await cards("waiting");
+    expect(waiting).toHaveLength(3);
+    expect(new Set(waiting.map(item => item.dismissalKey)).size).toBe(3);
+    const original = waiting.find(item => item.relatedIssue?.id === first)!;
+    expect(original.providerLimit).toMatchObject({ grouping: "retry_chain", attempts: 1, resetAt: null,
+      retryAt: due.toISOString(), state: "scheduled" });
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, original.dismissalKey, new Date(), original.changeFingerprint);
+
+    for (let count = 2; count <= 4; count++) {
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit" }).where(eq(heartbeatRuns.id, retry));
+      retry = await queue(first, retry);
+    }
+    expect((await cards("waiting")).map(item => item.relatedIssue?.id).sort()).toEqual([second, third].sort());
+    const archived = await cards("archived");
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatchObject({ dismissalKey: original.dismissalKey, providerLimit: { attempts: 4 } });
+
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit" }).where(eq(heartbeatRuns.id, retry));
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId: workerId, runId: retry, seq: 1,
+      eventType: "lifecycle", message: "Bounded retry exhausted" });
+    const manual = await cards("mine");
+    expect(manual).toHaveLength(1);
+    expect(manual[0]).toMatchObject({ relatedIssue: { id: first }, providerLimit: { attempts: 5, state: "needs_retry" } });
+    expect(await cards("archived")).toHaveLength(0);
+    expect(await cards("waiting")).toHaveLength(2);
+
+    await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null }).where(eq(heartbeatRuns.id, secondRetry));
+    const queued = (await cards("waiting")).find(item => item.relatedIssue?.id === second);
+    expect(queued?.providerLimit).toMatchObject({ attempts: 1, state: "retry_requested", resetAt: null });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, secondRetry));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, first));
+    expect((await cards("waiting")).map(item => item.relatedIssue?.id)).toEqual([third]);
+    expect(await cards("mine")).toHaveLength(0);
+  });
+
+  it("honors an older per-run archive without folding unrelated retries on the same task", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const task = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const other = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const base = { companyId, agentId: workerId, scopeKind: "issue" } as const;
+    async function failed(issueId: string, parent: string | null, code = "provider_limit_wait") {
+      const [run] = await db.insert(heartbeatRuns).values({ ...base, issueId, retryOfRunId: parent,
+        status: "failed", errorCode: code }).returning();
+      return run!.id;
+    }
+    const otherRoot = await failed(other, null);
+    const root = await failed(task, otherRoot); // A cross-task pointer cannot establish a shared chain.
+    const middle = await failed(task, root);
+    const transient = await failed(task, middle, "transient_error");
+    const tip = await failed(task, transient);
+    const separate = await failed(task, null);
+    for (const parent of [tip, separate]) {
+      await db.insert(heartbeatRuns).values({ ...base, issueId: task, retryOfRunId: parent,
+        status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000) });
+    }
+    const waiting = await list(companyId, SCOTT, "waiting");
+    const before = waiting.find(item => item.providerLimit?.runId === tip)!;
+    expect(before.providerLimit?.attempts).toBe(3);
+    const oldEpisode = createHash("sha256").update(middle).digest("hex");
+    const oldKey = before.dismissalKey.replace(before.providerLimit!.episode, oldEpisode);
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, oldKey, new Date(), before.changeFingerprint);
+    expect((await list(companyId, SCOTT, "archived")).map(item => item.dismissalKey)).toEqual([oldKey]);
+    expect((await list(companyId, SCOTT, "waiting")).map(item => item.providerLimit?.runId)).toEqual([separate]);
   });
 
   function find(items: AttentionItem[], sourceId: string) {

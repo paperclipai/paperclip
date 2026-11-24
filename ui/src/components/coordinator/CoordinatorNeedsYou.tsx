@@ -1,9 +1,9 @@
-import { InboxProviderLimit } from "./InboxProviderLimit";
+import { InboxLimitCards, InboxProviderLimit } from "./InboxProviderLimit";
 import { InboxRunHistory } from "./InboxRunHistory";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FileText, Image as ImageIcon, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, Image as ImageIcon, Loader2 } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { attentionCardType, type AttentionCloseMode, type AttentionItem, type AttentionPersonalView } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
@@ -32,6 +32,8 @@ import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import { DecisionResolver } from "@/components/DecisionResolver";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { useSidePanelTabs } from "@/components/side-panel";
+import { EmptyState } from "@/components/EmptyState";
+import { InboxFilter } from "@/components/InboxFilter";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -49,32 +51,11 @@ import { cn } from "@/lib/utils";
 
 type Group = "type" | "none" | "task" | "agent" | "project";
 
-function InboxFilter<T extends string>({ label, heading, value, options, onChange, defaultLabel }: {
-  label: string;
-  heading: string;
-  value: T;
-  options: readonly { value: T; label: string }[];
-  onChange: (value: T) => void;
-  defaultLabel?: string;
-}) {
-  const selected = options.find(option => option.value === value);
-  return <DropdownMenu>
-    <DropdownMenuTrigger asChild>
-      <Button variant="outline" size="sm" value={value} aria-label={selected ? `${label}, ${selected.label}` : label}>
-        <span className="max-w-(--sz-160px) truncate font-medium">{defaultLabel ?? selected?.label}</span>
-        <ChevronDown aria-hidden className="size-3.5 text-muted-foreground" />
-      </Button>
-    </DropdownMenuTrigger>
-    <DropdownMenuContent align="start" collisionPadding={8} className="w-(--sz-260px)" aria-label={heading}>
-      <DropdownMenuLabel>{heading}</DropdownMenuLabel>
-      {options.map(option => <DropdownMenuItem key={option.value} aria-current={option.value === value || undefined}
-        className="items-start gap-2" onSelect={() => onChange(option.value)}>
-        <Check aria-hidden className={cn("mt-0.5 size-3.5 shrink-0", value !== option.value && "opacity-0")} />
-        <span className={cn("truncate", value === option.value && "font-medium")}>{option.label}</span>
-      </DropdownMenuItem>)}
-    </DropdownMenuContent>
-  </DropdownMenu>;
-}
+const inboxFolders = [
+  { value: "needs", label: "Needs you", description: "Review open requests and decide what happens next." },
+  { value: "waiting", label: "Waiting", description: "See what you’ve snoozed and which tasks are waiting for an automatic retry." },
+  { value: "history", label: "History", description: "Look back at past decisions and see what happened to failed runs." },
+] as const;
 
 /** Rule 7: a card that cannot answer inline links to the exact control, named by its verb. */
 function openLabel(item: AttentionItem) {
@@ -288,7 +269,7 @@ export function CoordinatorNeedsYou() {
     const open = new Set(pendingItems.map(item => item.id));
     for (const tab of reviewTabs.tabs) if (!open.has(tab.payload.itemId)) closeReviewTab(tab.id);
   }, [pendingItems, reviewTabs.tabs, closeReviewTab]);
-  useEffect(() => { setBreadcrumbs([{ label: "Needs You" }]); }, [setBreadcrumbs]);
+  useEffect(() => { setBreadcrumbs([{ label: "Inbox" }]); }, [setBreadcrumbs]);
   useEffect(() => {
     setSettling([]); setReviewPanelOpen(false); resetReviewTabs({ tabs: [], activeTabId: null }); setNow(Date.now()); closePanel();
     return closePanel;
@@ -381,8 +362,6 @@ export function CoordinatorNeedsYou() {
           <NeedsYouAudience item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
           <NeedsYouRequester item={item} agentMap={agentMap} userLabelMap={userLabelMap} currentUserId={userId} />
           <time dateTime={item.activityAt} title={new Date(item.activityAt).toLocaleString()} className="shrink-0 text-xs leading-4.5 text-muted-foreground">{timeAgo(item.activityAt)}</time>
-          {!item.dismissal?.isActive && item.closeModes?.includes("archive") && <Button variant="ghost" size="sm"
-            disabled={closeActions.closingItemId === item.id} onClick={() => closeActions.close({ item, mode: "archive" })}>Archive for me</Button>}
           <AttentionCloseMenu item={item} currentUserId={userId} userLabelMap={userLabelMap}
           busy={closeActions.closingItemId === item.id || closeActions.transferringItemId === item.id}
           onWithdraw={(entry, reason) => closeActions.close({ item: entry, mode: "withdraw", reason })}
@@ -416,20 +395,26 @@ export function CoordinatorNeedsYou() {
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Choose a company to see its decisions.</p>;
   // Decision history is a view of the main pane (PAP-770), not a side panel
   // that repeats Recent Decisions beside them.
-  const folders = <nav className="flex gap-1" aria-label="Inbox views">{(["needs", "waiting", "history"] as const).map((value, i) => {
-    const selected = value === "needs" ? !waitingOpen && !historyOpen && !archivedView : value === folder;
-    const waitingCount = feed.data?.waitingCount;
-    const label = ["Needs you", "Waiting", "History"][i];
-    return <Button key={value} size="sm" variant={selected ? "secondary" : "ghost"} aria-current={selected ? "page" : undefined}
-      onClick={() => changeFolder(value)}>{label}{value === "waiting" && waitingCount ? ` · ${waitingCount}` : ""}</Button>;
-  })}</nav>;
+  const activeFolder = inboxFolders.find(({ value }) =>
+    value === "needs" ? !waitingOpen && !historyOpen && !archivedView : value === folder);
+  const folders = <div className="space-y-2" data-inbox-folders>
+    <nav className="flex gap-1" aria-label="Inbox views">{inboxFolders.map(({ value, label }) => {
+      const selected = value === activeFolder?.value;
+      const waitingCount = feed.data?.waitingCount;
+      return <Button key={value} size="sm" variant={selected ? "secondary" : "ghost"} aria-current={selected ? "page" : undefined}
+        onClick={() => changeFolder(value)}>{label}{value === "waiting" && waitingCount ? ` · ${waitingCount}` : ""}</Button>;
+    })}</nav>
+    {activeFolder && <p className="text-sm text-muted-foreground">{activeFolder.description}</p>}
+  </div>;
   const receipts = feed.data?.receipts ?? [];
   if (historyOpen) return <section className="coordinator-needs-you w-full space-y-6" aria-label="Decision history" data-coordinator-decision-history>
-    {folders}
-    {receipts.length > 0 && <section className="space-y-3"><h2>Updates</h2>{receipts.map(entry => <NeedsYouReceiptCard key={entry.id} receipt={entry} userLabelMap={userLabelMap} onOpen={navigate}
-        onDismiss={receiptActions.dismiss} dismissing={receiptActions.dismissingId === entry.id} />)}</section>}
+    <DecisionHistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} afterControls={<>
+      {folders}
+      {receipts.length > 0 && <section className="space-y-3"><h2>Updates</h2>{receipts.map(entry => <NeedsYouReceiptCard key={entry.id} receipt={entry} userLabelMap={userLabelMap} onOpen={navigate}
+          onDismiss={receiptActions.dismiss} dismissing={receiptActions.dismissingId === entry.id} />)}</section>}
+      <h1 className="text-2xl font-medium">Decision history</h1>
+    </>} />
     <InboxRunHistory companyId={selectedCompanyId} userId={userId} />
-    <DecisionHistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} header={<h1 className="text-2xl font-medium">Decision history</h1>} />
   </section>;
   const counts = { decisions: 0, problems: 0, updates: 0 };
   for (const item of currentItems) counts[needsYouSection(item)]++;
@@ -438,8 +423,7 @@ export function CoordinatorNeedsYou() {
   const sectionHeading = (section: NeedsYouSection) => <h2 className="text-base font-medium" data-needs-you-section={section}>
     {NEEDS_YOU_SECTIONS[section].title}
   </h2>;
-  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you w-full space-y-6" aria-label="Needs You">
-    {folders}
+  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you w-full space-y-6" aria-label="Inbox">
     {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView("mine")}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
     {/* Assigned to you by default (PAP-775); the assignee filter widens to all
         assignees, one person, no owner yet or company alerts. Archived and
@@ -470,6 +454,7 @@ export function CoordinatorNeedsYou() {
         </DropdownMenu>
       </div>
     </div>
+    {folders}
     {feed.data && !waitingOpen && summarySections.length > 0 ? <p className="text-sm text-muted-foreground" data-needs-you-summary>
       {summarySections.map((section, index) => {
         const label = NEEDS_YOU_SECTIONS[section].title.toLocaleLowerCase();
@@ -478,19 +463,23 @@ export function CoordinatorNeedsYou() {
     </p> : null}
     {feedWaiting ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
     {feedView.kind === "error" ? <QueryErrorState error={feedView.error} onRetry={feedView.retry} /> : null}
-    {!feedWaiting && feedView.kind !== "error" && currentItems.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : snoozedItems.length ? "No archived cards. Snoozed cards are below." : pendingItems.length ? "No open decisions match these filters." : waitingOpen ? "Nothing is waiting." : view === "mine" && feed.data?.waitingCount ? `You’re caught up. ${feed.data.waitingCount} ${feed.data.waitingCount === 1 ? "item is" : "items are"} waiting.` : EMPTY_VIEW_TEXT[view]}</p></div> : null}
+    {!feedWaiting && feedView.kind !== "error" && currentItems.length === 0 && (
+      staleItems.length || snoozedItems.length
+        ? <p className="py-8 text-center text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : "No archived cards. Snoozed cards are below."}</p>
+        : <EmptyState placement="upper" message={pendingItems.length ? "No open decisions match these filters." : waitingOpen ? "Nothing is waiting." : view === "mine" && feed.data?.waitingCount ? `You’re caught up. ${feed.data.waitingCount} ${feed.data.waitingCount === 1 ? "item is" : "items are"} waiting.` : EMPTY_VIEW_TEXT[view]} />
+    )}
     {groups.map(([label, items], index) => <div key={label} className="space-y-3" role={groupBy === "type" ? "group" : undefined} aria-label={groupBy === "type" ? NEEDS_YOU_SECTIONS[label as NeedsYouSection].title : undefined}>
       {groupBy === "type" ? index > 0 ? sectionHeading(label as NeedsYouSection) : null : label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}
-      {items.map(renderCard)}
+      <InboxLimitCards items={items} renderCard={renderCard} />
     </div>)}
     {currentItems.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
     <AttentionStaleGroup items={staleItems} open={staleOpen} onToggle={() => setStaleOpen(open => !open)} onWithdrawAll={closeActions.withdrawAll}
       busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap} titleOf={coordinatorCardTitle}>
-      {staleItems.map(renderCard)}
+      <InboxLimitCards items={staleItems} renderCard={renderCard} />
     </AttentionStaleGroup>
     {/* Snoozed by you: each card says when it comes back (PAP-749 plan §3). */}
     <AttentionSnoozedGroup count={snoozedItems.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(open => !open)}>
-      {snoozedItems.map(renderCard)}
+      <InboxLimitCards items={snoozedItems} renderCard={renderCard} />
     </AttentionSnoozedGroup>
   </section></LayoutGroup>;
 }

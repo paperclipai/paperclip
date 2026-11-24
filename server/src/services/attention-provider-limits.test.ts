@@ -16,6 +16,16 @@ describe("provider usage limits in the inbox", () => {
     expect(providerLimitForHold({ ...other, account: null }, scheduled, "").episode).not.toBe(episode);
   });
 
+  it("labels a scheduled recheck independently of what the provider reported", () => {
+    const retryAt = new Date(reset).toISOString();
+    expect(providerLimitForHold(run, { ...scheduled, providerLimitEstimated: true }, ""))
+      .toMatchObject({ grouping: "retry_chain", resetAt: null, retryAt, state: "scheduled" });
+    expect(providerLimitForHold({ ...run, account: null }, scheduled, ""))
+      .toMatchObject({ grouping: "retry_chain", resetAt: retryAt, state: "scheduled" });
+    expect(providerLimitForHold(run, scheduled, ""))
+      .toMatchObject({ grouping: "account_window", resetAt: retryAt });
+  });
+
   it("keeps the dismissal stable across lead changes and isolates different recipients", () => {
     const member = (id: string, userId: string, manual = false) => ({
       id, audience: { kind: "user", userId },

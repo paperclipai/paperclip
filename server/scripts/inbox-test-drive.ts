@@ -6,7 +6,8 @@ import { agents, agentRuntimeState, approvals, closeRegisteredClients, companies
   heartbeatRunEvents, heartbeatRuns, inboxDismissals, issueRecoveryActions, issues } from "@paperclipai/db";
 
 const phase = process.argv[2] ?? "reset";
-if (!["reset", "one-left", "all-recovered", "repeat"].includes(phase)) throw new Error("Use reset, repeat, one-left, or all-recovered");
+const chainPhases = ["chains", "chains-repeat", "chains-exhausted", "chains-recovered"];
+if (!["reset", "one-left", "all-recovered", "repeat", ...chainPhases].includes(phase)) throw new Error("Unknown inbox demo phase");
 const dir = realpathSync(fileURLToPath(new URL("../../tmp/inbox-drive/instances/default/db", import.meta.url)));
 const port = Number(readFileSync(dir + "/postmaster.pid", "utf8").split("\n")[3]);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Start the isolated dev server first");
@@ -19,6 +20,46 @@ const userId = "local-board";
 const titles = ["Review the launch checklist", "Draft release notes", "Check help links", "Prepare the handoff", "Summarize test results"];
 try {
   await db.transaction(async tx => {
+    if (chainPhases.includes(phase)) {
+      const demoId = id(1000);
+      const [demo] = await tx.select().from(companies).where(eq(companies.id, demoId));
+      if (demo && (demo.name !== "Retry Chain Test Drive" || demo.issuePrefix !== "RCH")) throw new Error("Fixture identity mismatch");
+      if (!demo && phase !== "chains") throw new Error("Run chains first");
+      await tx.insert(companies).values({ id: demoId, name: "Retry Chain Test Drive", issuePrefix: "RCH",
+        issueCounter: 3, defaultDecisionOwnerUserId: userId }).onConflictDoNothing();
+      await tx.insert(companyMemberships).values({ companyId: demoId, principalType: "user", principalId: userId,
+        membershipRole: "owner" }).onConflictDoNothing();
+      const agentId = id(1001);
+      await tx.insert(agents).values({ id: agentId, companyId: demoId, name: "Reviewer", status: "paused",
+        runtimeConfig: { heartbeat: { enabled: false } } }).onConflictDoNothing();
+      if (phase === "chains") await tx.delete(inboxDismissals).where(and(eq(inboxDismissals.companyId, demoId), eq(inboxDismissals.userId, userId)));
+      for (let n = 1; n <= 3; n++) {
+        const issueId = id(1010 + n);
+        const recovered = phase === "chains-recovered" && n === 2;
+        const manual = phase === "chains-exhausted" || phase === "chains-recovered";
+        const status = recovered ? "done" : "blocked";
+        await tx.insert(issues).values({ id: issueId, companyId: demoId, issueNumber: n, identifier: `RCH-${n}`,
+          title: titles[n-1]!, createdByUserId: userId, responsibleUserId: userId, assigneeAgentId: agentId, status })
+          .onConflictDoUpdate({ target: issues.id, set: { status } });
+        const attempts = n === 1 ? (phase === "chains" ? 3 : 4) : 1;
+        let parent: string | null = null;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const runId = id(1100 + 10 * n + attempt);
+          await tx.insert(heartbeatRuns).values({ id: runId, companyId: demoId, agentId, issueId, scopeKind: "issue",
+            status: "failed", errorCode: "native_provider_usage_limit", retryOfRunId: parent }).onConflictDoNothing();
+          parent = runId;
+        }
+        const evidence = { runId: parent, providerLimitAutomatic: true, providerLimitEstimated: true,
+          providerLimitResetAt: new Date(Date.now() + n * 3600_000).toISOString(),
+          ...(manual && n === 1 && { providerLimitResume: { state: "not_requested", reason: "automatic_retry_budget_used" } }) };
+        const holdStatus = recovered ? "resolved" : "active";
+        await tx.insert(issueRecoveryActions).values({ id: id(1200+n), companyId: demoId, sourceIssueId: issueId,
+          kind: "active_run_watchdog", ownerType: "board", cause: "native_provider_usage_limit", fingerprint: issueId,
+          evidence, status: holdStatus, nextAction: "Check the provider limit on this task." })
+          .onConflictDoUpdate({ target: issueRecoveryActions.id, set: { evidence, status: holdStatus, updatedAt: new Date() } });
+      }
+      return;
+    }
     const [existing] = await tx.select().from(companies).where(eq(companies.id,companyId));
     if (existing && (existing.name !== "Inbox Test Drive" || existing.issuePrefix !== "IBX")) throw new Error("Fixture identity mismatch");
     if (phase !== "reset" && !existing) throw new Error("Run reset first");

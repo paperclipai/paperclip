@@ -1,4 +1,4 @@
-import { groupProviderLimits, recoveredProviderRuns, scheduledProviderWaits, providerHoldRuns, providerLimitForHold } from "./attention-provider-limits.js";
+import { attachProviderRetryChains, groupProviderLimits, recoveredProviderRuns, scheduledProviderWaits, providerHoldRuns, providerLimitForHold } from "./attention-provider-limits.js";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -2107,14 +2107,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           recoveryActionAttentionCondition(),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
-      const [recoveryIssueMap, recoveryImageMap, holdRuns] = await Promise.all([
+      const [recoveryIssueMap, recoveryImageMap, holdRuns, scheduled] = await Promise.all([
         loadIssues(recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId])),
         loadImages(db, companyId, recoveryRows.map((row) => row.sourceIssueId), readCondition),
         providerHoldRuns(db, companyId, recoveryRows.flatMap(row =>
           row.cause === "native_provider_usage_limit" && typeof row.evidence?.runId === "string"
           && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(row.evidence.runId) ? [row.evidence.runId] : [])),
-
+        scheduledProviderWaits(db, companyId),
       ]);
+      const scheduledByRun = new Map(scheduled.map(run => [run.id, run.limit]));
 
       for (const recovery of recoveryRows) {
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
@@ -2123,6 +2124,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         if (run?.taskId === sourceIssue.id && run.resumed) continue;
         const providerLimit = run && run.taskId === sourceIssue.id && recovery.cause === "native_provider_usage_limit"
           ? providerLimitForHold(run, recovery.evidence, recovery.nextAction) : undefined;
+        const queuedRetry = run && scheduledByRun.get(run.runId);
+        if (providerLimit && queuedRetry) {
+          providerLimit.state = queuedRetry.state;
+          providerLimit.retryAt = queuedRetry.retryAt;
+        }
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
         add(createItem({
@@ -2459,10 +2465,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           : null);
       }
 
-      const [exhausted, scheduled] = await Promise.all([
-        listAttentionExhaustedRuns(db, companyId), scheduledProviderWaits(db, companyId),
-      ]);
-      const scheduledByRun = new Map(scheduled.map(run => [run.id, run.limit]));
+      const exhausted = await listAttentionExhaustedRuns(db, companyId);
       const failedRows = [...exhausted, ...scheduled];
       const failedIssueIds = failedRows.map((row) => row.boundTaskId ?? readRunIssueId(row.contextSnapshot));
       const [failedIssueMap, failedImageMap, failedRunsWithNewerRun] = await Promise.all([
@@ -2478,7 +2481,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const run of failedRows) {
         const issueId = run.boundTaskId ?? readRunIssueId(run.contextSnapshot);
         const scheduledLimit = scheduledByRun.get(run.id);
-        if (!scheduledLimit && failedRunsWithNewerRun.has(run.id)) continue;
+        if (!scheduledLimit && (failedRunsWithNewerRun.has(run.id) || ("providerResumed" in run && run.providerLimited && run.providerResumed))) continue;
 
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         if (issueId && (!issue || ["done", "cancelled"].includes(issue.status))) continue;
@@ -2745,7 +2748,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // Rule 11: one card for each obligation. Members share one placement, so
       // the fingerprint below reads the obligation's audience.
       assignAttentionObligations(currentItems, obligationHintByDedupKey);
-      groupProviderLimits(currentItems);
+      const legacyLimitDismissals = await attachProviderRetryChains(db, companyId, currentItems, dismissals);
+      groupProviderLimits(currentItems, legacyLimitDismissals);
       for (const item of currentItems) {
         // A count reads a fingerprint only to compare it with a dismissal.
         if (summaryOnly && !dismissals.has(item.dismissalKey)) continue;

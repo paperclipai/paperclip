@@ -1,9 +1,14 @@
+import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { attentionApi } from "@/api/attention";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollViewport";
+import { FileText } from "lucide-react";
+
+const recordedTime = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export function InboxRunHistory({ companyId, userId }: { companyId: string; userId: string | null }) {
   const query = useInfiniteQuery({ queryKey: [...queryKeys.attention(companyId), userId, "run-history"],
@@ -15,16 +20,27 @@ export function InboxRunHistory({ companyId, userId }: { companyId: string; user
     } });
   const runs = query.data?.pages.flat();
   const view = useQueryView(query);
-  if (view.kind === "error") return <QueryErrorState error={view.error} onRetry={view.retry} />;
-  return <section className="space-y-3"><h2 className="text-lg font-medium">Recent run history</h2>
+  return <section className="min-w-0 space-y-3"><h2 className="text-2xl font-medium" id="recent-run-history">Recent run history</h2>
+    {view.kind === "error" && <QueryErrorState error={view.error} onRetry={view.retry} />}
     {query.isLoading && <p role="status">Loading runs…</p>}
-    {runs?.length === 0 && <p>No failed runs on visible tasks.</p>}
-    {runs?.map(run => <div key={run.runId} className="flex flex-wrap items-baseline gap-2 text-sm">
-      <Link to={`/issues/${run.identifier ?? run.taskId}`} className="underline">{run.identifier} {run.taskTitle}</Link>
-      <span>{run.reason} · {run.outcome}</span>
-      <Link to={`/agents/${run.agentId}/runs/${run.runId}`} className="underline">{run.agentName} run log</Link>
-      <time className="text-muted-foreground" dateTime={run.recordedAt}>{new Date(run.recordedAt).toLocaleString()}</time>
-    </div>)}
+    {view.kind !== "error" && runs?.length === 0 && <EmptyState placement="upper" message="No failed runs on visible tasks." />}
+    {runs && runs.length > 0 && <HorizontalScrollViewport label="Run history columns">
+      <table className="inbox-run-table" aria-labelledby="recent-run-history">
+        <thead><tr>{["Task", "Task ID", "Outcome", "Run log", "Recorded"].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <tbody>{runs.map(run => {
+          const recordedAt = new Date(run.recordedAt);
+          return <tr key={run.runId}>
+            <td><Link to={`/issues/${run.identifier ?? run.taskId}`} className="block max-w-xs truncate hover:underline" title={run.taskTitle}>{run.taskTitle}</Link></td>
+            <td className="font-mono text-muted-foreground">{run.identifier ?? "—"}</td>
+            <td><div>{run.outcome}</div><div className="text-xs text-muted-foreground">{run.reason}</div></td>
+            <td><Link to={`/agents/${run.agentId}/runs/${run.runId}`} className="inline-flex items-center gap-1.5 hover:underline" aria-label={`${run.agentName} run log for ${run.identifier ?? run.taskTitle}`}>
+              <FileText aria-hidden className="size-3.5 shrink-0 text-muted-foreground" /><span className="max-w-40 truncate">{run.agentName}</span>
+            </Link></td>
+            <td><time className="tabular-nums text-muted-foreground" dateTime={run.recordedAt} title={recordedAt.toLocaleString()}>{recordedTime.format(recordedAt)}</time></td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </HorizontalScrollViewport>}
     {query.hasNextPage && <Button variant="outline" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>Show older runs</Button>}
   </section>;
 }

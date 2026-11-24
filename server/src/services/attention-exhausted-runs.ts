@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { agents, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 
+import { providerWorkResumed, usageLimitFailure } from "./attention-provider-limits.js";
+
 export function listAttentionExhaustedRuns(db: Db, companyId: string) {
   // Recovery can revisit an exhausted run. Deduplicate its historical events
   // before joining run data so duplicate events never multiply the wire payload.
@@ -31,8 +33,8 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       status: heartbeatRuns.status,
       error: heartbeatRuns.error,
       errorCode: heartbeatRuns.errorCode,
-      providerLimited: sql<boolean>`(${heartbeatRuns.errorCode} = 'native_provider_usage_limit'
-        or ${heartbeatRuns.resultJson}#>>'{providerFailure,category}' in ('rate_limit','quota_exhausted')) is true`,
+      providerLimited: sql<boolean>`${usageLimitFailure} is true`,
+      providerResumed: sql<boolean>`case when ${usageLimitFailure} then ${providerWorkResumed} else false end`,
       providerRetryAt: sql<string | null>`${heartbeatRuns.resultJson}#>>'{providerFailure,retryAt}'`,
       account: sql<string | null>`coalesce(nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,subscriptionId}', ''),
         nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,connectionId}', ''))`,

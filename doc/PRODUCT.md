@@ -537,11 +537,15 @@ at `/decisions`. The previous Inbox destination under More is removed.
 Inbox opens to **Needs you** with **Assigned to you** selected. Its badge counts
 personal actions. **Waiting** shows scheduled provider retries and personal
 snoozes. A provider limit with a known account and reset appears once per
-recipient, with the affected tasks, agents and run logs inside. Exhausted retries
+recipient, with the affected tasks, agents and run logs inside. When the account or
+reported reset is unknown, each task’s linked retry attempts share one card.
+Automatic retries update its attempt count and preserve a personal archive.
+A collapsible group brings these task cards together. Each card shows its own
+retry state and distinguishes a scheduled recheck from a reported reset. Exhausted retries
 return to Needs you when someone must act. Resumed or closed tasks leave the
 group. **History** includes decision receipts and failed or
-provider-held runs on accessible tasks. **Archive for me** is visible on open
-cards and has Undo. Archiving a provider episode covers later failures in the same
+provider-held runs on accessible tasks. Open a card’s ellipsis menu to choose
+**Archive for me**. The confirmation offers **Undo**. Archiving a provider episode covers later failures in the same
 window until the required action changes. Personal archive leaves approvals pending.
 The assignee filter can show all accessible
 assignees, a particular person, ownerless requests, or company alerts. Cards for
