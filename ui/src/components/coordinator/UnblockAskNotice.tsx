@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { ISSUE_PRIORITIES, type AttentionHeldUpTask, type AttentionItem, type IssueLockedStub, type IssueRelationIssueSummary } from "@paperclipai/shared";
@@ -36,13 +36,17 @@ const identifierNumber = (identifier: string | null) => Number(identifier?.match
  * The held-up tasks to list: open ones the viewer can read, in the card's
  * order (highest priority first, then the oldest, lowest-numbered task).
  * A private task comes back as a locked reference with no status; it is
- * left out, as the card's own count leaves it out.
+ * left out, as the card's own count leaves it out. Each task's sort keys are
+ * read once, before sorting, so a task holding up hundreds stays cheap.
  */
 export function openHeldUpTasks(tasks: ReadonlyArray<IssueRelationIssueSummary | IssueLockedStub>): IssueRelationIssueSummary[] {
-  return tasks
-    .filter((entry): entry is IssueRelationIssueSummary => !isLockedIssueStub(entry) && isOpen(entry.status))
-    .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority)
-      || identifierNumber(left.identifier) - identifierNumber(right.identifier));
+  const keyed: Array<{ task: IssueRelationIssueSummary; rank: number; number: number }> = [];
+  for (const entry of tasks) {
+    if (isLockedIssueStub(entry) || !isOpen(entry.status)) continue;
+    keyed.push({ task: entry, rank: priorityRank(entry.priority), number: identifierNumber(entry.identifier) });
+  }
+  keyed.sort((left, right) => left.rank - right.rank || left.number - right.number);
+  return keyed.map((entry) => entry.task);
 }
 
 /**
@@ -53,7 +57,9 @@ export function openHeldUpTasks(tasks: ReadonlyArray<IssueRelationIssueSummary |
 function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: string; issueLabel: string; moreCount: number; behindCount: number }) {
   const [open, setOpen] = useState(false);
   const issue = useQuery({ queryKey: queryKeys.issues.detail(issueId), queryFn: () => issuesApi.get(issueId), enabled: open });
-  const blocks = openHeldUpTasks(issue.data?.blocks ?? []);
+  const loadedBlocks = issue.data?.blocks;
+  // Query data is structurally shared, so this sorts again only when the list changes.
+  const blocks = useMemo(() => openHeldUpTasks(loadedBlocks ?? []), [loadedBlocks]);
   const heldUpCount = issue.data ? blocks.length : moreCount;
   return (
     <Popover open={open} onOpenChange={setOpen}>

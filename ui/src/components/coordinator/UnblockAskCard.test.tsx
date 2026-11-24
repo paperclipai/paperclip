@@ -112,5 +112,25 @@ describe("human unblock card", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(masked(document.body.querySelector("[data-unblock-held-up-list]")), "held-up list").toBe(true);
   });
+
+  it("lists hundreds of held-up tasks and sorts them once per load", async () => {
+    const size = 300;
+    let priorityReads = 0;
+    const blocks = Array.from({ length: size }, (_, n) => {
+      const entry = { ...heldUpTask(n + 10), status: n % 5 === 0 ? "done" : "todo" };
+      // Only the sort reads priority; fail at once if a re-render sorts the list again.
+      Object.defineProperty(entry, "priority", { get: () => { priorityReads += 1; if (priorityReads > size) throw new Error(`sorted again: ${priorityReads} priority reads`); return "medium"; } });
+      return entry;
+    });
+    issues.get.mockResolvedValueOnce({ blocks });
+    const card = await renderCard({ heldUpTasks: [heldUpTask(10), heldUpTask(11), heldUpTask(12)], heldUpDirectCount: size, heldUpTotalCount: size });
+    await act(async () => card.querySelector<HTMLButtonElement>("[data-unblock-held-up-more]")!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const list = document.body.querySelector<HTMLElement>("[data-unblock-held-up-list]")!;
+    const open = size - size / 5;
+    expect(list.querySelectorAll("[data-unblock-held-up-row]")).toHaveLength(open);
+    expect(list.querySelector("[data-unblock-held-up-heading]")?.textContent).toBe(`PAP-3 holds up ${open} tasks`);
+    expect(priorityReads).toBeLessThanOrEqual(size);
+  });
 });
 
