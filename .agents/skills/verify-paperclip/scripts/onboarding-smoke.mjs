@@ -15,13 +15,34 @@ const evidence = path.resolve(process.argv[3]);
 execFileSync('python3', [path.join(repo, '.agents/skills/verify-paperclip/scripts/doctor.py'), '--evidence-dir', evidence], { stdio: 'inherit' });
 const launch = JSON.parse(await fs.readFile(path.join(evidence, 'launch.json'), 'utf8'));
 assert.equal(new URL(launch.url).hostname, '127.0.0.1');
-const browser = await chromium.launch({ headless: true, ...(process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL ? { channel: process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL } : {}) });
+const companyName = `Verification ${Date.now()}`;
+const result = { feature: 'onboarding.md', subFeatures: ['company', 'resume'], entryPoint: 'web-wizard', commit: launch.commit, url: launch.url, actor: 'local_trusted board', providerCalls: false, mockedResponses: false, companyName, status: 'failed' };
+
+async function writeBlocked(error, remediation) {
+  result.status = 'blocked';
+  result.error = error;
+  if (remediation) result.remediation = remediation;
+  result.browserErrors = [];
+  result.notRun = ['browser drive'];
+  await fs.writeFile(path.join(evidence, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
+  console.log(JSON.stringify(result));
+}
+
+const channel = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
+const launchRemediation = channel
+  ? `Install or select the "${channel}" browser channel, or unset PAPERCLIP_PLAYWRIGHT_CHANNEL and run: node node_modules/@playwright/test/cli.js install chromium`
+  : 'Run: node node_modules/@playwright/test/cli.js install chromium';
+let browser;
+try {
+  browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+} catch (error) {
+  await writeBlocked(error.message, launchRemediation);
+  process.exit(1);
+}
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
-const companyName = `Verification ${Date.now()}`;
-const result = { feature: 'onboarding.md', subFeatures: ['company', 'resume'], entryPoint: 'web-wizard', commit: launch.commit, url: launch.url, actor: 'local_trusted board', providerCalls: false, mockedResponses: false, companyName, status: 'failed' };
 await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
 async function capture(name) {
   await page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true });

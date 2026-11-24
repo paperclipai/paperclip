@@ -86,9 +86,11 @@ instructions already given. Publishing npm packages belongs to the existing
 
 Run from the repository root with Node 24.11+, Python 3, `lsof`, and dependencies
 installed with `pnpm install --frozen-lockfile`. Browser driving uses the existing
-`@playwright/test` dependency. If Chromium is unavailable, run
-`node node_modules/@playwright/test/cli.js install chromium`, or select an installed
-browser with `PAPERCLIP_PLAYWRIGHT_CHANNEL=chrome`.
+`@playwright/test` dependency. The onboarding smoke launches a headless browser
+before opening a page; a missing executable or stale browser build is reported as a
+blocked drive with the remediation instead of an unhandled Playwright error. Install
+the expected build with `node node_modules/@playwright/test/cli.js install chromium`,
+or select an installed channel with `PAPERCLIP_PLAYWRIGHT_CHANNEL=chrome`.
 
 Create separate, unique data and evidence directories. Keep the evidence outside
 the data directory:
@@ -162,8 +164,10 @@ node .agents/skills/verify-paperclip/scripts/onboarding-smoke.mjs \
 This covers company creation and setup resumption, with no mocked responses or
 provider calls. Hiring, first task execution, and the alternate CLI entry remain
 separate journeys. The script requires an empty instance and refuses a non-owned
-or non-loopback target. For other features, reuse the owned URL and follow the
-map's entry points. Company routes normally require the selected company's
+or non-loopback target. Before opening a page it launches the browser; if that
+launch fails, it writes a `blocked` result with the install command instead of
+throwing before evidence is recorded. For other features, reuse the owned URL and
+follow the map's entry points. Company routes normally require the selected company's
 `issuePrefix`, for example `/<PREFIX>/goals`; use current navigation rather than
 guessing resource URLs. The unprefixed `/onboarding` route starts naming; use the
 company-prefixed onboarding route to resume its agent setup. Check relevant
