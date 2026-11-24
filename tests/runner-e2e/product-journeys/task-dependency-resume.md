@@ -35,6 +35,7 @@ one work run, uses the existing bounded case budget, and shares the original
 campaign deadline.
 The task and agent run reads can straddle completion. The completion wait requires
 both projections to agree on the same run facts before saving the finished point.
+After reopening, it again waits for agreement before grading the reopened point.
 It uses the original deadline and does not replace either independent observation.
 The native agent must have nonblank provider and model
 identifiers before any observation read or task creation. An incomplete execution

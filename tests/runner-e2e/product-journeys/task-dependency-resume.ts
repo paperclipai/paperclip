@@ -209,6 +209,13 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
     const document = page.locator(`#document-${documentKey}`);
     await expect(document).toContainText(reference);
     observations.reopened = await observe();
+    while (!dependencyRunProjectionsAgree(observations.reopened, startingRuns)) {
+      const remaining = options.deadlineAt - Date.now();
+      if (remaining <= 0) throw new JourneyError("failed", "dependency_reopen_deadline");
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));
+      if (Date.now() >= options.deadlineAt) throw new JourneyError("failed", "dependency_reopen_deadline");
+      observations.reopened = await observe();
+    }
     observations.reopened.resultVisible = await document.isVisible() && (await document.textContent())?.includes(reference) === true;
     const checks = gradeTaskDependencyResume({ ...observations, scope } as DependencyEvidence);
     evidence.checks.push(...checks);
