@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -24,6 +24,30 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+// Lets a test hand the card function the document as it was read before a
+// newer revision landed: the window a delayed settle runs in.
+const staleRead = vi.hoisted(() => ({ next: null as unknown }));
+vi.mock("../services/documents.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/documents.js")>();
+  return {
+    ...actual,
+    documentService: (db: Parameters<typeof actual.documentService>[0]) => {
+      const service = actual.documentService(db);
+      return {
+        ...service,
+        getIssueDocumentByKey: async (...args: Parameters<typeof service.getIssueDocumentByKey>) => {
+          if (staleRead.next) {
+            const snapshot = staleRead.next;
+            staleRead.next = null;
+            return snapshot as Awaited<ReturnType<typeof service.getIssueDocumentByKey>>;
+          }
+          return service.getIssueDocumentByKey(...args);
+        },
+      };
+    },
+  };
+});
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PLAN_REVIEW_CARD_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -195,6 +219,25 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(cards.find(card => card.id === oldCard!.id)?.status).toBe("expired");
     expect(cards.filter(card => card.status === "pending")).toHaveLength(1);
     await expect(interactionsAccept(t, oldCard!.id)).rejects.toThrow();
+  });
+
+  it("never withdraws a newer revision's card from a delayed settle of an older one", async () => {
+    const t = await seed();
+    const first = await t.newRun();
+    await t.writePlan(first);
+    const revisionOne = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+    const second = await t.newRun();
+    await t.writePlan(second, `${PLAN}\n3. Revised.`);
+    await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "created" });
+
+    // The first run's settle read revision 1 before revision 2 landed.
+    staleRead.next = revisionOne;
+    await expect(ensureNativePlanReviewCard(db, t.binding(first))).resolves.toMatchObject({ kind: "not_applicable" });
+
+    const cards = await t.cards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ status: "pending" });
+    expect(cards[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
   });
 
   async function interactionsAccept(t: Awaited<ReturnType<typeof seed>>, id: string) {

@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { documentRevisions, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { documentRevisions, documents, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { documentService } from "../documents.js";
 import { HttpError } from "../../errors.js";
@@ -115,13 +115,29 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
   // person wrote is theirs already.
   if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" };
 
+  // Withdraw review cards bound to an older plan revision, judged against
+  // the locked current document: a delayed settle for an older revision must
+  // never withdraw the card of a newer one. Answering a stale card is already
+  // refused, so this only tidies the thread and is best effort.
+  let superseded = false;
+  await db.transaction(async (tx) => {
+    // Issue before document: the same lock order as card creation.
+    await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).for("update");
+    const [current] = await tx.select({ latestRevisionId: documents.latestRevisionId, latestRevisionNumber: documents.latestRevisionNumber })
+      .from(documents).where(and(eq(documents.id, plan.id), eq(documents.companyId, binding.companyId))).for("update");
+    if (current?.latestRevisionId !== revision.id) {
+      superseded = true;
+      return;
+    }
+    await issueThreadInteractionService(tx as unknown as Db).expireStaleRequestConfirmationsForIssueDocument(
+      { id: binding.issueId, companyId: binding.companyId },
+      { id: plan.id, key: "plan", latestRevisionId: current.latestRevisionId, latestRevisionNumber: current.latestRevisionNumber },
+      { agentId: binding.agentId, runId: binding.runId });
+  }).catch((error: unknown) => logger.warn({ issueId: binding.issueId, error }, "Could not withdraw stale plan review cards"));
+  // A newer revision was written meanwhile; its own settle opens its card.
+  if (superseded) return { kind: "not_applicable" };
   const interactions = issueThreadInteractionService(db);
-  // Withdraw review cards bound to an older plan revision. Answering one is
-  // already refused as a stale target; this only tidies the thread, so a row
-  // it cannot read must not stop the current card from opening.
-  await interactions.expireStaleRequestConfirmationsForIssueDocument(
-    { id: binding.issueId, companyId: binding.companyId }, plan, { agentId: binding.agentId, runId: binding.runId },
-  ).catch((error: unknown) => logger.warn({ issueId: binding.issueId, error }, "Could not withdraw stale plan review cards"));
   let inserted = false;
   const publications: Parameters<typeof publishActivity>[0][] = [];
   let interactionId: string;
