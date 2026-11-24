@@ -128,9 +128,14 @@ describe("Coordinator task creation", () => {
 
     const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
     const links = Array.from(region.querySelectorAll("a"), link => link.getAttribute("href"));
-    expect(links).toHaveLength(tasks.length + chats.length + 2);
+    // Recent project rows expand their tasks in place instead of linking to the project.
+    expect(links).toHaveLength(tasks.length + chats.length);
+    const text = region.textContent ?? "";
+    expect(text.indexOf("Project 1")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Project 1")).toBeLessThan(text.indexOf("Project 0"));
+    expect(text.indexOf("Project 0")).toBeLessThan(text.indexOf("Recent task 299"));
     // A recent chat row opens its own conversation.
-    expect(links.slice(0, 4)).toEqual(["/projects/project-1/issues", "/projects/project-0/issues", "/issues/TASK-299", "/chats/agent-99/chat-99"]);
+    expect(links.slice(0, 2)).toEqual(["/issues/TASK-299", "/chats/agent-99/chat-99"]);
     expect(links.at(-1)).toBe("/issues/TASK-0");
     expect(new Set(links).size).toBe(links.length);
     expect(fixture.projectTasks).not.toHaveBeenCalled();
