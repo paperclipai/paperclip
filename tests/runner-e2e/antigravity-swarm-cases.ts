@@ -18,12 +18,12 @@ export const ANTIGRAVITY_SWARM_CASES = [
 ] as const;
 export const ANTIGRAVITY_SWARM_RECIPE = "doc/plans/2026-11-22-antigravity-qualification.md#swarm-live-proof";
 
-const LABELS: Record<(typeof ANTIGRAVITY_SWARM_CASES)[number], { label: string; runs: number; issue: "done" | "in_progress" | "todo"; run: "succeeded" | "cancelled" | "failed" }> = {
+const LABELS: Record<(typeof ANTIGRAVITY_SWARM_CASES)[number], { label: string; runs: number; issue: RunnerTaskFixture["expectedTerminalState"]["issue"]; run: "succeeded" | "cancelled" | "failed" }> = {
   "two-helpers-and-verifier": { label: "Two helpers write a.txt and b.txt, a verifier checks both; task Done", runs: 1, issue: "done", run: "succeeded" },
-  "stop-mid-swarm": { label: "Stop mid-swarm stops every helper and leaves no process", runs: 1, issue: "todo", run: "cancelled" },
+  "stop-mid-swarm": { label: "Stop mid-swarm stops every helper and leaves no process", runs: 1, issue: "in_progress", run: "cancelled" },
   "process-loss-retry": { label: "Kill the CLI mid-swarm, Retry starts a fresh swarm in the same task folder", runs: 2, issue: "done", run: "succeeded" },
   "follow-up-after-swarm": { label: "An ordinary follow-up after a swarm runs on the registry route", runs: 2, issue: "done", run: "succeeded" },
-  "flag-off-refusal": { label: "With the flag off, /swarm gets the plain 'not available' message and nothing runs", runs: 0, issue: "todo", run: "succeeded" },
+  "flag-off-refusal": { label: "With the flag off, /swarm gets the plain 'not available' message and nothing runs", runs: 0, issue: "in_progress", run: "succeeded" },
 };
 
 export function buildAntigravitySwarmSuite(environments: readonly EnvironmentFixture[]): RunnerSuiteFixture {

@@ -19816,6 +19816,12 @@ export function issueRoutes(
               },
               tx,
             );
+            // The swarm request commits with its comment or not at all.
+            if (swarmRequested && actor.actorType === "user") {
+              await recordAntigravitySwarmRequest(tx as unknown as Db, {
+                companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: insertedComment.id, userId: actor.actorId,
+              });
+            }
             const updated =
               actor.actorType === "user" && currentIssue.status !== "done"
                 ? await svc.update(
@@ -19921,9 +19927,15 @@ export function issueRoutes(
             dbOrTx,
           );
         const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
-        comment = needsFastResponse ? await db.transaction(async tx => {
+        comment = needsFastResponse || swarmRequested ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
-          if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+          // The swarm request commits with its comment or not at all.
+          if (swarmRequested && actor.actorType === "user") {
+            await recordAntigravitySwarmRequest(tx as unknown as Db, {
+              companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: saved.id, userId: actor.actorId,
+            });
+          }
+          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
             fastResponseEnqueued = true;
@@ -20060,11 +20072,6 @@ export function issueRoutes(
         comment,
         currentIssue.assigneeAgentId,
       );
-      if (swarmRequested && req.actor.type === "board" && req.actor.userId) {
-        await recordAntigravitySwarmRequest(db, {
-          companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: comment.id, userId: req.actor.userId,
-        });
-      }
       const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({

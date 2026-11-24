@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
+import { createProviderFailure } from "../provider-failure.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
 
 /**
@@ -34,9 +36,13 @@ export type AntigravitySwarmErrorCode =
 /** `message` is written for the person who asked for the swarm. */
 export class AntigravitySwarmError extends Error {
   readonly retryable = false;
+  /** Lets the sidecar hand this plain message to the user instead of a generic open failure. */
+  readonly providerFailure: ProviderFailure | null;
   constructor(readonly code: AntigravitySwarmErrorCode, message: string) {
     super(message);
     this.name = "AntigravitySwarmError";
+    this.providerFailure = createProviderFailure({ provider: "antigravity", phase: "startup", message, providerCode: code,
+      category: code === "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED" ? "authentication" : code === "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT" ? "timeout" : "unknown" });
   }
 }
 

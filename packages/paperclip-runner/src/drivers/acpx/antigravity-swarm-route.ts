@@ -1,8 +1,9 @@
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
 import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
-import { resolveAntigravityCliLaunch, type AntigravityCliLaunchOptions } from "./antigravity-cli-installation.js";
+import { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunchOptions } from "./antigravity-cli-installation.js";
 import { ANTIGRAVITY_CLI_STABLE_ENDPOINT, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError } from "./antigravity-swarm-guard.js";
 import type { VerifiedAcpxInstallation } from "./installation-integrity.js";
 
@@ -45,7 +46,11 @@ export async function verifyAntigravitySwarmInstallation(
   stateDirectory: () => string,
   options: Omit<AntigravityCliLaunchOptions, "arguments"> = {},
 ): Promise<VerifiedAcpxInstallation> {
-  const pinned = await resolveAntigravityCliLaunch(options);
+  const pinned = await resolveAntigravityCliLaunch(options).catch((error: unknown) => {
+    // The runtime-missing and unsupported-platform messages are written for people; keep them visible.
+    if (error instanceof AntigravityCliRuntimeError) throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", `Swarm is not available on this computer: ${error.message}`);
+    throw error;
+  });
   return Object.freeze({
     commandDigest: pinned.commandDigest,
     agentServerPackageJsonPath: null,
@@ -74,12 +79,23 @@ export function antigravitySwarmLaunchEnvironment(
   return { ...environment, ...ANTIGRAVITY_CLI_DISTRIBUTION.environment };
 }
 
-/** Paperclip tools that create tasks, assign work or hire. A swarm is one run with one assignee. */
-const DELEGATION_TOOL = /^paperclip_(?:create_(?:task|issue|subtask|agent)|hire|delegate|assign|reassign)/;
+/**
+ * Paperclip operations that create, assign or hand off work, hire, or reach the
+ * generic API (which can do any of those). A swarm is one run with one
+ * assignee, so none of them is offered on a swarm turn. Production catalogs
+ * name tools by bare operation id; prefixed names are matched canonically.
+ */
+export const ANTIGRAVITY_SWARM_DELEGATING_OPERATIONS: ReadonlySet<string> = new Set([
+  "create_task", "create_issue", "create_subtask", "reassign_task", "assign_task", "set_dependencies", "delegate_task",
+  "hire_agent", "create_agent", "call_api",
+  "create_project", "create_case", "update_case", "handoff_case", "create_workflow", "update_workflow",
+  "update_routine", "create_routine", "create_area", "update_area", "create_responsibility", "update_responsibility",
+]);
 
 /** The bridge catalog for a swarm turn: the run's tools without delegation. */
 export function antigravitySwarmTools<T extends Readonly<Record<string, unknown>>>(tools: readonly T[]): T[] {
-  return tools.filter(tool => !(typeof tool.name === "string" && DELEGATION_TOOL.test(tool.name)));
+  return tools.filter(tool => ![tool.name, tool.operationId].some(name =>
+    typeof name === "string" && ANTIGRAVITY_SWARM_DELEGATING_OPERATIONS.has(canonicalRunnerToolName(name))));
 }
 
 /**

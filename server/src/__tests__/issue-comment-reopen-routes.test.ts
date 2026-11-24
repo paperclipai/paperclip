@@ -1320,7 +1320,9 @@ describe("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "two helpers write a.txt and b.txt", nativeCommand: "swarm" });
     expect(res.status).toBe(201);
-    expect(mockSwarm.record).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ commentId: "comment-1", userId: "local-board" }));
+    // Written in the same transaction as the comment, so neither can exist without the other.
+    expect(mockSwarm.record).toHaveBeenCalledWith(mockTx, expect.objectContaining({ commentId: "comment-1", userId: "local-board" }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), mockTx);
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({ contextSnapshot: expect.objectContaining({ antigravitySwarmCommentId: "comment-1" }) }),

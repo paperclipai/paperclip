@@ -65,6 +65,13 @@ export function parseSwarmCommand(value: string): { request: string } | null {
   return command ? { request: command.argument } : null;
 }
 
+/** A swarm runs on the agent's configured model; a per-message model or effort choice cannot apply. */
+export function swarmRunSettingsRefusal(settings: { model: string | null; effort: string | null; fast: boolean } | null | undefined): string | null {
+  return settings && (settings.model || settings.effort || settings.fast)
+    ? "Swarm uses the agent's configured model. Clear the model and effort choices for this message, then send /swarm."
+    : null;
+}
+
 export type PlanSubmission =
   | { kind: "none" }
   /** Select Plan mode and send nothing. */

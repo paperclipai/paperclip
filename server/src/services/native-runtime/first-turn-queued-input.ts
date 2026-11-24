@@ -109,6 +109,8 @@ export function deferredWakeJoinsFirstTurn(
     reason !== null && COMMENT_WAKE_REASONS.has(reason) &&
     !payload.interactionId && !context.interactionId && !context.interactionStatus &&
     !payload.queuedCommentInterrupt && context.resumeIntent !== true &&
+    // A /swarm request selects its own run (a different provider route).
+    context.antigravitySwarmCommentId === undefined &&
     !deferredWakeIsChatRequest(payload) &&
     queuedCommentIdsFromWakePayload(payload).length > 0;
 }

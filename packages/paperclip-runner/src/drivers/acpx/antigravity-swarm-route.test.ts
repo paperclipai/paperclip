@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME } from "../../contracts/completion-result.js";
 import { antigravityRouteChangeRefusal, antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { createAcpxModeBinding, resolveAcpxProviderMode } from "./provider-mode.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -43,10 +44,14 @@ describe("Antigravity swarm route selection", () => {
     expect(antigravitySwarmLaunchEnvironment({ HOME: "/private/home" }, { agentHomeDirectory: "/private", platform: "darwin", realHome: "/Users/owner" }).HOME).toBe("/Users/owner");
   });
 
-  it("keeps Paperclip delegation tools out of a swarm turn", () => {
-    const tools = ["paperclip_finish_task", "paperclip_block_task", "paperclip_create_task", "paperclip_create_issue", "paperclip_hire_agent",
-      "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"].map(name => ({ name }));
-    expect(antigravitySwarmTools(tools).map(tool => tool.name)).toEqual(["paperclip_finish_task", "paperclip_block_task", "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"]);
+  it("keeps every Paperclip operation that creates or hands off work out of a swarm turn, as the production catalog names them", () => {
+    const delegating = ["create_task", "reassign_task", "set_dependencies", "hire_agent", "call_api", "create_project", "create_case", "update_case",
+      "handoff_case", "create_workflow", "update_workflow", "update_routine", "create_area", "create_responsibility"];
+    const kept = [PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME, "get_task_context", "read_document", "write_document", "report_progress", "search_tasks", "list_agents"];
+    // Production descriptors carry the bare operation id as name (sidecar_run_tool_operations).
+    const catalog = [...delegating, ...kept].map(name => ({ name, operationId: name, description: "x" }));
+    expect(antigravitySwarmTools(catalog).map(tool => tool.name)).toEqual(kept);
+    expect(antigravitySwarmTools([{ name: "paperclip_create_task" }, { name: "x", operationId: "hire_agent" }])).toEqual([]);
   });
 
   it("lets the server open a fresh conversation when a saved one belongs to the other route", () => {

@@ -10,7 +10,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { undeliveredLegacyUserCommentIds } from "../explicit-native-continuation.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import {
-  claimFirstTurnQueuedInput, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput,
+  claimFirstTurnQueuedInput, deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput,
 } from "./first-turn-queued-input.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -185,5 +185,19 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     // Still owed after the turn: release promotion delivers it with its file.
     expect([...await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
       commentIds: [withFile] })]).toEqual([]);
+  });
+});
+
+describe("a /swarm request never joins another run's first turn", () => {
+  const user = "user-1";
+  const commentId = "6f1c1b0e-5a52-4b0a-9a51-0d6c9c3b2f11";
+  const wake = (context: Record<string, unknown>) => ({
+    agentId: "agent-1", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: user, reason: "issue_commented",
+    payload: { issueId: "issue-1", commentId, mutation: "comment", _paperclipWakeContext: { wakeReason: "issue_commented", commentId, wakeCommentId: commentId, wakeCommentIds: [commentId], ...context } },
+  });
+  it("keeps the swarm request for its own run selection", () => {
+    const run = { agentId: "agent-1", responsibleUserId: user };
+    expect(deferredWakeJoinsFirstTurn(wake({}), run)).toBe(true);
+    expect(deferredWakeJoinsFirstTurn(wake({ antigravitySwarmCommentId: commentId }), run)).toBe(false);
   });
 });

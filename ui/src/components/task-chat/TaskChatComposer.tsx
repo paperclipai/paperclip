@@ -72,7 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
-import { parseRunnerGoalCommand, parseSwarmCommand, planSubmission, type RunnerGoalComposerCommand } from "./composer-commands";
+import { parseRunnerGoalCommand, parseSwarmCommand, planSubmission, swarmRunSettingsRefusal, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -866,6 +866,11 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
+      // A swarm is started from a comment on an existing task; never create an ordinary task from it.
+      if (parseSwarmCommand(bodyRef.current)) {
+        setActionError("Create the task first, then send /swarm in a comment on it.");
+        return;
+      }
       // Only a composer that offers Plan mode reads /plan; elsewhere it stays text.
       const plan = onWorkModeChange
         ? planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length))
@@ -918,6 +923,11 @@ export function TaskChatComposer({
     const swarmCommand = queuedEdit ? null : parseSwarmCommand(submittedBody);
     if (swarmCommand && !swarmCommand.request) {
       setActionError("Write what the swarm should do after /swarm.");
+      return;
+    }
+    const swarmSettingsRefusal = swarmCommand ? swarmRunSettingsRefusal(runSettings) : null;
+    if (swarmSettingsRefusal) {
+      setActionError(swarmSettingsRefusal);
       return;
     }
     if (swarmCommand && showAssignee && assigneeValue !== currentAssigneeValue) {
@@ -1087,7 +1097,7 @@ export function TaskChatComposer({
         ...(reassignment ? { reassignment } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
-        ...(swarmCommand ? { nativeCommand: "swarm" } : {}),
+        ...(swarmCommand ? { nativeCommand: "swarm" as const } : {}),
       };
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
@@ -1097,7 +1107,7 @@ export function TaskChatComposer({
       }
       sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
       if (swarmCommand) {
-        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings ?? undefined, "swarm");
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, undefined, "swarm");
       } else if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
@@ -1193,7 +1203,7 @@ export function TaskChatComposer({
       submission.attemptId,
     ] as const;
     try {
-      if (request.nativeCommand === "swarm") await onAdd(...args, request.runSettings as unknown as ComposerRunSettings | undefined, "swarm");
+      if (request.nativeCommand === "swarm") await onAdd(...args, undefined, "swarm");
       else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onAdd(...args);
     } catch (error) {

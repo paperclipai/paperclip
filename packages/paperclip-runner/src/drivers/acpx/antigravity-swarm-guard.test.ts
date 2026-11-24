@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { providerFailureFromError } from "../provider-failure.js";
+import { AntigravitySwarmError } from "./antigravity-swarm-guard.js";
 import {
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
 } from "./antigravity-swarm-guard.js";
@@ -121,5 +123,13 @@ describe("Antigravity CLI swarm guard (replaces the registry admission receipt)"
     expect(classifyAntigravityRefusalText("\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"))
       .toMatchObject({ kind: "rate_limit", httpStatus: 429 });
     expect(classifyAntigravityRefusalText("Both files are written.")).toBeNull();
+  });
+
+  it("carries its plain message to the user as a typed provider failure", () => {
+    const error = new AntigravitySwarmError("ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED", "The Antigravity CLI on this computer is not signed in to Google.");
+    expect(providerFailureFromError(new Error("session.open failed", { cause: error }))).toMatchObject({
+      provider: "antigravity", phase: "startup", category: "authentication",
+      message: "The Antigravity CLI on this computer is not signed in to Google.", providerCode: "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED",
+    });
   });
 });

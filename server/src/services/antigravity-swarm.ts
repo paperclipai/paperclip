@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { activityLog, agents, issueComments, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -96,7 +96,8 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   const commentId = requestedAntigravitySwarmCommentId(input.context);
   if (!commentId) return false;
   const [requested] = await db.select({ id: activityLog.id }).from(activityLog)
-    .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId)))
+    .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),
+      isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
     .where(and(eq(activityLog.companyId, input.companyId), eq(activityLog.action, ANTIGRAVITY_SWARM_REQUESTED_ACTION),
       eq(activityLog.entityId, input.issueId), eq(activityLog.actorType, "user"), eq(activityLog.actorId, issueComments.authorUserId),
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
