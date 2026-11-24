@@ -101,8 +101,7 @@ Use these checks alongside the entry-point recipes below and the operation recor
 
 ### `task-thread`
 
-Automated: [interaction cards](../../ui/src/components/IssueThreadInteractionCard.test.tsx),
-[paged task cards](../../ui/src/components/task-chat/TaskChatInteractionCard.test.tsx),
+Automated: [interaction cards](../../ui/src/components/IssueThreadInteractionCard.test.tsx)
 and [task thread](../../ui/src/components/TaskChatThread.test.tsx) cover form,
 receipt, and dismissal behavior. [Resolution routes](../../server/src/__tests__/issue-thread-interaction-routes.test.ts)
 and [response delivery](../../server/src/__tests__/question-response-delivery.test.ts)

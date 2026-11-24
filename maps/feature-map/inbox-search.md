@@ -149,8 +149,9 @@ approvals resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
 100-row snapshot with parent/run context; sidebar badges use the count endpoint.
-The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
-barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
+The [inbox helpers](../../ui/src/lib/inbox.test.ts) and [coordinator inbox E2E](../../tests/e2e/coordinator-inbox-views.spec.ts)
+cover inbox projection and view transitions (mocked `Inbox.test.tsx` page tests were removed);
+[badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.
 
 ### `decisions`
@@ -250,8 +251,8 @@ after switching company/account to verify suppression and isolation.
 - A feature-map recipe and mocked UI tests do not prove live multiplayer behavior.
 
 - Combined Inbox/Tasks requires both `enableCombinedInboxTasks` and
-  `enableStreamlinedUi`. [Standalone Inbox tests](../../ui/src/pages/Inbox.test.tsx)
-  render archive/read controls and toolbars; this is not live multi-user evidence.
+  `enableStreamlinedUi`. [Coordinator inbox E2E](../../tests/e2e/coordinator-inbox-views.spec.ts)
+  exercises combined and standalone inbox views; live multi-user evidence remains separate.
 
 - Personal archival is not task cancellation or completion.
 - Legacy Inbox routes can redirect to the combined task view; record which host actually rendered.
@@ -266,7 +267,7 @@ Capability ID: `inbox-search/views`.
 Scope: ui
 Storybook: Mine/Recent/Unread/Blocked and broader task views; combined versus standalone host; loading/empty/error/filter states.
 Production: Use persisted personal participation/read data; verify scoped counts and list navigation/reload; automatic read cleanup must not create Mine membership.
-Sources: Source: [Inbox.tsx](../../ui/src/pages/Inbox.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx). Tests: [Inbox.test.tsx](../../ui/src/pages/Inbox.test.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx), [issues-service.test.ts](../../server/src/__tests__/issues-service.test.ts)
+Sources: Source: [Inbox.tsx](../../ui/src/pages/Inbox.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx). Tests: [inbox.test.ts](../../ui/src/lib/inbox.test.ts), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx), [issues-service.test.ts](../../server/src/__tests__/issues-service.test.ts), [coordinator-inbox-views.spec.ts](../../tests/e2e/coordinator-inbox-views.spec.ts)
 
 #### `toasts`
 

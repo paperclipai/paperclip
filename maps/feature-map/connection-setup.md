@@ -101,14 +101,13 @@ do not establish OAuth registration, public callbacks, or production provider ac
 
 ### `apps-catalog`
 
-Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx) covers catalog entry
-with mocked APIs (mocked `AppNotConnected` and `AppsConnect` component tests were
-removed; coverage for access selection, method choices, and setup failures now relies
-on browser/manual checks). [Connection intents](../../tests/e2e/connection-intents.spec.ts)
-drives store and task setup against one fake provider through a useful continuation:
+Automated: [Connection intents](../../tests/e2e/connection-intents.spec.ts)
+and [chat provider catalog E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts)
+drive catalog entry and setup against fake providers through a useful continuation
+(mocked `Browse`, `AppNotConnected`, and `AppsConnect` component tests were
+removed; Tailscale admin gating stays covered by [TailscaleConnector](../../ui/src/pages/apps/TailscaleConnector.test.tsx)):
 
 ```sh
-pnpm exec vitest run ui/src/pages/apps/Browse.test.tsx
 pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts
 ```
 

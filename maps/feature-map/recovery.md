@@ -204,14 +204,14 @@ Use these checks alongside the entry-point recipes below and the operation recor
 Automated: [recovery actions](../../server/src/__tests__/issue-recovery-actions.test.ts)
 covers source scoping, bounded attempts, operator stops, quota monitoring,
 ownership, stale action retirement, and continuation deduplication.
-[Recovery cards](../../ui/src/components/IssueRecoveryActionCard.test.tsx) cover
-diagnosis, retry progress, exhaustion, and action availability. The fixture-backed
+[Export recovery controls](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx)
+cover export-hold recovery bindings (mocked `IssueRecoveryActionCard` UI tests were removed). The fixture-backed
 [execution-recovery journeys](../../tests/e2e/execution-recovery/recovery.spec.ts)
 start their own test-drive instances and exercise safe, uncertain, restart,
 manager-lineage, and legacy-unknown paths:
 
 ```sh
-pnpm exec vitest run server/src/__tests__/issue-recovery-actions.test.ts ui/src/components/IssueRecoveryActionCard.test.tsx
+pnpm exec vitest run server/src/__tests__/issue-recovery-actions.test.ts ui/src/components/WorkspaceExportRecovery.control.test.tsx
 pnpm exec playwright test -c tests/e2e/execution-recovery/playwright.config.ts recovery.spec.ts
 ```
 
@@ -335,10 +335,10 @@ provider stop reply, and verifies that HTTP Retry cannot admit a successor until
 the real temporary files are restored. Duplicate requests then admit one queued
 turn. GitHub and Telegram admission also retain the exact pending recovery.
 
-Automated: [IssueRecoveryActionCard](../../ui/src/components/IssueRecoveryActionCard.test.tsx)
-covers workspace divergence, reissue, reconcile, and confirmation (mocked UI tests
-for `DispositionRecoveryNotice` and `WorkspaceExportRecovery` were removed; verify
-those notice and export states via Storybook/manual checks).
+Automated: [WorkspaceExportRecovery.control](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx)
+covers verified export-recovery bindings (mocked UI tests for
+`IssueRecoveryActionCard`, `DispositionRecoveryNotice`, and `WorkspaceExportRecovery`
+were removed; verify those notice and export card states via Storybook/manual checks).
 
 For a retained legacy or native file hold, open the source task after its recovery
 action has resolved but its files still need recovery. The shared task projection
@@ -476,7 +476,7 @@ Capability ID: `recovery/exhaustion`.
 Scope: ui
 Storybook: Exhausted/overdue attempts, operator retry pending/error, blocked authority/gate and specific escalation.
 Production: Inspect durable attempt bounds and actual eligible retry/repair; acknowledgment alone does not prove continued execution.
-Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
+Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [WorkspaceExportRecovery.control.test.tsx](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
 
 #### `unknown-outcome`
 
@@ -485,7 +485,7 @@ Capability ID: `recovery/unknown-outcome`.
 Scope: ui
 Storybook: Uncertain external outcome, required inspection/evidence and explicit permitted operator decision.
 Production: Corroborate provider outcome before authorization; enforce no automatic external side-effect replay and reject stale/unauthorized decisions.
-Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
+Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [WorkspaceExportRecovery.control.test.tsx](../../ui/src/components/WorkspaceExportRecovery.control.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
 
 #### `user-continuation`
 
