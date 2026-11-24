@@ -137,11 +137,12 @@ export function parseAcpxStdoutLine(line: string, ts: string): TranscriptEntry[]
     }];
   }
 
+  if (type === "acpx.safety_notice") {
+    return [{ kind: "provider_activity", ts, family: "safety", eventType: asString(parsed.eventType),
+      status: "informational", title: asString(parsed.title), summary: asString(parsed.summary), payload: {} }];
+  }
+
   if (type === "acpx.status") {
-    if (parsed.tag === "claude_safeguard_retry") {
-      return [{ kind: "provider_activity", ts, family: "safety", eventType: "claude_safeguard_retry",
-        status: "informational", title: "Claude safeguard retry", summary: asString(parsed.text), payload: {} }];
-    }
     return [{ kind: "system", ts, text: statusText(parsed) }];
   }
 

@@ -402,6 +402,9 @@ export interface AcpxEngineExecutorOptions {
     failure: AcpxTerminalSessionFailure,
     now: Date,
   ) => AcpxTerminalFailureClassification | null;
+  classifyOutputSafetyNotice?: (
+    event: Pick<Extract<AcpRuntimeEvent, { type: "text_delta" }>, "tag" | "text" | "messageId">,
+  ) => { eventType: string; title: string } | null;
   /**
    * The bound on how long the fail-fast seam waits for a cooperative
    * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
@@ -5345,9 +5348,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               }
             }
             if (event.type === "text_delta" && event.stream !== "thought") {
-              if (prepared.acpxAgent === "claude" && event.tag === "agent_message_chunk" && !event.messageId &&
-                /^\*\*Notice:\*\* [^\r\n]+['’]s safeguards stopped the response above · continuing once with that noted$/.test(event.text.trim())) {
-                await emitAcpxLog(ctx, { type: "acpx.status", tag: "claude_safeguard_retry", text: event.text });
+              const notice = deps.classifyOutputSafetyNotice?.(event);
+              if (notice) {
+                await emitAcpxLog(ctx, { type: "acpx.safety_notice", eventType: notice.eventType, title: notice.title, summary: event.text });
                 continue;
               }
               currentOutputChunk.push(event.text);
