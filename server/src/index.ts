@@ -1290,8 +1290,7 @@ async function startServerWithDatabaseTeardown(
   // the bundled-plugin install/load pass so a declared environment never
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
-  // row of a provider that did not come up). Deployments may opt into requiring
-  // full convergence; that startup gate throws on failed or skipped entries.
+  // row of a provider that did not come up).
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };

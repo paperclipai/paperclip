@@ -1658,6 +1658,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const legacy = await svc.create({
       name: "Legacy managed sandbox",
       driver: "sandbox",
+      status: "active",
+      envVars: {},
       config: { provider: "daytona", snapshot: "old" },
       metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
     });
@@ -1722,8 +1724,6 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(first.action).toBe(reaffirm ? "skipped" : "updated");
     expect(first.environment.status).toBe(reaffirm ? "archived" : "active");
     expect(first.environment.config.snapshot).toBe(reaffirm ? "old" : "current");
-    // Creating tracking records later must not turn an earlier archive
-    // decision into permission to reactivate on a subsequent boot.
     await seedCompany();
     expect((await reconcile()).action).toBe(reaffirm ? "skipped" : "unchanged");
     expect((await reconcile()).environment.status).toBe(reaffirm ? "archived" : "active");
@@ -2005,11 +2005,6 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   it.each([false, true])("platformFullyManaged never adopts an unmarked same-name sandbox row (%s)", async (hasCompany) => {
-    // Same setup as the plain case above: a tenant-created sandbox row holds
-    // the desired name and has no stock binding. It reads as
-    // `operator_modified` too, but there is no prior platform pass for it to
-    // have drifted from. A tracking-only binding written by a skipped pass
-    // must not authorize adoption on the next boot either.
     const companyId = hasCompany ? await seedCompany() : undefined;
     const handMade = await svc.create({
       name: "Daytona",

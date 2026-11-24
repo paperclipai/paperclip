@@ -191,6 +191,15 @@ initialized when companies appear. This includes legacy marked rows that have
 no stock baseline. Ordinary self-hosted reconciliation continues to preserve
 operator modifications.
 
+The internal `platformFullyManaged` assertion is reserved for deployment callers
+that prevent operator edits. Other callers of `ensureManagedSandboxEnvironment`
+leave it unset. Platform reconciliation requires the row's existing
+`managedByPaperclip` ownership marker even when company bindings exist: a
+tracking binding recorded for a skipped tenant-created row never authorizes
+adopting it. Only Paperclip's own archive token authorizes reactivation; an
+operator save removes that token when reaffirming an archive, including before
+the first company and its stock bindings exist.
+
 Re-running reconciliation with the desired declaration repairs stale managed
 stock in place and is idempotent. It preserves environment identity, tenant
 environment variables and unrelated metadata, and does not replace running

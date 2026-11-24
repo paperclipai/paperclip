@@ -180,18 +180,6 @@ export interface ManagedSandboxEnvironmentInput {
   extraMetadata?: Record<string, unknown>;
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
-  /**
-   * Asserts the caller's deployment gives no operator any path to hand-edit
-   * this row (currently only true for the PAPERCLIP_MANAGED_CONFIG applier,
-   * where `enableManagedSandboxOnly` removes the tenant's own environment
-   * choice entirely). When set, an already Paperclip-marked row can advance
-   * without a company binding, including before the first company exists.
-   * Content-hash mismatches are treated as stock drift rather than operator
-   * customization; explicit archive decisions remain protected.
-   * Leave unset for any caller (self-hosted `kubernetes-execution-mode`
-   * bootstrap, tests, admin routes) where an operator could realistically
-   * have edited the row through the normal environments UI/API.
-   */
   platformFullyManaged?: boolean;
 }
 
@@ -649,18 +637,6 @@ export function environmentService(db: Db) {
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
 
-        // A trusted platform deployment owns the marked slot even before its
-        // first company exists. Company-scoped bindings cannot establish that
-        // ownership on an empty instance, and legacy marked rows may predate
-        // stock tracking entirely. Re-running this ensure repairs their stock
-        // in place without replacing the environment or its user-owned fields.
-        // The marker is required even when a binding exists: a prior skipped
-        // same-name tenant row may have received a tracking-only binding.
-        // Ordinary self-hosted callers still preserve hash drift.
-        //
-        // Only Paperclip's own archive token authorizes reactivation. The
-        // user-update path strips it when an archive is reaffirmed, including
-        // on instances that had no companies (and thus no archive baseline).
         const platformOwnedRow = row.metadata?.managedByPaperclip === true;
         const platformArchivedRow = row.status === "archived" &&
           typeof rowArchiveToken === "string" &&

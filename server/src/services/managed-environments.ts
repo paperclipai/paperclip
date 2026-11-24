@@ -15,8 +15,7 @@
  *    malformed section refuses startup with a precise error.
  * 2. **The DB ensure step is fail-safe per entry**: an ensure failure is
  *    logged and boot continues degraded (environment unavailable) rather
- *    than crash-looping a fleet. Deployments that require every declaration
- *    to converge before startup may opt into the stricter startup wrapper.
+ *    than crash-looping a fleet.
  *
  * Ensuring is additionally synchronized with provider availability: the
  * caller's `pluginsReady` promise (the bundled-plugin install/load pass) is
@@ -735,12 +734,6 @@ export async function applyManagedEnvironments(
   };
 }
 
-/**
- * Startup boundary for deployments that must not become ready with stale or
- * unavailable managed environments. The ordinary reconciler remains best
- * effort; this opt-in gate checks its aggregate result before startup resumes
- * queued runs. Aggregate counters include all declared environment drivers.
- */
 export async function applyManagedEnvironmentsAtStartup(
   db: Db,
   managedConfig: ManagedInstanceConfig | null,
