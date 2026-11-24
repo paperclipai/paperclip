@@ -1,5 +1,5 @@
 /** Redacted presentation contracts shared with the production API. */
-import type { AiProvider, AiAuthMethod, AiManagedConnectionSummary, AiConnectionBinding } from "@paperclipai/shared";
+import { isAiConnectionCompatible, type AiConnectionMetadata, type AiProvider, type AiAuthMethod, type AiManagedConnectionSummary, type AiConnectionBinding } from "@paperclipai/shared";
 export type { AiProvider, AiAuthMethod, AiConnectionBinding } from "@paperclipai/shared";
 export type AiConnectionStatus = AiManagedConnectionSummary["status"];
 
@@ -28,6 +28,15 @@ export const AI_PROVIDERS: Record<
 };
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
+
+/** Before model selection, test harness support without excluding multi-provider accounts. */
+export function isAiConnectionCompatibleForSelection(
+  connection: AiConnectionMetadata | AiConnectionBinding,
+  adapterType: string,
+  model?: string,
+) {
+  return isAiConnectionCompatible(connection, adapterType, model || `${connection.provider}/`);
+}
 
 export interface AiConnectionRequirement {
   companyId: string;

@@ -191,6 +191,7 @@ export interface ToolConnection {
   healthStatus: ToolConnectionHealthStatus;
   /** Managed GitHub grant state; transient health failures do not require sign-in. */
   requiresReauthorization?: boolean;
+  firstSignInPending?: boolean;
   healthMessage?: string | null;
   healthCheckedAt: Date | null;
   lastHealthAt?: Date | string | null;
@@ -445,7 +446,7 @@ export type ManagedGoogleRevocationOutcome =
 
 export interface ManagedGoogleAccessRemoval {
   provider: "google";
-  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "not_ended";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "retrying" | "not_ended";
   outcomes: ManagedGoogleRevocationOutcome[];
 }
 
@@ -1282,6 +1283,8 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+  /** Plain-language reason shown with the client fields, when Paperclip has one. */
+  manualClientReason?: string | null;
 }
 
 /** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
@@ -1733,6 +1736,7 @@ export interface ToolAccessDecisionInput {
     clientSubjectId?: string | null;
     clientName?: string | null;
     externalClient?: boolean | null;
+    sessionOpenedByUserId?: string | null;
   } | null;
   request: {
     applicationId?: string | null;

@@ -36,10 +36,11 @@ Decisions and the details behind them are kept in the
 - [x] **Owner** (Nov 17): Dotta owns submission, security, privacy and release.
 - [x] **Engineering test instance** (Nov 17): create
       `googletester.staging.paperclip.app`.
-- [ ] What we send to the reviewers (the staging tester or something else),
-      including the custom reviewer password.
+- [x] What we send to the reviewers: the staging tester (Nov 23). Its review
+      code is created but not yet handed over.
 - [ ] Privacy policy edits approved.
-- [ ] Security lab and budget.
+- [ ] Security lab and budget. (Nov 23: TAC Security recommended; quote and
+      budget not confirmed)
 - [ ] Email the Developer Preview team asking for permission to offer the MCP
       integration publicly (optional now, still cheap).
 
@@ -73,14 +74,17 @@ Decisions and the details behind them are kept in the
 - [x] Prompt-injection screening confirmed on every Google tool result
       (Nov 17, [#21999](https://github.com/paperclipai/paperclip/pull/21999)).
 - [ ] Disconnecting the last Google connection revokes the grant at Google.
+      Seen at Google on November 23 on the build before the REST switch.
+      Test it again on the REST build before this is ticked.
 - [x] Retention and deletion of Google content in tasks, runs and files audited
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
       store inventory; summary in the working memory's "Where Google content
       is kept"). Users can now delete it per connection. Content agents wrote
-      into tasks stays, and task or company deletion does not yet run the same
-      cleanup.
-- [x] REST-backed tool set for all 36 actions exists but is not switched on
-      (Nov 17): Gmail 9
+      into tasks stays until the task is deleted. Task and company deletion
+      run the same cleanup, including run logs and saved files in storage.
+- [x] REST-backed tool set for all 36 actions exists (Nov 17) and is switched
+      on (Nov 23,
+      [#22634](https://github.com/paperclipai/paperclip/pull/22634)): Gmail 9
       ([#22000](https://github.com/paperclipai/paperclip/pull/22000),
       [#22014](https://github.com/paperclipai/paperclip/pull/22014)),
       Calendar 9 ([#22017](https://github.com/paperclipai/paperclip/pull/22017)),
@@ -90,7 +94,11 @@ Decisions and the details behind them are kept in the
       ([#22028](https://github.com/paperclipai/paperclip/pull/22028)). The
       per-service switch exists
       ([#22016](https://github.com/paperclipai/paperclip/pull/22016)).
-- [ ] Each service switched to REST after a live test on the staging tester.
+- [x] Each service switched to REST and tested live on the staging tester
+      (Nov 23). All six were switched together, then tested: 36 actions
+      passed against Google after two fixes
+      ([#22706](https://github.com/paperclipai/paperclip/pull/22706),
+      [#22714](https://github.com/paperclipai/paperclip/pull/22714)).
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [x] `googletester.staging.paperclip.app` created (Nov 18).

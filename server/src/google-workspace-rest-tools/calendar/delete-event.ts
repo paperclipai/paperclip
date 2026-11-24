@@ -52,6 +52,7 @@ export function deleteEventResult(deleted: RestEvent): CallToolResult {
 export const deleteEvent = defineTool({
   definition: {
     name: "delete_event",
+    title: "Delete an event",
     description: "Deletes one event, or one occurrence of a recurring event, and returns it as it was, with status cancelled. It never deletes a whole recurring series: a series ID is refused, so pass one occurrence's ID (from list_events). By default Google emails a cancellation to every attendee (notificationLevel ALL); pass notificationLevel NONE to delete it silently.",
     inputSchema: {
       type: "object",

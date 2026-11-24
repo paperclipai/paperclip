@@ -26,7 +26,7 @@ function assertTrustedOwner(stat) {
 
 /** Resolve parent aliases once, then use only the checked canonical path.
  * A root-owned sticky temporary directory protects each owned child entry. */
-async function ownedDirectory(directory, { privateRoot = false, parentAlias = false } = {}) {
+export async function ownedDirectory(directory, { privateRoot = false, parentAlias = false } = {}) {
   const original = await lstat(directory);
   if ((!original.isDirectory() || original.isSymbolicLink()) && !(parentAlias && original.isSymbolicLink())) {
     throw new Error("Antigravity closure must be a real directory with private write access");
@@ -53,14 +53,14 @@ async function ownedDirectory(directory, { privateRoot = false, parentAlias = fa
   return { directory: canonical, stat: root };
 }
 
-function assertOwnedFile(stat, maximum) {
+export function assertOwnedFile(stat, maximum) {
   if (!stat.isFile() || stat.nlink !== 1) throw new Error("Antigravity closure contains links or special files");
   assertTrustedOwner(stat);
   if (stat.mode & 0o7022) throw new Error("Antigravity closure contains unsafe file permissions");
   if (stat.size > maximum) throw new Error("Antigravity asset exceeds its file size limit");
 }
 
-async function openOwnedFile(path, maximum) {
+export async function openOwnedFile(path, maximum) {
   const parent = await ownedDirectory(dirname(path), { parentAlias: true });
   const canonical = join(parent.directory, basename(path));
   const before = await lstat(canonical);
@@ -74,7 +74,7 @@ async function openOwnedFile(path, maximum) {
   } catch (error) { await file.close(); throw error; }
 }
 
-async function readOwnedFile(path, maximum) {
+export async function readOwnedFile(path, maximum) {
   const { file, before } = await openOwnedFile(path, maximum);
   try {
     const bytes = await file.readFile();
@@ -88,7 +88,7 @@ async function readOwnedFile(path, maximum) {
 }
 
 /** Reject an unsafe existing ancestor before creating even a staging directory. */
-async function ownedDestination(destination) {
+export async function ownedDestination(destination) {
   const missing = [];
   let ancestor = dirname(destination);
   while (true) {

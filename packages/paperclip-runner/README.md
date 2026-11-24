@@ -333,6 +333,35 @@ substitute for a runtime credential. See the
 [current qualification plan](../../doc/plans/2026-11-22-antigravity-qualification.md)
 and the [October integration record](../../doc/plans/2026-10-28-antigravity-integration.md).
 
+### Antigravity CLI route (experimental)
+
+`antigravity-cli-distributions.json` pins Google's Antigravity CLI (`agy`)
+1.5.15 for darwin-arm64, linux-x64 and linux-arm64. Each pin has the archive URL,
+size, SHA-512 and SHA-256, plus the extracted executable's digests.
+`paperclipai runtime setup antigravity-cli` downloads the archive from Google,
+verifies it, and installs `agy` under `~/.paperclip/runtimes/antigravity-cli/`.
+A mismatch installs nothing. Re-running setup verifies the installed copy and
+replaces it if it was changed. The binary is never packed into npm, the
+provider pack or an image.
+
+A driver gets a launch from one call:
+
+```ts
+resolveAntigravityCliLaunch(options?: {
+  arguments?: readonly string[];  // driver flags, appended after the pinned `acp`
+  platform?: NodeJS.Platform; architecture?: string; home?: string;
+}): Promise<AntigravityCliLaunch>
+```
+
+The result has `version`, `build`, `target`, `commandDigest`, the exact
+`arguments`, the pinned `environment` (`AGY_CLI_DISABLE_AUTO_UPDATE=1`),
+`environmentFor(base)`, which merges the pins over a driver environment, and
+`installation`. `installation.openCommand()` admits the sealed verified store
+copy, and each spawn re-hashes the executable it runs. The call fails with
+`AntigravityCliRuntimeError` (`ANTIGRAVITY_CLI_UNSUPPORTED_PLATFORM` or
+`ANTIGRAVITY_CLI_RUNTIME_MISSING`, both permanent). The endpoint, modes,
+`--gemini-dir` and route selection are the driver's choices.
+
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
 binds each daemon path and SHA-256, plus `remoteProviderPacks: {"linux-x64": {path, sha256}, "linux-arm64": {path, sha256}}` for

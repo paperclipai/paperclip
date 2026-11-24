@@ -17,8 +17,7 @@ import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connect
  *
  * The tail (CEO chat at step 4, hiring-plan generation at step 5, final
  * landing) depends on a live LLM and is verified separately during manual /
- * LLM-backed QA — see PAP-50. Surface-level rendering of every step is
- * snapshotted by nux-phase4-screenshots.spec.ts.
+ * LLM-backed QA — see PAP-50.
  */
 
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;

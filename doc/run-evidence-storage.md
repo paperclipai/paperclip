@@ -290,6 +290,19 @@ background worker and online preparation may delegate a settled native source
 with unproven coverage to the guarded read-only archive path.
 Rollbacks after enrollment require readers that support `s3_archive`.
 
+A finalized local log can grow after its size and SHA-256 were recorded, for
+example when a later attempt of the same run appended to the file. When the
+recorded size and SHA-256 match a prefix of the current file, both the online
+and offline paths archive every current byte as a read-only `s3_archive` log,
+update the run's size and SHA-256 to the archived bytes, and record the original
+prefix proof and the archived proof in a `run.historical_log_archived` activity
+entry in the same transaction. When the recorded proof matches no prefix of the
+file, the log stays on the volume and is reported as
+`legacy_recorded_log_not_a_prefix`. The longer bytes must come from the local file;
+a longer mirror copy stays blocked as `mirror_completeness_unproven`. While the
+run still has a pending or leased attempt, the log stays blocked as
+`legacy_writer_retry_pending`, and the publication rechecks this condition.
+
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
 the staged object prefix. The automatic worker resumes the verified switch after restart or retry.
