@@ -63,9 +63,18 @@ test("ordinary app PRs skip canary dry run, runner support, docker context and r
 
 test("canary dry run, runner support, chat, docker and test-only edits select their exact owners", () => {
   for (const file of ["scripts/release.sh", "scripts/release-lib.sh", "scripts/release-package-manifest.json",
-    "scripts/release-package-map.mjs", "scripts/build-npm.sh", "scripts/stage-bundled-packages.mjs",
-    "scripts/pack-staged-packages.mjs"]) {
+    "scripts/release-package-map.mjs", "scripts/build-npm.sh", "scripts/build-standalone-public-packages.mjs",
+    "scripts/link-plugin-dev-sdk.mjs", "scripts/stage-bundled-packages.mjs", "scripts/pack-staged-packages.mjs",
+    "scripts/prepare-bundled-package.mjs", "scripts/prepare-server-ui-dist.sh",
+    "scripts/generate-npm-package-json.mjs", "scripts/prepare-npm-readme.mjs"]) {
     assert.equal(selected(plan([file]), "canary_dry_run"), true, `canary: ${file}`);
+  }
+  for (const entry of ["scripts/release.sh", "scripts/build-npm.sh"]) {
+    const content = readFileSync(new URL(entry, root), "utf8");
+    for (const [, scriptPath] of content.matchAll(/(?:^|[^a-zA-Z0-9._/-])(scripts\/[a-zA-Z0-9._-]+\.(?:sh|mjs|js|json))/g)) {
+      if (scriptPath === "scripts/stage-release-runner-binaries.mjs") continue;
+      assert.equal(selected(plan([scriptPath]), "canary_dry_run"), true, `${entry} invokes ${scriptPath}`);
+    }
   }
   for (const file of ["package.json", "server/package.json", "packages/shared/package.json",
     "packages/shared/src/constants.ts", "pnpm-lock.yaml", "README.md", "scripts/run-vitest-stable.mjs",
