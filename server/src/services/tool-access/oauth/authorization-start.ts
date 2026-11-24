@@ -7,7 +7,8 @@ import { createOAuthEndpointPolicy } from "./endpoint-policy.js";
 import { createOAuthDiscovery } from "./discovery.js";
 import { asRecord, oauthConfig, normalizeOauthScopes, originOf } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { paperclipGoogleSignInAvailable } from "../../google-sign-in-availability.js";
 import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
@@ -23,6 +24,7 @@ import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { actorBinding } from "../actor.js";
 import { assertOAuthRedirectConstraints, randomOauthToken, base64UrlSha256 } from "./authorization-constraints.js";
 import type { createPersonalConnectionIdentity } from "../connections/personal-identity.js";
+import { connectionRemovedOrSignInCancelled } from "../connections/first-sign-in.js";
 
 type Dependencies = {
   now: () => Date;
@@ -36,8 +38,13 @@ type Dependencies = {
   assertOAuthEndpointUrl: ReturnType<typeof createOAuthEndpointPolicy>["assertOAuthEndpointUrl"];
 };
 
-function cloudConnectorStartHttpError(error: unknown, providerName: string, at: Date): unknown {
+function googleSignInCloudOnlyError() {
+  return unprocessable(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, { code: "google_sign_in_cloud_only" });
+}
+
+function cloudConnectorStartHttpError(error: unknown, provider: string, providerName: string, at: Date): unknown {
   if (!(error instanceof PaperclipCloudConnectorError)) return error;
+  if (provider === "google" && error.brokerReason === "PROVIDER_CLOUD_ONLY") return googleSignInCloudOnlyError();
   if (error.status !== 429 && error.brokerReason !== "RATE_LIMITED") return error;
   const retryAfterSeconds = error.retryAt === undefined
     ? undefined
@@ -71,7 +78,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
-    if (connection.status === "archived")
+    if (connectionRemovedOrSignInCancelled(connection))
       throw conflict("Archived app connections cannot start sign in");
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
@@ -360,6 +367,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       if (!managedProfile)
         throw badRequest("This app has an invalid managed connector profile");
       const providerName = galleryEntry?.name ?? "Google Workspace";
+      if (managedProfile.provider === "google" && !paperclipGoogleSignInAvailable()) throw googleSignInCloudOnlyError();
       if (!paperclipCloudConnectorConsentAllowed(managedProfile.id)) {
         throw unprocessable(
           `${providerName} can no longer be connected through Paperclip with these permissions. Connect Google Workspace, or set up ${providerName} with your own Google OAuth app.`,
@@ -420,7 +428,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
           returnState: state,
         });
       } catch (error) {
-        throw cloudConnectorStartHttpError(error, providerName, now());
+        throw cloudConnectorStartHttpError(error, managedProfile.provider, providerName, now());
       }
       const remoteExpiry = new Date(session.expiresAt);
       const expiresAt = Number.isFinite(remoteExpiry.getTime())

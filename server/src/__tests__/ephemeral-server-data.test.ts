@@ -42,6 +42,20 @@ it("refuses volume-dependent rows before readiness and accepts their durable rep
   expect(await db.select().from(agentFileRoots)).toHaveLength(1);
 });
 
+it("lets a skill whose remote source is gone move without blocking the stack", async () => {
+  vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true"); vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), skillId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Unavailable skill source", issuePrefix: "GONE" });
+  await db.insert(companySkills).values({ id: skillId, companyId, key: "gone", slug: "gone", name: "Gone",
+    sourceType: "github", markdown: "", fileInventory: [{ path: "SKILL.md", kind: "skill" }] });
+  await expect(assertEphemeralServerData(db)).rejects.toThrow("skills_require_migration");
+  await db.update(companySkills).set({ metadata: { missingSource: { reason: "remote_source_unavailable", sourceType: "github",
+    sourceLocator: null, sourcePath: null, detectedAt: new Date().toISOString() } } }).where(eq(companySkills.id, skillId));
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  expect((await readEphemeralServerDataEligibility(db)).blockers).not.toContain("skills_require_migration");
+  await db.delete(companySkills).where(eq(companySkills.id, skillId));
+});
+
 it("keeps replacement readiness independent of a serving controller's unfinished skill selection", async () => {
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true"); vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
   const companyId = randomUUID(), agentId = randomUUID(), skillId = randomUUID(), versionId = randomUUID();

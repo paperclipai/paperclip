@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
+import { providerPackReusePlan } from "./provider-pack-layers.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -113,6 +114,93 @@ async function layeredFixture() {
   if (!("kind" in archive)) throw Error("Expected layered archive");
   return { root, pack, receipt, archive };
 }
+
+const toolPath = "node_modules/.pnpm/tool@1.0.0/node_modules/tool/bin/tool";
+const twinPath = "node_modules/.pnpm/tool-baseline@1.0.0/node_modules/tool-baseline/bin/tool";
+const otherTwinPath = "provider-assets/kimi/linux-x64/runtime/node/bin/tool";
+
+/** A pack that repeats one large binary under three paths, like the OpenCode
+ * binary in a release pack, with an older image that has it under one path. */
+async function repeatedBytesFixture(modes: Record<string, number> = {}) {
+  const { root, pack } = await fixture();
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
+    await fs.writeFile(path.join(pack, relative), Buffer.alloc(2 * 1024 * 1024, 9));
+    await fs.chmod(path.join(pack, relative), modes[relative] ?? 0o755);
+  }
+  await createProviderPackLayers(pack);
+  const archive = (await readProviderPackArchive(pack, digest))!;
+  if (!("kind" in archive)) throw Error("Expected layered archive");
+  const image = path.join(root, "image");
+  await fs.cp(pack, image, { recursive: true, verbatimSymlinks: true });
+  for (const relative of [twinPath, otherTwinPath]) await fs.rm(path.join(image, relative));
+  return { root, pack, image, archive };
+}
+
+it.skipIf(!tar || !hasZstd)("stores repeated bytes once, from an image file under another path, without transferring them", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture();
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  const before = (await fs.readdir(image, { recursive: true })).sort();
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  const staged = await Promise.all([toolPath, twinPath, otherTwinPath].map(relative => fs.lstat(path.join(targetPath, relative))));
+  // Physical files inside the pack, sharing one private inode that is not the image's.
+  for (const stat of staged) expect(stat.isFile()).toBe(true);
+  expect(new Set(staged.map(stat => stat.ino)).size).toBe(1);
+  expect(staged[0]!.ino).not.toBe((await fs.stat(path.join(image, toolPath))).ino);
+  expect(staged[0]!.nlink).toBe(3);
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+    expect((await fs.stat(path.join(targetPath, relative))).mode & 0o777).toBe(0o755);
+  }
+  // Only the small-file overlay crosses the network, and the image is unchanged.
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
+  expect((await fs.readdir(image, { recursive: true })).sort()).toEqual(before);
+}, 60_000);
+
+it("plans one private copy per digest and mode, with same-bytes twins as copy sources", () => {
+  const a = "a".repeat(64), b = "b".repeat(64);
+  expect(providerPackReusePlan([
+    { path: "one", sha256: a, mode: 0o755 },
+    { path: "two", sha256: a, mode: 0o644 },
+    { path: "three", sha256: a, mode: 0o755 },
+    { path: "four", sha256: a, mode: 0o644 },
+    { path: "other", sha256: b, mode: 0o755 },
+  ])).toEqual([
+    { sources: ["one", "two", "three", "four"], group: 0 },
+    { sources: ["two", "one", "three", "four"], group: 1 },
+    { sources: ["three", "one", "two", "four"], group: 0 },
+    { sources: ["four", "one", "two", "three"], group: 1 },
+    { sources: ["other"], group: 2 },
+  ]);
+});
+
+it.skipIf(!tar || !hasZstd)("keeps one private copy per mode when the same bytes repeat with different modes", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture({ [twinPath]: 0o644 });
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  const [tool, twin, other] = await Promise.all([toolPath, twinPath, otherTwinPath].map(relative => fs.lstat(path.join(targetPath, relative))));
+  expect(other!.ino).toBe(tool!.ino);
+  expect(twin!.ino).not.toBe(tool!.ino);
+  expect(twin!.mode & 0o777).toBe(0o644);
+  expect(tool!.mode & 0o777).toBe(0o755);
+  expect(await fs.readFile(path.join(targetPath, twinPath))).toEqual(await fs.readFile(path.join(pack, twinPath)));
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
+});
+
+it.skipIf(!tar || !hasZstd)("transfers repeated bytes when no image has them, and does not reuse a changed twin", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture();
+  await fs.writeFile(path.join(image, toolPath), Buffer.alloc(2 * 1024 * 1024, 10));
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+  }
+  const layers = archive.files.reduce((sum, file) => sum + file.archive.bytes, 0);
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes + layers);
+}, 60_000);
 
 it("writes the same archive for the same file every time, with nothing after the frame", async () => {
   // Ending the compressor while its last chunk was still queued made Node

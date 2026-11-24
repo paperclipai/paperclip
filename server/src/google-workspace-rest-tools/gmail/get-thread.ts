@@ -35,6 +35,7 @@ export function getThreadResult(thread: GmailRestFullThread, input: GetThreadArg
 export const getThread = defineTool({
   definition: {
     name: "get_thread",
+    title: "Read a thread",
     description: "Gets one email thread from the signed-in user's Gmail by thread ID, with its messages oldest first.",
     inputSchema: {
       type: "object",

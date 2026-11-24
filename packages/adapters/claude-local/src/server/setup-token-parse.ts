@@ -182,8 +182,13 @@ const URL_PREAMBLE_RE = /the url below to sign in/i;
 const PROMPT_LINE_RE = /^Paste code here if prompted\b[\s>*]*$/;
 
 // The copy hint that `claude` 2.1.291 prints between the URL block and the
-// prompt. The parser skips this exact line and binds no value from it.
-const COPY_HINT_LINE_RE = /^Hold\s+Shift\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+// prompt. The key it names depends on the host terminal and platform. The parser
+// skips this exact hint, even when it wraps, and binds no value from it.
+const COPY_HINT_LINE_RE = /^Hold\s+(?:Shift|Option|Fn|Shift\s+\(Option\s+in\s+iTerm2,\s+Fn\s+in\s+Terminal\.app\))\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+
+const MAX_COPY_HINT_LINES = 3;
+
+const LOGIN_METHOD_LINE_RE = /^Login\s+method\s+pre-selected:\s+[A-Za-z][A-Za-z0-9 ()/+.,-]{0,79}$/;
 
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
@@ -224,6 +229,12 @@ function stripTerminalControls(text: string): string {
 /** The CLI waits for another Enter after rejecting a code instead of exiting. */
 export function hasSetupTokenOAuthError(text: string): boolean {
   return /OAuth\s+error\s*:/.test(stripTerminalControls(text));
+}
+
+export function hasSetupTokenPromptLine(text: string): boolean {
+  return stripTerminalControls(text)
+    .split("\n")
+    .some((line) => PROMPT_LINE_RE.test(line.trim()));
 }
 
 /**
@@ -349,22 +360,26 @@ function validateAuthUrl(candidate: string): string | null {
  * The parser starts at `startLine`, then joins at most {@link MAX_URL_LINES}
  * consecutive URL-character-only physical lines into at most {@link
  * MAX_URL_LENGTH} characters. It validates the joined string after each join and
- * returns the first joined string that passes {@link validateAuthUrl}. A CLI that
- * emits the whole URL on one line passes on the first join. A CLI that wraps the
- * URL passes once the parser joins the last fragment. Returns null when no bounded
- * join validates.
+ * returns the last joined string that passes {@link validateAuthUrl} before a
+ * row shorter than the first row ends the wrap. A CLI that emits the whole URL
+ * on one line passes on the first join. A CLI that wraps the URL passes once the
+ * parser joins the last fragment. Returns null when no bounded join validates.
  */
 function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch | null {
   let joined = "";
+  let firstWidth = 0;
+  let match: SetupTokenUrlMatch | null = null;
   for (let offset = 0; offset < MAX_URL_LINES && startLine + offset < lines.length; offset += 1) {
     const trimmed = lines[startLine + offset].trim();
     if (trimmed.length === 0 || !URL_CHARS_ONLY_RE.test(trimmed)) break;
+    if (offset === 0) firstWidth = trimmed.length;
     joined += trimmed;
     if (joined.length > MAX_URL_LENGTH) break;
     const url = validateAuthUrl(joined);
-    if (url) return { url, endLine: startLine + offset };
+    if (url) match = { url, endLine: startLine + offset };
+    if (offset === 0 ? match !== null : trimmed.length < firstWidth) break;
   }
-  return null;
+  return match;
 }
 
 /**
@@ -373,9 +388,12 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * end line. The Claude UI can emit one full URL line per wrapped display row, so
  * it repeats the same full authorization URL on a few consecutive lines. The
  * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
- * copy hint before the prompt, so the parser skips a line that matches {@link
- * COPY_HINT_LINE_RE}. The parser then binds the prompt on the first non-blank
- * line that is not a repeat and not the copy hint. That line must match the
+ * copy hint before the prompt, so the parser skips the up to {@link
+ * MAX_COPY_HINT_LINES} non-blank lines that together match {@link
+ * COPY_HINT_LINE_RE}. The `claude` 2.1.306 UI also prints a login-method status
+ * line, so the parser skips a line that matches {@link LOGIN_METHOD_LINE_RE}.
+ * The parser then binds the prompt on the first non-blank line that is not a
+ * repeat, the copy hint, or the login-method line. That line must match the
  * exact prompt shape. Returns null when that line is not the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
@@ -386,8 +404,26 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
-    if (COPY_HINT_LINE_RE.test(trimmed)) continue;
+    if (LOGIN_METHOD_LINE_RE.test(trimmed)) continue;
+    const hintEnd = copyHintEndLine(lines, i);
+    if (hintEnd !== null) {
+      i = hintEnd;
+      continue;
+    }
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
+  }
+  return null;
+}
+
+function copyHintEndLine(lines: string[], start: number): number | null {
+  let joined = "";
+  let rows = 0;
+  for (let i = start; i < lines.length && rows < MAX_COPY_HINT_LINES; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+    joined = rows === 0 ? trimmed : `${joined} ${trimmed}`;
+    rows += 1;
+    if (COPY_HINT_LINE_RE.test(joined)) return i;
   }
   return null;
 }

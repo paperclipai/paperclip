@@ -46,7 +46,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `company-switcher`
 
-Automated: [company list](../../ui/src/pages/Companies.test.tsx) and [archive UI](../../ui/src/pages/CompanySettingsArchive.test.tsx) cover UI behavior with mocks.
+Automated: none for mocked UI pages (mocked `Companies` and `CompanySettingsArchive` component tests were removed; see [CompanyContext.test.tsx](../../ui/src/context/CompanyContext.test.tsx) and server tests in Storybook/Production entries below).
 
 Manual: Create or select a company, rename it, and reload. Switch to the second company and back; verify tasks, agents, and settings follow the selection. Archive the disposable company and verify its visibility and offered restoration path.
 
@@ -58,11 +58,10 @@ Manual: Export a small company, inspect the package preview, and import into a d
 
 ### `company-ai-services`
 
-Automated: [decision settings](../../ui/src/components/decision-models/DecisionModelSettings.test.tsx),
-[decision history](../../ui/src/components/decision-models/DecisionHistory.test.tsx),
-[fast-response settings](../../ui/src/components/fast-responses/FastResponseSettings.test.tsx),
-[decision service](../../server/src/__tests__/decision-models.test.ts), and
+Automated:
+[decision service](../../server/src/__tests__/decision-models.test.ts) and
 [fast-response service](../../server/src/__tests__/fast-responses.test.ts) cover
+server behavior (mocked UI tests for decision settings, decision history, and fast-response settings were removed; verify settings UI manually).
 component and service contracts with simulated providers.
 
 Manual: As an authorized connection manager, select a disposable shared AI
@@ -95,7 +94,7 @@ Capability ID: `companies/selection`.
 Scope: ui
 Storybook: Company list/create/switcher; empty, loading, error, unavailable company and switched navigation.
 Production: Switch and reload between companies; verify tasks/agents/cache/routes remain scoped and unauthorized company requests fail.
-Sources: Source: [Companies.tsx](../../ui/src/pages/Companies.tsx), [CompanySwitcher.tsx](../../ui/src/components/CompanySwitcher.tsx), [CompanyContext.tsx](../../ui/src/context/CompanyContext.tsx). Tests: [Companies.test.tsx](../../ui/src/pages/Companies.test.tsx), [CompanyContext.test.tsx](../../ui/src/context/CompanyContext.test.tsx), [companies-route-cross-company-authz.test.ts](../../server/src/__tests__/companies-route-cross-company-authz.test.ts)
+Sources: Source: [Companies.tsx](../../ui/src/pages/Companies.tsx), [CompanySwitcher.tsx](../../ui/src/components/CompanySwitcher.tsx), [CompanyContext.tsx](../../ui/src/context/CompanyContext.tsx). Tests: [CompanyContext.test.tsx](../../ui/src/context/CompanyContext.test.tsx), [companies-route-cross-company-authz.test.ts](../../server/src/__tests__/companies-route-cross-company-authz.test.ts)
 
 #### `archive`
 
@@ -104,7 +103,7 @@ Capability ID: `companies/archive`.
 Scope: ui
 Storybook: Archive confirmation, pending/error and departure navigation; archived list entry and Unarchive action.
 Production: Archive eligible agents/runs without deleting history; restoration handles archival-specific pause and navigates to correct company.
-Sources: Source: [CompanySettings.tsx](../../ui/src/pages/CompanySettings.tsx), [Companies.tsx](../../ui/src/pages/Companies.tsx), [companies.ts](../../ui/src/api/companies.ts). Tests: [CompanySettingsArchive.test.tsx](../../ui/src/pages/CompanySettingsArchive.test.tsx), [Companies.test.tsx](../../ui/src/pages/Companies.test.tsx), [companies-service.test.ts](../../server/src/__tests__/companies-service.test.ts)
+Sources: Source: [CompanySettings.tsx](../../ui/src/pages/CompanySettings.tsx), [Companies.tsx](../../ui/src/pages/Companies.tsx), [companies.ts](../../ui/src/api/companies.ts). Tests: [companies-service.test.ts](../../server/src/__tests__/companies-service.test.ts)
 
 #### `portability`
 
@@ -113,7 +112,7 @@ Capability ID: `companies/portability`.
 Scope: ui
 Storybook: Import/export preview, conflict choice, warnings, async progress/failure/success and restricted managed deployment.
 Production: Apply real small package to disposable target; inspect counts/references/conflicts, source immutability and credential exclusions; imported task requires separate runnable-account proof.
-Sources: Source: [CompanyImport.tsx](../../ui/src/pages/CompanyImport.tsx), [CompanyExport.tsx](../../ui/src/pages/CompanyExport.tsx), [companies.ts](../../ui/src/api/companies.ts). Tests: [CompanyImport.test.tsx](../../ui/src/pages/CompanyImport.test.tsx), [CompanyExport.test.tsx](../../ui/src/pages/CompanyExport.test.tsx), [company-portability-routes.test.ts](../../server/src/__tests__/company-portability-routes.test.ts), [company-import-export-e2e.test.ts](../../cli/src/__tests__/company-import-export-e2e.test.ts)
+Sources: Source: [CompanyImport.tsx](../../ui/src/pages/CompanyImport.tsx), [CompanyExport.tsx](../../ui/src/pages/CompanyExport.tsx), [companies.ts](../../ui/src/api/companies.ts). Tests: [company-portability-routes.test.ts](../../server/src/__tests__/company-portability-routes.test.ts), [company-import-export-e2e.test.ts](../../cli/src/__tests__/company-import-export-e2e.test.ts)
 
 ### Documentation scope: Company and instance administration
 

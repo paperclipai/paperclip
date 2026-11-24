@@ -11,12 +11,22 @@ import { offlineMigrationExecutionWhere } from "../offline-migration-execution.j
 import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 import { hasValidNativeHarnessFilesystemIndependence } from "./native-harness-filesystem-independence.js";
+import { NATIVE_HARNESS_BACKUP_SOURCE_ABSENT_KEY, recordNativeHarnessBackupSourceAbsence } from "./native-harness-backup-source-absence.js";
 
 const MAX_PARALLEL_INDEPENDENCE_CHECKS = 4;
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
+  for await (const _ of localNativeHarnessObligationScopes(db)) return true;
+  return false;
+}
+
+type ObligationScope = { companyId: string; selectedSessionId: string; scopeDigest: string };
+
+async function* localNativeHarnessObligationScopes(db: Db, all = false, signal?: AbortSignal,
+  skip: ReadonlySet<string> = new Set()): AsyncGenerator<ObligationScope> {
   let afterSession = "", afterScope = "";
   for (;;) {
+    signal?.throwIfAborted();
     const rows = await db.execute<{ company_id: string; selected_session_id: string; scope_digest: string; has_receipt: boolean }>(sql`with selected_sessions as materialized (
       select s.company_id, s.id, s.last_run_id, r.native_issue_id, r.native_session_id
       from agent_task_sessions s
@@ -31,22 +41,29 @@ export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean>
     where e.metadata->'nativeHarnessBackup'->>'schema' = 'paperclip.native-harness-backup-stamp.v2'
       and not exists (select 1 from native_harness_backups b where b.company_id = s.company_id
         and b.scope_digest = e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256' and b.status = 'current')
+      and not coalesce(r.runner_profile_json #> array['${sql.raw(NATIVE_HARNESS_BACKUP_SOURCE_ABSENT_KEY)}', 'scopes',
+        e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', 'manifestSha256s']
+        ? (e.metadata->'nativeHarnessBackup'->>'manifestSha256'), false)
       and (s.id::text, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '')) > (${afterSession}, ${afterScope})
     order by selected_session_id, scope_digest limit 100`);
-    let next = 0, invalid = false;
+    let next = 0, failed = false;
+    const invalid: ObligationScope[] = [];
     const checked = await Promise.allSettled(Array.from({ length: Math.min(MAX_PARALLEL_INDEPENDENCE_CHECKS, rows.length) }, async () => {
-      while (!invalid && next < rows.length) {
+      while (!failed && (all || !invalid.length) && next < rows.length) {
+        signal?.throwIfAborted();
         const row = rows[next++]!;
+        if (skip.has(row.scope_digest)) continue;
         try {
           if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
             companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
-          })) invalid = true;
-        } catch (error) { invalid = true; throw error; }
+          })) invalid.push({ companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest });
+        } catch (error) { failed = true; throw error; }
       }
     }));
     for (const result of checked) if (result.status === "rejected") throw result.reason;
-    if (invalid) return true;
-    if (rows.length < 100) return false;
+    signal?.throwIfAborted();
+    yield* invalid;
+    if (rows.length < 100) return;
     afterSession = rows.at(-1)!.selected_session_id; afterScope = rows.at(-1)!.scope_digest;
   }
 }
@@ -179,15 +196,21 @@ export async function migrateNativeHarnessBackups(db: Db, input: {
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
   if (active) throw new Error("native_harness_migration_requires_offline_writers");
   const counts = await mapSources(input, (source, signal) => migrateSource(db, { storage: input.storage, signal }, source));
+  for await (const scope of localNativeHarnessObligationScopes(db, true, input.signal)) {
+    input.signal.throwIfAborted();
+    await recordNativeHarnessBackupSourceAbsence(db, { ...scope, signal: input.signal });
+  }
   return counts.reduce<number>((total, count) => total + count, 0);
 }
 
 export async function prestageNativeHarnessBackups(db: Db, input: { storage: StorageService; signal: AbortSignal; onOutcome?: (outcome: string) => void }) {
+  const visited = new Set<string>();
   const deferSource = (scopeDigest: string, reason: string, outcome: string) => {
     console.warn(JSON.stringify({ schema: "paperclip.native-harness-prestage-source.v1", scopeDigest, reason }));
     return outcome;
   };
   const outcomes = await mapSources({ ...input, concurrency: 1, onResult: (outcome: string) => input.onOutcome?.(outcome), unavailableSource: (error, scopeDigest) => {
+    visited.add(scopeDigest);
     if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_migration_source_unsettled") {
       return deferSource(scopeDigest, error.message, "source_unavailable");
     }
@@ -197,6 +220,7 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
     return undefined;
   } }, async (source, signal) => {
     signal.throwIfAborted();
+    visited.add(source.scopeDigest);
     const run = await sourceRun(db, source).catch(error => {
       if (error instanceof Error && error.message === "native_harness_migration_binding_mismatch") return null;
       throw error;
@@ -264,7 +288,18 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       throw error;
     }
   });
-  const counts = { inspected: outcomes.length, published: 0, current: 0, deferred: {} as Record<string, number> };
+  const absent: Record<string, number> = {};
+  let gone = 0;
+  for await (const scope of localNativeHarnessObligationScopes(db, true, input.signal, visited)) {
+    input.signal.throwIfAborted();
+    if (visited.has(scope.scopeDigest)) continue;
+    visited.add(scope.scopeDigest);
+    const outcome = await recordNativeHarnessBackupSourceAbsence(db, { ...scope, signal: input.signal });
+    input.onOutcome?.(outcome);
+    if (outcome === "source_gone_recorded") gone++;
+    else absent[outcome] = (absent[outcome] ?? 0) + 1;
+  }
+  const counts = { inspected: outcomes.length, published: 0, current: 0, ...(gone ? { sourceGone: gone } : {}), deferred: absent };
   for (const outcome of outcomes) {
     if (outcome === "published" || outcome === "current") counts[outcome]++;
     else counts.deferred[outcome] = (counts.deferred[outcome] ?? 0) + 1;

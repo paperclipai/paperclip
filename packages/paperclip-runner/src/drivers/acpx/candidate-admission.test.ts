@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "./generated-profiles.js";
 import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
-import { assertAcpxExecutionAdmission, bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateAdmission } from "./candidate-admission.js";
+import { assertAcpxExecutionAdmission, bindAcpxCandidateAdmission, isAntigravityNativeTarget, parseAcpxCandidateAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateAdmission } from "./candidate-admission.js";
 import historicalKimi from "../../../test/fixtures/kimi-profile-v16-identity.json" with { type: "json" };
 import { verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { AcpxRuntimeHost } from "./runtime-host.js";
@@ -38,6 +38,21 @@ describe("operator candidate execution admission", () => {
     { expiresAt: "1800000060000" }, { unknown: true }, { runId: "injected-run" }, { model: "auto" },
   ])("rejects mismatched or broadened authority %j", change => {
     expect(() => parseAcpxCandidateAdmission({ ...candidate(), ...change }, expected, now)).toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+  });
+
+  it("admits each verified native closure only for its own platform", () => {
+    expect(Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS).sort()).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
+    for (const target of Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS) as Array<keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS>) {
+      const [platform, architecture] = target.split("-");
+      const record = { ...candidate(), platform, architecture, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256}` };
+      expect(parseAcpxCandidateAdmission(record, expected, now)).toEqual(record);
+      expect(isAntigravityNativeTarget(platform, architecture)).toBe(true);
+      for (const other of Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS).filter(other => other !== target) as Array<keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS>) {
+        expect(() => parseAcpxCandidateAdmission({ ...record, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[other].closureSha256}` }, expected, now)).toThrow();
+      }
+    }
+    expect(isAntigravityNativeTarget("darwin", "x64")).toBe(false);
+    expect(() => parseAcpxCandidateAdmission({ ...candidate(), architecture: "x64" }, expected, now)).toThrow();
   });
 
   it("binds actual startup run/session and refuses replay against another identity", () => {

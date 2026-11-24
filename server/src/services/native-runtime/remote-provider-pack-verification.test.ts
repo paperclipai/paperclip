@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { readFileSync } from "node:fs";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { canonicalProviderPackJson, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { canonicalProviderPackJson, clearSealedProviderPacksForTest, PROVIDER_PACK_IDENTITY_FUNCTION, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const manifest = (revision: string): ProviderPackIdentity => {
@@ -76,6 +76,11 @@ describe("installed provider pack compatibility", () => {
       await expect(verifyRemoteProviderPack(input)).rejects.toMatchObject({
         message: expect.stringContaining("manifest mismatch"), failureCheck: "manifest_mismatch:runnerSourceRevision" });
       expect(execute).toHaveBeenCalledOnce();
+      // The sealing variant of the verifier runs the same checks in a real Node process.
+      await expect(verifyRemoteProviderPack({ ...input, seal: { targetKey: "sandbox:env:real" } })).rejects.toMatchObject({
+        failureCheck: "manifest_mismatch:runnerSourceRevision" });
+      await expect(verifyRemoteProviderPack({ ...input, manifest: installed, seal: { targetKey: "sandbox:env:real" } })).rejects.toMatchObject({
+        failureCheck: "artifact_digest:nodeCommand" });
       await expect(verifyRemoteProviderPack({ ...input, manifest: installed })).rejects.toMatchObject({
         message: expect.stringContaining("nodeCommand digest mismatch"), failureCheck: "artifact_digest:nodeCommand" });
       await rm(join(root, "provider-pack.json"));
@@ -210,6 +215,71 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "acpx" as const, agent: "claude" } };
     await expect(verifyRemoteProviderPack(input)).resolves.toEqual(reseal(installed));
     await expect(verifyRemoteProviderPack({ ...input, provider: { kind: "acpx", agent: "codex" } })).rejects.toThrow("profile is incompatible");
+  });
+
+  describe("sealed reuse on the same sandbox", () => {
+    const identityOf = async (root: string) => {
+      const { stdout } = await promisify(execFile)(process.execPath, ["-e",
+        `${PROVIDER_PACK_IDENTITY_FUNCTION};process.stdout.write(packIdentity(process.argv[1]))`, root]);
+      return stdout;
+    };
+
+    it("changes the identity for any same-size rewrite, even with its mtime restored", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pack-identity-"));
+      try {
+        await mkdir(join(root, "dist"));
+        await writeFile(join(root, "dist", "file.js"), "original");
+        await symlink(join(root, "dist", "file.js"), join(root, "link.js"));
+        const sealed = await identityOf(root);
+        expect(sealed).toMatch(/^[a-f0-9]{64}$/);
+        expect(await identityOf(root)).toBe(sealed);
+        const before = await stat(join(root, "dist", "file.js"));
+        await new Promise(resolve => setTimeout(resolve, 20));
+        await writeFile(join(root, "dist", "file.js"), "tampered");
+        await utimes(join(root, "dist", "file.js"), before.atime, before.mtime);
+        expect(await identityOf(root)).not.toBe(sealed);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it("re-checks only the identity on a sealed sandbox and fully re-verifies after any change", async () => {
+      clearSealedProviderPacksForTest();
+      const expected = manifest("b");
+      let identity = "a".repeat(64);
+      const execute = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        const script = String(request.args?.[1] ?? "");
+        const stdout = request.args?.[0] === "--version" ? `${expected.payload.pins.opencode}\n`
+          : script.includes("paperclip-pack-check") ? `verified\npaperclip-pack-identity=${identity}\n`
+            : `\npaperclip-pack-identity=${identity}\n`;
+        return { exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "", stdout };
+      });
+      const kinds = () => execute.mock.calls.map(([request]) => request.args?.[0] === "--version" ? "version"
+        : String(request.args?.[1]).includes("paperclip-pack-check") ? "full" : "identity");
+      const input = { runner: { execute }, cwd: "/workspace", packRoot: "/workspace/provider-pack", manifest: expected,
+        seal: { targetKey: "sandbox:env-1:sandbox-1" } };
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["full", "version"]);
+      execute.mockClear();
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["identity"]);
+      // Another sandbox, or no sandbox identity, never reuses the seal.
+      execute.mockClear();
+      await verifyRemoteProviderPack({ ...input, seal: { targetKey: "sandbox:env-1:sandbox-2" } });
+      await verifyRemoteProviderPack({ ...input, seal: undefined });
+      expect(kinds()).toEqual(["full", "version", "full", "version"]);
+      // A changed identity falls back to the complete verification.
+      execute.mockClear();
+      identity = "b".repeat(64);
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["identity", "full", "version"]);
+      // A pack that changed while it was hashed reports no identity and is not sealed.
+      execute.mockClear();
+      clearSealedProviderPacksForTest();
+      execute.mockImplementation(async (request) => ({ exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "",
+        stdout: request.args?.[0] === "--version" ? `${expected.payload.pins.opencode}\n` : "verified\n" }));
+      await verifyRemoteProviderPack(input);
+      await verifyRemoteProviderPack(input);
+      expect(kinds()).toEqual(["full", "version", "full", "version"]);
+    });
   });
 
   it("rejects the published Grok pack from before native effort admission", async () => {

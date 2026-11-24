@@ -514,7 +514,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         try {
           const archive = await writeSkillPackageArchive(archivePath, files, signal);
           await backend.putFile({ companyId, namespace: "skill-packages", objectKey: upload.archiveKey, originalFilename: "files.tar.gz",
-            contentType: "application/gzip", body: createReadStream(archivePath), byteSize: archive.bytes, sha256: archive.sha256, signal });
+            contentType: "application/gzip", body: createReadStream(archivePath), byteSize: archive.bytes, sha256: archive.sha256, sourceFile: archivePath, signal });
           await backend.putFile({ companyId, namespace: "skill-packages", objectKey: upload.manifestKey, originalFilename: "manifest.json",
             contentType: "application/json", body: manifestBuffer, signal });
           const receipt: SkillPackageStorageReceipt = { format: "tar-gzip-v1", provider: backend.provider, ...(!restore ? { durable: true } : {}),

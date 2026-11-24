@@ -1,4 +1,4 @@
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { BoardBootstrap, Company } from "@paperclipai/shared";
 import { authApi } from "./auth";
 import { companiesApi } from "./companies";
@@ -80,14 +80,25 @@ export function useAccountSessionQuery() {
 export function useAccountIdentity(): {
   userId: string | null;
   settled: boolean;
+  /**
+   * Settled, and still this account's answer: false while an invalidated session
+   * (for example right after an in-place sign-in) still holds the previous user.
+   * Use it before reading anything this tab saved for the account, the same rule
+   * `resolveAccountUserId` applies.
+   */
+  current: boolean;
   failed: boolean;
   bootstrap: BoardBootstrap | undefined;
   updatedAt: number;
 } {
-  const { data: session, isSuccess, isError, dataUpdatedAt } = useAccountSessionQuery();
+  const queryClient = useQueryClient();
+  const { data: session, isSuccess, isError, isFetching, dataUpdatedAt } = useAccountSessionQuery();
   const userId = session?.user.id ?? null;
+  // Reading `isFetching` subscribes to it, so the invalidation's refetch re-renders and `current` is recomputed.
+  const invalidated = isFetching !== undefined && Boolean(queryClient.getQueryState(queryKeys.auth.session)?.isInvalidated);
+  const current = isSuccess && !invalidated && !hasUnverifiedSession(queryClient);
   return {
-    userId, settled: isSuccess, failed: isError, updatedAt: dataUpdatedAt,
+    userId, settled: isSuccess, current, failed: isError, updatedAt: dataUpdatedAt,
     bootstrap: isSuccess && session?.boardBootstrap?.userId === userId ? session.boardBootstrap : undefined,
   };
 }

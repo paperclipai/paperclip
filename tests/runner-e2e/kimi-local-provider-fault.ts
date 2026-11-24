@@ -106,7 +106,7 @@ export function readKimiLocalProcesses(pids: readonly number[]): KimiLocalProces
 
 export function selectKimiLocalTarget(input: {
   authority: RunProcessAuthority; journal: readonly JournalIdentity[]; processes: readonly KimiLocalProcess[];
-  workspacePath: string; guardLoaderSha256: string;
+  workspacePath: string; guardLoaderSha256: string; closureSha256: string;
 }) {
   const byPid = new Map(input.processes.map(row => [row.pid, row])), root = byPid.get(input.authority.pid);
   const retainedRoot = input.journal.find(row => row.pid === input.authority.pid);
@@ -116,11 +116,15 @@ export function selectKimiLocalTarget(input: {
   const matches = [];
   for (const candidate of input.processes) {
     if (candidate.pid === root.pid || candidate.cwd !== input.workspacePath || candidate.bootId !== root.bootId) continue;
-    const match = /^(\/[^\u0000-\u0020]*\/paperclip-acpx-native-[A-Za-z0-9_-]+\/distribution)\/node\/bin\/node$/u.exec(candidate.executable);
-    if (!match) continue;
+    // The child runs Node from the runner's sealed store for the pinned closure;
+    // its bootstrap parent runs from a separate per-launch directory.
+    const match = /^(\/[^\u0000-\u0020]*\/paperclip-verified-native-[A-Za-z0-9_-]+\/([a-f0-9]{64})\/distribution)\/node\/bin\/node$/u.exec(candidate.executable);
+    if (!match || match[2] !== input.closureSha256) continue;
     const distribution = match[1]!, parent = byPid.get(candidate.ppid);
     if (!parent || parent.cwd !== input.workspacePath || parent.bootId !== root.bootId) continue;
-    if (!Array.isArray(parent.argv) || parent.argv.length !== 10 || parent.argv[1] !== "--eval" || parent.argv[3] !== distribution
+    const launch = Array.isArray(parent.argv) ? parent.argv[3] ?? "" : "";
+    if (!Array.isArray(parent.argv) || parent.argv.length !== 10 || parent.argv[1] !== "--eval"
+      || !/^\/[^\u0000-\u0020]*\/paperclip-acpx-native-[A-Za-z0-9_-]+\/launch$/u.test(launch)
       || JSON.stringify(parent.argv.slice(4)) !== JSON.stringify([".paperclip-native-entry.cjs", "0", "0", "commonjs", "[]", "0"])
       || sha(parent.argv[2]!) !== input.guardLoaderSha256) continue;
     const ancestry = [candidate]; let cursor = candidate;
@@ -133,7 +137,7 @@ export function selectKimiLocalTarget(input: {
     }
     demand(input.journal.some(row => row.pid === candidate.pid && row.parent === candidate.ppid
       && Math.floor(Date.parse(row.start) / 1000) === Math.floor(Number(candidate.startUs) / 1_000_000)), "unobserved_native_child");
-    matches.push({ target: candidate, ancestry, distribution });
+    matches.push({ target: candidate, ancestry, distribution, launch });
   }
   demand(matches.length === 1, "unique_native_child");
   return matches[0]!;
@@ -156,9 +160,10 @@ export function terminateKimiLocalProvider(input: { authority: RunProcessAuthori
   demand(supportsKimiLocalProviderFault(), "supported_platform");
   const contract = kimiFaultRuntimeContract("darwin-arm64");
   const pids = input.journal.map(row => row.pid);
-  const before = selectKimiLocalTarget({ ...input, processes: readKimiLocalProcesses(pids), guardLoaderSha256: contract.guardLoaderSha256 });
+  const selector = { guardLoaderSha256: contract.guardLoaderSha256, closureSha256: contract.closureSha256 };
+  const before = selectKimiLocalTarget({ ...input, processes: readKimiLocalProcesses(pids), ...selector });
   demand(before.target.pid !== process.pid && before.target.pid !== input.authority.pid, "not_runner");
-  for (const path of [before.distribution, dirname(before.distribution)]) {
+  for (const path of [before.launch, dirname(before.launch), before.distribution, dirname(before.distribution)]) {
     const stat = lstatSync(path);
     demand(stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o222) === 0 && realpathSync(path) === path, "snapshot_seal");
   }
@@ -166,14 +171,14 @@ export function terminateKimiLocalProvider(input: { authority: RunProcessAuthori
   const entries = parseNativeAcpxDistributionEntries(metadata, contract.closureSha256);
   const node = sealedFile(join(before.distribution, "node/bin/node"), 256 * 1024 * 1024);
   const entry = sealedFile(join(before.distribution, KIMI_FAULT_ENTRY), 256 * 1024 * 1024);
-  const guard = sealedFile(join(before.distribution, ".paperclip-native-module-guard.cjs"), 4 * 1024 * 1024);
-  const bootstrap = sealedFile(join(before.distribution, ".paperclip-native-entry.cjs"), 65536);
+  const guard = sealedFile(join(before.launch, ".paperclip-native-module-guard.cjs"), 4 * 1024 * 1024);
+  const bootstrap = sealedFile(join(before.launch, ".paperclip-native-entry.cjs"), 65536);
   demand(node.dev === before.target.executableDev && node.ino === before.target.executableIno
     && node.digest === contract.nodeSha256 && node.digest === `sha256:${entries.find(row => row.path === "node/bin/node")?.sha256}`
     && entry.digest === `sha256:${entries.find(row => row.path === KIMI_FAULT_ENTRY)?.sha256}`
     && guard.bytes.toString("utf8") === expectedNativeModuleGuard(before.distribution, entries)
-    && bootstrap.bytes.toString("utf8") === expectedNativeBootstrap(before.distribution, contract.nodeSha256), "pinned_native_bytes");
-  const fresh = selectKimiLocalTarget({ ...input, processes: readKimiLocalProcesses(pids), guardLoaderSha256: contract.guardLoaderSha256 });
+    && bootstrap.bytes.toString("utf8") === expectedNativeBootstrap(before.launch, before.distribution, contract.nodeSha256), "pinned_native_bytes");
+  const fresh = selectKimiLocalTarget({ ...input, processes: readKimiLocalProcesses(pids), ...selector });
   demand(JSON.stringify(fresh) === JSON.stringify(before), "native_identity_changed");
   process.kill(fresh.target.pid, "SIGKILL");
   const identity = ({ pid, ppid, pgid, startUs, bootId }: KimiLocalProcess) => ({ pid, ppid, pgid, startUs, bootId });
