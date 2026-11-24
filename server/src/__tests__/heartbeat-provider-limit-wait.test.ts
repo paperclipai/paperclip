@@ -13,14 +13,23 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { createProviderLimitWait, releaseProviderLimitWaits } from "../services/heartbeat/provider-limit-wait.js";
 import { agentService } from "../services/agents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { toolAccessService } from "../services/tool-access.js";
 import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const providerLimitCancellation = vi.hoisted(() => ({ after: null as null | (() => Promise<unknown>) }));
+const releaseFailure = vi.hoisted(() => ({ next: false }));
 vi.mock("../services/heartbeat/provider-limit-wait.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/heartbeat/provider-limit-wait.js")>();
   return {
     ...actual,
+    releaseProviderLimitWaits: async (...args: Parameters<typeof actual.releaseProviderLimitWaits>) => {
+      if (releaseFailure.next) {
+        releaseFailure.next = false;
+        throw new Error("release step failed");
+      }
+      return actual.releaseProviderLimitWaits(...args);
+    },
     createProviderLimitWait: (...[database, deps]: Parameters<typeof actual.createProviderLimitWait>) =>
       actual.createProviderLimitWait(database, {
         ...deps,
@@ -518,23 +527,21 @@ describePostgres("heartbeat provider usage limit wait", () => {
       const f = await heldFixture();
       await wake(f);
       const retry = await scheduledRetry(f.agentId);
-      const revokeWithRelease = (fail: boolean) => db.transaction(async tx => {
-        await tx.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
-          .where(eq(connectionGrants.id, f.accounts[0].grantId));
-        await releaseProviderLimitWaits(tx as unknown as typeof db, { companyId: f.companyId, reason: "ai_connection_revoked",
-          grantIds: [f.accounts[0].grantId] });
-        if (fail) throw new Error("release step failed");
-      });
-      // A failure anywhere in the revocation leaves both the account and the wait as they were.
-      await expect(revokeWithRelease(true)).rejects.toThrow("release step failed");
-      const [grantAfterFailure] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.accounts[0].grantId));
-      expect(grantAfterFailure.status).toBe("active");
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime())
-        .toBe(retry!.scheduledRetryAt!.getTime());
+      const actor = { actorType: "user" as const, actorId: `limit-user-${f.companyId}` };
+      const retryAt = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime();
+      const grantStatus = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.accounts[0].grantId)))[0].status;
+
+      // If the release fails, the revocation fails with it: never revoked with work still waiting.
+      releaseFailure.next = true;
+      await expect(toolAccessService(db).revokeConnectionGrant(f.accounts[0].connectionId, f.accounts[0].grantId, actor))
+        .rejects.toThrow("release step failed");
+      expect(await grantStatus()).toBe("active");
+      expect(await retryAt()).toBe(retry!.scheduledRetryAt!.getTime());
+
       // A committed revocation has already made the waiting work due.
-      await revokeWithRelease(false);
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime())
-        .toBeLessThanOrEqual(Date.now());
+      await toolAccessService(db).revokeConnectionGrant(f.accounts[0].connectionId, f.accounts[0].grantId, actor);
+      expect(await grantStatus()).toBe("revoked");
+      expect(await retryAt()).toBeLessThanOrEqual(Date.now());
       expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
     }, 60_000);
 
