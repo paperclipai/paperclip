@@ -5,6 +5,7 @@ import { bundledImageFixture } from "./helpers/bundled-image-fixture.js";
 import { createBundledPluginPackageResolver } from "../services/bundled-plugin-package.js";
 import { BUNDLED_PLUGIN_CATALOG, resolveBundledPluginInstalls } from "../services/bundled-plugins.js";
 import { readDistributionPluginCatalog } from "../services/distribution-plugin-catalog.js";
+import { pluginManifestValidator } from "../services/plugin-manifest-validator.js";
 
 import boxd from "../../../packages/plugins/sandbox-providers/boxd/src/manifest.js";
 import createos from "../../../packages/plugins/sandbox-providers/createos/src/manifest.js";
@@ -37,6 +38,16 @@ describe("bundled image package identity", () => {
     expect(resolver.inspect(registration)).toMatchObject({ compatible: false, code: "missing_manifest_evidence" });
     expect(resolver.inspect(registration, { ...manifest, description: "changed" })).toMatchObject({ compatible: false, code: "incompatible_bundled_package", reason: expect.stringContaining("Approved plugin manifest") });
     expect(resolver.inspect(registration, manifest)).toMatchObject({ compatible: true, identity: { kind: "bundled_image", catalogKey: "fixture", pluginKey: manifest.id, version: "1.0.0" } });
+  });
+
+  it("compares parsed optional fields in the JSON form that registrations store", () => {
+    const { resolver, registration, manifest } = fixture();
+    const parsed = pluginManifestValidator().parseOrThrow({ ...manifest, capabilities: kubernetes.capabilities, environmentDrivers: kubernetes.environmentDrivers });
+    expect(Object.hasOwn(parsed.environmentDrivers![0]!, "supportsLoginPty")).toBe(true);
+    const stored = JSON.parse(JSON.stringify(parsed));
+    expect(Object.hasOwn(stored.environmentDrivers[0], "supportsLoginPty")).toBe(false);
+    expect(resolver.inspect({ ...registration, manifestJson: stored }, parsed)).toMatchObject({ compatible: true });
+    expect(resolver.inspect({ ...registration, manifestJson: stored }, { ...parsed, description: "changed" })).toMatchObject({ compatible: false });
   });
 
   it("rejects mismatched package names, versions, identity and escaping entrypoints", () => {

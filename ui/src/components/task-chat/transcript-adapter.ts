@@ -35,6 +35,7 @@ import {
   toolActivityPresentation,
   toolTaxonomy,
 } from "./tool-taxonomy";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -329,17 +330,6 @@ function titleCaseKey(value: string): string {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function safeHttpHref(value: unknown): string | null {
-  const href = stringValue(value);
-  if (!href) return null;
-  try {
-    const url = new URL(href);
-    return url.protocol === "http:" || url.protocol === "https:" ? href : null;
-  } catch {
-    return null;
-  }
-}
-
 const PROVIDER_DETAIL_KEYS: Record<
   TaskChatProviderActivityItem["family"],
   readonly string[]
@@ -504,7 +494,7 @@ function providerActivityItem(
           .map(objectRecord)
           .slice(0, 64)
           .flatMap((source) => {
-            const href = safeHttpHref(source.url);
+            const href = safeExternalHttpUrl(source.url);
             return href
               ? [
                   {

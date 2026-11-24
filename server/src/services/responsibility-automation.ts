@@ -93,7 +93,7 @@ export function responsibilityAutomationService(
         suggestions.unrepeatableIssueIds(companyId, taskIds),
         routinesSvc.liveOriginIds(companyId, ROUTINE_FROM_TASK_ORIGIN_KIND, taskIds),
         interactions.routineSuggestionsForIssues(companyId, taskIds),
-        conversations.conversationsForTasks(companyId, taskIds),
+        conversations.conversationsForTasks(companyId, taskIds, ownerUserId),
         conversations.companyAgents(companyId),
         standingChecks.lastResults(companyId, routineIds, opts.scope.issueReadCondition),
       ]);

@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {environmentTaskOperationSchema,environmentTaskResultSchema} from "../src/environment-tasks.js";
+import {ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS,environmentTaskCredentialSchema,environmentTaskOperationSchema,environmentTaskResultSchema} from "../src/environment-tasks.js";
 const submit={kind:"submit",projectIds:[],bootstrapTicket:"synthetic",runner:{harness:"codex",protocolMin:1,protocolMax:3,runnerId:"runner",leaseId:"lease",runId:"run",sessionId:"session",turnId:"turn",itemId:"item"},
  launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}};
 describe("task lifecycle policy",()=>{
@@ -122,5 +122,30 @@ describe("configured environment", () => {
     const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` }, configuredEnvironmentVersion: 1 };
     expect(environmentTaskResultSchema.parse(description)).toEqual(description);
     expect(environmentTaskResultSchema.safeParse({ ...description, configuredEnvironmentVersion: 2 }).success).toBe(false);
+  });
+});
+
+describe("Grok launch settings", () => {
+  const grok = (settings: Record<string, unknown>) => ({ ...prepare, requirements: { ...prepare.requirements,
+    provider: "acpx", settings: { acpxAgent: "grok", ...settings } } });
+  it.each([{ grokDisableWebSearch: true }, { grokDisableWebSearch: false }, { grokEffort: "minimal", grokDisableWebSearch: true },
+    { grokEffort: "xhigh" }, {}])("accepts the Runner's Grok settings %j", settings => {
+    expect(environmentTaskOperationSchema.parse(grok(settings))).toEqual(grok(settings));
+  });
+  it.each([{ grokEffort: "max" }, { grokEffort: "" }, { grokDisableWebSearch: "true" }, { grokDisableWebSearch: null }])("rejects invalid Grok settings %j", settings => {
+    expect(environmentTaskOperationSchema.safeParse(grok(settings)).success).toBe(false);
+  });
+});
+
+describe("provider environment credential allowlist", () => {
+  it("accepts every published set and nothing beyond it", () => {
+    for (const [provider, sets] of Object.entries(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS)) {
+      for (const set of sets) {
+        const environment = Object.fromEntries(set.map(name => [name, "fixture-value"]));
+        expect(environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider, environment }).success).toBe(true);
+        expect(environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider,
+          environment: { ...environment, UNRELATED_SECRET: "fixture-value" } }).success).toBe(false);
+      }
+    }
   });
 });

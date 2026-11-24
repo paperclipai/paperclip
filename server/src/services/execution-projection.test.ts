@@ -191,12 +191,12 @@ describe("execution truth projection", () => {
       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))
       .toMatchObject({ label: "Waiting for AI subscription", phase: "retry_scheduled", attempt: 1, recoveryOwner: null });
   });
-  it("shows a provider usage limit wait with its reset time", () => {
+  it("shows a provider usage limit recheck without promising work will start then", () => {
     const scheduledRetryAt = new Date("2026-11-05T13:47:50.375Z");
     expect(projectExecution(run({ runtimeMode: "native", status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait",
       scheduledRetryAt, scheduledRetryAttempt: 3, contextSnapshot: { wakeReason: "provider_limit_retry", failureRetriesBeforeAiConnectionWait: 0 } }),
     undefined, [], undefined, now)).toMatchObject({
-      label: "Waiting for usage limit reset", phase: "retry_scheduled", attempt: 1, recoveryOwner: null,
+      label: "Waiting for provider usage", phase: "retry_scheduled", attempt: 1, recoveryOwner: null,
       nextAction: expect.stringContaining(scheduledRetryAt.toISOString()),
     });
   });
