@@ -256,8 +256,9 @@ organization-naming steps have no `step` value. No event carries free text.
 ## Privacy
 
 Session replay shows text by default, the way PostHog normally works. Text is
-masked only inside marked customer content. Input values and attribute values
-are always masked.
+masked only inside marked customer content, and inside work content unless the
+company holds no Google or Slack data. Input values and attribute values are
+always masked.
 
 - Session replay masks every input value (`maskAllInputs`).
 - Replay masks text only inside these markers (`ANALYTICS_MASK_TEXT_SELECTOR`
@@ -266,6 +267,9 @@ are always masked.
   - `ANALYTICS_NO_CAPTURE_CLASS` (`ph-no-capture`): secrets. Replay blocks
     these elements entirely.
   - `contenteditable` editors (not `contenteditable="false"`).
+
+  - `ANALYTICS_WORK_CONTENT_CLASS` (`ph-work-content`): work content, see
+    below.
 
   rrweb masks a text node only when its parent matches the selector or has an
   ancestor that matches it. All other text, for example navigation, headings,
@@ -278,6 +282,29 @@ are always masked.
   element references (`id`, `for`, `aria-labelledby`) are always masked, so
   images record as empty boxes and link targets (for example download links
   with file paths) never leave.
+- Work content shows in replays only for a company that holds no Google or
+  Slack data. Work content is the task description (task page and the first
+  bubble of the task chat), the task preview description, document bodies,
+  attachment and artifact previews (text, tables, patches, markdown) and the
+  file viewer. `ReplayWorkContentVisibility`
+  (`ui/src/lib/analytics/replay-work-content.tsx`) sets
+  `data-replay-work-content="visible"` on `<html>` only when the company's
+  tool connections and chat endpoints both load and none of them, in any
+  status, is Google (Gmail, Drive, Calendar, Docs and the other Workspace
+  services), Slack or an aggregator (Composio, Arcade, Executor). Loading,
+  errors (including no permission to list connections), no company and
+  replay off all keep work content masked. `maskReplayText` (the rrweb
+  `maskTextFn`) shows work content text only when the nearest marker around
+  it is the work content marker, so customer content, secrets and editors
+  inside work content stay masked. rrweb decides masking when it records a
+  node, so the page calls `refreshSessionReplay` (a new full snapshot) when
+  work content becomes visible. Task titles, artifact titles and file names
+  were already recorded as they are. Comments, chat messages, run output and
+  every connected-account surface stay customer content and always mask.
+- The task chat container carries no mask of its own. Each header, row, live
+  tail, notice and the composer carry `ANALYTICS_MASK_CLASS`, and the
+  description row carries `ANALYTICS_WORK_CONTENT_CLASS`
+  (`TaskChatThreadView` `replayMask`).
 - The masking options in `posthog.init` take precedence over the PostHog
   project's "Privacy and masking" settings (posthog-js 1.450). posthog-js
   ignores the project setting and logs a warning when the two differ. Keep the
@@ -305,7 +332,8 @@ are always masked.
   surfaces below, and other free-form text that agents or customers write,
   carry `ANALYTICS_MASK_CLASS` on their content element (not on the chrome
   around it):
-  - Rendered markdown (task bodies, comments, chat messages, documents), the
+  - Rendered markdown (comments, chat messages; task descriptions and
+    documents are work content, above), the
     rich editor, task and issue chat threads (messages, tool calls, tool
     results, interaction cards), the comment timeline and the file viewer.
   - Link preview cards, task quicklook descriptions, external object pills and

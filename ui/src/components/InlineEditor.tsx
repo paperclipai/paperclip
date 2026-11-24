@@ -12,6 +12,8 @@ import { FoldCurtain } from "./FoldCurtain";
 
 interface InlineEditorProps {
   value: string;
+  /** Session replay treatment of the rendered markdown (see `MarkdownBody`). Editing always masks. */
+  replayContent?: "customer" | "work";
   onSave: (value: string) => void | Promise<unknown>;
   as?: "h1" | "h2" | "p" | "span";
   className?: string;
@@ -96,6 +98,7 @@ function OwnedInlineEditor({
   draftKey,
   readCurrentValue,
   draftOwner,
+  replayContent,
 }: InlineEditorProps & { draftOwner: string | undefined }) {
   const [editing, setEditing] = useState(false);
   const editingChangeCallback = useRef(onEditingChange);
@@ -433,6 +436,7 @@ function OwnedInlineEditor({
               <MarkdownBody
                 className={cn("paperclip-edit-in-place-content", className)}
                 externalReferences={externalReferences}
+                replayContent={replayContent}
               >
                 {previewValue}
               </MarkdownBody>
@@ -441,6 +445,7 @@ function OwnedInlineEditor({
             <MarkdownBody
               className={cn("paperclip-edit-in-place-content", className)}
               externalReferences={externalReferences}
+              replayContent={replayContent}
             >
               {previewValue}
             </MarkdownBody>

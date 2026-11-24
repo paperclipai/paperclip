@@ -65,7 +65,7 @@ export function DocumentMarkdownBody({ documentKey, revisionId, documentIssueId,
 
   return (
     <div ref={containerRef}>
-      <MarkdownBody {...props} documentIssueId={documentIssueId} onImageClick={openImage} />
+      <MarkdownBody replayContent="work" {...props} documentIssueId={documentIssueId} onImageClick={openImage} />
       <ImageGalleryModal
         items={items}
         initialIndex={(image ?? 1) - 1}

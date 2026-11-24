@@ -10,7 +10,7 @@ import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "@/lib/
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
 import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
@@ -145,6 +145,13 @@ interface MarkdownBodyProps {
    * openable, so the markdown re-parses with the new answers.
    */
   resolveWorkspaceFileRef?: WorkspaceFileRefResolver;
+  /**
+   * How session replay treats this text. `customer` (default) always masks.
+   * `work` is for task descriptions, document bodies and artifact contents:
+   * it shows only when the company holds no Google or Slack data
+   * (`ANALYTICS_WORK_CONTENT_CLASS`).
+   */
+  replayContent?: "customer" | "work";
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -784,6 +791,7 @@ function MarkdownBodyImpl({
   onImageClick,
   mediaMode = "render",
   resolveWorkspaceFileRef,
+  replayContent = "customer",
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
@@ -1041,8 +1049,9 @@ function MarkdownBodyImpl({
       className={cn(
         "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
-        // Customer content: masked in session replay, skipped by autocapture.
-        ANALYTICS_MASK_CLASS,
+        // Customer content always masks in session replay; work content masks
+        // unless the company holds no Google or Slack data. Autocapture skips both.
+        replayContent === "work" ? ANALYTICS_WORK_CONTENT_CLASS : ANALYTICS_MASK_CLASS,
         className,
       )}
       style={mergeWrapStyle(style)}

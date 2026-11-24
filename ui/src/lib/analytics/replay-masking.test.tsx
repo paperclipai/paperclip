@@ -14,7 +14,14 @@ import { ChatConversationList } from "@/pages/apps/chat/ChatConversationList";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
 import { buildPostHogInitOptions } from "./product-analytics";
-import { ANALYTICS_MASK_CLASS, ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS } from "./privacy";
+import {
+  ANALYTICS_MASK_CLASS,
+  ANALYTICS_MASK_TEXT_SELECTOR,
+  ANALYTICS_NO_CAPTURE_CLASS,
+  ANALYTICS_WORK_CONTENT_CLASS,
+  REPLAY_WORK_CONTENT_ATTRIBUTE,
+  maskReplayText,
+} from "./privacy";
 import { isBlockedFromReplay, replayLeaks } from "./replay-recording.test-utils";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -29,7 +36,8 @@ const options = buildPostHogInitOptions(
 function recordedText(node: Text): string {
   const parent = node.parentElement;
   const masked = parent?.closest(options.session_recording.maskTextSelector) != null;
-  return masked ? node.data.replace(/\S/g, "*") : node.data;
+  // Like rrweb: text inside the selector goes through `maskTextFn`.
+  return masked ? options.session_recording.maskTextFn(node.data, parent) : node.data;
 }
 
 function recordedTextOf(html: string, text: string): string {
@@ -42,10 +50,24 @@ function recordedTextOf(html: string, text: string): string {
   throw new Error(`text not rendered: ${text}`);
 }
 
+/**
+ * Work content: masked unless the company holds no Google or Slack data
+ * (`ANALYTICS_WORK_CONTENT_CLASS`). Task descriptions, document bodies and
+ * artifact contents.
+ */
+const WORK_CONTENT_SURFACES: Array<{ file: string; content: string }> = [
+  { file: "components/IssueLinkQuicklook.tsx", content: "data-slot=\"task-preview-description\"" },
+  { file: "components/task-side-panel/TaskAttachmentPanel.tsx", content: "File is empty." },
+  { file: "components/artifacts/ArtifactCard.tsx", content: "{preview}" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "<PatchLines text={body} />" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "<ReactMarkdown" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "{columns.map(" },
+  { file: "components/FileViewerSheet.tsx", content: "{lines.map(" },
+];
+
 const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "components/LinkPreview.tsx", content: "{preview.title}" },
   { file: "components/LinkPreview.tsx", content: "{target.canonicalUrl}" },
-  { file: "components/IssueLinkQuicklook.tsx", content: "data-slot=\"task-preview-description\"" },
   { file: "components/ExternalObjectPill.tsx", content: "{valueLabel}" },
   { file: "components/ExternalObjectPill.tsx", content: "{labelText}" },
   { file: "components/issue-properties/external-object-rows.tsx", content: "{displayKey}</span>" },
@@ -140,11 +162,6 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "pages/CaseDetail.tsx", content: "{caseData.summary}" },
   { file: "pages/CaseDetail.tsx", content: "{files.map(" },
   { file: "components/CaseFieldsPanel.tsx", content: "aria-label=\"Case fields\"" },
-  { file: "components/task-side-panel/TaskAttachmentPanel.tsx", content: "File is empty." },
-  { file: "components/artifacts/ArtifactCard.tsx", content: "{preview}" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "<PatchLines text={body} />" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "<ReactMarkdown" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "{columns.map(" },
   { file: "components/AttentionQueueRow.tsx", content: "{detailLine}" },
   { file: "components/AttentionObligationEvidence.tsx", content: "{attentionEvidenceLabel(item, entry)}" },
   { file: "components/coordinator/NeedsYouCardKit.tsx", content: "{children}</p>" },
@@ -265,9 +282,37 @@ describe("session replay text masking", () => {
     expect(recordedTextOf(`<div contenteditable="false"><p>Read only</p></div>`, "Read only")).toBe("Read only");
   });
 
-  it("sends only the marker selector to session replay", () => {
+  it("masks work content unless the page allows it", () => {
+    const html = `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Ship the Q3 plan</p></div>`;
+    expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("**** *** ** ****");
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("Ship the Q3 plan");
+      document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "pending");
+      expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("**** *** ** ****");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("keeps strict markers inside visible work content masked", () => {
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const work = (inner: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Plan <span>${inner}</span></p></div>`;
+      expect(recordedTextOf(work(`</span><span class="${ANALYTICS_MASK_CLASS}">ana@acme.com`), "ana@acme.com")).toBe("************");
+      expect(recordedTextOf(work(`</span><span contenteditable="true">Draft`), "Draft")).toBe("*****");
+      expect(recordedTextOf(`<div class="${ANALYTICS_WORK_CONTENT_CLASS} ${ANALYTICS_MASK_CLASS}"><p>Both markers</p></div>`, "Both markers")).toBe("**** *******");
+      // A work row inside a masked container shows (the task chat description).
+      expect(recordedTextOf(`<div class="${ANALYTICS_MASK_CLASS}"><div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Brief</p></div><p>Reply</p></div>`, "Brief")).toBe("Brief");
+      expect(recordedTextOf(`<div class="${ANALYTICS_MASK_CLASS}"><div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Brief</p></div><p>Reply</p></div>`, "Reply")).toBe("*****");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("sends the marker selector and the work content mask function to session replay", () => {
     expect(options.session_recording.maskTextSelector).toBe(ANALYTICS_MASK_TEXT_SELECTOR);
-    expect(options.session_recording).not.toHaveProperty("maskTextFn");
+    expect(options.session_recording.maskTextFn).toBe(maskReplayText);
     expect(options.session_recording.maskAllInputs).toBe(true);
     expect(options.session_recording.blockClass).toBe(ANALYTICS_NO_CAPTURE_CLASS);
   });
@@ -376,6 +421,15 @@ describe("session replay text masking", () => {
     const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
     const elements = [...openElementsAt(source, index), contentTag];
     expect(elements.some((tag) => tag.includes("ANALYTICS_MASK_CLASS"))).toBe(true);
+  });
+
+  it.each(WORK_CONTENT_SURFACES)("keeps the work content mask on $content in $file", ({ file, content }) => {
+    const source = readFileSync(join(UI_SRC, file), "utf8");
+    const index = source.indexOf(content);
+    expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);
+    const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
+    const elements = [...openElementsAt(source, index), contentTag];
+    expect(elements.some((tag) => tag.includes("ANALYTICS_WORK_CONTENT_CLASS"))).toBe(true);
   });
 
   it("finds the portaled content of connection and account surfaces", () => {

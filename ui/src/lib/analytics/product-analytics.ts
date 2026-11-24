@@ -27,6 +27,7 @@ import {
   ANALYTICS_MASK_TEXT_SELECTOR,
   ANALYTICS_NO_CAPTURE_CLASS,
   maskReplayAttribute,
+  maskReplayText,
   redactAnalyticsUrl,
 } from "./privacy";
 
@@ -69,6 +70,7 @@ export type PostHogInitOptions = {
   session_recording: {
     maskAllInputs: boolean;
     maskTextSelector: string;
+    maskTextFn: (text: string, element?: HTMLElement | null) => string;
     maskAttributeFn: (name: string, value: string, element?: Element | null) => string;
     blockClass: string;
   };
@@ -178,6 +180,8 @@ export function buildPostHogInitOptions(
       // Text shows; only marked customer content and secrets mask (privacy.ts).
       maskAllInputs: true,
       maskTextSelector: ANALYTICS_MASK_TEXT_SELECTOR,
+      // Shows work content only when the company holds no Google or Slack data.
+      maskTextFn: maskReplayText,
       // Attributes too (title, aria-label, alt, src, ...): deny by default.
       maskAttributeFn: maskReplayAttribute,
       blockClass: ANALYTICS_NO_CAPTURE_CLASS,
@@ -334,6 +338,19 @@ export function startProductAnalytics(
         if (state === current) current.loading = false;
       });
   });
+}
+
+/**
+ * Record the page again from a fresh snapshot. rrweb decides masking when it
+ * records a node, so text recorded masked stays masked until it re-renders.
+ * `ReplayWorkContentVisibility` calls this when work content becomes visible.
+ * It does nothing when replay is off, opted out or not loaded yet.
+ */
+export function refreshSessionReplay(): void {
+  const current = state;
+  if (!current?.client || current.optedOut || !current.config.replayEnabled) return;
+  current.client.stopSessionRecording?.();
+  current.client.startSessionRecording?.();
 }
 
 /** Set (or clear, on sign-out) the signed-in user. Safe to call before posthog-js loads. */

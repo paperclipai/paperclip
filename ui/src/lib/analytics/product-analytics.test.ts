@@ -144,9 +144,10 @@ describe("product analytics", () => {
       tracing_headers: ["acme.paperclip.app"],
       session_recording: { maskAllInputs: true, blockClass: "ph-no-capture" },
     });
-    // Replay masks text only inside customer content, secrets and editable content.
-    expect(options.session_recording?.maskTextSelector).toBe(".ph-mask, .ph-sensitive, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"])");
-    expect(options.session_recording).not.toHaveProperty("maskTextFn");
+    // Replay masks text only inside customer content, secrets, editable content
+    // and work content; maskTextFn shows work content when the page allows it.
+    expect(options.session_recording?.maskTextSelector).toBe(".ph-mask, .ph-sensitive, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"]), .ph-work-content");
+    expect(options.session_recording?.maskTextFn).toBeTypeOf("function");
     expect(options.session_recording?.maskAttributeFn).toBeTypeOf("function");
     expect(options).toMatchObject({ disable_surveys: true, disable_product_tours: true, disable_web_experiments: true, disable_conversations: true });
     expect(buildPostHogInitOptions({ ...config, replayEnabled: false }, "x").disable_session_recording).toBe(true);

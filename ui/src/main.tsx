@@ -9,6 +9,7 @@ import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
 import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
+import { ReplayWorkContentVisibility } from "./lib/analytics/replay-work-content";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
@@ -137,6 +138,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
+              <ReplayWorkContentVisibility />
               <EditorAutocompleteProvider>
                 <ToastProvider>
                   <MutationErrorToastBridge />

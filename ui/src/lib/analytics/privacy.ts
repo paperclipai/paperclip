@@ -2,8 +2,10 @@
 //
 // Session replay shows text by default and masks ALL input values. Text is
 // masked only inside customer content marked with `ANALYTICS_MASK_CLASS`,
-// inside secrets marked with `ANALYTICS_NO_CAPTURE_CLASS` (blocked entirely)
-// and inside editable content. Autocapture never records element text or
+// inside secrets marked with `ANALYTICS_NO_CAPTURE_CLASS` (blocked entirely),
+// inside editable content, and inside work content marked with
+// `ANALYTICS_WORK_CONTENT_CLASS` unless the company holds no Google or Slack
+// data. Autocapture never records element text or
 // attribute values at all (see `product-analytics.ts`).
 //
 // Apply these markers instead of PostHog class names, so `product-analytics.ts`
@@ -13,8 +15,9 @@
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
 /**
- * Customer content: task and issue bodies, comments, chat messages, documents,
- * artifacts and connected-account data. Session replay masks its text, and
+ * Customer content: comments, chat messages, run output, connected-account
+ * data and anything else that is not work content (see
+ * `ANALYTICS_WORK_CONTENT_CLASS`). Session replay always masks its text, and
  * autocapture records nothing from inside it.
  */
 export const ANALYTICS_MASK_CLASS = "ph-mask ph-sensitive";
@@ -26,11 +29,57 @@ export const ANALYTICS_MASK_CLASS = "ph-mask ph-sensitive";
  */
 export const ANALYTICS_NO_CAPTURE_CLASS = "ph-no-capture";
 
-/** Session replay masks text only inside these markers. */
-export const ANALYTICS_MASK_TEXT_SELECTOR = [
+/**
+ * Work content: task descriptions, document bodies and artifact contents.
+ * Session replay masks it unless the page says the active company holds no
+ * Google or Slack data (`REPLAY_WORK_CONTENT_ATTRIBUTE` on `<html>`, set by
+ * `ReplayWorkContentVisibility`). Agents copy connected-account content into
+ * these surfaces, and our privacy policy and the Google API Limited Use rules
+ * say no person may read that content in a replay.
+ *
+ * A strict marker inside work content still wins: `ANALYTICS_MASK_CLASS`,
+ * `ANALYTICS_NO_CAPTURE_CLASS` and editors stay masked (see `maskReplayText`).
+ */
+export const ANALYTICS_WORK_CONTENT_CLASS = "ph-work-content";
+
+/** `<html>` attribute that shows work content in replays when set to `"visible"`. */
+export const REPLAY_WORK_CONTENT_ATTRIBUTE = "data-replay-work-content";
+
+/** Markers that always mask, wherever they sit. */
+const STRICT_MASK_SELECTOR = [
   ...ANALYTICS_MASK_CLASS.split(" "),
   ANALYTICS_NO_CAPTURE_CLASS,
 ].map((name) => `.${name}`).concat("[contenteditable]:not([contenteditable=\"false\"])").join(", ");
+
+/**
+ * Session replay masks text only inside these markers. Work content is in the
+ * selector too, so it fails closed: `maskReplayText` decides whether it shows.
+ */
+export const ANALYTICS_MASK_TEXT_SELECTOR = `${STRICT_MASK_SELECTOR}, .${ANALYTICS_WORK_CONTENT_CLASS}`;
+
+/** True when the page has confirmed that work content may show in replays. */
+export function replayWorkContentVisible(doc: Document | null | undefined = globalThis.document): boolean {
+  return doc?.documentElement?.getAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE) === "visible";
+}
+
+/**
+ * Session replay `maskTextFn`. rrweb calls it only for text inside
+ * `ANALYTICS_MASK_TEXT_SELECTOR`. The nearest marker decides: work content
+ * shows when the page allows it, and every other marker masks. Whitespace
+ * stays, so the layout stays readable.
+ */
+export function maskReplayText(text: string, element?: HTMLElement | null): string {
+  const nearest = element?.closest?.(ANALYTICS_MASK_TEXT_SELECTOR);
+  if (
+    nearest
+    && nearest.classList.contains(ANALYTICS_WORK_CONTENT_CLASS)
+    && !nearest.matches(STRICT_MASK_SELECTOR)
+    && replayWorkContentVisible(nearest.ownerDocument)
+  ) {
+    return text;
+  }
+  return text.replace(/\S/g, "*");
+}
 
 /**
  * Attributes that only describe layout, state or structure. Every other

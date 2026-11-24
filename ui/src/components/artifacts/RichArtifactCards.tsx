@@ -31,7 +31,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
 
 // Renderers contain UI labels only. All artifact-specific content is passed in.
@@ -309,7 +309,7 @@ export function CommitCard(props: CommitCardProps) {
 
 function Markdown({ body, preview = false }: { body: string; preview?: boolean }) {
   return (
-    <div className={cn("flex flex-col gap-3 text-sm leading-relaxed", ANALYTICS_MASK_CLASS)}>
+    <div className={cn("flex flex-col gap-3 text-sm leading-relaxed", ANALYTICS_WORK_CONTENT_CLASS)}>
       <ReactMarkdown
         components={{
           pre: ({ children }) => <pre className={preview
@@ -389,9 +389,9 @@ export interface DocumentCardProps extends ArtifactIdentity {
 export function DocumentCard(props: DocumentCardProps) {
   const patch = props.patch ?? isPatchFile(props.filename);
   const content = (body: string, preview = false) => patch
-    ? <pre className={cn(ANALYTICS_MASK_CLASS, preview
+    ? <pre className={cn(ANALYTICS_WORK_CONTENT_CLASS, preview
       ? "paperclip-patch-preview m-0 min-w-0 overflow-hidden whitespace-pre font-mono text-xs leading-5"
-      : "m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-xs leading-5", ANALYTICS_MASK_CLASS)}><code><PatchLines text={body} /></code></pre>
+      : "m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-xs leading-5", ANALYTICS_WORK_CONTENT_CLASS)}><code><PatchLines text={body} /></code></pre>
     : <Markdown body={body} preview={preview} />;
   return (
     <Card>
@@ -454,7 +454,7 @@ export interface DataCardProps extends ArtifactIdentity {
 function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
   return (
     <div className="overflow-x-auto">
-      <table className={cn("w-full text-left text-xs", ANALYTICS_MASK_CLASS)}>
+      <table className={cn("w-full text-left text-xs", ANALYTICS_WORK_CONTENT_CLASS)}>
         <thead>
           <tr>
             {columns.map((column, i) => (
