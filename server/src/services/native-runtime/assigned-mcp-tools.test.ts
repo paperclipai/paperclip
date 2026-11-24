@@ -4,7 +4,7 @@ import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { ToolGatewayHttpError, toolResultErrorDetails, toolResultErrorMessage, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 import {
   ASSIGNED_CATALOG_CACHE_BYTES, ASSIGNED_CATALOG_CACHE_ENTRIES, assignedCatalogCacheStats,
   ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES, ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES, assignedSchemaAdmissionCacheSize,
@@ -724,6 +724,31 @@ describe("assigned MCP runner tools", () => {
     await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toMatchObject({
       reasonCode: "tool_error", status, message: `${code}: The connected tool reported an error.`,
     });
+  });
+
+  it("never turns prose into a code and prefers the tool's structured code", async () => {
+    const f = fixture([descriptor("recall")]);
+    const assigned = await createAssignedMcpTools(f);
+    const call = { tool: assigned.definitions()[0]!.name as string, arguments: {} };
+    f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, "validation failed\nreason: missing field", "tool_error"));
+    await expect(assigned.execute(call)).rejects.toMatchObject({ message: "assigned_tool_error: The connected tool reported an error." });
+    f.executeTool.mockResolvedValueOnce({ status: "completed", result: { isError: true,
+      structuredContent: { code: "quota_exceeded" }, content: [{ type: "text", text: '{"code":"upstream_thing"}' }] } });
+    await expect(assigned.execute(call)).rejects.toMatchObject({ message: "quota_exceeded: The connected tool reported an error." });
+    f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, "MCP tool returned an error result", "tool_error",
+      { toolCode: "quota_exceeded", retryable: true }));
+    await expect(assigned.execute(call)).rejects.toMatchObject({ status: 429, message: "quota_exceeded: The connected tool reported an error." });
+  });
+
+  it("builds gateway tool error messages and details from MCP results", () => {
+    expect(toolResultErrorMessage({ isError: true, content: [{ type: "text", text: "(code: validation_error)" }] }))
+      .toBe("(code: validation_error)");
+    expect(toolResultErrorMessage({ isError: true, content: [{ type: "image", data: "x" }] })).toBe("The tool returned an error.");
+    expect(toolResultErrorMessage({ error: "Denied" }, "Reconnect it.")).toBe("Denied\n\nReconnect it.");
+    expect(toolResultErrorDetails({ structuredContent: { code: "quota_exceeded", retryability: "later" } }))
+      .toEqual({ toolCode: "quota_exceeded", retryable: true });
+    expect(toolResultErrorDetails({ data: { code: "read_rate_limit", retryable: true } })).toEqual({ toolCode: "read_rate_limit", retryable: true });
+    expect(toolResultErrorDetails({ structuredContent: { code: "Not A Code" } })).toEqual({});
   });
 
   it("propagates discovery denial", async () => {

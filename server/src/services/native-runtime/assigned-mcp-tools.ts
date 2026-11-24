@@ -191,6 +191,7 @@ function sha256(value: string): string {
 const TOOL_CODE = "[a-z][a-z0-9_]{2,79}";
 const PLUGIN_CODE = new RegExp(`\\(code: (${TOOL_CODE})[,)]`);
 const JSON_CODE = new RegExp(`"code"\\s*:\\s*"(${TOOL_CODE})"`);
+const STRUCTURED_CODE = new RegExp(`^${TOOL_CODE}$`);
 const PREFIX_CODE = new RegExp(`^(${TOOL_CODE}):`);
 const RETRYABLE_TEXT = new RegExp(`\\(code: ${TOOL_CODE}, retryable\\)|"retryable"\\s*:\\s*true|"retryability"\\s*:\\s*"later"`);
 
@@ -198,23 +199,25 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function toolReportedParts(detail: unknown): { text: string; retryable: boolean } {
+function toolReportedParts(detail: unknown): { text: string; retryable: boolean; structuredCode?: string } {
   if (typeof detail === "string") return { text: detail, retryable: RETRYABLE_TEXT.test(detail) };
   const value = record(detail);
   const data = record(value.data);
   const content = Array.isArray(value.content) ? value.content : Array.isArray(data.content) ? data.content : [];
   const structured = record(value.structuredContent ?? data.structuredContent);
   const texts = content.flatMap((item) => typeof record(item).text === "string" ? [record(item).text as string] : []);
-  const codes = [value.code, structured.code, data.code].filter((code): code is string => typeof code === "string");
-  const text = [...codes.map((code) => `${code}:`), ...texts, ...(typeof value.error === "string" ? [value.error] : [])].join("\n");
+  const structuredCode = [value.code, structured.code, data.code]
+    .find((code): code is string => typeof code === "string" && STRUCTURED_CODE.test(code));
+  const text = [...texts, ...(typeof value.error === "string" ? [value.error] : [])].join("\n");
   const flagged = [value, structured, data].some((source) => source.retryable === true || source.retryability === "later");
-  return { text, retryable: flagged || RETRYABLE_TEXT.test(text) };
+  return { text, retryable: flagged || RETRYABLE_TEXT.test(text), ...(structuredCode ? { structuredCode } : {}) };
 }
 
 export function toolReportedError(detail: unknown): ToolGatewayHttpError {
-  const { text, retryable } = toolReportedParts(detail);
-  const code = PLUGIN_CODE.exec(text)?.[1] ?? JSON_CODE.exec(text)?.[1]
-    ?? text.split("\n").map((line) => PREFIX_CODE.exec(line.trim())?.[1]).find(Boolean) ?? "assigned_tool_error";
+  const { text, retryable, structuredCode } = toolReportedParts(detail);
+  const firstLine = text.trim().split("\n")[0] ?? "";
+  const code = structuredCode ?? PLUGIN_CODE.exec(text)?.[1] ?? JSON_CODE.exec(text)?.[1]
+    ?? PREFIX_CODE.exec(firstLine)?.[1] ?? "assigned_tool_error";
   return new ToolGatewayHttpError(retryable ? 429 : 422, `${code}: The connected tool reported an error.`, "tool_error",
     retryable ? { retryable: true } : undefined);
 }
@@ -487,7 +490,9 @@ export async function createAssignedMcpTools(input: {
           parameters,
         });
       } catch (error) {
-        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") throw toolReportedError(error.message);
+        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") {
+          throw toolReportedError({ error: error.message, code: error.details.toolCode, retryable: error.details.retryable });
+        }
         throw error;
       }
       if (result.status !== "completed" && result.status !== "replayed") {

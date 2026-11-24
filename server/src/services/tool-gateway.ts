@@ -485,6 +485,27 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
+export function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string): string {
+  const content = Array.isArray(result.content)
+    ? result.content.map((item) => (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+      ? (item as { text: string }).text : "")).filter(Boolean).join("\n")
+    : result.content;
+  const error = typeof result.error === "string" ? result.error : "";
+  const message = (typeof content === "string" && content) || error || "The tool returned an error.";
+  return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
+}
+
+const TOOL_ERROR_CODE = /^[a-z][a-z0-9_]{2,79}$/;
+
+export function toolResultErrorDetails(result: Record<string, unknown>): { toolCode?: string; retryable?: true } {
+  const object = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const data = object(result.data);
+  const sources = [object(result.structuredContent), object(data.structuredContent), data];
+  const toolCode = sources.map((source) => source.code).find((code): code is string => typeof code === "string" && TOOL_ERROR_CODE.test(code));
+  const retryable = sources.some((source) => source.retryable === true || source.retryability === "later");
+  return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
+}
+
 export class ToolGatewayHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -7493,15 +7514,6 @@ export function createToolGatewayService(
     return normalized;
   }
 
-  function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string) {
-    const content = Array.isArray(result.content)
-      ? result.content.map((item) => (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
-        ? (item as { text: string }).text : "")).filter(Boolean).join("\n")
-      : result.content;
-    const message = String(content || result.error);
-    return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
-  }
-
   // ── MCP Tasks (io.modelcontextprotocol/tasks) ─────────────────────────────
   // A provider may answer tools/call with a durable task. The live call waits
   // on it up to the normal tool timeout; past that the row keeps it, background
@@ -10218,7 +10230,8 @@ export function createToolGatewayService(
       if (providerResult?.error) {
         throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
-          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error", { execution: connectedMcpExecution.execution });
+          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
+          { execution: connectedMcpExecution.execution, ...toolResultErrorDetails(providerResult) });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -11105,6 +11118,7 @@ export function createToolGatewayService(
           resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(resultRecord, connectedMcpExecution?.failureInstructions),
           resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
+          toolResultErrorDetails(resultRecord),
         );
       const now = new Date();
       await db
@@ -14120,7 +14134,7 @@ export function createToolGatewayService(
             validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             toolResultErrorMessage(validatedMcpResult, connectedMcpExecution?.failureInstructions),
             validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-            { execution: connectedMcpExecution?.execution },
+            { execution: connectedMcpExecution?.execution, ...toolResultErrorDetails(validatedMcpResult) },
           );
         }
         await db
