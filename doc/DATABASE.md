@@ -331,10 +331,10 @@ array lists every packed migration in journal order with `idx`, `tag`,
 ### Migrations that need a deploy without overlap
 
 Some `requires_staging` migrations ship in one release instead of an expand
-and a contract release. They cannot carry the reason in their SQL header when
-their bytes must stay identical to an already-applied copy, so the constraint
-is recorded here. Deploy such a release without overlap: stop every server of
-the previous release before a server of the new release accepts traffic.
+and a contract release. Their `requires_staging` header records that the
+operator accepts a maintenance deploy; this table explains why. Deploy such a
+release without overlap: stop every server of the previous release before a
+server of the new release accepts traffic.
 
 | Migration | Why the previous release cannot run beside it |
 | --- | --- |
