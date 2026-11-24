@@ -123,6 +123,7 @@ export function createFoldSourceResolvedRun(deps: FoldSourceResolvedRunDeps) {
       adapterType: input.runningAgentAdapterType,
       fallbackPid: input.run.processPid,
       fallbackProcessGroupId: input.run.processGroupId,
+      fallbackProcessStartedAt: input.run.processStartedAt,
     });
 
     const outcome = await deps.writer.foldSourceResolvedRun(input.run.companyId, {

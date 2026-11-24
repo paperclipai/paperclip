@@ -70,6 +70,7 @@ import {
   isLocalServiceProcessInWorkspace,
   openLocalServiceLogFile,
   readLocalServiceProcessCwd,
+  readLocalServiceProcessCreatedAt,
   readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
   removeLocalServiceRegistryRecord,
@@ -252,6 +253,7 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   serviceKey: string;
   profileKind: string;
   processGroupId: number | null;
+  processCreatedAt?: string | null;
   /** Server-private broker lease handle; never returned by toRuntimeServiceRef. */
   exposureHandle: string | null;
   /** Loopback URL used for backend readiness/adoption; never serialized. */
@@ -6694,6 +6696,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
           serviceKey,
           profileKind: "workspace-runtime",
           processGroupId: adoptedRecord.processGroupId ?? null,
+          processCreatedAt: adoptedRecord.processCreatedAt ?? null,
           exposureHandle: null,
           backendUrl: adoptedUrl,
           exposureConfig: null,
@@ -6836,6 +6839,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
+  record.processCreatedAt = child.pid ? await readLocalServiceProcessCreatedAt(child.pid) : null;
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6858,6 +6862,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       url: backendUrl,
       pid: child.pid,
       processGroupId: child.pid,
+      processCreatedAt: record.processCreatedAt ?? null,
       provider: "local_process",
       runtimeServiceId: record.id,
       reuseKey: input.reuseKey,
@@ -7055,6 +7060,9 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         pid: child.pid,
         processGroupId: child.pid,
         port,
+        ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+        ...(record.command ? { command: record.command } : {}),
+        ...(record.serviceName ? { serviceName: record.serviceName } : {}),
       });
     }
     await cleanupRecordExposure(record, { preserveFailure: true });
@@ -7313,6 +7321,9 @@ async function stopRuntimeServiceRecord(serviceId: string) {
       pid: record.child.pid,
       processGroupId: record.processGroupId ?? record.child.pid,
       port: record.port,
+      ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+      ...(record.command ? { command: record.command } : {}),
+      ...(record.serviceName ? { serviceName: record.serviceName } : {}),
     });
   } else if (record.providerRef) {
     const pid = Number.parseInt(record.providerRef, 10);
@@ -7321,6 +7332,9 @@ async function stopRuntimeServiceRecord(serviceId: string) {
         pid,
         processGroupId: record.processGroupId,
         port: record.port,
+        ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+        ...(record.command ? { command: record.command } : {}),
+        ...(record.serviceName ? { serviceName: record.serviceName } : {}),
       });
     }
   }
@@ -9004,6 +9018,7 @@ async function reconstructRuntimeServices(db: Db) {
           serviceKey: adoptedRecord.serviceKey,
           profileKind: "workspace-runtime",
           processGroupId: adoptedRecord.processGroupId ?? null,
+          processCreatedAt: adoptedRecord.processCreatedAt ?? null,
           exposureHandle: row.exposureHandle ?? null,
           backendUrl: adoptedUrl,
           exposureConfig: null,
