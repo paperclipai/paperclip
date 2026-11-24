@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -2735,6 +2735,28 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
   }, 30_000);
+  it("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = "unremovable-home";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Unremovable home", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const parent = path.join(home, "instances", "ai-connection-fixture", "ai-local-logins");
+    const read = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]!;
+    await mkdir(path.join(parent, id), { recursive: true });
+    await chmod(parent, 0o500);
+    try {
+      const login = localAiLoginService(db);
+      await expect(login.cancel(companyId, owner, id)).rejects.toMatchObject({ code: "EACCES" });
+      const pending = await read();
+      expect(pending).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(pending.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      await expect(login.start(companyId, owner, { ...intent, agentIds: [] })).rejects.toThrow();
+      await chmod(parent, 0o700);
+      await login.reapExpired();
+      expect(await read()).toMatchObject({ status: "cancelled", expiresAt: null });
+    } finally { await chmod(parent, 0o700); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();

@@ -32,7 +32,6 @@ function loginHome(id: string) {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return path.join(canonicalRoot, "ai-local-logins", id);
 }
-const isBusy = (error: unknown) => (error as { details?: { code?: unknown } } | null)?.details?.code === "ai_connection_busy";
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
   const directory = loginHome(id);
@@ -301,7 +300,7 @@ export function localAiLoginService(db: Db) {
       }
       return presentAttempt(id, expiresAt, intent.provider);
     }).catch(async error => {
-      if (retiredAttemptId && isBusy(error)) await requestCleanup(companyId, userId, retiredAttemptId, managementContext).catch(() => undefined);
+      if (retiredAttemptId) await requestCleanup(companyId, userId, retiredAttemptId, managementContext).catch(() => undefined);
       throw error;
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
@@ -490,7 +489,7 @@ export function localAiLoginService(db: Db) {
         });
       }
     }).catch(async error => {
-      if (isBusy(error)) await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
+      await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
       throw error;
     });
     deferredRetirements.delete(id);
