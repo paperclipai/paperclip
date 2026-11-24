@@ -40,7 +40,7 @@ export function storedContentSummary(content: ToolConnectionStoredContent, appNa
 export function storedContentStatus(content: ToolConnectionStoredContent): string | null {
   const deletion = content.deletion;
   if (deletion?.status === "pending" && deletion.reason !== "requested") {
-    return "Access to this app ended, so Paperclip is deleting this data automatically. It waits for runs that are still working and finishes within a day.";
+    return "Access to this app ended, so Paperclip is deleting this data automatically. It waits up to a day for runs that are still working, and keeps trying until every step succeeds.";
   }
   if (deletion?.status === "pending") {
     return deletion.retrying

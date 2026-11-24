@@ -161,16 +161,19 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                   && error.code === "REAUTHORIZATION_REQUIRED"
                   && error.brokerReason === "PROVIDER_REAUTHORIZATION_REQUIRED";
                 await db.transaction(async (tx) => {
-                  await tx
+                  const [marked] = await tx
                     .update(connectionGrants)
                     .set({ status: "needs_reauthorization", updatedAt: now() })
                     .where(
                       and(
                         eq(connectionGrants.id, grant.id),
                         eq(connectionGrants.companyId, grant.companyId),
+                        eq(connectionGrants.status, "active"),
+                        sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
                       ),
-                    );
-                  if (accessEndedAtGoogle) await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "provider_access_ended");
+                    )
+                    .returning({ id: connectionGrants.id });
+                  if (marked && accessEndedAtGoogle) await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "provider_access_ended");
                 });
                 throw unprocessable(
                   cloudOnly ? `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}` : "Managed authorization must be reconnected",

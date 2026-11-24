@@ -14,7 +14,7 @@ import {
   toolConnectionInstalls,
   toolConnections,
 } from "@paperclipai/db";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -605,6 +605,24 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
     expect(grant!.status).toBe("needs_reauthorization");
     expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "provider_access_ended" }]);
+  });
+
+  it("keeps the content when a late refresh failure answers after the grant was signed in again", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.refresh.mockImplementation(async () => {
+      await db.update(connectionGrants)
+        .set({ providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{oauth,refreshLease}', '{"id":"newer-sign-in"}'::jsonb)` as never })
+        .where(eq(connectionGrants.id, fixture.grant.id));
+      throw new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_REAUTHORIZATION_REQUIRED");
+    });
+
+    await expect(fixture.service.refreshOAuthGrantCredentials({
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, forceRefresh: true,
+    })).rejects.toBeTruthy();
+
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grant!.status).toBe("active");
+    expect(await contentDeletions(fixture.connectionId)).toEqual([]);
   });
 
   it.each([

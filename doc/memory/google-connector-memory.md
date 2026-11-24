@@ -486,10 +486,16 @@ unchanged.
   (the existing durable job, plus `not_before`).
 - An access end while a manual deletion is pending moves that job's cutoff to
   the access end and restarts it.
-- Reconnect: only calls made after the access end are kept. The job also
+- Reconnect: only calls made after the access end are kept. Late records of
+  a call made before the access end (a completion event, an app view, an audit
+  entry written after the result came back) are deleted too. The job also
   clears the saved harness session pointers (`agent_task_sessions`,
-  `agent_runtime_state.session_id`) of the runs it cleans, so the next run
-  starts a new harness conversation and does not replay old Google results.
+  `agent_runtime_state.session_id`) and the session ids on every run of that
+  harness session (`session_id_before`, `session_id_after`, the result's
+  `sessionId`), so neither the next run nor "resume from this run" reopens a
+  conversation that holds old Google results.
+- A refresh failure counts only if the refresh still holds the grant's
+  refresh lease; a late answer after a new sign-in deletes nothing.
 - New in the job for every app: tool error text (`tool_invocations` and
   `tool_call_events` `error_message`, the approval card's
   `toolAction.errorMessage`), and the session pointers above.
