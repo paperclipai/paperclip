@@ -623,6 +623,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "provider_tool_definition_invalid",
   NATIVE_SANDBOX_DISK_FULL,
   "adapter_engine_unavailable",
+  "refresh_token_invalidated",
   "agent_not_invokable",
   "agent_not_found",
   "budget_blocked",
