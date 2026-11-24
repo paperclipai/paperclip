@@ -21,17 +21,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { Input } from "@/components/ui/input";
 import { queryKeys } from "@/lib/queryKeys";
 
 type AreaRef = Pick<ResponsibilityArea, "id" | "title" | "status">;
 
-/** The company's areas that can take a responsibility (active and proposed). */
+/** The viewer's areas that can take a responsibility (active and proposed). */
 export function useResponsibilityAreas(companyId: string | null | undefined, enabled = true) {
+  const { userId } = useResolvedViewerId({ enabled });
   return useQuery({
-    queryKey: queryKeys.responsibilities.areas(companyId ?? "__none__"),
+    queryKey: [...queryKeys.responsibilities.areas(companyId ?? "__none__"), userId],
     queryFn: () => responsibilityAreasApi.list(companyId!),
-    enabled: enabled && !!companyId,
+    enabled: enabled && !!companyId && !!userId,
   });
 }
 

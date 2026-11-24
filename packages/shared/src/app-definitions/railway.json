@@ -33,7 +33,8 @@
         ],
         "oauthAuthorizationParams": {
           "prompt": "consent"
-        }
+        },
+        "tokenEndpoint": "https://backboard.railway.com/oauth/token"
       },
       "guidanceMd": "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
       "riskTier": "S4",

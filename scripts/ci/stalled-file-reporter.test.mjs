@@ -97,7 +97,27 @@ test("passes", () => {});
     let fixtureReporter = reporterPath;
     if (label === "a test that never settles") {
       fixtureReporter = path.join(directory, "after-test-start.mjs");
-      writeFileSync(fixtureReporter, 'import Base from ' + JSON.stringify(pathToFileURL(reporterPath).href) + ';\nimport { existsSync } from "node:fs";\nexport default class extends Base { check() { if (!existsSync(' + JSON.stringify(startedMarker) + ')) return; super.check(); } }\n');
+      writeFileSync(fixtureReporter, `
+import Base from ${JSON.stringify(pathToFileURL(reporterPath).href)};
+import { existsSync } from "node:fs";
+export default class extends Base {
+  ready = false;
+  onTestCaseReady(testCase) {
+    if (testCase.module.moduleId !== ${JSON.stringify(path.join(directory, "stuck.test.mjs"))}) {
+      super.onTestCaseReady(testCase);
+      return;
+    }
+    setTimeout(() => {
+      super.onTestCaseReady(testCase);
+      this.ready = true;
+    }, this.limitMs + 500);
+  }
+  check() {
+    if (!this.ready || !existsSync(${JSON.stringify(startedMarker)})) return;
+    super.check();
+  }
+}
+`);
     }
     const configFile = path.join(directory, "vitest.config.mjs");
     writeFileSync(configFile, `export default ${JSON.stringify({ test: { include: ["*.test.mjs"],

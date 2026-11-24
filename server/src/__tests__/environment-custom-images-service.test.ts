@@ -11,9 +11,11 @@ import {
   createDb,
   environmentCustomImageSetupSessions,
   environmentCustomImageTemplates,
+  environmentLeases,
   environments,
   plugins,
 } from "@paperclipai/db";
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -27,6 +29,8 @@ import {
 import {
   resolveEnvironmentDriverConfigForRuntime,
 } from "../services/environment-config.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { environmentService } from "../services/environments.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -168,6 +172,7 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
   });
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
     await db.delete(environmentCustomImageSetupSessions);
     await db.delete(environmentCustomImageTemplates);
     await db.delete(plugins);
@@ -607,6 +612,61 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(timedOut?.metadata).toMatchObject({ setupRpcCompanyId: expired.session.metadata!.setupRpcCompanyId,
       sourceEnvironmentConfigFingerprint: expired.session.metadata!.sourceEnvironmentConfigFingerprint });
   });
+
+  it.each(["setup scope", "foreign company", "instance scope"])(
+    "hands an unconfirmed setup sandbox to the pending-cleanup sweep: %s", async (scope) => {
+      // PAPERCLIP-BACKEND-75: a Daytona 502 during setup creation left a
+      // provisional sandbox whose cleanup was never recorded anywhere.
+      const { companyId, environmentId } = await seed();
+      const workerManager = createWorkerManager();
+      const startCall = workerManager.call.getMockImplementation()!;
+      const providerLeaseId = `paperclip-create-${randomUUID()}`;
+      let cleanup: Record<string, unknown> | undefined;
+      let destroyed: Record<string, unknown> | undefined;
+      workerManager.call.mockImplementation(async (pluginId, method, params) => {
+        if (method === "environmentStartInteractiveSetup") {
+          cleanup = {
+            providerLeaseId, attemptId: providerLeaseId.slice("paperclip-create-".length),
+            companyId: scope === "foreign company" ? randomUUID() : params.companyId, environmentId,
+            accountFingerprint: "a".repeat(64), labels: { "paperclip-provider": "fake-plugin" },
+          };
+          throw new JsonRpcCallError({ code: -32000,
+            message: `Sandbox creation failed (HTTP 502); cleanup could not be confirmed for ${providerLeaseId}`,
+            data: { schema: "paperclip/environment-creation-cleanup/v1", cleanup, providerDiagnostic: { httpStatus: 502 } } });
+        }
+        if (method === "environmentDestroyLease") {
+          destroyed = params;
+          return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+        }
+        return startCall(pluginId, method, params);
+      });
+      const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+      const attempt = service.startSetupSession({ environmentId, actor: { userId: "user-1" },
+        ...(scope === "instance scope" ? {} : { secretContextCompanyId: companyId }) });
+      if (scope === "setup scope") await expect(attempt).rejects.toBeInstanceOf(JsonRpcCallError);
+      else await expect(attempt).rejects.toThrow("Interactive setup sandbox cleanup could not be recorded");
+
+      const [session] = await db.select().from(environmentCustomImageSetupSessions)
+        .where(eq(environmentCustomImageSetupSessions.environmentId, environmentId));
+      expect(session.status).toBe("failed");
+      const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, providerLeaseId));
+      if (scope !== "setup scope") {
+        expect(leases).toHaveLength(0);
+        return;
+      }
+      expect(leases).toEqual([expect.objectContaining({ companyId, environmentId, status: "pending_cleanup",
+        provider: "fake-plugin", failureReason: "interrupted_setup_creation" })]);
+      expect(leases[0].metadata).toMatchObject({ provider: "fake-plugin", image: "fake:base", purpose: "interactive_setup",
+        setupSessionId: session.id, failedCreateCleanup: cleanup });
+
+      // The existing sweep teardown accepts the recorded lease and destroys the allocation.
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      await expect(runtime.retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(leases[0].id))! }))
+        .resolves.toEqual({ providerLeaseId, state: "destroyed" });
+      expect(destroyed).toMatchObject({ providerLeaseId, companyId, environmentId, leaseMetadata: { failedCreateCleanup: cleanup } });
+    },
+  );
 
   it("rejects interactive setup when the provider declares it but the worker omits a setup method", async () => {
     const { environmentId } = await seed();

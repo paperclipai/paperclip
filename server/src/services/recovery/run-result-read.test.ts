@@ -45,6 +45,17 @@ describe.skipIf(!support.supported)("recovery result PostgreSQL projection", () 
     expect(stored).toEqual(run);
   });
 
+  it.each(["authentication", "quota_exhausted"])("retains typed %s evidence for native recovery", async category => {
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+      category, message: "Account needs attention", retryability: "requires_action" };
+    const { run, selected } = await read({ providerFailure, output: "private execution output" }, "native_session_interrupted");
+    expect(selected.resultJson).toEqual({ providerFailure });
+    const complete = { ...run, livenessState: "blocked" };
+    const projected = { ...complete, resultJson: selected.resultJson };
+    expect(isAiAuthenticationBlocked(projected)).toBe(isAiAuthenticationBlocked(complete));
+    expect(classifyContinuationFailure(projected)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
   it.each(["adapter_failed", "provider_quota", "configuration_incomplete"])("retains arbitrary provider evidence for %s classification", async errorCode => {
     const now = new Date("2020-01-01T00:00:00Z");
     const result = { providerSpecificField: { nestedResponse: "Rate limit exceeded. Try again after 2099-01-01T00:00:00Z" },

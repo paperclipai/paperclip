@@ -22,6 +22,11 @@ Failed or expired sign-ins show a short message and a Retry sign-in footer
 button. Retry releases the old session before starting a fresh sign-in. It keeps
 the onboarding setup and clears the old code.
 
+When the selected environment does not support browser sign-in and no saved
+subscription is available, onboarding disables Connect and keyboard submission.
+It explains the limitation and directs the user back to use an API key or choose
+another model. Saved subscriptions and API-key connections remain available.
+
 Returning from Review to Connect can change the existing agent's connection.
 Connect verifies and saves the current selection before returning to Review;
 it does not create another agent. A new API account selected in onboarding becomes
@@ -114,8 +119,17 @@ authorization, and old delegation records do not override the human audience.
 
 A connection choice never changes the harness or model. For a routed connection,
 the selected connection owns its provider routing.
-Changing those separately may make a binding incompatible; saving then requires
-a compatible choice. Agent configuration cannot grant access to another account.
+Changing the harness removes an incompatible binding from the unsaved form.
+Compatible API accounts stay available for multi-provider harnesses before a model
+is chosen. Once a model is selected, account choices use that model and the saved
+connection's routing and sign-in method. An incompatible saved choice is disabled
+with a reason. Changing only the model may require a compatible account choice.
+Agent configuration cannot grant access to another account.
+
+New OpenCode and Pi agents use harness sign-in by default. Managed connections
+are optional; **Use harness sign-in** clears the selection during setup. OpenCode
+model discovery and manual model entry support providers outside OpenRouter.
+The missing-default message includes **Connect an account** beside the error.
 
 Agent account choices and legacy-adoption confirmations show the sign-in method,
 personal or company-shared scope, and available account or owner identity beside
@@ -342,8 +356,19 @@ same inline connection/reconnect controls as missing-account setup. Pending
 cards are deduplicated. Creating a repair card persists a blocked run classification
 that suppresses immediate and periodic generic retries until the responsible user
 repairs the connection. Unsupported providers and failures that could not create
-a card retain their existing recovery path. Tool permission errors and provider quota failures do not
+a card retain their existing recovery path. Typed provider authentication failures
+and the runtime's `provider_invalid_credentials` code enter this same repair path.
+Managed repair follows the run's recorded account attribution, including proxy
+accounts whose driver reports an upstream provider. Unmanaged adoption requires
+a compatible provider. Tool permission errors and provider quota failures do not
 request model authentication.
+
+An exhausted provider allowance with typed `quota_exhausted` evidence and no
+reported reset asks the user to review billing and usage, then retry. It does
+not create an estimated cooldown or an automatic provider retry. The task links
+to Apps to review the connected AI account. Rate limits without a reset retain
+their default cooldown; allowance limits with a reported reset retain their
+scheduled retry. Older untyped quota failures retain their existing recovery.
 
 Pre-dispatch `configuration_incomplete` failures also show this card when every
 missing binding is a personal `user_secret_ref` for the same compatible AI

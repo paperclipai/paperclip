@@ -395,6 +395,14 @@ it("names the managed AI connection a plugin Runner-task environment requires", 
   expect(notice.body).not.toContain("secret/env");
 });
 
+it("names incompatible project workspace storage instead of a missing secret", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "project_storage_environment_incompatible" });
+  expect(notice.title).toBe("Workspace storage unavailable");
+  expect(notice.body).toContain("workspace storage that the agent's environment cannot use");
+  expect(notice.nextAction).toContain("Assign the task to an agent whose environment can use");
+  expect(notice.body).not.toContain("secret");
+});
+
 it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
   const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
   expect(notice.title).toBe("Isolated Runner home required");

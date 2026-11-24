@@ -38,6 +38,11 @@ Example: A CEO agent's adapter config tells it to "review what your executives a
 
 Then you define who reports to the CEO: a CTO managing programmers, a CMO managing the marketing team, and so on. Every agent in the tree gets their own adapter configuration.
 
+When Areas & Responsibilities is enabled, each person has a private dashboard in each company.
+People can use the same area names independently. Dashboard conversations, saved versions and
+the way a person files shared work are visible only to that person and their authorized agent
+where the workflow requires it. Filing an existing task or project keeps its existing access rules.
+
 Each person also has a personal primary agent per company. Their first human-created
 agent becomes primary automatically; they can choose another from its profile.
 An existing primary is replaced only after confirmation. The crown appears on the
@@ -235,6 +240,8 @@ and read markers do not establish participation in automatic work. Direct board 
 human API comments, human assignment, and deliberate user mutations do establish
 participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
+Responsibility-repair audit entries do not establish personal participation,
+even when the repair is attributed to a human operator.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 

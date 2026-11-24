@@ -81,15 +81,12 @@ export async function agentPersonInCompany(db: Db, req: Request, companyId: stri
 }
 
 /**
- * The writer rule for an agent on a person's responsibilities: it acts for
- * the person who directed its run and may change what that person could, so
- * it manages that person's own responsibilities, and anyone's when that person
- * is a company owner or admin. Returns that person's user id, or null.
+ * A directed agent run may manage the dashboard of the person who directed it.
  */
 export async function agentActsForResponsibilityOwner(db: Db, req: Request, companyId: string, ownerUserId: string): Promise<string | null> {
   const person = await agentPersonInCompany(db, req, companyId);
   if (!person) return null;
-  return person.userId === ownerUserId || person.role === "owner" || person.role === "admin" ? person.userId : null;
+  return person.userId === ownerUserId && (!req.actor.authorizingUserId || req.actor.authorizingUserId === ownerUserId) ? person.userId : null;
 }
 
 /** Why an agent may not act for a person here, for its error messages. */

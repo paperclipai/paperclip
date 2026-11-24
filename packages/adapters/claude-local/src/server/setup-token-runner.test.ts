@@ -191,6 +191,41 @@ describe("runSetupTokenLogin", () => {
     expect(fake.disposes.count).toBe(1);
   });
 
+  it("logs one fixed line when the prompt is on screen but the parser does not bind it", async () => {
+    const unrecognized = PROMPT_OUTPUT.replace(VALID_URL, `${VALID_URL}\nan unknown status line`);
+    const fake = createFakeDriver({ chunks: [unrecognized, unrecognized] });
+    const logs: string[] = [];
+    const onPrompt = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt,
+      provideCode: async () => BROWSER_CODE,
+      timeoutMs: 20,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+    expect(result.outcome).toBe("timeout");
+    expect(onPrompt).not.toHaveBeenCalled();
+    const unrecognizedLogs = logs.filter((line) => line.includes("did not recognize the sign-in screen"));
+    expect(unrecognizedLogs).toHaveLength(1);
+    expect(logs.join("\n")).not.toContain(VALID_URL);
+    expect(logs.join("\n")).not.toContain("an unknown status line");
+  });
+
+  it("does not log the unrecognized-screen line before the prompt appears", async () => {
+    const fake = createFakeDriver();
+    const logs: string[] = [];
+    await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      timeoutMs: 20,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+    expect(logs.some((line) => line.includes("did not recognize the sign-in screen"))).toBe(false);
+  });
+
   it("stops the process on a cancellation", async () => {
     const fake = createFakeDriver();
     const controller = new AbortController();

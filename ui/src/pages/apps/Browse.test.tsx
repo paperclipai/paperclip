@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Browse } from "./Browse";
+import { Browse, pendingFirstSignInOnlyApplicationIds } from "./Browse";
 import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
@@ -318,6 +318,27 @@ describe("Connectors landing page", () => {
     await act(() => button!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/tailscale");
     expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  it("finds the Anthropic connector when people search for Claude", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["anthropic", "openai"].map(slug => getAppStoreDefinition(slug)) });
+    await renderBrowse(false);
+    await search("claude");
+    const anthropic = container.querySelector('[data-app-slug="anthropic"]');
+    expect(anthropic?.textContent).toContain("Anthropic (Claude)");
+    expect(anthropic?.textContent).toContain("Connect to Claude with Anthropic.");
+    expect(anthropic?.textContent).not.toContain("restricted key");
+    expect(container.querySelector('[aria-label="Connect Anthropic (Claude)"]')).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="openai"]')).toBeNull();
+  });
+
+  it("titles the Google AI connector after Antigravity and Gemini", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("google")] });
+    await renderBrowse(false);
+    const google = container.querySelector('[data-app-slug="google"]');
+    expect(google?.querySelector("h2")?.textContent).toBe("Google Antigravity and Gemini");
+    expect(google?.textContent).toContain("Connect Google Antigravity accounts or Gemini API keys for your agents.");
+    expect(container.querySelector('[aria-label="Connect Google Antigravity and Gemini"]')).not.toBeNull();
   });
 
   it("does not advertise Tailscale setup or request tailnets for non-instance-admin members", async () => {
@@ -1558,6 +1579,48 @@ describe("Connectors landing page", () => {
     notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
     expect(notion.textContent).toContain("2 connections· 1 needs attention");
     expect(notion.textContent).toContain("draft@example.com");
+  });
+
+  it("does not list a connection whose first sign-in never finished", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection(), connection({ id: "conn-cancelled", name: "cancelled@example.com", status: "draft", firstSignInPending: true })],
+    });
+    await renderBrowse();
+    const notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("devinfoley@gmail.com");
+    expect(notion.textContent).not.toContain("cancelled@example.com");
+    expect(notion.textContent).not.toContain("needs attention");
+    expect(notion.textContent).not.toContain("2 connections");
+  });
+
+  it("finds apps with only unfinished sign-ins in one pass over a large list", () => {
+    const connections = Array.from({ length: 5000 }, (_, index) => ({
+      applicationId: `app-${index % 2500}`,
+      status: index < 2500 ? "draft" as const : "active" as const,
+      firstSignInPending: index < 2500 || undefined,
+    }));
+    connections.push({ applicationId: "app-only-pending", status: "draft", firstSignInPending: true });
+    let reads = 0;
+    const counted = new Proxy(connections, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect([...pendingFirstSignInOnlyApplicationIds(counted)]).toEqual(["app-only-pending"]);
+    expect(reads).toBeLessThanOrEqual(connections.length);
+  });
+
+  it("does not list a custom app whose only connection never finished its first sign-in", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "app-custom", name: "Abandoned server",
+      applicationKey: "app-gallery:link:one", status: "draft", metadata: { source: "link" } })] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ id: "conn-custom", applicationId: "app-custom", name: "Abandoned server", status: "draft",
+        firstSignInPending: true, config: {} })],
+    });
+    await renderBrowse();
+    expect(container.textContent).not.toContain("Abandoned server");
   });
 
   it.each(["provider_setup", "identity_link", undefined, "complete"])(

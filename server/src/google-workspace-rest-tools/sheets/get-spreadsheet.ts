@@ -86,6 +86,7 @@ export function getSpreadsheetResult(spreadsheet: RestSpreadsheet): CallToolResu
 export const getSpreadsheet = defineTool({
   definition: {
     name: "get_spreadsheet",
+    title: "Read spreadsheet details",
     description: "Returns a spreadsheet as Google's Sheets API Spreadsheet resource: its title, locale, time zone, sheets (names, IDs, sizes, frozen rows), named ranges and other metadata. With includeGridData it also returns cell data for ranges (or every sheet): each cell has userEnteredValue (what was typed, including formulas), effectiveValue (the computed value; dates and times are serial numbers counted in days from December 30, 1899), formattedValue (the text shown) and its format; merged areas are listed under merges. Use fields to return only what you need. Returns at most 50,000 cells per call; a larger result is an error asking for narrower ranges or fewer fields, never a cut-off result. Comments are not available (commentsIncluded is refused).",
     inputSchema: {
       type: "object",

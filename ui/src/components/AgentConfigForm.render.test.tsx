@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -332,6 +333,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    cloud?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -341,6 +343,7 @@ async function renderForm(
   const root = createRoot(container);
   const onSave = vi.fn();
   const queryClient = createFormQueryClient();
+  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
 
   await act(async () => {
     renderFormView(root, queryClient,
@@ -1349,6 +1352,38 @@ describe("AgentConfigForm environment selector", () => {
     }
   });
 
+  it.each([
+    { provider: "anthropic" as const, source: "claude_local", method: "subscription" as const, target: "codex_local", keep: false },
+    { provider: "anthropic" as const, source: "claude_local", method: "api_key" as const, target: "pi_local", keep: true },
+    { provider: "anthropic" as const, source: "claude_local", method: "api_key" as const, target: "codex_local", keep: false },
+    { provider: "openrouter" as const, source: "pi_local", method: "api_key" as const, target: "opencode_local", keep: false },
+  ])("handles a $provider $method account when switching to $target (keep: $keep)", async ({ method, provider, source, target, keep }) => {
+    const binding = { mode: "shared" as const, provider, method,
+      connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" };
+    const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true,
+      connections: [{ id: binding.connectionId, grantId: binding.grantId, companyId: "company-1", provider: binding.provider,
+        method, ownership: "shared", name: "Original account", isDefault: false, status: "connected" }] });
+    try {
+      const result = await renderForm([], { adapterType: source, adapterConfig: { model: provider === "openrouter" ? "openrouter/anthropic/claude-sonnet-4.6" : "claude-sonnet-4-6" },
+        runtimeConfig: { heartbeat: { enabled: true }, aiConnection: binding } }, { showAdapterTypeField: true, showAdapterTestEnvironmentButton: true });
+      roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      await clickElement(document.querySelector(`[role="option"][data-value="${target}"]`));
+      await flushReact();
+      if (!keep) {
+        expect(result.container.textContent).not.toContain("This connection does not support");
+        expect(result.container.textContent).not.toContain("Original account");
+      }
+      await clickByText(result.container, "Save");
+      const patch = result.onSave.mock.calls.at(-1)![0];
+      if (keep) {
+        expect(result.container.textContent).toContain("Original account");
+        expect(patch).not.toHaveProperty("runtimeConfig");
+      }
+      else expect(patch.runtimeConfig).toEqual({ heartbeat: { enabled: true } });
+    } finally { accountList.mockRestore(); }
+  });
+
   it.each(["grok_local", "paperclip_runner"])("saves Grok 4.7 reasoning effort using the runtime key on %s", async adapterType => {
     const result = await renderForm([], { adapterType, adapterConfig: { ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok" } : {}), model: "grok-4.7", reasoningEffort: "high" } });
     roots.push(result.root);
@@ -1459,6 +1494,20 @@ describe("AgentConfigForm environment selector", () => {
         provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model",
       }) }));
     } finally { accounts.mockRestore(); }
+  });
+
+  it.each(["antigravity", "copilot"])("honors Cloud availability during saved %s model discovery", async acpxAgent => {
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "source-model" },
+    }, { cloud: true });
+    roots.push(result.root);
+    await flushReact();
+    if (acpxAgent === "copilot") {
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent })));
+    } else {
+      expect(result.container.querySelector('[aria-label="Model"]')).toBeNull();
+      expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    }
   });
 
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
