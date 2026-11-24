@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
@@ -240,5 +240,127 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       }
     },
     20_000,
+  );
+
+  it(
+    "backfills missing webhook secret bindings for legacy webhook triggers (enabled and disabled) and is idempotent",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      cleanups.push(async () => sql.end());
+
+      const companyId = randomUUID();
+      const enabledRoutineId = randomUUID();
+      const disabledRoutineId = randomUUID();
+      const alreadyBoundRoutineId = randomUUID();
+      const enabledSecretId = randomUUID();
+      const disabledSecretId = randomUUID();
+      const alreadyBoundSecretId = randomUUID();
+      const enabledTriggerId = randomUUID();
+      const disabledTriggerId = randomUUID();
+      const alreadyBoundTriggerId = randomUUID();
+
+      await sql`
+        INSERT INTO "companies" ("id", "name", "issue_prefix")
+        VALUES (${companyId}, 'Backfill webhook company', 'BWH')
+      `;
+      for (const routineId of [enabledRoutineId, disabledRoutineId, alreadyBoundRoutineId]) {
+        await sql`
+          INSERT INTO "routines" (
+            "id", "company_id", "title"
+          ) VALUES (
+            ${routineId}, ${companyId}, ${`Legacy routine ${routineId}`}
+          )
+        `;
+      }
+      for (const secretId of [enabledSecretId, disabledSecretId, alreadyBoundSecretId]) {
+        await sql`
+          INSERT INTO "company_secrets" (
+            "id", "company_id", "key", "name"
+          ) VALUES (
+            ${secretId}, ${companyId}, ${`webhookSecret:${secretId}`}, ${`webhook-${secretId}`}
+          )
+        `;
+      }
+      await sql`
+        INSERT INTO "routine_triggers" (
+          "id", "company_id", "routine_id", "kind", "enabled", "secret_id"
+        ) VALUES (
+          ${enabledTriggerId}, ${companyId}, ${enabledRoutineId}, 'webhook', true, ${enabledSecretId}
+        )
+      `;
+      await sql`
+        INSERT INTO "routine_triggers" (
+          "id", "company_id", "routine_id", "kind", "enabled", "secret_id"
+        ) VALUES (
+          ${disabledTriggerId}, ${companyId}, ${disabledRoutineId}, 'webhook', false, ${disabledSecretId}
+        )
+      `;
+      await sql`
+        INSERT INTO "routine_triggers" (
+          "id", "company_id", "routine_id", "kind", "enabled", "secret_id"
+        ) VALUES (
+          ${alreadyBoundTriggerId}, ${companyId}, ${alreadyBoundRoutineId}, 'webhook', true, ${alreadyBoundSecretId}
+        )
+      `;
+      await sql`
+        INSERT INTO "company_secret_bindings" (
+          "company_id", "secret_id", "target_type", "target_id", "config_path"
+        ) VALUES (
+          ${companyId}, ${alreadyBoundSecretId}, 'routine', ${alreadyBoundRoutineId},
+          ${`webhookSecret:${alreadyBoundSecretId}`}
+        )
+      `;
+      await sql`
+        DELETE FROM "company_secret_bindings"
+        WHERE "secret_id" IN (${enabledSecretId}, ${disabledSecretId})
+      `;
+
+      const hash = await migrationHash("0506_backfill_webhook_secret_bindings.sql");
+      await sql`
+        DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${hash}
+      `;
+
+      await expect(applyPendingMigrations(connectionString)).resolves.toBeUndefined();
+
+      const bindings = await sql<
+        { secret_id: string; target_id: string; config_path: string }[]
+      >`
+        SELECT "secret_id", "target_id", "config_path"
+        FROM "company_secret_bindings"
+        WHERE "company_id" = ${companyId}
+        ORDER BY "secret_id"
+      `;
+      expect(bindings).toHaveLength(3);
+
+      const bySecret = new Map(bindings.map((row) => [row.secret_id, row]));
+      expect(bySecret.get(enabledSecretId)).toEqual({
+        secret_id: enabledSecretId,
+        target_id: enabledRoutineId,
+        config_path: `webhookSecret:${enabledSecretId}`,
+      });
+      expect(bySecret.get(disabledSecretId)).toEqual({
+        secret_id: disabledSecretId,
+        target_id: disabledRoutineId,
+        config_path: `webhookSecret:${disabledSecretId}`,
+      });
+      expect(bySecret.get(alreadyBoundSecretId)).toEqual({
+        secret_id: alreadyBoundSecretId,
+        target_id: alreadyBoundRoutineId,
+        config_path: `webhookSecret:${alreadyBoundSecretId}`,
+      });
+
+      await sql`
+        DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${hash}
+      `;
+      await expect(applyPendingMigrations(connectionString)).resolves.toBeUndefined();
+      const afterReplay = await sql<{ count: number }[]>`
+        SELECT count(*)::int AS count
+        FROM "company_secret_bindings"
+        WHERE "company_id" = ${companyId}
+      `;
+      expect(afterReplay[0]?.count).toBe(3);
+    },
+    45_000,
   );
 });
