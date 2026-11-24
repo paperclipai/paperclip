@@ -113,6 +113,8 @@ async function prompt(id, params) {
   if (!text.startsWith("/swarm ")) { say("not a swarm"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   update(state.sessionId, { sessionUpdate: "session_info_update", title: "Swarm" });
   if (scenario === "refusal") { say("\n⚠ agent executor error: Error 402 Your prepayment credits are depleted. Status: RESOURCE_EXHAUSTED\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
+  // Seen live: the CLI refuses its whole toolbox when a tool schema does not compile, then ends the turn.
+  if (scenario === "executor-error") { say("\n⚠ agent executor error: building toolbox: tool \"mcp_paperclip_read_document\" advertises an invalid parameter schema\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   if (scenario === "quota") { say("\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   const outside = {
     "outside-edit": { name: "write_file", kind: "edit", title: "Write /etc/elsewhere.txt", locations: [{ path: "/etc/elsewhere.txt" }] },

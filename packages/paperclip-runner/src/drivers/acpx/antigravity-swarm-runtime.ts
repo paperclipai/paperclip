@@ -516,6 +516,11 @@ export async function openAntigravitySwarmRuntime(
           provider: { kind: refusal.kind, ...(refusal.httpStatus ? { httpStatus: refusal.httpStatus } : {}), ...(refusal.status ? { status: refusal.status } : {}) } });
         return failed(refusal.kind === "authentication" ? "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED" : "ANTIGRAVITY_SWARM_PROVIDER_REFUSED", refusal.message);
       }
+      // The CLI reports its own failures (for example a toolbox it could not build)
+      // as text and ends the turn normally. The detail is internal; say it plainly.
+      if (/⚠\s*agent executor error:/i.test(transcript.slice(0, 8_000))) {
+        return failed("ANTIGRAVITY_SWARM_FAILED", "The Antigravity CLI stopped with an internal error, so the swarm did not finish. Send /swarm again to retry.");
+      }
       // What the swarm changed is recorded from the task folder itself, never
       // from what the coordinator or helpers say (helpers can misreport).
       // Done still requires the hand-in through Paperclip's finish tool.

@@ -211,6 +211,13 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(run.failures[0]?.provider?.kind).toBe(scenario === "refusal" ? "quota_exhausted" : "rate_limit");
   });
 
+  it("fails a turn the CLI ended with an internal executor error, in plain words", async () => {
+    const run = await runTurn("executor-error");
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_FAILED",
+      message: expect.stringMatching(/^The Antigravity CLI stopped with an internal error/) } });
+    expect(JSON.stringify(run.result)).not.toContain("toolbox");
+  });
+
   it("stops every helper on Stop and leaves no process behind", async () => {
     let cancelled = false;
     const run = await runTurn("cancel", { onEvent: (event, cancel) => {

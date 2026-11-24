@@ -697,6 +697,8 @@ export class AcpxRuntimeHost {
               ...(swarmRoute && options.semanticTools!.tools ? { tools: antigravitySwarmTools(options.semanticTools!.tools) } : {}),
               preserveToolNames: options.assignedMcpTransport === "prp",
               preloadClaudeTaskTools: options.agent === "claude",
+              // The Antigravity CLI checks tool schemas with RE2 and refuses its whole toolbox otherwise.
+              ...(swarmRoute ? { schemaPatternDialect: "re2" as const } : {}),
             }),
             resource: "tool_bridge",
             releaseLate: (lateToolBridge) => lateToolBridge.close(),
