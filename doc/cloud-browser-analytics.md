@@ -312,18 +312,21 @@ always masked.
     that waits on a refresh, no company and replay off all keep work content
     masked. The check keeps its own query keys (`replayWorkContentQueryKeys`)
     and drops an answer when the company changes.
-  - `LiveUpdatesProvider` resets the check on the activity the server logs
-    when a source is added (`tool_app.connected`, `tool_app.oauth_connected`,
-    `tool_app.reconnected`, `tool_example.installed`,
-    `tool_connection.created`, `tool_connection.updated`,
-    `connection_installs.changed`, `chat_endpoint.created`,
-    `chat_endpoint.updated`, `chat_endpoint.reconnected`, `company.imported`),
-    so work content masks at once and stays masked until the lists reload.
-    Add an action to `SOURCE_CHANGE_ACTIONS` when a new route can add a
-    connection. The live socket closes while the tab is hidden, so the
-    provider invalidates active queries when the tab returns or the socket
-    reopens, and an invalidated list does not count until it reloads. A
-    five-minute refetch covers a missed live update.
+  - `LiveUpdatesProvider` resets the check on every activity in a connection
+    family (`tool_connection.*`, `tool_app.*`, `tool_example.*`,
+    `tool_application.*`, `connection_installs.*`, `ai_connection.*`,
+    `chat_endpoint.*`, `chat_github.*`, `email_endpoint.*`) and on
+    `company.imported`, so work content masks at once and stays masked until
+    the lists reload. Several routes add a connection row and some build the
+    action name at run time, so a new action in these families re-checks
+    without a code change. A new family needs an entry in
+    `SOURCE_CHANGE_FAMILIES`. Six frequent actions that cannot add a source
+    are left out (`NOT_A_SOURCE_CHANGE`: health and catalog checks,
+    credential reads and refreshes, incoming webhooks). The live socket
+    closes while the tab is hidden, so the provider invalidates active
+    queries when the tab returns or the socket reopens, and an invalidated
+    list does not count until it reloads. A five-minute refetch covers a
+    missed live update.
   - `maskReplayText` (the rrweb `maskTextFn`) shows work content text only
     when the nearest marker around it is the work content marker, so customer
     content, secrets and editors inside work content stay masked.

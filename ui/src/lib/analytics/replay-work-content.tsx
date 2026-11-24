@@ -117,29 +117,47 @@ export const replayWorkContentQueryKeys = {
 };
 
 /**
- * Activity that can add a Google or Slack source, by the action the server
- * logs: an app connected from the catalog (`tool_app.*`, logged in
- * `server/src/routes/tool-access.ts`), a tool connection added or edited by
- * hand, an example installed, a new or edited chat channel, or an imported
- * company. `LiveUpdatesProvider` resets this check on these, so work content
- * stays masked until the new source lists load.
+ * Activity that can add a Google or Slack source, by the family of the action
+ * the server logs: a tool connection or app (`tool_connection.*`,
+ * `tool_app.*`, `tool_example.*`, `tool_application.*`,
+ * `connection_installs.*`), a model connection (`ai_connection.*`), a chat or
+ * email channel (`chat_endpoint.*`, `chat_github.*`, `email_endpoint.*`), or
+ * an imported company. Several routes add a connection row and some build the
+ * action name at run time, so the check matches the whole family: a new
+ * action re-checks without a change here. `LiveUpdatesProvider` resets the
+ * check on these, so work content stays masked until the source lists load.
  */
-const SOURCE_CHANGE_ACTIONS = new Set([
-  "tool_app.connected",
-  "tool_app.oauth_connected",
-  "tool_app.reconnected",
-  "tool_example.installed",
-  "tool_connection.created",
-  "tool_connection.updated",
-  "connection_installs.changed",
-  "chat_endpoint.created",
-  "chat_endpoint.updated",
-  "chat_endpoint.reconnected",
-  "company.imported",
+const SOURCE_CHANGE_FAMILIES = [
+  "tool_connection.",
+  "tool_app.",
+  "tool_example.",
+  "tool_application.",
+  "connection_installs.",
+  "ai_connection.",
+  "chat_endpoint.",
+  "chat_github.",
+  "email_endpoint.",
+];
+
+const SOURCE_CHANGE_ACTIONS = new Set(["company.imported"]);
+
+/**
+ * Frequent actions in those families that cannot add a source: health and
+ * catalog checks, credential reads and refreshes, and incoming webhooks. A
+ * re-check on each of them would mask work content over and over.
+ */
+const NOT_A_SOURCE_CHANGE = new Set([
+  "tool_connection.health_check",
+  "tool_connection.catalog_refresh",
+  "tool_connection.credential_resolution",
+  "tool_connection.webhook_processed",
+  "ai_connection.credential_refreshed",
+  "chat_endpoint.webhook_verified",
 ]);
 
 export function isReplayWorkContentSourceChange(action: string | null | undefined): boolean {
-  return !!action && SOURCE_CHANGE_ACTIONS.has(action);
+  if (!action || NOT_A_SOURCE_CHANGE.has(action)) return false;
+  return SOURCE_CHANGE_ACTIONS.has(action) || SOURCE_CHANGE_FAMILIES.some((family) => action.startsWith(family));
 }
 
 /** Backstop refresh, in case a live update is missed (a dropped socket). */

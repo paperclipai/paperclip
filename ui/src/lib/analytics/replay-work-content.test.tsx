@@ -109,8 +109,25 @@ describe("isReplayWorkContentSourceChange", () => {
     }
   });
 
+  it("matches every other action of a connection family, named or not", () => {
+    // Other routes add a connection row too (a machine sign-in, a model
+    // connection, an email channel, a GitHub chat app), and some build the
+    // action name at run time. A new action in these families must re-check.
+    for (const action of [
+      "tool_connection.machine_sign_in_created", "tool_connection.archived", "tool_connection.some_future_action",
+      "ai_connection.connected", "ai_connection.reconnected", "ai_connection.pool_saved",
+      "email_endpoint.connected", "chat_github.app_connected", "tool_application.created",
+    ]) {
+      expect(isReplayWorkContentSourceChange(action)).toBe(true);
+    }
+  });
+
   it("ignores frequent activity that adds no source", () => {
-    for (const action of ["tool_connection.health_check", "tool_connection.catalog_refresh", "chat_endpoint.webhook_verified", "issue.updated", null, undefined]) {
+    for (const action of [
+      "tool_connection.health_check", "tool_connection.catalog_refresh", "tool_connection.credential_resolution",
+      "tool_connection.webhook_processed", "ai_connection.credential_refreshed", "chat_endpoint.webhook_verified",
+      "tool_gateway.call_completed", "issue.updated", "company.updated", null, undefined,
+    ]) {
       expect(isReplayWorkContentSourceChange(action)).toBe(false);
     }
   });

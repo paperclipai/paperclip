@@ -50,6 +50,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it.each([
     ["tool_connection.created", true],
     ["tool_app.oauth_connected", true],
+    ["tool_connection.machine_sign_in_created", true],
+    ["ai_connection.connected", true],
     ["chat_endpoint.created", true],
     ["tool_connection.health_check", false],
   ] as const)("masks session replay work content until sources reload after %s", (action, resets) => {
@@ -302,7 +304,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     "refreshes company AI account previews after %s", (action) => {
       const invalidateQueries = vi.fn();
       __liveUpdatesTestUtils.invalidateActivityQueries(
-        { invalidateQueries, getQueryData: () => undefined, getQueryCache: () => ({ findAll: () => [] }) } as never,
+        // `ai_connection.*` also resets the session replay source check.
+        { invalidateQueries, resetQueries: vi.fn(), getQueryData: () => undefined, getQueryCache: () => ({ findAll: () => [] }) } as never,
         "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
         { userId: "owner", agentId: null },
       );
