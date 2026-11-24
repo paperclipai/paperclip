@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 2137,
-    "withSetup": 2137,
-    "inventory": 2137
+    "measured": 1573,
+    "withSetup": 1573,
+    "inventory": 2138
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
@@ -1184,6 +1184,7 @@
     "server/src/__tests__/tool-gateway-service.test.ts": 100846,
     "server/src/__tests__/tool-gateway.test.ts": 110569,
     "server/src/__tests__/tool-grant-scope.test.ts": 11130,
+    "server/src/__tests__/tool-oauth-legacy-backfill.test.ts": 7497,
     "server/src/__tests__/tool-profile-entry-order.test.ts": 6995,
     "server/src/__tests__/tool-profile-entry-validation.test.ts": 9779,
     "server/src/__tests__/tool-profile-matching.test.ts": 1869,
