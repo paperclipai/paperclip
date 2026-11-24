@@ -105,12 +105,16 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
   revalidateMutationScope: vi.fn(async (): Promise<{
     allowed: boolean;
+    correction?: boolean;
     reason?: string;
     classification: { state: string; stopFingerprint?: string; liveIssueIds?: string[] };
   }> => ({
     allowed: true,
     classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
   })),
+  authorizeCorrection: vi.fn(async (): Promise<
+    { ok: true; retractedCommentId: string } | { ok: false; reason: string }
+  > => ({ ok: true, retractedCommentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" })),
   reconcileForIssueAndAncestors: vi.fn(async () => ({
     checked: 0,
     triggered: 0,
@@ -3610,6 +3614,78 @@ describe("agent issue mutation checkout ownership", () => {
         expect.any(Object),
         expect.any(Object),
       );
+    });
+
+    it("admits a correction comment on a live subtree and audits the retraction", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      mockTaskWatchdogService.revalidateMutationScope.mockResolvedValueOnce({
+        allowed: true,
+        correction: true,
+        classification: { state: "live", liveIssueIds: [issueId] },
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Retracting cccccccc-cccc-4ccc-8ccc-cccccccccccc" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockTaskWatchdogService.revalidateMutationScope).toHaveBeenCalledWith(expect.anything(), "comment");
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.task_watchdog_finding_corrected",
+          details: expect.objectContaining({
+            watchdogId: expect.any(String),
+            sourceIssueId: issueId,
+            watchdogIssueId: watchdogReportIssueId,
+            runId: expect.anything(),
+            stopFingerprint: "task_watchdog_stop:test",
+            retractedCommentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          }),
+        }),
+      );
+    });
+
+    it("refuses a correction comment that fails the retraction or cap check", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      mockTaskWatchdogService.revalidateMutationScope.mockResolvedValueOnce({
+        allowed: true,
+        correction: true,
+        classification: { state: "live", liveIssueIds: [issueId] },
+      });
+      mockTaskWatchdogService.authorizeCorrection.mockResolvedValueOnce({
+        ok: false,
+        reason: "Task-watchdog correction limit of 5 per stop event is exhausted.",
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Sixth correction" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: "issue.task_watchdog_finding_corrected" }),
+      );
+    });
+
+    it("keeps non-comment source mutations on mutate intent", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+      mockTaskWatchdogService.revalidateMutationScope.mockResolvedValueOnce({
+        allowed: false,
+        reason: "Task-watchdog review is stale because the watched subtree now has a live path.",
+        classification: { state: "live", liveIssueIds: [issueId] },
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(mockTaskWatchdogService.revalidateMutationScope).toHaveBeenCalledWith(expect.anything(), "mutate");
     });
 
     it.each([

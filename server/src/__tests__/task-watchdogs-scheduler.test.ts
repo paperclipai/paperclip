@@ -504,6 +504,76 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(visible.classification?.state).toBe("live");
   });
 
+  it("splits mutation authority by intent once the subtree is no longer stopped", async () => {
+    const x = await seedDeepSubtree();
+    expect((await x.service.reconcileTaskWatchdogs({ companyId: x.companyId })).triggered).toBe(1);
+    const [persisted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, x.watchdog.id));
+    const scope = {
+      kind: "watchdog" as const, watchdogId: x.watchdog.id, companyId: x.companyId,
+      watchedIssueId: x.sourceId, stopFingerprint: persisted!.lastObservedFingerprint,
+    };
+    const stale = { ...scope, stopFingerprint: "task_watchdog_stop:rotated" };
+    const omittedId = await seedIssue(x.companyId, {
+      parentId: x.boundaryId, status: "blocked", issueNumber: 1100,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: x.companyId, agentId: x.agentId, status: "running",
+      contextSnapshot: { issueId: omittedId },
+    });
+    for (const intent of ["mutate", "comment"] as const) {
+      const incomplete = await x.service.revalidateMutationScope(scope, intent);
+      expect(incomplete.allowed).toBe(false);
+      expect(incomplete.classification?.state).toBe("incomplete");
+    }
+    await db.update(issues).set({ parentId: x.sourceId }).where(eq(issues.id, omittedId));
+
+    const liveComment = await x.service.revalidateMutationScope(scope, "comment");
+    expect(liveComment).toMatchObject({ allowed: true, correction: true });
+    expect(liveComment.classification?.state).toBe("live");
+    const liveMutate = await x.service.revalidateMutationScope(scope, "mutate");
+    expect(liveMutate.allowed).toBe(false);
+    expect((await x.service.revalidateMutationScope(scope)).allowed).toBe(false);
+    for (const intent of ["mutate", "comment"] as const) {
+      expect((await x.service.revalidateMutationScope(stale, intent)).allowed).toBe(false);
+    }
+
+    await db.update(issueWatchdogs)
+      .set({ lastObservedFingerprint: "task_watchdog_stop:newer", lastReviewedFingerprint: scope.stopFingerprint })
+      .where(eq(issueWatchdogs.id, x.watchdog.id));
+    expect((await x.service.revalidateMutationScope(scope, "comment")).allowed).toBe(true);
+    await db.update(issueWatchdogs)
+      .set({ lastObservedFingerprint: "task_watchdog_stop:newer", lastReviewedFingerprint: "task_watchdog_stop:newer" })
+      .where(eq(issueWatchdogs.id, x.watchdog.id));
+    expect((await x.service.revalidateMutationScope(scope, "comment")).allowed).toBe(false);
+  });
+
+  it("requires a retracted comment id and caps corrections at five per stop event", async () => {
+    const x = await seedDeepSubtree();
+    const fingerprint = "task_watchdog_stop:cap";
+    const scope = { watchdogId: x.watchdog.id, companyId: x.companyId, stopFingerprint: fingerprint };
+    const [comment] = await db.insert(issueComments).values({
+      companyId: x.companyId, issueId: x.sourceId, body: "Original finding",
+    }).returning();
+    const missing = await x.service.authorizeCorrection(scope, x.sourceId, "No id here");
+    expect(missing.ok).toBe(false);
+    const foreign = await x.service.authorizeCorrection(scope, x.boundaryId, `Retracts ${comment!.id}`);
+    expect(foreign.ok).toBe(false);
+    for (let i = 0; i < 5; i += 1) {
+      expect(await x.service.authorizeCorrection(scope, x.sourceId, `Retracts ${comment!.id}`))
+        .toEqual({ ok: true, retractedCommentId: comment!.id });
+      await db.insert(activityLog).values({
+        companyId: x.companyId, actorType: "agent", actorId: x.agentId,
+        action: "issue.task_watchdog_finding_corrected", entityType: "issue", entityId: x.sourceId,
+        details: { watchdogId: x.watchdog.id, stopFingerprint: fingerprint, retractedCommentId: comment!.id },
+      });
+    }
+    const sixth = await x.service.authorizeCorrection(scope, x.sourceId, `Retracts ${comment!.id}`);
+    expect(sixth.ok).toBe(false);
+    const rotated = await x.service.authorizeCorrection(
+      { ...scope, stopFingerprint: "task_watchdog_stop:next" }, x.sourceId, `Retracts ${comment!.id}`);
+    expect(rotated.ok).toBe(true);
+  });
+
   it("does not treat excluded boundary children as a truncated watched subtree", async () => {
     const x = await seedDeepSubtree();
     const hiddenId = await seedIssue(x.companyId, { parentId: x.boundaryId, issueNumber: 1100 });

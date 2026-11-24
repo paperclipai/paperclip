@@ -5853,7 +5853,11 @@ export function issueRoutes(
         });
         return false;
       }
-      return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
+      return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue, {
+        intent: "comment",
+        actor: req.actor.type === "agent" ? req.actor : undefined,
+        body: typeof req.body?.body === "string" ? req.body.body : typeof req.body?.comment === "string" ? req.body.comment : "",
+      });
     }
     const boundaryDecision = await decideIssueAccess(
       req,
@@ -6100,13 +6104,55 @@ export function issueRoutes(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
     issue: { id: string },
+    opts: {
+      intent?: "mutate" | "comment";
+      body?: string;
+      actor?: { agentId?: string | null; runId?: string | null; agentApiKeyId?: string | null };
+    } = {},
   ) {
     if (scope.kind !== "watchdog") return true;
     if (scope.watchdogIssueId && issue.id === scope.watchdogIssueId)
       return true;
 
-    const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope);
-    if (revalidated.allowed) return true;
+    const revalidated = await taskWatchdogsSvc.revalidateMutationScope(
+      scope,
+      opts.intent ?? "mutate",
+    );
+    if (revalidated.allowed) {
+      if (!revalidated.correction) return true;
+      const check = await taskWatchdogsSvc.authorizeCorrection(scope, issue.id, opts.body ?? "");
+      if (check.ok) {
+        await logActivity(db, {
+          companyId: scope.companyId,
+          actorType: "agent",
+          actorId: opts.actor?.agentId ?? scope.watchdogId,
+          agentId: opts.actor?.agentId ?? null,
+          runId: opts.actor?.runId ?? null,
+          agentApiKeyId: opts.actor?.agentApiKeyId ?? null,
+          action: "issue.task_watchdog_finding_corrected",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            watchdogId: scope.watchdogId,
+            sourceIssueId: scope.watchedIssueId,
+            watchdogIssueId: scope.watchdogIssueId,
+            runId: opts.actor?.runId ?? null,
+            stopFingerprint: scope.stopFingerprint,
+            retractedCommentId: check.retractedCommentId,
+          },
+        });
+        return true;
+      }
+      res.status(409).json({
+        error: check.reason,
+        details: {
+          watchedIssueId: scope.watchedIssueId,
+          watchdogId: scope.watchdogId,
+          runStopFingerprint: scope.stopFingerprint,
+        },
+      });
+      return false;
+    }
     res.status(409).json({
       error: revalidated.reason,
       details: {
