@@ -42,6 +42,9 @@ export interface DashboardSummary {
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    monthApiEquivalentCents?: number;
+    monthApiEquivalentUnpricedTokens?: number;
+    monthApiEquivalentUnpricedEvents?: number;
   };
   pendingApprovals: number;
   budgets: {

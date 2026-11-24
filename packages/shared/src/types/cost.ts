@@ -43,6 +43,16 @@ export interface CostSummary {
   spendCentsExact?: string;
   budgetCents: number;
   utilizationPercent: number;
+  apiEquivalent?: ApiEquivalent;
+}
+
+export interface ApiEquivalent {
+  cents: number;
+  reportedCents: number;
+  listPriceCents: number;
+  unpricedTokens: number;
+  unpricedEvents: number;
+  unpricedModels: string[];
 }
 
 export type CostDataQualityReason = "unknown_billing" | "missing_model" | "missing_price"
@@ -131,6 +141,7 @@ export interface CostByAgent {
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  apiEquivalent?: ApiEquivalent;
 }
 
 export interface CostByProviderModel {

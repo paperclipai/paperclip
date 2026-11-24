@@ -1401,6 +1401,7 @@ export type {
   CostDataQualityReport,
   CostDataQualityReason,
   IssueCostSummary,
+  ApiEquivalent,
   CostByAgent,
   CostByUser,
   CostByUserReport,
