@@ -75,7 +75,7 @@ Both are board-only. Both are separate from budgets.
 
 A budget is a budget policy on one scope: `company`, `agent`, or `project`. Only board users can change budgets.
 
-Budgets count billed cost in cents (`billed_cents`). Usage with the billing type `subscription_included` has a cost of 0 cents, so a budget does not stop an agent that runs on a subscription.
+Budgets count billed cost in cents (`billed_cents`). Usage with the billing type `subscription_included` has a cost of 0 cents, so it never moves a budget toward its limit. A hard stop and `reservationCents` still apply to runs on a subscription.
 
 ### Budget Overview
 
@@ -125,7 +125,7 @@ POST /api/companies/{companyId}/budgets/policies
 | `notifyEnabled` | `true` | Whether the warning opens |
 | `hardStopEnabled` | `true` | Whether work stops when spend reaches the limit |
 | `reservationCents` | `0` | An estimate held against the budget before each run starts |
-| `unpricedUsagePolicy` | `block` | `block` or `allow`. What to do when usage has no reliable price |
+| `unpricedUsagePolicy` | `block` | `block` or `allow`. What to do when a complete usage receipt has no reliable price |
 | `isActive` | `true` | Set `false` to turn the policy off and keep its amount |
 
 A scope has one policy for each window kind. A second call with the same scope and window updates the policy. Fields you leave out keep their value.
