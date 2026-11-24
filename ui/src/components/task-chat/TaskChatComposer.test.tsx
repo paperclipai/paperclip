@@ -2106,6 +2106,15 @@ describe("TaskChatComposer", () => {
       expect(onWorkModeChange).toHaveBeenCalledWith("planning");
     });
 
+    it("keeps /plan as text in a composer that has no Plan mode", async () => {
+      const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+        submitLabel: "Start", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
+      render(<TaskChatComposer creation={creation} workMode="standard" />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("/plan Add a greeting file", "standard", null);
+    });
+
     it("creates a new task in Plan mode", async () => {
       const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
         submitLabel: "Create", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };

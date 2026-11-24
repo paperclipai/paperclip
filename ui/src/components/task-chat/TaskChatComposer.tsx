@@ -864,7 +864,10 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
-      const plan = planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length));
+      // Only a composer that offers Plan mode reads /plan; elsewhere it stays text.
+      const plan = onWorkModeChange
+        ? planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length))
+        : ({ kind: "none" } as const);
       if (plan.kind === "switch_mode" && !submittingRef.current) {
         changeMode("planning");
         creation.onChange("");
