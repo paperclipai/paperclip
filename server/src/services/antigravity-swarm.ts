@@ -1,5 +1,5 @@
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { activityLog, agents, issueComments, type Db } from "@paperclipai/db";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { activityLog, agents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-profile.js";
@@ -71,6 +71,43 @@ export async function antigravitySwarmCommentRefusal(db: Db, issue: { companyId:
  * the user's swarm. Throws a plain-language failure when the swarm was asked
  * for but cannot run here, so the run is not silently an ordinary request.
  */
+/**
+ * Every run that re-creates a swarm request is that swarm, never ordinary work:
+ * - a retry or automatic recovery inherits it through its retry link (the run
+ *   column, or the context copy), following a bounded chain on the same task;
+ * - any other wake on the task (blocker-stalled and stranded-work sweeps,
+ *   continuations, restart recovery) runs it while the user's latest message is
+ *   a swarm request that no successful swarm run has fulfilled.
+ * The record check in resolveAntigravitySwarmRun still applies to the result.
+ */
+async function inheritedSwarmCommentId(db: Db, companyId: string, issueId: string, runId: string, context: unknown): Promise<string | null> {
+  const [current] = await db.select({ retryOfRunId: heartbeatRuns.retryOfRunId }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+  let retryOf: unknown = current?.retryOfRunId ?? record(context).retryOfRunId;
+  for (let hop = 0; hop < 8 && typeof retryOf === "string" && /^[0-9a-f-]{36}$/i.test(retryOf); hop++) {
+    const [source] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot, retryOfRunId: heartbeatRuns.retryOfRunId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, retryOf), eq(heartbeatRuns.companyId, companyId),
+        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`));
+    if (!source) return null;
+    const inherited = requestedAntigravitySwarmCommentId(source.contextSnapshot);
+    if (inherited) return inherited;
+    retryOf = source.retryOfRunId ?? record(source.contextSnapshot).retryOfRunId;
+  }
+  return null;
+}
+
+async function pendingSwarmCommentId(db: Db, companyId: string, issueId: string): Promise<string | null> {
+  const [latest] = await db.select({ id: issueComments.id }).from(issueComments)
+    .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+      isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+  if (!latest) return null;
+  const [fulfilled] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "succeeded"),
+      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${latest.id}`)).limit(1);
+  return fulfilled ? null : latest.id;
+}
+
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {
   await logActivity(db, {
     companyId: input.companyId, actorType: "user", actorId: input.userId, issueId: input.issueId,
@@ -93,7 +130,9 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   remote: boolean;
   planning: boolean;
 }): Promise<boolean> {
-  const commentId = requestedAntigravitySwarmCommentId(input.context);
+  const commentId = requestedAntigravitySwarmCommentId(input.context)
+    ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context)
+    ?? await pendingSwarmCommentId(db, input.companyId, input.issueId);
   if (!commentId) return false;
   const [requested] = await db.select({ id: activityLog.id }).from(activityLog)
     .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),

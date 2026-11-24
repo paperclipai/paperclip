@@ -70,12 +70,56 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     expect(await resolve(f, { context: { antigravitySwarmCommentId: otherComment!.id } })).toBe(false);
   });
 
-  it("ignores a wake without the marker, and a marker from another task or company", async () => {
+  it("never borrows a marker from another task or company", async () => {
     const f = await seed();
-    expect(await resolve(f, { context: { commentId: f.comment.id, wakeCommentId: f.comment.id } })).toBe(false);
     const other = await seed();
     expect(await resolve(f, { context: { antigravitySwarmCommentId: other.comment.id } })).toBe(false);
     expect(await resolve(other, { companyId: f.company.id })).toBe(false);
+  });
+
+  it("treats a recovery or retry of a swarm run as the same swarm request, never as ordinary work", async () => {
+    const f = await seed();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "failed", runtimeMode: "native",
+      nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } }).returning();
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", runtimeMode: "native",
+      nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id, retryOfRunId: source!.id } }).returning();
+    // A recovery wake carries only the retry link (wakeReason issue_recovery_action_restored), not the marker.
+    expect(await resolve(f, { runId: retry!.id, context: { issueId: f.issue.id, retryOfRunId: source!.id, wakeReason: "issue_recovery_action_restored" } })).toBe(true);
+    const [second] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", runtimeMode: "native",
+      nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id, retryOfRunId: retry!.id } }).returning();
+    expect(await resolve(f, { runId: second!.id, context: { issueId: f.issue.id, retryOfRunId: retry!.id } })).toBe(true);
+    // A retry chain from another task never borrows its swarm request.
+    const other = await seed({ record: "none" });
+    expect(await resolve(other, { context: { retryOfRunId: source!.id } })).toBe(false);
+  });
+
+  async function insertRun(f: Awaited<ReturnType<typeof seed>>, values: Record<string, unknown>) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", runtimeMode: "native",
+      nativeIssueId: f.issue.id, responsibleUserId: USER, contextSnapshot: { issueId: f.issue.id }, ...values } as never).returning();
+    return run!;
+  }
+
+  it("inherits the swarm request through a retry link stored only on the run row", async () => {
+    const f = await seed();
+    const source = await insertRun(f, { status: "failed", contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } });
+    const retry = await insertRun(f, { retryOfRunId: source.id });
+    expect(await resolve(f, { runId: retry.id, context: { issueId: f.issue.id, wakeReason: "issue_recovery_action_restored" } })).toBe(true);
+  });
+
+  it.each(["issue_blocker_stalled", "issue_assigned", "issue_continuation_needed"])(
+    "runs a %s wake as the swarm while the user's latest message is an unfulfilled swarm request", async wakeReason => {
+      const f = await seed();
+      const run = await insertRun(f, {});
+      expect(await resolve(f, { runId: run.id, context: { issueId: f.issue.id, wakeReason } })).toBe(true);
+    });
+
+  it("runs ordinary work once the swarm succeeded, or after a newer ordinary message", async () => {
+    const f = await seed();
+    await insertRun(f, { status: "succeeded", contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } });
+    expect(await resolve(f, { context: { issueId: f.issue.id, wakeReason: "issue_assigned" } })).toBe(false);
+    const g = await seed();
+    await db.insert(issueComments).values({ companyId: g.company.id, issueId: g.issue.id, authorType: "user", authorUserId: USER, body: "thanks", createdAt: new Date(Date.now() + 1000) });
+    expect(await resolve(g, { context: { issueId: g.issue.id, wakeReason: "issue_commented" } })).toBe(false);
   });
 
   it.each([
