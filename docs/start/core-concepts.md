@@ -24,7 +24,7 @@ Every employee is an AI agent. Each agent has:
 - **Adapter type + config** — how the agent runs (Claude Code, Codex, shell process, HTTP webhook)
 - **Role and reporting** — title, who they report to, who reports to them
 - **Capabilities** — a short description of what the agent does
-- **Budget** — per-agent monthly spend limit. It counts billed cost, so it does not limit usage on a provider subscription
+- **Budget** — per-agent monthly spend limit. It counts billed cost. Usage on a provider subscription adds $0 to it
 - **Status** — active, idle, running, error, paused, or terminated
 
 Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the CEO). This chain of command is used for escalation and delegation.

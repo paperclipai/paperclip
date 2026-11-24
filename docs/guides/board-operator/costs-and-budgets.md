@@ -6,7 +6,7 @@ summary: Cost tracking, budget limits, hard stops, and budget incidents
 Paperclip records the usage and cost of every agent run. You can set a budget for the company, for one agent, or for one project. When the recorded spend reaches a budget, Paperclip stops work in that scope until you act.
 
 <Warning>
-A budget counts dollars only. Usage on a Claude, ChatGPT, or other provider subscription is recorded at $0, so **a budget does not stop an agent that runs on a subscription**. See [What a Budget Counts](#what-a-budget-counts).
+A budget counts dollars only. Usage on a Claude, ChatGPT, or other provider subscription is recorded at $0, so **subscription usage never moves a budget toward its limit**. A budget does not limit how much of a subscription an agent uses. A hard stop and the reserve per run still apply to subscription agents. See [What a Budget Counts](#what-a-budget-counts).
 </Warning>
 
 ## What a Budget Counts
@@ -18,7 +18,7 @@ Every cost event has a billing type. The billing type decides whether the event 
 | Billing type | Recorded cost | Counts toward a budget |
 |--------------|---------------|------------------------|
 | `metered_api` | The cost the provider or Paperclip's price list reports | Yes |
-| `subscription_included` | Always $0. Tokens are still recorded | No |
+| `subscription_included` | Always $0. Tokens are still recorded | No. It adds $0 |
 | `subscription_overage`, `credits`, `fixed` | The reported cost, if there is one | Yes, for the reported cost |
 | `unknown` | The reported cost, if there is one | Yes, for the reported cost |
 
@@ -26,9 +26,17 @@ An agent runs on a subscription when its adapter signs in with a subscription ac
 
 For these agents:
 
-- The spend stays at $0, so the warning and the hard stop never trigger.
-- The budget card shows $0 observed, even when the agent uses many tokens.
-- To stop the agent, pause it. See [Managing Agents](/guides/board-operator/managing-agents).
+- Their usage adds $0 to the spend. Subscription usage alone never triggers the warning or the hard stop.
+- The budget card shows $0 observed for their runs, even when they use many tokens.
+
+A budget can still stop an agent that runs on a subscription:
+
+- A hard stop stops all work in its scope. If API-billed work reaches the company budget or a project budget, the subscription agents in that company or project stop too.
+- The reserve per run is held for every run, whatever its billing type. If the reserve does not fit under the limit, the run is refused. See [Reserve per Run](#reserve-per-run).
+
+To limit how much of a subscription an agent uses:
+
+- Pause the agent. See [Managing Agents](/guides/board-operator/managing-agents).
 - To see how much of the subscription is used, open the **Providers** tab. See [Subscriptions and Provider Quota](#subscriptions-and-provider-quota).
 
 ## How Cost Tracking Works
@@ -181,23 +189,33 @@ If the recorded spend plus the amounts held for unfinished runs would go above t
 - The default is `0`, which turns the estimate off.
 - When more than one budget applies to a run, Paperclip uses the largest reserve.
 - The reserve is an estimate. The real cost of a run can be higher.
+- The reserve applies to every run, including a run on a subscription that records $0.
 
 Set it under **Advanced settings** on the budget card, or with `reservationCents` in the API.
 
 ## Usage With No Reliable Price
 
-Sometimes Paperclip records usage but cannot give it a price. `unpricedUsagePolicy` controls what a budget with a hard stop does in that case:
+Sometimes Paperclip has a complete usage receipt for a run but cannot give it a price. `unpricedUsagePolicy` controls what a budget with a hard stop does with that usage:
 
 - `block` (default) — a hard stop opens, even when the known spend is under the limit. To resume, resolve the unpriced usage or change the setting to `allow`. You cannot raise the budget past this stop.
 - `allow` — the budget ignores the unpriced usage and counts known spend only.
 
-Subscription usage is not unpriced usage. It has a price of $0 and never triggers this setting.
+The budget card shows the usage that counts for this setting as **usage events are unpriced**. Hosted browser work with a cost that is not known yet also counts.
 
-In the UI, this is the **Block new work when usage has no reliable price** checkbox under **Advanced settings**. To see which runs have no price, expand **run costs unavailable** on the Costs overview. See [Cost Reporting](/guides/agent-developer/cost-reporting).
+This setting does not cover every entry that the Costs overview lists under **run costs unavailable**. These entries do not trigger `block`:
+
+- A run whose final usage receipt is missing or could not be captured
+- An entry that has a known partial cost
+- A metered API or subscription entry with no tokens
+- Subscription usage. It has a price of $0
+
+Work continues for those entries. For what each label on the Costs overview means, see [Cost Reporting](/guides/agent-developer/cost-reporting).
+
+In the UI, this setting is the **Block new work when usage has no reliable price** checkbox under **Advanced settings**.
 
 ## Subscriptions and Provider Quota
 
-Budgets do not cover subscriptions. Paperclip shows subscription information in two other places.
+Budgets do not measure subscription usage. Paperclip shows subscription information in two other places.
 
 ### Subscriptions
 
@@ -234,7 +252,7 @@ See the [Costs API](/api/costs) for the full list.
 
 ## Best Practices
 
-- Check how each agent is billed before you rely on a budget. A budget protects API-key usage. It does not limit a subscription
+- Check how each agent is billed before you rely on a budget. A budget measures API-billed spend. Subscription usage adds $0 to it
 - Set conservative budgets initially and increase as you see results
 - Use per-agent budgets to limit exposure from any single agent
 - Use a project budget to cap the total cost of one piece of work

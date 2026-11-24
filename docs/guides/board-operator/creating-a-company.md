@@ -50,9 +50,9 @@ Set monthly budgets at the company and per-agent level. You can also set a budge
 - **Warning** at 80% of the budget. Work continues
 - **Hard stop** at 100% — the company, agent, or project is paused, new work is refused, and a budget incident opens
 
-Both thresholds are settings on the budget.
+You can change the warning percentage and turn the hard stop on or off. The hard stop always uses 100% of the budget.
 
-Budgets count dollars only. Usage on a provider subscription is recorded at $0, so a budget does not stop an agent that runs on a subscription. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
+Budgets count dollars only. Usage on a provider subscription is recorded at $0, so subscription usage never moves a budget toward its limit. A hard stop still stops every agent in its scope. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
 
 ## Step 6: Launch
 
