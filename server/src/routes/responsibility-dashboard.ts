@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -22,10 +23,9 @@ import {
   toDashboardVersionSummary,
   type DashboardActivityEvent,
 } from "../services/responsibility-dashboard-versions.js";
-import { responsibilityService } from "../services/responsibilities.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
-import { boardCanManageResponsibilityOwner, defaultResponsibilityOwnerUserId } from "./responsibilities.js";
+import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const ISSUE_NOT_FOUND = "Issue not found";
 const VERSION_NOT_FOUND = "Version not found";
@@ -35,7 +35,7 @@ const VERSION_NOT_FOUND = "Version not found";
  * applied change saved as a version (experimental `enableResponsibilities`).
  * Reads follow the responsibilities overview: board users read their own by
  * default, agents name the person. A person who may edit that person's
- * responsibilities (themselves, or a company admin) starts the conversation,
+ * responsibilities starts the conversation,
  * applies the agent's proposed changes and restores versions; only the agent
  * in the conversation proposes.
  */
@@ -44,7 +44,6 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
   const access = accessService(db);
   const svc = responsibilityDashboardService(db);
   const versions = responsibilityDashboardVersionService(db);
-  const responsibilitiesSvc = responsibilityService(db);
   const issues = issueService(db);
   const references = issueReferenceService(db);
   const heartbeat = opts.heartbeat ?? heartbeatService(db);
@@ -83,20 +82,9 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     }
   }
 
-  /** The overview route's ownerUserId rule: board users default to themselves, agents to the person their run works for. */
-  function ownerFrom(req: Request, ownerUserId: string | undefined) {
-    const owner = ownerUserId ?? defaultResponsibilityOwnerUserId(req);
-    if (!owner) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: this run works for no person, so name the person whose dashboard to read"
-        : "ownerUserId is required");
-    }
-    return owner;
-  }
-
   function assertWriter(req: Request, companyId: string, ownerUserId: string) {
     if (!boardCanManageResponsibilityOwner(req, companyId, ownerUserId)) {
-      throw forbidden("Only the person whose dashboard this is, or a company admin, can change it");
+      throw notFound("Dashboard item not found");
     }
   }
 
@@ -121,7 +109,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = responsibilityDashboardQuerySchema.parse(req.query);
-    res.json(await svc.state(companyId, ownerFrom(req, query.ownerUserId)));
+    res.json(await svc.state(companyId, await dashboardOwner(db, req, companyId, query.ownerUserId)));
   });
 
   router.get("/companies/:companyId/responsibility-dashboard/versions", async (req, res) => {
@@ -129,7 +117,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = responsibilityDashboardQuerySchema.parse(req.query);
-    const ownerUserId = ownerFrom(req, query.ownerUserId);
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     // Someone who may change this dashboard saves it as it is first, so the list starts with what they see.
     const writer = boardCanManageResponsibilityOwner(req, companyId, ownerUserId);
     const { list, saved } = await versions.list(companyId, ownerUserId, writer ? { checkpointBy: getActorInfo(req).actorId } : {});
@@ -150,11 +138,8 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     const companyId = req.params.companyId as string;
     assertBoard(req);
     assertCompanyAccess(req, companyId);
-    const ownerUserId = ownerFrom(req, req.body.ownerUserId);
+    const ownerUserId = await dashboardOwner(db, req, companyId, req.body.ownerUserId);
     assertWriter(req, companyId, ownerUserId);
-    if (ownerUserId !== req.actor.userId && !(await responsibilitiesSvc.isCompanyMember(companyId, ownerUserId))) {
-      throw notFound("Owner is not a member of this company");
-    }
     const actor = getActorInfo(req);
     const agentId = req.body.agentId ?? await svc.defaultAgentId(companyId);
     if (agentId) {

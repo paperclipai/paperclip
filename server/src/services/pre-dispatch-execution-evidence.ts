@@ -1,7 +1,9 @@
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations } from "@paperclipai/db";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { readRunCancellation } from "./run-cancellation.js";
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 
 export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
@@ -29,6 +31,62 @@ export function agentDirectoryPreparationWaitPredicate() {
     and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb
     and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
     and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb)`;
+}
+
+/** The control plane cancels a run that is still waiting, for example a
+ * scheduled retry superseded by a task change. This row check only selects a
+ * candidate cheaply; `unclaimedControlPlaneCancellationPredicate` (with the
+ * chain rule) plus `noRetainedExecutionPredicate` is the proof. */
+export function isUnclaimedControlPlaneCancellationCandidate(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
+  const cancellation = readRunCancellation(run.resultJson);
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && run.errorCode === "cancelled" &&
+    cancellation?.source === "control_plane" && cancellation.expected && cancellation.initiator.type === "system";
+}
+
+/** A retry continues its chain, so its own missing execution evidence is not
+ * enough. Terminalization records a reconciliation hold on any predecessor
+ * whose outcome is unknown, and the scheduler refuses to retry such a run.
+ * The chain is settled when the predecessor exists and carries no such hold
+ * that is still effective or was superseded. A row with retry metadata whose
+ * predecessor was deleted fails closed. Workspace-wait retries keep their own
+ * proof (`isCancelledNativeStartup`). */
+export function settledRetryPredecessorPredicate() {
+  return sql`(case when ${heartbeatRuns.retryOfRunId} is null
+    then ${heartbeatRuns.scheduledRetryAttempt} = 0 and ${heartbeatRuns.scheduledRetryReason} is null
+    else coalesce(${heartbeatRuns.scheduledRetryReason}, '') <> 'workspace_busy'
+      and exists (select 1 from heartbeat_runs predecessor
+        where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
+          and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.finished_at is not null)
+      and not exists (select 1 from ${issueRecoveryActions}
+        where ${issueRecoveryActions.companyId} = ${heartbeatRuns.companyId}
+          and coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+            = ${heartbeatRuns.retryOfRunId}::text
+          and (${effectiveReconciliationHoldPredicate()}
+            -- A newer hold superseded this one; the predecessor's obligation was not settled.
+            or (${inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES])}
+              and ${issueRecoveryActions.status} = 'cancelled' and ${issueRecoveryActions.outcome} = 'cancelled')))
+    end)`;
+}
+
+/** A reconciliation hold that still blocks execution: open, or resolved with
+ * automatic replay blocked. Shared by the task blocker and the retry-chain proof. */
+export function effectiveReconciliationHoldPredicate() {
+  return and(
+    inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+    or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+  )!;
+}
+
+/** SQL proof for `isUnclaimedControlPlaneCancellationCandidate`. Callers add
+ * `noRetainedExecutionPredicate` for the run's own execution evidence. */
+export function unclaimedControlPlaneCancellationPredicate() {
+  return sql`(${heartbeatRuns.errorCode} = 'cancelled'
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
+    and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,initiator,type}' = 'system'
+    and ${settledRetryPredecessorPredicate()})`;
 }
 
 export function executionStartedEventPredicate() {

@@ -2,7 +2,10 @@ import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames } from
 import { describe, expect, it, vi } from "vitest";
 import {
   callGoogleWorkspaceRest,
+  googleWorkspaceRestToolDefinition,
+  googleWorkspaceCatalogToolTitle,
   googleWorkspaceRestTransportGaps,
+  listGoogleWorkspaceRest,
   probeGoogleWorkspaceRest,
 } from "./google-workspace-rest-dispatch.js";
 
@@ -19,6 +22,54 @@ describe("Google Workspace REST transport eligibility", () => {
   it("names every missing tool of a service with no REST tools", () => {
     expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, chat: "paperclip_rest" }))
       .toEqual([{ service: "chat", missing: googleWorkspaceServiceToolNames("chat") }]);
+  });
+});
+
+describe("googleWorkspaceRestToolDefinition", () => {
+  it("returns this folder's definition for a tool of a service on paperclip_rest, and nothing otherwise", () => {
+    const rest = listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc")!;
+    expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual({ name: rest.name, title: "Docs: Edit a document", description: rest.description,
+      inputSchema: rest.inputSchema, outputSchema: rest.outputSchema, annotations: rest.annotations });
+    expect(googleWorkspaceRestToolDefinition("docs__update_doc")?.inputSchema.required).toContain("writeControl");
+    expect(googleWorkspaceRestToolDefinition("chat__list_messages")).toBeNull();
+    expect(googleWorkspaceRestToolDefinition("gmail__send_message")).toBeNull();
+    expect(googleWorkspaceRestToolDefinition("update_doc")).toBeNull();
+    const saved = GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs;
+    GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = "google_mcp";
+    try {
+      expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toBeNull();
+    } finally {
+      GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = saved;
+    }
+  });
+});
+
+describe("googleWorkspaceCatalogToolTitle", () => {
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+  it("names every allowlisted tool for a person, whichever transport lists it", () => {
+    for (const service of Object.keys(GOOGLE_WORKSPACE_TOOL_TRANSPORT) as Array<keyof typeof GOOGLE_WORKSPACE_TOOL_TRANSPORT>) {
+      for (const leaf of googleWorkspaceServiceToolNames(service)) {
+        const name = `${service}__${leaf}`;
+        const title = googleWorkspaceCatalogToolTitle("google-workspace", name, null);
+        expect(title, name).toMatch(/^[A-Z][A-Za-z ]+: [A-Z][a-z]+( [a-z]+)*$/);
+        expect(title, name).not.toMatch(UUID);
+      }
+    }
+  });
+
+  it("uses the Paperclip tool title for services with REST tools, for both transports", () => {
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "gmail__get_message", null)).toBe("Gmail: Read a message");
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "gmail__get_message", "Get Message")).toBe("Gmail: Read a message");
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "calendar__list_events", null)).toBe("Calendar: List events");
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "chat__send_message", "Send a message")).toBe("Chat: Send a message");
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "chat__send_message", "Chat: Send a message")).toBe("Chat: Send a message");
+    expect(googleWorkspaceCatalogToolTitle("google-workspace", "chat__send_message", null)).toBe("Chat: Send message");
+  });
+
+  it("leaves other connections' titles alone", () => {
+    expect(googleWorkspaceCatalogToolTitle("github", "gmail__get_message", null)).toBeNull();
+    expect(googleWorkspaceCatalogToolTitle(undefined, "create_issue", "Create issue")).toBe("Create issue");
   });
 });
 

@@ -33,6 +33,7 @@ export function copyFileResult(file: RestFile): CallToolResult {
 export const copyFile = defineTool({
   definition: {
     name: "copy_file",
+    title: "Copy a file",
     description: "Copies a Drive file into a new file and returns the copy. The original is not changed. Folders cannot be copied. Without title the copy gets Google's default name; without parentId Google places it next to the original when it can. Writes use Drive file access (drive.file), so Google may refuse a file or folder that this app did not create or open; the call then returns an error and nothing is copied.",
     inputSchema: {
       type: "object",

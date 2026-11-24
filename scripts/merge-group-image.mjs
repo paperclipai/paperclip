@@ -124,7 +124,7 @@ export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
  * check from the copy of this script in the push's `before` commit, so a push
  * cannot remove the check it is subject to.
  */
-export const pipelineFiles = [workflowPath, ".github/workflows/docker.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
+export const pipelineFiles = [workflowPath, ".github/workflows/docker.yml", ".github/workflows/macos-runner-runtime.yml", "scripts/macos-runner-runtime.mjs", "scripts/macos-runner-runtime-cache.mjs", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
 
 export function assertPipelineUnchanged(changedFiles) {
   const changed = changedFiles.filter(file => pipelineFiles.includes(file));

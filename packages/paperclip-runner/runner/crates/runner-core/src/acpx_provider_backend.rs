@@ -328,7 +328,7 @@ impl AcpxProviderDescriptor {
     fn supports_host_parking(&self) -> bool {
         matches!(self.agent.as_str(), "codex" | "claude")
             && self.names_qualified_release()
-            && acpx_release_profile(&self.agent)
+            && crate::acpx_candidate_admission::release_profile(&self.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
     }
 
@@ -1003,6 +1003,17 @@ fn validate_pending_runtime_requests(
     Ok(())
 }
 
+/// The sidecar refused to reload a saved conversation in a new provider
+/// process (ACP `session/load` or `session/resume` behind a recovering
+/// `session.open`). Only the typed rejection decides; the message never does.
+fn saved_state_reload_refused(error: &crate::local_runner::LocalRunnerError) -> bool {
+    error.command_rejection().is_some_and(|rejection| {
+        rejection.command == GeneratedAcpxSidecarCommand::SessionOpen.as_str()
+            && rejection.classification
+                == crate::acpx_sidecar_transport::ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE
+    })
+}
+
 fn attested_pending_runtime_requests(
     pending: &BTreeMap<String, Value>,
     provider: &crate::acpx_provider_state::AcpxProviderState,
@@ -1537,8 +1548,17 @@ impl AcpxCommandExecutor {
                 }
                 Err(_) => return Ok(false),
             };
-        let Ok(session) = self.start_session(true) else {
-            return Ok(false);
+        let session = match self.start_session(true) {
+            Ok(session) => session,
+            // The provider refused this saved conversation by name: closing
+            // the turn as a generic interruption would hide that the server
+            // must start a replacement conversation.
+            Err(error)
+                if error.classification() == Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE) =>
+            {
+                return Err(error)
+            }
+            Err(_) => return Ok(false),
         };
         let identity = session.identity().clone();
         let process_id = session.process_id();
@@ -1607,8 +1627,15 @@ impl AcpxCommandExecutor {
             self.launch_profile.as_ref(),
         )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
-                .with_provider_failure(error.provider_failure())
+            let incompatible = recovering && saved_state_reload_refused(&error);
+            let failure =
+                DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
+                    .with_provider_failure(error.provider_failure());
+            if incompatible {
+                failure.with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
+            } else {
+                failure
+            }
         })?;
         if session.identity().profile_digest != state.descriptor.command_digest {
             let _ = session.shutdown("qualified ACPX profile digest mismatch");
@@ -1619,7 +1646,7 @@ impl AcpxCommandExecutor {
         let expected_dormant = recovering
             && self.recovery_pending_effects == Some(0)
             && self.candidate_admission().is_none()
-            && acpx_release_profile(&state.descriptor.agent)
+            && crate::acpx_candidate_admission::release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
             && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
             && state.active_turn_id.is_none()
@@ -4447,7 +4474,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_authority_cannot_come_from_descriptor_or_recover_a_prior_runner() {
         let directory = temporary_directory("candidate-authority");
         let mut admission = crate::acpx_candidate_admission::test_admission("run-1", "session-1");
@@ -6112,6 +6145,209 @@ mod tests {
         drop(listeners.pop());
         (candidates, listeners)
     }
+    /// An Antigravity session saved by `run-1` under an ordinary launch
+    /// profile (no candidate grant), and a runner for `context_run`. Its
+    /// sidecar records any launch and exits, so no test reaches a provider.
+    #[cfg(unix)]
+    fn ordinary_antigravity_fixture(
+        label: &str,
+        context_run: &str,
+    ) -> (PathBuf, DurableRunnerConfig, Value, PathBuf) {
+        let directory = temporary_directory(label);
+        let command = directory.join("owned-sidecar");
+        let sentinel = directory.join("provider-opened");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", sentinel.display()).as_bytes(),
+            true,
+        );
+        let profile = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: vec![],
+            artifacts: vec![artifact(&command)],
+        };
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut value = descriptor("antigravity");
+        value["runtimeDirectory"] = json!(runtime);
+        value["cwd"] = json!(workspace);
+        value["sidecarCommand"] = json!(command);
+        value["sidecarArgs"] = json!([]);
+        let desc: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: desc.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: desc.model.clone(),
+            effective_model: desc.model.clone(),
+            permission_mode: Some(desc.permission_mode),
+            mode: None,
+            pi_thinking_level: None,
+            claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let operations = Vec::new();
+        let tools = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(desc, tools, profile.canonical_digest().unwrap());
+        state.lifecycle = "suspended".to_owned();
+        state.identity = Some(identity);
+        let saving = test_config(&directory, Some(profile));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &saving);
+        executor.state = Some(state);
+        executor.save_state().unwrap();
+        let mut config = saving;
+        if context_run != "run-1" {
+            config.run_id = context_run.to_owned();
+            config.turn_id = "turn-2".to_owned();
+            config.item_id = "item-2".to_owned();
+        }
+        config.validate().unwrap();
+        (directory, config, value, sentinel)
+    }
+
+    /// The candidate grant the pending Antigravity profile admits for `run_id`.
+    fn antigravity_grant(run_id: &str) -> crate::acpx_candidate_admission::AcpxCandidateAdmission {
+        let mut grant = crate::acpx_candidate_admission::test_admission(run_id, "session-1");
+        grant.model = "explicit-test-model".to_owned();
+        grant
+    }
+
+    // At qualification the Antigravity profile becomes released. Only the
+    // declaration changes: the candidate-only refusals key on a candidate
+    // grant, a released profile admits no grant, and the ordinary qualified
+    // path applies to the provider launch, recovery and attachment.
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_launches_without_grant_and_rejects_any_candidate_grant() {
+        let (directory, config, _, _) = ordinary_antigravity_fixture("antigravity-flip", "run-1");
+        let executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let saved: AcpxDurableState =
+            serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+        let profile = config.acpx_launch_profile.as_ref().unwrap();
+        // The launch configuration exactly as AcpxProviderSession::start
+        // validates it before spawning the sidecar.
+        let launch = |profile: &AcpxLaunchProfile| {
+            let config = saved
+                .descriptor
+                .session_config(
+                    saved.tool_set.clone(),
+                    saved.identity.clone(),
+                    Some(profile),
+                )
+                .map_err(|error| error.to_string())?;
+            config.validate().map_err(|error| error.to_string())?;
+            Ok::<_, String>(config)
+        };
+        // Pending: an ordinary launch is refused until an operator grant.
+        let pending = launch(profile).unwrap_err();
+        assert!(pending.contains("qualification is pending"), "{pending}");
+        let mut granted = profile.clone();
+        granted.candidate_admission = Some(antigravity_grant("run-1"));
+        let mut candidate_config = config.clone();
+        candidate_config.acpx_launch_profile = Some(granted.clone());
+        candidate_config.validate().unwrap();
+        launch(&granted).unwrap();
+
+        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
+        // Released: the ordinary launch needs no grant ...
+        let ordinary = launch(profile).unwrap();
+        assert!(ordinary.candidate_admission.is_none());
+        // ... and every candidate grant is refused at startup and at launch.
+        assert!(candidate_config.validate().is_err());
+        assert!(launch(&granted).is_err());
+        let mut injected = descriptor("antigravity");
+        injected["candidateAdmission"] = json!(antigravity_grant("run-1"));
+        assert!(serde_json::from_value::<AcpxProviderDescriptor>(injected).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn released_antigravity_without_grant_restores_suspends_and_attaches_a_prior_activation() {
+        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
+        let (directory, config, value, sentinel) =
+            ordinary_antigravity_fixture("antigravity-released-cold", "run-2");
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // load_state_without_session: an ordinary runner adopts the prior
+        // durable activation that a candidate would refuse.
+        recovered
+            .restore()
+            .expect("a released Antigravity runner adopts the prior activation");
+        assert!(recovered.state.is_some());
+        // runner.suspend keeps the recoverable session instead of retiring it.
+        let suspended = recovered.suspend().unwrap();
+        assert_eq!(suspended.result["status"], "completed");
+        assert_eq!(recovered.state.as_ref().unwrap().lifecycle, "suspended");
+        // run.attach: the next run attaches to the saved conversation and
+        // reaches the ordinary provider launch (the fixture sidecar exits).
+        let mut provider = value;
+        provider["runId"] = json!("run-2");
+        let error = recovered
+            .execute(&cold_attach_command(json!({"provider": provider})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to start ACPX provider"), "{error}");
+        assert!(sentinel.exists(), "the ordinary launch ran the sidecar");
+        let saved: AcpxDurableState =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(saved.descriptor.run_id, "run-2");
+        assert_ne!(saved.lifecycle, "closed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn released_antigravity_without_grant_rotates_a_live_runner_authority() {
+        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
+        let (directory, config, value, sentinel) =
+            ordinary_antigravity_fixture("antigravity-released-warm", "run-1");
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        executor.load_state_for_test();
+        let mut provider = value;
+        provider["runId"] = json!("run-2");
+        let attach = cold_attach_command(json!({"provider": provider, "paperclipNextAuthority": {
+            "identity": {"runId": "run-2", "normalizedSessionId": "session-1"}
+        }}));
+        // The rotation passes both candidate refusals and reaches the
+        // ordinary provider launch (the fixture sidecar exits).
+        let error = executor.execute(&attach).unwrap_err().to_string();
+        assert!(error.contains("failed to start ACPX provider"), "{error}");
+        assert!(sentinel.exists(), "the ordinary launch ran the sidecar");
+        let updated = executor.state.as_ref().unwrap();
+        assert_eq!(updated.descriptor.run_id, "run-2");
+        assert_eq!(executor.context.run_id, "run-1");
+        assert!(executor
+            .launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -6377,6 +6613,15 @@ mod tests {
             sentinel,
             grant,
         )
+    }
+
+    impl AcpxCommandExecutor {
+        /// Loads the saved state as an already-restored runner holds it, so a
+        /// test reaches command dispatch without launching the provider.
+        fn load_state_for_test(&mut self) {
+            self.load_state_without_session().unwrap();
+            self.restore_checked = true;
+        }
     }
 
     pub(super) fn cold_attach_command(payload: Value) -> Command {

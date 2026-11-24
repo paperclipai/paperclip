@@ -435,7 +435,11 @@ function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) 
   const sql = client.$client;
   const end = sql.end;
   sql.end = async (options?: { timeout?: number }) => {
-    await Promise.all([onEnd(options?.timeout), end(options)]);
+    const resolvedOptions =
+      options?.timeout === undefined && process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()
+        ? { ...options, timeout: 5 }
+        : options;
+    await Promise.all([onEnd(resolvedOptions?.timeout), end(resolvedOptions)]);
   };
 }
 

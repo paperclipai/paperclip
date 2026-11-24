@@ -9,6 +9,7 @@ import {
   type McpAppDisplayMode,
   type McpAppHostContext,
 } from "./mcp-app-host";
+import { openSafeUrl } from "@/lib/safe-url";
 
 const MAX_HEIGHT = 640;
 const INITIAL_HEIGHT = 120;
@@ -115,7 +116,7 @@ export function McpAppFrame({
       get toolInput() { return latest.current.toolInput; },
       get toolResult() { return latest.current.toolResult; },
       callTool: (name, args) => latest.current.callTool(name, args),
-      openLink: (url) => window.open(url, "_blank", "noopener,noreferrer"),
+      openLink: (url) => { openSafeUrl(url); },
       ...(canProposeMessages ? { proposeMessage: (text: string) => latest.current.proposeMessage!(text) } : {}),
       ...(canUpdateModelContext ? { updateModelContext: (context: McpAppModelContext | null) => latest.current.updateModelContext!(context) } : {}),
       ...(canChangeDisplayMode ? { setDisplayMode: (mode: McpAppDisplayMode) => latest.current.onRequestDisplayMode?.(mode) } : {}),

@@ -15,10 +15,12 @@ const MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 type Runner = Pick<CommandManagedRuntimeRunner, "execute">;
 
 const HOLD_SCRIPT = [
-  'set -u; reserve=$1; bytes=$2; minimum_free_kib=$3; [ -f "$reserve" ] && exit 0',
+  'set -u; reserve=$1; bytes=$2; minimum_free_kib=$3; minimum_free_inodes=$4; [ -f "$reserve" ] && exit 0',
   'directory=$(dirname -- "$reserve"); mkdir -p -- "$directory" || exit 1',
   `free_kib=$(df -Pk -- "$directory" | awk 'NR == 2 { print $4 }')`,
   '[ -n "$free_kib" ] && [ "$free_kib" -ge "$minimum_free_kib" ] || exit 0',
+  `free_inodes=$(df -Pi -- "$directory" | awk 'NR == 2 { print $(NF - 2) }')`,
+  '[ -n "$free_inodes" ] && [ "$free_inodes" -ge "$minimum_free_inodes" ] || exit 0',
   'partial="$reserve.partial"; rm -f -- "$partial"',
   'fallocate -l "$bytes" "$partial" 2>/dev/null || dd if=/dev/zero of="$partial" bs=65536 count=$((bytes / 65536)) 2>/dev/null || { rm -f -- "$partial"; exit 1; }',
   'mv -f -- "$partial" "$reserve"',
@@ -31,14 +33,14 @@ const RELEASE_SCRIPT =
 export async function holdRemoteRunnerDiskReserve(
   runner: Runner,
   reservePath: string,
-  options: { bytes?: number; minimumFreeBytes?: number } = {},
+  options: { bytes?: number; minimumFreeBytes?: number; minimumFreeInodes?: number } = {},
 ): Promise<void> {
   const bytes = options.bytes ?? REMOTE_RUNNER_DISK_RESERVE_BYTES;
   const minimumFreeBytes = options.minimumFreeBytes ?? MINIMUM_FREE_BYTES;
   await runner.execute({
     command: "sh",
     args: ["-c", HOLD_SCRIPT, "paperclip-runner-disk-reserve-hold", reservePath,
-      String(bytes), String(Math.ceil((minimumFreeBytes + bytes) / 1024))],
+      String(bytes), String(Math.ceil((minimumFreeBytes + bytes) / 1024)), String(options.minimumFreeInodes ?? 1024)],
     bypassSession: true,
     timeoutMs: 30_000,
   });

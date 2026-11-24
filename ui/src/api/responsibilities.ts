@@ -100,8 +100,7 @@ export const responsibilitiesApi = {
 };
 
 /**
- * Areas: broad things a company cares about, with no owner. Any board user
- * manages them. Creating one whose title already exists returns that area.
+ * Areas on the acting person's dashboard. A repeated title returns their existing area.
  */
 export const responsibilityAreasApi = {
   list: (companyId: string, options?: { includeArchived?: boolean }) =>

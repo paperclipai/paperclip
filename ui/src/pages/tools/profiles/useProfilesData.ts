@@ -7,8 +7,20 @@ import { queryKeys } from "@/lib/queryKeys";
 import { groupCatalogByApp } from "./profile-model";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 
+export function useProfileIndexData(companyId: string) {
+  const profiles = useQuery({
+    queryKey: [...queryKeys.tools.profiles(companyId), "summary"],
+    queryFn: () => toolsApi.listProfileSummaries(companyId),
+  });
+  const agents = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+  });
+  return { profiles, agents };
+}
+
 /**
- * Shared data layer for the access-profiles index and wizard. Assembles the
+ * Shared data layer for profile detail and the wizard. Assembles the
  * company-wide catalog (there is no aggregate endpoint, so we fan out per
  * connection) and the lookup maps both surfaces need.
  */

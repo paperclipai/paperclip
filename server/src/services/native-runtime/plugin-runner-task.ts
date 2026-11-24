@@ -76,12 +76,13 @@ export function createPluginRunnerTaskOwner(input: {
   let relaunchProgress: "none" | "sent" | "refused" = "none";
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
-  let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
-  let launched = !!input.adoptIdentity;
-  let launchIdentity = input.adoptIdentity;
+  const relaunchedTask = !input.adoptIdentity && input.resumeIdentityVersion === 1 ? input.relaunch?.source : undefined;
+  let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity ?? relaunchedTask;
+  let launched = !!(input.adoptIdentity ?? relaunchedTask);
+  let launchIdentity = input.adoptIdentity ?? relaunchedTask;
   let stopRequested = false;
   let released = false;
-  let submitted = !!input.adoptIdentity;
+  let submitted = launched;
   let detached = false;
   let adoptionVerified = false;
   let markReady!: () => void;
@@ -102,7 +103,7 @@ export function createPluginRunnerTaskOwner(input: {
   if (input.adoptIdentity) markReady();
   const configuredEnvironmentFields = (launchesRunner: boolean) =>
     input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
-  let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
+  let configuredEnvironmentDelivered: boolean | undefined = launched ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];

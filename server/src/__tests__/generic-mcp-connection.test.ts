@@ -2281,9 +2281,10 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(fixture.requestsTo("/register")).toHaveLength(1);
   });
 
-  it("prefers a deployment-preconfigured client over any registration", async () => {
-    const fixture = installMcpOAuthFixture({ auth: "oauth", cimd: true });
+  it("never offers a deployment-wide client to a custom server", async () => {
+    installMcpOAuthFixture({ auth: "oauth", cimd: true });
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "preconfigured-client");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "preconfigured-secret");
     const company = await createCompany(db);
     const service = toolAccessService(db);
 
@@ -2293,9 +2294,45 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       actor: { actorType: "user", actorId: "board-user" },
     });
 
-    expect(start.registrationSource).toBe("preconfigured");
-    expect(new URL(start.authorizationUrl).searchParams.get("client_id")).toBe("preconfigured-client");
-    expect(fixture.requestsTo("/register")).toHaveLength(0);
+    expect(start.registrationSource).not.toBe("preconfigured");
+    expect(new URL(start.authorizationUrl).searchParams.get("client_id")).not.toBe("preconfigured-client");
+  });
+
+  it("explains that a deployment-wide client cannot be used when a custom server has no other client", async () => {
+    installMcpOAuthFixture({ auth: "oauth", dcr: false });
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "preconfigured-client");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "preconfigured-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture refused deployment client" });
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    })).rejects.toMatchObject({ details: { code: "oauth_manual_client_required", reason: expect.stringContaining("Add a client ID and secret") } });
+  });
+
+  it("keeps the draft and asks for a client, with the reason, when a deployment-wide client cannot be used", async () => {
+    installMcpOAuthFixture({ auth: "oauth", dcr: false });
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "preconfigured-client");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "preconfigured-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: MCP_URL, name: "Fixture refused deployment client" })
+      .expect(201);
+
+    expect(response.body.connectionId).toEqual(expect.any(String));
+    expect(response.body.auth).toMatchObject({
+      kind: "oauth",
+      startUrl: null,
+      manualClientRequired: true,
+      manualClientReason: expect.stringContaining("Add a client ID and secret"),
+    });
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
   });
 
   it("asks for a preregistered client when the server offers neither CIMD nor DCR", async () => {

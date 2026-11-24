@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -71,10 +72,10 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     };
   }
 
-  /** The writer rule of the responsibilities routes: the owner, or a company admin. */
+  /** The writer rule of the responsibilities routes: the owner. */
   function assertWriter(req: Request, row: { companyId: string; ownerUserId: string }) {
     if (!boardCanManageResponsibilityOwner(req, row.companyId, row.ownerUserId)) {
-      throw forbidden("Only the person who owns this responsibility, or a company admin, can change its bar");
+      throw forbidden("Only the person who owns this responsibility can change its bar");
     }
   }
 
@@ -95,6 +96,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return;
     assertBoard(req);
+    await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     res.json(await svc.conversation(row));
   });
 

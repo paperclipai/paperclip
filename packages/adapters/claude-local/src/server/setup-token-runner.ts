@@ -9,6 +9,7 @@ import {
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
   hasSetupTokenOAuthError,
+  hasSetupTokenPromptLine,
   type SetupTokenPrompt,
 } from "./setup-token-parse.js";
 
@@ -218,6 +219,7 @@ export async function runSetupTokenLogin(
   }
 
   let promptSurfaced = false;
+  let unrecognizedPromptLogged = false;
   let codeSubmitted = false;
   let submitStarted = false;
   let oauthError = false;
@@ -326,6 +328,10 @@ export async function runSetupTokenLogin(
           submitPromise = submitCode();
         }
         return;
+      }
+      if (!unrecognizedPromptLogged && hasSetupTokenPromptLine(buffer)) {
+        unrecognizedPromptLogged = true;
+        log("[paperclip] Setup-token login: the browser-code prompt is on screen, but the parser did not recognize the sign-in screen.");
       }
       if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
         buffer = buffer.slice(buffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);

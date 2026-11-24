@@ -66,7 +66,7 @@ describe("seedIssueChatBootstrap", () => {
       // The activity key holds the de-duplicated recent answer.
       expect(qc.getQueryData(recentIssueActivityQueryKey(ref))).toEqual([event("a1"), event("a2")]);
       // A cold open shows the latest run and discloses the earlier one.
-      expect(qc.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("r2")], hasEarlierRuns: true });
+      expect(qc.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("r2")], hasEarlierRuns: true, earlierRun: { runId: "r1", status: "succeeded" } });
       expect(qc.getQueryData(queryKeys.issues.interactions(ref))).toEqual([]);
       expect(qc.getQueryData(queryKeys.issues.attachments(ref))).toEqual([]);
       expect(qc.getQueryData(queryKeys.issues.liveRuns(ref))).toEqual([]);

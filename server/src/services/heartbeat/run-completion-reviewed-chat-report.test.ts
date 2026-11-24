@@ -4,6 +4,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
+import { environmentResumeErrorData, JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { EnvironmentRunError } from "../environment-run-orchestrator.js";
+import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -67,7 +70,7 @@ function callbacks(db: Db) {
 }
 
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("reviewed chat setup wait reporting", () => {
+describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("setup failure reporting after a bounded retry decision", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
@@ -125,5 +128,43 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         expect.objectContaining({ id: f.run.id, status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" }),
         expect.objectContaining({ phase: "setup", error,
           reviewedChatRetry: scenario === "scheduled" || scenario === "interaction_scheduled" ? "scheduled" : "not_scheduled" }));
+    });
+
+  // The sandbox provider answered a saved-sandbox resume with HTTP 502, and the
+  // orchestrator wrapped the refusal exactly as staging recorded it.
+  const resumeRefusal = (cause: unknown) => new EnvironmentRunError("lease_acquire_failed", "Failed to acquire lease", {
+    cause: new ReusableSandboxResumeError({ provider: "daytona", providerLeaseId: "lease-1", cause }) });
+  const rpcRefusal = (httpStatus: number, title = `${httpStatus} Bad Gateway`) => new JsonRpcCallError({ code: -32002,
+    message: `<html><head><title>${title}</title></head></html>`, data: environmentResumeErrorData({ status: httpStatus }) });
+
+  it.each(["scheduled", "gateway_timeout", "not_scheduled", "exhausted", "scheduler_failed", "provider_refusal", "unclassified"] as const)(
+    "reports a sandbox resume provider outage only after its retry decision: %s", async scenario => {
+      const f = await fixture();
+      if (scenario === "scheduler_failed") f.deps.scheduleBoundedRetryForRun.mockRejectedValueOnce(new Error("fixture scheduler failure"));
+      else f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce(["scheduled", "gateway_timeout", "provider_refusal", "unclassified"].includes(scenario)
+        ? { outcome: "scheduled" } as never
+        : scenario === "exhausted" ? { outcome: "retry_exhausted", attempt: 4, maxAttempts: 4 } as never
+        : { outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+      // A 4xx names a refusal of this sandbox, and a failure without a status
+      // is unproven; neither is a provider outage.
+      const error = resumeRefusal(scenario === "provider_refusal" ? rpcRefusal(400)
+        : scenario === "unclassified" ? new Error("worker refused the resume")
+        : scenario === "gateway_timeout" ? rpcRefusal(504, "504 Gateway Time-out") : rpcRefusal(502));
+      await f.completion.failRunSetup(f.setup(error));
+      const write = f.deps.setRunStatusIfRunning.mock.calls.find(call => call[1] === "failed");
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "reusable_sandbox_resume_failed" });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+      if (scenario === "provider_refusal" || scenario === "unclassified") {
+        // Other resume refusals keep their report on the failed-status write.
+        expect(write?.[3]).toEqual(expect.not.objectContaining({ sandboxResumeRetry: expect.anything() }));
+        expect(reportRunFailure).not.toHaveBeenCalled();
+        return;
+      }
+      expect(write?.[3]).toMatchObject({ phase: "setup", sandboxResumeRetry: "pending" });
+      expect(reportRunFailure).toHaveBeenCalledOnce();
+      expect(reportRunFailure).toHaveBeenCalledWith(db,
+        expect.objectContaining({ id: f.run.id, status: "failed", errorCode: "reusable_sandbox_resume_failed" }),
+        expect.objectContaining({ phase: "setup", error,
+          sandboxResumeRetry: scenario === "scheduled" || scenario === "gateway_timeout" ? "scheduled" : "not_scheduled" }));
     });
 });

@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { listResponsibilitiesQuerySchema } from "@paperclipai/shared";
@@ -15,7 +16,6 @@ import {
   type ResponsibilitySummaryServiceOptions,
 } from "../services/responsibility-summaries.js";
 import { assertCompanyAccess, getAccessibleResource } from "./authz.js";
-import { defaultResponsibilityOwnerUserId } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
 const summaryQuerySchema = listResponsibilitiesQuerySchema.pick({ ownerUserId: true });
@@ -67,12 +67,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = summaryQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
-    if (!ownerUserId) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: this run works for no person, so name the person whose responsibilities to summarize"
-        : "ownerUserId is required");
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     const overview = await responsibilities.overview(companyId, ownerUserId, {
       includeLetGo: false,
       scope: await readScope(req),
@@ -85,6 +80,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
     const row = await getAccessibleResource(req, res, responsibilities.getById(req.params.id as string), NOT_FOUND);
     if (!row) return;
     await assertCompanyRead(req, row.companyId);
+    await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     const detail = await responsibilities.detail(row, await readScope(req), { actor: req.actor });
     res.json(await summaries.affectingTheNumber({ detail, actor: req.actor }));
   });
