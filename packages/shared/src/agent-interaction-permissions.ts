@@ -4,6 +4,7 @@ export const AGENT_INTERACTION_PERMISSION_KEYS = [
   "canAssignTasksToAgents",
   "canReceiveAssignmentsFromAgents",
   "canAssignTasksToHumans",
+  "canAskHumans",
   "canMentionAgents",
   "canReceiveMentionsFromAgents",
   "canCommentOnOtherTasks",
