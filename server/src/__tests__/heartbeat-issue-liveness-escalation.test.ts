@@ -1325,8 +1325,11 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     // Production shape: the blocker finished long ago, then each woken run failed
     // and left the task blocked in a new cycle, so every wake carries a different
     // cycle-aware idempotency key.
-    await db.update(issues).set({ status: "done", completedAt: new Date(input.lastFinishedAt.getTime() - 60 * 60_000) })
+    const blockerChangedAt = new Date(input.lastFinishedAt.getTime() - 60 * 60_000);
+    await db.update(issues).set({ status: "done", completedAt: blockerChangedAt })
       .where(eq(issues.id, input.blockerIssueId));
+    await db.update(issueRelations).set({ createdAt: blockerChangedAt })
+      .where(eq(issueRelations.relatedIssueId, input.blockedIssueId));
     for (let index = input.count - 1; index >= 0; index -= 1) {
       const finishedAt = new Date(input.lastFinishedAt.getTime() - index * 20_000);
       const requestedAt = new Date(finishedAt.getTime() - 15_000);
@@ -1405,6 +1408,21 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.blockedIssueId, status: "succeeded",
       startedAt: new Date(Date.now() - 30_000), finishedAt: new Date(Date.now() - 20_000),
       contextSnapshot: { issueId: fixture.blockedIssueId, wakeReason: "issue_assigned" },
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when the blocker set is edited", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(activityLog).values({
+      companyId: fixture.companyId, actorType: "user", actorId: "board-user", action: "issue.blockers_updated",
+      entityType: "issue", entityId: fixture.blockedIssueId,
+      details: { blockedByIssueIds: [fixture.blockerIssueId], removedBlockedByIssueIds: [randomUUID()] },
+      createdAt: new Date(Date.now() - 10_000),
     });
 
     const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });

@@ -13,8 +13,8 @@ function run(status: string, minutesAgo: number, id = `run-${nextId++}`): Depend
   return { id, status, finishedAt: new Date(now - minutesAgo * 60_000) };
 }
 
-function decide(runs: DependencyWakeRunSample[], latestBlockerResultAt: Date | null = null) {
-  return decideDependencyWakeCircuit({ runs, latestBlockerResultAt, now });
+function decide(runs: DependencyWakeRunSample[], latestBlockerChangeAt: Date | null = null) {
+  return decideDependencyWakeCircuit({ runs, latestBlockerChangeAt, now });
 }
 
 describe("dependencyWakeBackoffMs", () => {
@@ -57,7 +57,12 @@ describe("decideDependencyWakeCircuit", () => {
     expect(decide([run("cancelled", 0), run("failed", 1)])).toEqual({ state: "closed", consecutiveFailures: 0 });
   });
 
-  it("ignores failures from before the latest blocker result", () => {
+  it("orders runs by finish time", () => {
+    expect(decide([run("failed", 2), run("succeeded", 3), run("failed", 0)]))
+      .toMatchObject({ state: "backoff", consecutiveFailures: 2 });
+  });
+
+  it("ignores failures from before the latest blocker change", () => {
     const runs = [run("failed", 0), run("failed", 2), run("failed", 3)];
     expect(decide(runs, new Date(now - 90_000))).toMatchObject({ state: "backoff", consecutiveFailures: 1 });
     expect(decide(runs, new Date(now))).toEqual({ state: "closed", consecutiveFailures: 0 });
