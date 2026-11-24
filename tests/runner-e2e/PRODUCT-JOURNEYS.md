@@ -557,3 +557,17 @@ retains the five allowlisted task observations. The adjacent
 Valid, wrong and missing evidence
 controls calibrate the independent oracle. Registration and local checks do not
 claim a Cloud staging pass or admission to a daily plan.
+
+
+Agent task journeys keep observing an exact native-session retry when the API
+reports a retryable failure, agent-owned recovery, remaining attempts and a retry
+time inside the original campaign deadline. Older projections can omit the
+optional successor field when there is no successor. The same run must later
+succeed; the temporary failed state never counts as completion. Terminal,
+unbound, exhausted and out-of-deadline failures still fail immediately. The
+original run limit, budgets, deadline and artifact checks stay in effect.
+
+The recovery wait gates the shared task snapshot before it reaches any journey
+consumer. Plan revision, Plan approval and protected-action decisions cannot use
+a pending card while its producing run is still recovering. A recovery that
+outlives the original campaign deadline fails without making a decision.

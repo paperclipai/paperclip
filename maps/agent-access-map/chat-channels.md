@@ -216,8 +216,8 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 API: `present` — `POST /api/chat-endpoints/{endpointId}/github/app`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api` return a saved human credential-entry handoff; agents may send an empty body.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). A human session imports the App credentials and signing key. Delegated service import is rejected, and agent requests persist no caller-chosen key.
-Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts), [provider service](../../server/src/services/chat-channels/github/app-setup.ts), and [actual-auth fixture](../../server/src/__tests__/connection-management.integration.test.ts). Agent key/JWT handoffs leave vault refs unchanged. Fresh drafts open the saved import form without the reconnect flag; its component test submits App import with the required webhook secret. Human import persists credentials, then agent repository discovery and verification continue.
-Verification: `passed` — deterministic provider fixtures, assembled server and [saved-screen tests](../../ui/src/pages/apps/chat/GitHubChatSetup.test.tsx).
+Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts), [provider service](../../server/src/services/chat-channels/github/app-setup.ts), and [actual-auth fixture](../../server/src/__tests__/connection-management.integration.test.ts). Agent key/JWT handoffs leave vault refs unchanged. Fresh drafts open the saved import form without the reconnect flag; browser E2E submits App import with the required webhook secret. Human import persists credentials, then agent repository discovery and verification continue.
+Verification: `passed` — deterministic provider fixtures, assembled server, and [browser chat-provider E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts).
 Gaps: Human credential entry is intentional; no live provider qualification.
 
 ### `post-chat-endpoints-github-repositories-refresh`
