@@ -1484,7 +1484,8 @@ export function TaskChatComposer({
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
               }] : creation ? (onWorkModeChange ? [planCommandOption] : [])
-                : onWorkModeChange ? [planCommandOption, goalCommandOption] : [goalCommandOption]}
+                // A queued edit keeps its exact text, so /plan cannot select Plan mode there.
+                : onWorkModeChange && !queuedEdit ? [planCommandOption, goalCommandOption] : [goalCommandOption]}
               onSubmit={() => void submit()}
               submitKey={submitKey}
               fileDropTarget="parent"

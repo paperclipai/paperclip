@@ -2050,6 +2050,20 @@ describe("TaskChatComposer", () => {
       expect(onAdd).toHaveBeenCalledWith("Please /plan this first", undefined, undefined, undefined, expect.any(String));
     });
 
+    it("offers Plan in the slash menu, except while editing a queued message", async () => {
+      const planOffered = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="mention-autocomplete-menu"] button[type="button"]')).some(node => node.textContent?.includes("/plan"));
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />);
+      typeText("/pl");
+      await placeCaretAtEnd();
+      expect(planOffered()).toBe(true);
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onWorkModeChange={vi.fn()}
+        queuedEdit={{ commentId: "queued", body: "" }} onSaveQueuedEdit={vi.fn()} />);
+      typeText("/pl");
+      await placeCaretAtEnd();
+      expect(planOffered()).toBe(false);
+    });
+
     it("creates a new task in Plan mode", async () => {
       const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
         submitLabel: "Create", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
