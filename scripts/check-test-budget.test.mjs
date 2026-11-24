@@ -46,7 +46,7 @@ test("findUnbudgetedSleeps flags real-clock sleeps >1000ms (including inline cal
     ],
   );
 
-  // Cancellable deadline timers and fake-timer suites must not produce false positives.
+  // Cancellable deadline timers and full fake-timer scopes must not produce false positives.
   assert.deepEqual(
     findUnbudgetedSleeps(
       "const timer = setTimeout(() => reject(new Error('timeout')), 60_000);\nclearTimeout(timer);",
@@ -56,6 +56,59 @@ test("findUnbudgetedSleeps flags real-clock sleeps >1000ms (including inline cal
   assert.deepEqual(
     findUnbudgetedSleeps("vi.useFakeTimers();\nsetTimeout(() => done(), 10_000);"),
     [],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      'beforeEach(() => { vi.useFakeTimers(); });\nafterEach(() => { vi.useRealTimers(); });\nit("faked", () => {\n  setTimeout(() => done(), 5000);\n});',
+    ),
+    [],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      'vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });\nsetTimeout(() => done(), 2500);',
+    ),
+    [],
+  );
+
+  // Partial fake timers (e.g. Date-only) and real-clock tests in mixed-clock files MUST still be flagged.
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      'vi.useFakeTimers({ toFake: ["Date"] });\nawait new Promise((resolve) => setTimeout(resolve, 2500));',
+    ).map((v) => ({ rule: v.rule, line: v.line })),
+    [{ rule: "sleep-over-1s", line: 2 }],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      'vi.useFakeTimers({ doNotFake: ["setTimeout"] });\nawait new Promise((resolve) => setTimeout(resolve, 2500));',
+    ).map((v) => ({ rule: v.rule, line: v.line })),
+    [{ rule: "sleep-over-1s", line: 2 }],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      [
+        'it("faked", () => {',
+        "  vi.useFakeTimers();",
+        "  setTimeout(() => done(), 5000);",
+        "});",
+        'it("real", async () => {',
+        "  await new Promise((resolve) => setTimeout(resolve, 2500));",
+        "});",
+      ].join("\n"),
+    ).map((v) => ({ rule: v.rule, line: v.line })),
+    [{ rule: "sleep-over-1s", line: 6 }],
+  );
+  assert.deepEqual(
+    findUnbudgetedSleeps(
+      [
+        'it("restores", async () => {',
+        "  vi.useFakeTimers();",
+        "  setTimeout(() => done(), 5000);",
+        "  vi.useRealTimers();",
+        "  await new Promise((resolve) => setTimeout(resolve, 2500));",
+        "});",
+      ].join("\n"),
+    ).map((v) => ({ rule: v.rule, line: v.line })),
+    [{ rule: "sleep-over-1s", line: 5 }],
   );
 });
 

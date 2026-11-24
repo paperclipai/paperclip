@@ -109,10 +109,90 @@ function hasProseSourceRead(source) {
   return false;
 }
 
+function fakeTimersFakesSetTimeout(rawArgs) {
+  const args = (rawArgs ?? "").trim();
+  if (!args) return true;
+  const toFakeMatch = args.match(/\btoFake\s*:\s*\[([^\]]*)\]/);
+  if (toFakeMatch) {
+    return /['"`]setTimeout['"`]/.test(toFakeMatch[1]);
+  }
+  const doNotFakeMatch = args.match(/\bdoNotFake\s*:\s*\[([^\]]*)\]/);
+  if (doNotFakeMatch && /['"`]setTimeout['"`]/.test(doNotFakeMatch[1])) {
+    return false;
+  }
+  return true;
+}
+
+function buildFakeTimeoutRanges(source) {
+  // Walk timer-mode transitions and test boundaries in source order so partial
+  // fakes (e.g. `toFake: ["Date"]`) and real-clock tests in mixed-clock files
+  // are still checked for unbudgeted `setTimeout` sleeps.
+  const events = [];
+  const hookRanges = [];
+  const hookRe = /\b(beforeEach|beforeAll|afterEach|afterAll)\s*\(/g;
+  let m;
+  while ((m = hookRe.exec(source)) !== null) {
+    const call = extractBalancedCallArgs(source, m.index + m[0].length - 1);
+    if (!call) continue;
+    hookRanges.push({ kind: m[1], start: m.index, end: call.endIndex });
+  }
+  const hookKindAt = (offset) => {
+    for (const h of hookRanges) {
+      if (offset >= h.start && offset <= h.end) return h.kind;
+    }
+    return null;
+  };
+
+  const fakeRe = /\b(?:vi|jest)\.useFakeTimers\s*\(/g;
+  while ((m = fakeRe.exec(source)) !== null) {
+    const call = extractBalancedCallArgs(source, m.index + m[0].length - 1);
+    const fakesSetTimeout = fakeTimersFakesSetTimeout(call?.args[0] ?? "");
+    const hook = hookKindAt(m.index);
+    events.push({
+      offset: m.index,
+      kind: hook === "beforeEach" || hook === "beforeAll" ? "hook-fake" : "fake",
+      fakesSetTimeout,
+    });
+  }
+
+  const realRe = /\b(?:vi|jest)\.useRealTimers\s*\(/g;
+  while ((m = realRe.exec(source)) !== null) {
+    const hook = hookKindAt(m.index);
+    if (hook === "afterEach" || hook === "afterAll") continue;
+    events.push({ offset: m.index, kind: "real", fakesSetTimeout: false });
+  }
+
+  const testBoundaryRe = /^\s*(?:it|test|describe)(?:\.(?:only|skip|concurrent|sequential|each))?\s*\(/gm;
+  while ((m = testBoundaryRe.exec(source)) !== null) {
+    events.push({ offset: m.index, kind: "boundary", fakesSetTimeout: false });
+  }
+
+  events.sort((a, b) => a.offset - b.offset);
+
+  return function isSetTimeoutFakedAt(offset) {
+    let hookFake = false;
+    let localFake = false;
+    for (const ev of events) {
+      if (ev.offset > offset) break;
+      if (ev.kind === "hook-fake") {
+        hookFake = ev.fakesSetTimeout;
+        localFake = hookFake;
+      } else if (ev.kind === "boundary") {
+        localFake = hookFake;
+      } else if (ev.kind === "fake") {
+        localFake = ev.fakesSetTimeout;
+      } else if (ev.kind === "real") {
+        localFake = false;
+      }
+    }
+    return localFake;
+  };
+}
+
 export function findUnbudgetedSleeps(source, { onlyLineNumbers = null } = {}) {
   const violations = [];
   const lines = source.split(/\r?\n/);
-  const usesFakeTimers = /\b(?:vi|jest)\.useFakeTimers\s*\(/.test(source);
+  const isSetTimeoutFakedAt = buildFakeTimeoutRanges(source);
   const clearedHandles = new Set(
     [...source.matchAll(/\bclearTimeout\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((m) => m[1]),
   );
@@ -147,7 +227,7 @@ export function findUnbudgetedSleeps(source, { onlyLineNumbers = null } = {}) {
 
     const callee = match[1];
     if (callee === "setTimeout") {
-      if (usesFakeTimers) continue;
+      if (isSetTimeoutFakedAt(match.index)) continue;
       // Ignore cancellable deadline timers (e.g. `const timer = setTimeout(...); ... clearTimeout(timer)`).
       const beforeOnLine = source.slice(Math.max(0, match.index - 80), match.index);
       const assignedVar = beforeOnLine.match(/([A-Za-z_$][\w$]*)\s*=\s*$/);
