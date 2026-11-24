@@ -471,6 +471,62 @@ describe("Agents", () => {
   it.each([
     ["streamlined", Agents],
     ["production", ProductionAgents],
+  ] as const)("%s: keeps the Live badge on one line when an agent has several runs", async (_mode, AgentList) => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      {
+        id: "run-1",
+        status: "running",
+        agentId: "agent-1",
+        invocationSource: "timer",
+        triggerDetail: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        agentName: "Alpha",
+        adapterType: "codex_local",
+      },
+      {
+        id: "run-2",
+        status: "queued",
+        agentId: "agent-1",
+        invocationSource: "timer",
+        triggerDetail: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        agentName: "Alpha",
+        adapterType: "codex_local",
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider>
+      </QueryClientProvider>,
+    ));
+    await flushReact();
+    await flushReact();
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    if (listToggle && listToggle.getAttribute("aria-pressed") !== "true") {
+      await act(() => {
+        listToggle.click();
+      });
+      await flushReact();
+    }
+    const badge = container.querySelector<HTMLAnchorElement>('a[href="/agents/alpha/runs/run-1"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("Live (2)");
+    expect(badge?.className).toContain("inline-flex");
+    expect(badge?.className).toContain("shrink-0");
+    expect(badge?.className).toContain("whitespace-nowrap");
+    const label = Array.from(badge!.querySelectorAll("span")).find((node) => node.textContent === "Live (2)");
+    expect(label?.className).toContain("whitespace-nowrap");
+    expect(badge?.parentElement?.className).toContain("flex-wrap");
+  });
+
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
   ] as const)("%s: combines metadata filters, keeps hidden selections, and retains org ancestors", async (_mode, AgentList) => {
     const agents = [
       makeAgent({ id: "manager", name: "Manager", adapterType: "process" }),
