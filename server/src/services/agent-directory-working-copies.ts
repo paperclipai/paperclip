@@ -6,7 +6,7 @@ import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { syncDirectoryToSsh, restoreWorkspaceFromSshExecution } from "@paperclipai/adapter-utils/ssh";
 import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget, type PreparedAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
-import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorageWarning, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { excludeRuntimeFromRemoteGit } from "./agent-instruction-files.js";
@@ -659,16 +659,23 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const run = async () => {
       const lockRoot = path.resolve(disposableRemoteCopy(row) ? projectionRoot(row) : row.localRoot, "../../..");
       if (disposableRemoteCopy(row)) await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
-      return withDirectoryMergeLock(lockRoot, async () => {
-        let current = await get(row.companyId, row.runId);
-        if (!current) throw notFound("Agent directory copy not found");
-        if (disposableRemoteCopy(current) && current.localRoot !== projectionRoot(current)) {
-          current = await patch(current, { localRoot: projectionRoot(current) });
-          if (current.localRoot !== projectionRoot(current)) throw conflict("Agent directory projection changed");
-          transports.delete(key(current));
-        }
-        return fn(current);
-      }, process.env, operation);
+      let entered = false;
+      try {
+        return await withDirectoryMergeLock(lockRoot, async () => {
+          entered = true;
+          let current = await get(row.companyId, row.runId);
+          if (!current) throw notFound("Agent directory copy not found");
+          if (disposableRemoteCopy(current) && current.localRoot !== projectionRoot(current)) {
+            current = await patch(current, { localRoot: projectionRoot(current) });
+            if (current.localRoot !== projectionRoot(current)) throw conflict("Agent directory projection changed");
+            transports.delete(key(current));
+          }
+          return fn(current);
+        }, process.env, operation);
+      } catch (error) {
+        if (!entered && (error as NodeJS.ErrnoException | null)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) throw new AgentDirectoryOperationBusyError();
+        throw error;
+      }
     };
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
