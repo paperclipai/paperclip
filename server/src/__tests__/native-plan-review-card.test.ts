@@ -1,0 +1,244 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  activityLog,
+  agents,
+  companies,
+  createDb,
+  documentRevisions,
+  documents,
+  goals,
+  heartbeatRuns,
+  issueDocuments,
+  issueThreadInteractions,
+  issues,
+} from "@paperclipai/db";
+import { ensureNativePlanReviewCard } from "../services/native-runtime/native-plan-review-card.js";
+import { synchronizeCompletedProviderPlan } from "../services/native-runtime/native-session-executor.js";
+import { documentService } from "../services/documents.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PLAN_REVIEW_CARD_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const PLAN = "# Create crash-proof.txt\n\n1. Write the file.\n2. Verify it.";
+
+// Harnesses without a provider plan event (Antigravity and other ACPX agents)
+// write the Plan document with a tool. A Plan-mode run that settles without
+// opening the review card — for example a run recovered after its process was
+// killed — must not leave the task waiting on a review nobody can give.
+describeEmbeddedPostgres("Plan-mode review card on settle", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plan-review-card-");
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
+    await tempDb?.cleanup();
+  });
+
+  let prefix = 0;
+  async function seed(workMode: "standard" | "planning" = "planning") {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `PRC${++prefix}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(goals).values({ id: goalId, companyId, title: "Ship", level: "task", status: "active" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Gemma", role: "engineer", status: "active",
+      adapterType: "antigravity_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, goalId, title: "Create crash-proof.txt", status: "in_progress",
+      priority: "medium", assigneeAgentId: agentId, workMode,
+    });
+    const newRun = async () => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+      return runId;
+    };
+    const binding = (runId: string) => ({ companyId, issueId, agentId, runId });
+    const writePlan = async (runId: string, body = PLAN) => documentService(db).upsertIssueDocument({
+      issueId, key: "plan", title: "Plan", format: "markdown", body,
+      baseRevisionId: (await documentService(db).getIssueDocumentByKey(issueId, "plan"))?.latestRevisionId ?? undefined,
+      createdByAgentId: agentId, createdByRunId: runId,
+    } as never);
+    const cards = () => db.select().from(issueThreadInteractions)
+      .where(and(eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.kind, "request_confirmation")));
+    return { companyId, issueId, agentId, newRun, binding, writePlan, cards };
+  }
+
+  it("opens exactly one review card for a recovered run's new plan revision", async () => {
+    const t = await seed();
+    await t.newRun(); // the killed run
+    const recovered = await t.newRun();
+    await t.writePlan(recovered);
+
+    const outcome = await ensureNativePlanReviewCard(db, t.binding(recovered));
+
+    expect(outcome.kind).toBe("created");
+    const cards = await t.cards();
+    expect(cards).toHaveLength(1);
+    const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+    expect(cards[0]).toMatchObject({ status: "pending", sourceRunId: recovered, createdByAgentId: t.agentId });
+    expect(cards[0]!.payload).toMatchObject({
+      acceptLabel: "Approve plan", rejectLabel: "Request changes",
+      target: { type: "issue_document", key: "plan", revisionId: plan!.latestRevisionId, revisionNumber: 1 },
+    });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, t.issueId));
+    expect(activity).toEqual([expect.objectContaining({ action: "issue.thread_interaction_created", actorType: "system" })]);
+  });
+
+  it("does nothing when the agent already opened a card for the revision", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    await t.writePlan(runId);
+    // The agent's own card, without a document target (as Antigravity opens it).
+    await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: "confirm-plan-v1", sourceRunId: runId,
+      title: "Approve the plan", continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt: "Proceed with implementation?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
+    } as never, { agentId: t.agentId, runId });
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({ kind: "pending" });
+    expect(await t.cards()).toHaveLength(1);
+  });
+
+  it("keeps one card across repeated and concurrent settles of the same and later runs", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    await t.writePlan(runId);
+    const reconcileRun = await t.newRun();
+
+    const outcomes = await Promise.all([
+      ensureNativePlanReviewCard(db, t.binding(runId)),
+      ensureNativePlanReviewCard(db, t.binding(runId)),
+      ensureNativePlanReviewCard(db, t.binding(reconcileRun)),
+    ]);
+    await ensureNativePlanReviewCard(db, t.binding(runId));
+    await ensureNativePlanReviewCard(db, t.binding(reconcileRun));
+
+    expect(outcomes.filter(outcome => outcome.kind === "created").length).toBeLessThanOrEqual(1);
+    const cards = await t.cards();
+    expect(cards.filter(card => card.status === "pending")).toHaveLength(1);
+    expect(cards).toHaveLength(1);
+  });
+
+  it("opens a new card for the revision written after Request changes and leaves the old one unanswerable", async () => {
+    const t = await seed();
+    const first = await t.newRun();
+    await t.writePlan(first);
+    const created = await ensureNativePlanReviewCard(db, t.binding(first));
+    if (created.kind !== "created") throw new Error("expected a card");
+    const interactions = issueThreadInteractionService(db);
+    const [oldCard] = await t.cards();
+    await interactions.rejectInteraction(
+      { id: t.issueId, companyId: t.companyId }, oldCard!.id,
+      { reason: "Name the file crash-proof-2.txt" } as never, { userId: "local-board" } as never,
+    );
+
+    // Request changes answered this revision: nothing new until the agent revises.
+    await expect(ensureNativePlanReviewCard(db, t.binding(first))).resolves.toMatchObject({ kind: "reviewed" });
+
+    const second = await t.newRun();
+    await t.writePlan(second, `${PLAN}\n3. Use crash-proof-2.txt.`);
+    await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "created" });
+
+    const cards = await t.cards();
+    expect(cards).toHaveLength(2);
+    const pending = cards.filter(card => card.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
+    expect(cards.find(card => card.id === oldCard!.id)?.status).toBe("rejected");
+  });
+
+  it("replaces a still-pending card for an older revision", async () => {
+    const t = await seed();
+    const first = await t.newRun();
+    await t.writePlan(first);
+    await ensureNativePlanReviewCard(db, t.binding(first));
+    const [oldCard] = await t.cards();
+    const second = await t.newRun();
+    await t.writePlan(second, `${PLAN}\n3. Revised.`);
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "created" });
+
+    const cards = await t.cards();
+    expect(cards.find(card => card.id === oldCard!.id)?.status).toBe("expired");
+    expect(cards.filter(card => card.status === "pending")).toHaveLength(1);
+    await expect(interactionsAccept(t, oldCard!.id)).rejects.toThrow();
+  });
+
+  async function interactionsAccept(t: Awaited<ReturnType<typeof seed>>, id: string) {
+    return issueThreadInteractionService(db).acceptInteraction(
+      { id: t.issueId, companyId: t.companyId, projectId: null, goalId: null }, id, {} as never, { userId: "local-board" } as never,
+    );
+  }
+
+  it("reports a Plan-mode run with no plan, and leaves Standard tasks untouched", async () => {
+    const planning = await seed();
+    const runId = await planning.newRun();
+    await expect(ensureNativePlanReviewCard(db, planning.binding(runId))).resolves.toEqual({ kind: "no_plan" });
+    expect(await planning.cards()).toHaveLength(0);
+
+    const standard = await seed("standard");
+    const standardRun = await standard.newRun();
+    await standard.writePlan(standardRun);
+    await expect(ensureNativePlanReviewCard(db, standard.binding(standardRun))).resolves.toEqual({ kind: "not_applicable" });
+    expect(await standard.cards()).toHaveLength(0);
+  });
+
+  it("leaves the card Codex and Claude open from their plan event as the only card", async () => {
+    const t = await seed();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: t.companyId, agentId: t.agentId, status: "running", contextSnapshot: { issueId: t.issueId } });
+    const synced = await synchronizeCompletedProviderPlan({
+      db,
+      execution: {
+        binding: t.binding(runId), provider: { kind: "codex" }, task: { workMode: "planning" }, executionMode: "plan",
+        planningContext: { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "none", reviewContext: {} },
+      } as never,
+      event: { sourceEventId: "event-1", turnId: "turn-1", eventType: "plan.proposed",
+        payload: { schema: "paperclip.plan.proposed.v1", proposalId: "plan-1", status: "completed", markdown: PLAN, source: "codex" } },
+    });
+    expect(synced).toMatchObject({ status: "synchronized" });
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({ kind: "pending", interactionId: synced!.confirmationId });
+    expect(await t.cards()).toHaveLength(1);
+  });
+
+  it("does not put a person's own plan edit up for review", async () => {
+    const t = await seed();
+    const runId = await t.newRun();
+    await documentService(db).upsertIssueDocument({
+      issueId: t.issueId, key: "plan", title: "Plan", format: "markdown", body: "# My plan", createdByUserId: "local-board",
+    });
+    await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toEqual({ kind: "not_applicable" });
+    expect(await t.cards()).toHaveLength(0);
+  });
+});

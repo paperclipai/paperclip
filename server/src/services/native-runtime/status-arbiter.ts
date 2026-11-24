@@ -13,6 +13,7 @@ export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
 export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
+export const PLAN_NOT_PRODUCED_REASON = "plan_mode_plan_not_produced";
 export const NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE = "native_blocker_superseded_by_queued_request";
 export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
   "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
@@ -236,6 +237,8 @@ export function arbitrateNativeStatus(input: {
   publishedExternalReview?: boolean;
   /** Server-verified accepted plan request and normal provider terminal. */
   planWaitAuthorized?: boolean;
+  /** A Plan-mode run settled with no unanswered plan revision to review. */
+  planNotProduced?: boolean;
   monitorWaitAuthorized?: boolean;
   caseHandoffAuthorized?: boolean;
   /** The saved timer already admitted another run and this run no longer owns checkout. */
@@ -899,6 +902,36 @@ export function arbitrateNativeStatus(input: {
       // An answered native plan is not task completion or permission to
       // change modes. Only a new explicit user cause may continue the work.
       effects: [],
+    };
+  }
+  if (
+    input.planNotProduced === true &&
+    !input.isConversation &&
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake"
+  ) {
+    // Plan mode waits only on a plan review, and there is no plan to review.
+    // Ask the agent once to save its plan (its card then opens); after that the
+    // task shows a recovery step instead of an empty wait.
+    if (input.allowIncompleteContinuation === false) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve", toStatus: input.priorIssueStatus,
+        reasonCode: PLAN_NOT_PRODUCED_REASON, unblockDescriptor: null,
+        effects: [{ kind: "record_finalization_error", cause: PLAN_NOT_PRODUCED_REASON,
+          nextAction: "The agent finished in Plan mode without a new plan to review. Ask it to write the plan, or switch the task out of Plan mode.",
+          agentId: input.agentId }],
+      };
+    }
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress", toStatus: "in_progress",
+      reasonCode: PLAN_NOT_PRODUCED_REASON, unblockDescriptor: null,
+      effects: [{
+        kind: "enqueue_continuation", continuationKind: "same_agent",
+        summary: "This task is in Plan mode and there is no new plan to review. Save your plan (or the revised plan) to this task's Plan document; Paperclip then asks the user to approve it. If you need an answer first, ask a question instead of waiting.",
+        idempotencyKey: "native-completion-incomplete", agentId: input.agentId,
+      }],
     };
   }
   if (
