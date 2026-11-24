@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, max, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueRelations, issues, workspaceOperations } from "@paperclipai/db";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 
 /**
  * Circuit breaker for the resolved-dependency wake backstop.
@@ -80,14 +81,21 @@ export async function readDependencyWakeCircuit(
   db: Db,
   input: { companyId: string; issueId: string; agentId: string; blockerIssueIds: string[]; now?: number },
 ): Promise<DependencyWakeCircuitDecision> {
-  // heartbeat_runs.issue_id is the run's task binding; ordering by created_at
-  // uses heartbeat_runs_company_issue_created_idx. Unfinished runs are skipped.
+  // Match the canonical run-task binding. The OR over the three indexed binding
+  // paths (issue_id, native_issue_id, context issueId) lets the planner use
+  // their company-scoped indexes; the coalesced binding keeps the match exact.
+  // Unfinished runs are skipped.
   const runs = await db
     .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, input.companyId),
-      eq(heartbeatRuns.issueId, input.issueId),
+      or(
+        eq(heartbeatRuns.issueId, input.issueId),
+        eq(heartbeatRuns.nativeIssueId, input.issueId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+      ),
+      sql`${boundRunIssueIdSql()} = ${input.issueId}`,
       eq(heartbeatRuns.agentId, input.agentId),
     ))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))

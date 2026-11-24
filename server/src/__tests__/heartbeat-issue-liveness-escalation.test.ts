@@ -1321,6 +1321,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     blockerIssueId: string;
     count: number;
     lastFinishedAt: Date;
+    contextOnly?: boolean;
   }) {
     // Production shape: the blocker finished long ago, then each woken run failed
     // and left the task blocked in a new cycle, so every wake carries a different
@@ -1336,7 +1337,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       const [run] = await db.insert(heartbeatRuns).values({
         companyId: input.companyId,
         agentId: input.agentId,
-        issueId: input.blockedIssueId,
+        // Promoted wakes bind the task only in the context snapshot.
+        issueId: input.contextOnly ? null : input.blockedIssueId,
         status: "failed",
         errorCode: "native_session_interrupted",
         startedAt: requestedAt,
@@ -1390,6 +1392,16 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(deadlines).toHaveLength(1);
     expect(deadlines[0]).toBeGreaterThan(Date.now() + 20 * 60_000);
     expect(await countDependencyWakes(fixture.companyId)).toBe(3);
+  });
+
+  it("counts failed runs bound to the task only through their context", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 2, lastFinishedAt: new Date(Date.now() - 30_000), contextOnly: true });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(0);
+    expect(result.failedWakeBackoffSkipped).toBe(1);
   });
 
   it("wakes again once the failure backoff has passed", async () => {
