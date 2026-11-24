@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   checkCoverage,
   checkCoverageAsync,
+  defaultConcurrency,
   findUncheckedTests,
   LOCKED_PROVIDERS,
   PROGRAMS,
@@ -306,6 +307,10 @@ test("selectTestPrograms skips sandbox providers and examples unless their input
   const tsconfigEdit = selectTestPrograms(["ui/tsconfig.json"]);
   assert.equal(tsconfigEdit.checkCoverage, true);
   assert.equal(tsconfigEdit.changedTestFiles, null);
+
+  const adapterUtilsEdit = selectTestPrograms(["packages/adapter-utils/src/github-launcher.ts"]);
+  assert.ok(adapterUtilsEdit.programs.some((program) => program.startsWith("packages/paperclip-runner/")));
+  assert.equal(adapterUtilsEdit.includeRunnerEval, true);
 });
 
 test("prepareTestPrograms can skip sandbox provider installs, runner eval prep, and plugin SDK", () => {
@@ -410,4 +415,12 @@ test("checkCoverageAsync checks targeted files with early exit and skips uninsta
     logError: () => {},
   });
   assert.deepEqual(uncovered, ["ui/src/Orphan.test.tsx"]);
+});
+
+test("defaultConcurrency scales safely with CPU count and memory", () => {
+  const GiB = 1024 ** 3;
+  assert.equal(defaultConcurrency({ cpus: 2, totalMemoryBytes: 8 * GiB }), 1);
+  assert.equal(defaultConcurrency({ cpus: 4, totalMemoryBytes: 16 * GiB }), 2);
+  assert.equal(defaultConcurrency({ cpus: 8, totalMemoryBytes: 16 * GiB }), 3);
+  assert.equal(defaultConcurrency({ cpus: 8, totalMemoryBytes: 32 * GiB }), 4);
 });

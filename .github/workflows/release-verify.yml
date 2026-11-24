@@ -573,7 +573,7 @@ jobs:
         with:
           lookup-only: true
           path: server/ui-dist
-          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
 
       - name: Stage prebuilt UI assets for E2E cache
         if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.e2e_ui_dist.outputs.cache-hit != 'true' }}
@@ -584,7 +584,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: server/ui-dist
-          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
 
   runner_binary_targets:
     if: inputs.runner_binaries_only

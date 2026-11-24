@@ -189,7 +189,7 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 API: `present` — `POST /api/tools/oauth/{connectionId}/start`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Returns the saved setup without issuing agent-bound OAuth state; the human browser initiates provider consent.
-Evidence: `verified` — [authenticated integration fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed through production authentication and database persistence, including saved Google service choices addressed to the responsible user. [Service-picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx) cover restoring only that user's request and retaining newer consent.
+Evidence: `verified` — [authenticated integration fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed through production authentication and database persistence, including saved Google service choices addressed to the responsible user. (Mocked `GoogleWorkspaceServices` UI service-picker tests were removed; verify UI consent-picker restoration manually.)
 Verification: `passed` — deterministic local fixture; no live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.
 
