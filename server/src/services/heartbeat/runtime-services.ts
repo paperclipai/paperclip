@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { formatRunLogError } from "./run-log.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { parseObject } from "../../adapters/utils.js";
@@ -148,7 +149,7 @@ export async function startHeartbeatRuntimeServices(db: Db, input: RuntimeServic
     } catch (err) {
       await onLog(
         "stderr",
-        `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to post workspace-ready comment: ${formatRunLogError(err)}\n`,
       );
     }
   }
@@ -206,7 +207,7 @@ export async function recordHeartbeatAdapterRuntimeServices(db: Db, input: Runti
       } catch (err) {
         await onLog(
           "stderr",
-          `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[paperclip] Failed to post adapter-managed runtime comment: ${formatRunLogError(err)}\n`,
         );
       }
     }

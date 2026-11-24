@@ -11,6 +11,21 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const INLINE_BASE64_IMAGE_DATA_RE =
   /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
+export function formatRunLogError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const seen = new Set<unknown>([error]);
+  const codes: string[] = [];
+  let cause = error !== null && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined;
+  for (let depth = 0; depth < 8 && cause !== null && typeof cause === "object"; depth++) {
+    if (seen.has(cause)) break;
+    seen.add(cause);
+    const entry = cause as { code?: unknown; cause?: unknown };
+    if (typeof entry.code === "string" && /^[A-Z0-9_]{1,64}$/.test(entry.code)) codes.push(entry.code);
+    cause = entry.cause;
+  }
+  return codes.length > 0 ? `${message} (cause codes: ${codes.join(", ")})` : message;
+}
+
 export function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
 }

@@ -194,6 +194,36 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
+  it.each(["presentation", "skill test"] as const)("logs bounded cause codes for a failed %s publication without cause text", async path => {
+    const f = await fixture();
+    const driver = Object.assign(new Error("private driver detail"), { code: "23503", detail: "private row values" });
+    const invalid = { code: "unsafe\nprivate", cause: driver };
+    const wrapped = new Error("Failed query", { cause: { code: "PUBLICATION_FAILED", cause: invalid } });
+    driver.cause = wrapped;
+    if (path === "presentation") {
+      f.input.adapterResult.resultJson = { finalResponseDisposition: "final", finalResponse: "Completed the work." };
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Report the result" }).returning();
+      f.input.issueId = issue.id;
+      f.input.issueRef = issue;
+      f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+      f.deps.issuesSvc.addComment.mockRejectedValueOnce(wrapped);
+    } else f.deps.completeSkillTestRunForHeartbeatOutcome.mockRejectedValueOnce(wrapped);
+    await f.completion.completeRun(f.input);
+    const prefix = path === "presentation" ? "Failed to resolve run presentation" : "Failed to complete skill test run";
+    expect(f.input.onLog).toHaveBeenCalledWith("stderr", `[paperclip] ${prefix}: Failed query (cause codes: PUBLICATION_FAILED, 23503)\n`);
+    if (path === "presentation") expect(f.deps.issuesSvc.addComment).toHaveBeenCalledOnce();
+    expect(await read(f.run.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("bounds the cause-code traversal in presentation failure output", async () => {
+    const f = await fixture();
+    let cause: unknown = { code: "OMITTED" };
+    for (let index = 7; index >= 0; index--) cause = { code: `CODE_${index}`, cause };
+    f.deps.findLatestCompletedFinalAgentMessage.mockRejectedValueOnce(new Error("Failed query", { cause }));
+    await f.completion.completeRun(f.input);
+    expect(f.input.onLog).toHaveBeenCalledWith("stderr", "[paperclip] Failed to resolve run presentation: Failed query (cause codes: CODE_0, CODE_1, CODE_2, CODE_3, CODE_4, CODE_5, CODE_6, CODE_7)\n");
+  });
+
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
     for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
       const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
