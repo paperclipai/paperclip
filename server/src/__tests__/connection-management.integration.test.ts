@@ -394,12 +394,22 @@ describe("connection management with production default agents", () => {
     expect(await f.request("GET", `/tool-profiles/${profileIds[1]}/new-tools`)).toMatchObject({ status: 200, body: { tools: [expect.objectContaining({ connectionName: "Private profile account", description: "Private tool metadata" })] } });
     const effectivePath = `/companies/${f.companyId}/tools/profiles/effective/agents/${f.agentId}`;
     expect((await f.request("GET", effectivePath)).body.allowedTools.some((tool: { toolName: string }) => tool.toolName === "private_tool")).toBe(true);
+    const profileListPath = `/companies/${f.companyId}/tools/profiles`;
+    const summaryPath = `${profileListPath}/summary`;
+    const fullProfiles = await f.request("GET", profileListPath);
+    expect(fullProfiles.body.profiles.map((profile: { id: string }) => profile.id)).toContain(profileIds[0]);
+    const summary = await f.request("GET", summaryPath);
+    expect(summary).toEqual({ status: 200, body: { profiles: fullProfiles.body.profiles.map(
+      ({ id, name, status, updatedAt, summary, newToolsPendingCount }: Record<string, unknown>) =>
+        ({ id, name, status, updatedAt, summary, newToolsPendingCount }),
+    ) } });
     expect(await f.request("PUT", `/tool-connections/${second.body.id}/installs`, { installs: [{ targetType: "agent", targetId: f.agentId }] })).toMatchObject({ status: 200 });
     await server.db.update(toolConnections).set({ credentialPolicy: "per_user", createdByUserId: randomUUID() }).where(eq(toolConnections.id, second.body.id));
     for (const token of [f.key.token, f.jwt]) {
       expect(await f.request("GET", `/tool-profiles/${profileIds[1]}/new-tools`, undefined, token)).toMatchObject({ status: 403 });
       for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools`, undefined, token)).toMatchObject({ status: 403 });
-      expect((await f.request("GET", `/companies/${f.companyId}/tools/profiles`, undefined, token)).body.profiles).toEqual([]);
+      expect((await f.request("GET", profileListPath, undefined, token)).body.profiles).toEqual([]);
+      expect(await f.request("GET", summaryPath, undefined, token)).toEqual({ status: 200, body: { profiles: [] } });
       expect(await f.request("GET", effectivePath, undefined, token)).toMatchObject({ status: 403 });
     }
     for (const [index, entry] of selectors.entries()) expect(await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: `private-attempt-${index}`, name: `Private attempt ${index}`, entries: [entry] })).toMatchObject({ status: 403 });

@@ -406,6 +406,7 @@ import {
 import {
   addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
+  conversationInteractionResponderAllowed,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -3120,6 +3121,9 @@ function toCompactIssue(issue: any): CompactIssue {
       : {}),
     ...(issue.isUnreadForMe !== undefined
       ? { isUnreadForMe: issue.isUnreadForMe }
+      : {}),
+    ...(issue.isArchivedForMe !== undefined
+      ? { isArchivedForMe: issue.isArchivedForMe }
       : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     interruption: issue.interruption ?? null,
@@ -6423,7 +6427,7 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+    if (req.actor.type === "board" && !conversationInteractionResponderAllowed(issue, req.actor.userId)) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
     // Actor-only gates deliberately precede the interaction lookup. An actor
@@ -7276,6 +7280,22 @@ export function issueRoutes(
     res.status(409).json({
       error: "Task is paused. Resume it before sending a message.",
       details: { issueId: issue.id, holdId: hold.holdId, rootIssueId: hold.rootIssueId },
+    });
+    return false;
+  }
+
+  async function assertAgentMayLeaveBlocked(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string },
+    nextStatus: string,
+  ) {
+    if (req.actor.type !== "agent" || issue.status !== "blocked" || nextStatus === "blocked" || isClosedIssueStatus(nextStatus)) return true;
+    const hold = await getExecutionBlocker(db, issue.companyId, issue.id, { recoveryHoldOnly: true });
+    if (!hold?.recoveryActionId) return true;
+    res.status(409).json({
+      error: `Issue stays blocked until its execution recovery hold is released. ${hold.nextAction}`,
+      details: { issueId: issue.id, recoveryActionId: hold.recoveryActionId, cause: hold.cause, nextAction: hold.nextAction },
     });
     return false;
   }
@@ -8800,6 +8820,15 @@ export function issueRoutes(
       res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
       return;
     }
+    const inboxArchive = req.query.inboxArchive;
+    if (inboxArchive !== undefined && ((inboxArchive !== "include" && inboxArchive !== "archived") || attention)) {
+      res.status(400).json({ error: "inboxArchive must be include or archived and cannot be used with attention" });
+      return;
+    }
+    if (inboxArchive && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "inboxArchive requires board authentication" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8967,6 +8996,9 @@ export function issueRoutes(
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
+      inboxArchive: inboxArchive && req.actor.type === "board" && req.actor.userId
+        ? { mode: inboxArchive, userId: req.actor.userId }
+        : undefined,
       unreadForUserId,
       readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
@@ -9024,7 +9056,7 @@ export function issueRoutes(
       requestKey,
       // The new collection projections must reflect read/archive/undo mutations
       // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
-      allowTtlCache: view === "compact",
+      allowTtlCache: view === "compact" && !inboxArchive,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
@@ -15179,6 +15211,7 @@ export function issueRoutes(
       }
 
       const nextStatus = updateFields.status ?? existing.status;
+      if (!(await assertAgentMayLeaveBlocked(req, res, existing, nextStatus))) return;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -16465,7 +16498,7 @@ export function issueRoutes(
                 }
               : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
-            ...(hasFieldChanges ? { updated: true } : {}),
+            ...(hasFieldChanges ? { updated: true, changes: issueChanges } : {}),
             ...summarizeIssueReferenceActivityDetails({
               addedReferencedIssues:
                 commentReferenceDiff.addedReferencedIssues.map(
@@ -17116,6 +17149,7 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue, "in_progress"))) return;
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
@@ -17324,17 +17358,18 @@ export function issueRoutes(
       });
     }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 7 }),
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
-      hasMore: recent.length > 4,
+      hasMore: recent.slice(4).some((comment) => !included.has(comment.id)),
     });
   }
 
@@ -19507,6 +19542,12 @@ export function issueRoutes(
           .json({ error: "Issue follow-up blocked by unresolved blockers" });
         return;
       }
+      if (
+        effectiveMoveToTodoRequested &&
+        !hasUnresolvedFirstClassBlockers &&
+        !(await assertAgentMayLeaveBlocked(req, res, issue, "todo"))
+      )
+        return;
       if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,

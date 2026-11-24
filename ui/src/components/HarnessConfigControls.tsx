@@ -63,6 +63,8 @@ export function ExperimentalBadge() {
   );
 }
 
+export type ModelGroupEntry = { group: string; label: string; note?: string };
+
 export function ModelDropdown({
   models,
   value,
@@ -84,6 +86,7 @@ export function ModelDropdown({
   emptyDetectHint,
   defaultLabel,
   presentation = "searchable",
+  groupModel,
 }: {
   models: AdapterModel[];
   value: string;
@@ -106,6 +109,9 @@ export function ModelDropdown({
   emptyDetectHint?: string;
   defaultLabel?: string;
   presentation?: "searchable" | "native";
+  /** Groups a curated list by model family, keeping its order; each entry shows
+   * the variant (for example a thinking level) and an optional note. */
+  groupModel?: (model: AdapterModel) => ModelGroupEntry | null;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [enteringCustomModel, setEnteringCustomModel] = useState(false);
@@ -140,7 +146,18 @@ export function ModelDropdown({
       );
     });
   }, [models, modelSearch, promotedModelIds]);
-  const groupedModels = useMemo(() => {
+  const groupedModels = useMemo((): Array<{ provider: string; heading?: string; entries: AdapterModel[] }> => {
+    if (groupModel && !groupByProvider) {
+      const groups = new Map<string, AdapterModel[]>();
+      const other: AdapterModel[] = [];
+      for (const model of filteredModels) {
+        const group = groupModel(model)?.group;
+        if (!group) { other.push(model); continue; }
+        groups.set(group, [...(groups.get(group) ?? []), model]);
+      }
+      return [...[...groups].map(([group, entries]) => ({ provider: group, heading: group, entries })),
+        ...(other.length ? [{ provider: "other", heading: groups.size ? "Other models" : undefined, entries: other }] : [])];
+    }
     if (!groupByProvider) {
       // A hand-ordered list (newest release of each family first, older releases at the end) is
       // shown as the adapter ordered it; a discovered list has no stable order, so sort it.
@@ -160,7 +177,11 @@ export function ModelDropdown({
         provider,
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
-  }, [filteredModels, groupByProvider, preserveOrder]);
+  }, [filteredModels, groupByProvider, preserveOrder, groupModel]);
+  const entryLabel = (model: AdapterModel) => {
+    const entry = groupModel?.(model);
+    return entry ? (entry.note ? `${entry.label} · ${entry.note}` : entry.label) : model.label;
+  };
 
   async function handleDetectModel() {
     if (!onDetectModel) return;
@@ -197,11 +218,11 @@ export function ModelDropdown({
             {allowDefault ? (defaultLabel ?? "Default") : loadingModels ? "Loading models…" : required ? "Select model (required)" : "Select model"}
           </option>
           {extraModels.map(id => <option key={id} value={id}>{models.find(model => model.id === id)?.label ?? id}</option>)}
-          {groupedModels.map(({ provider, entries }) => groupByProvider ? (
-            <optgroup key={provider} label={provider}>
-              {entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+          {groupedModels.map(({ provider, heading, entries }) => groupByProvider || heading ? (
+            <optgroup key={provider} label={heading ?? provider}>
+              {entries.map(model => <option key={model.id} value={model.id}>{groupByProvider ? model.label : entryLabel(model)}</option>)}
             </optgroup>
-          ) : entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>))}
+          ) : entries.map(model => <option key={model.id} value={model.id}>{entryLabel(model)}</option>))}
           {creatable && <option value={customOption}>Enter custom model…</option>}
         </NativeSelect>
         {enteringCustomModel && (
@@ -390,6 +411,11 @@ export function ModelDropdown({
                     {group.provider} ({group.entries.length})
                   </div>
                 )}
+                {!groupByProvider && group.heading && (
+                  <div role="presentation" className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                    {group.heading}
+                  </div>
+                )}
                 {group.entries.map((m) => (
                   <button
                     type="button"
@@ -404,9 +430,16 @@ export function ModelDropdown({
                       onOpenChange(false);
                     }}
                   >
-                    <span className="block w-full text-left truncate" title={m.id}>
-                      {groupByProvider ? extractModelName(m.id) : m.label}
-                    </span>
+                    {groupByProvider ? (
+                      <span className="block w-full text-left truncate" title={m.id}>{extractModelName(m.id)}</span>
+                    ) : groupModel?.(m) ? (
+                      <span className="flex w-full min-w-0 items-baseline gap-2 text-left" title={m.id}>
+                        <span className="truncate">{groupModel(m)!.label}</span>
+                        {groupModel(m)!.note && <span className="truncate text-xs text-muted-foreground">{groupModel(m)!.note}</span>}
+                      </span>
+                    ) : (
+                      <span className="block w-full text-left truncate" title={m.id}>{m.label}</span>
+                    )}
                   </button>
                 ))}
               </div>

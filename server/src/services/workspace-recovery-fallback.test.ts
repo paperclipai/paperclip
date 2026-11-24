@@ -212,6 +212,16 @@ describe("retained source fallback", () => {
     expect(wake.mock.calls.filter(call => (call as unknown[])[0] === settled.returnOwnerAgentId)).toHaveLength(0);
   }, 60_000);
 
+  it("continues from saved work after an API upload stopped before dispatch", async () => {
+    const f = await unverifiableRetainedSource();
+    const source = await run(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson, apiToolReceipts: {
+      upload: { state: "undispatched", operationId: "create_issue_attachment", digest: "a".repeat(64) },
+    } } }).where(eq(heartbeatRuns.id, f.runId));
+    await recoverRetainedWorkspace(f.input);
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+  }, 60_000);
+
   it("still continues when the retained root cannot be read, recording why", async () => {
     const f = await unverifiableRetainedSource();
     await rm(f.remote, { recursive: true, force: true });

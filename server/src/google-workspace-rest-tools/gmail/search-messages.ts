@@ -69,6 +69,7 @@ async function readMessages(ids: string[], input: SearchMessagesArgs, http: Goog
 export const searchMessages = defineTool({
   definition: {
     name: "search_messages",
+    title: "Search messages",
     description: "Lists the signed-in user's Gmail messages that match an optional Gmail search query, newest first, one page at a time. Returns message summaries by default; set messageFormat to FULL_CONTENT for bodies, or use get_message with a message ID.",
     inputSchema: {
       type: "object",

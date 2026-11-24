@@ -1312,6 +1312,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     options: CancelRunOptions,
     committedBudgetCancellation = false,
     quotaLineage = new Set<string>(),
+    quotaRechecked = false,
   ): Promise<typeof heartbeatRuns.$inferSelect | null> {
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -1467,7 +1468,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
         }
       }
-      if (supersessionApplied === "quota_recheck") return cancelRun(runId, reason, options, false, quotaLineage);
+      if (supersessionApplied === "quota_recheck") {
+        if (quotaRechecked) throw conflict("The pool retry changed while stopping this run. Try Stop again.", { code: "run_stop_busy", runId });
+        return cancelRun(runId, reason, options, false, quotaLineage, true);
+      }
       publications.forEach(publishActivity);
       if (!supersessionApplied) return null;
     }

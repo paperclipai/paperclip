@@ -568,6 +568,18 @@ describe("native status authority", () => {
     );
   });
 
+  it.each(["task_wide", "current_track"] as const)("keeps a resolved human owner for a %s block without waking the worker again", scope => {
+    const blocked = assessment({ reportedDisposition: "blocked", blocker: {
+      boardOwned: true, ownerKind: "user", ownerUserId: "named-member", scope, unblockAction: "Decide the dependency exception",
+    } });
+    const decision = arbitrate({ assessment: blocked });
+    expect(decision.unblockDescriptor?.owner).toEqual({ userId: "named-member" });
+    expect(decision.effects).toEqual([{ kind: "bind_blocker", owner: { userId: "named-member" }, action: "Decide the dependency exception" }]);
+    expect(arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true })).toMatchObject({
+      reasonCode: "durable_dependency_blocker_bound", unblockDescriptor: { owner: { userId: "named-member" } }, effects: [],
+    });
+  });
+
   it("blocks only for a task-wide blocker with a named owner and action", () => {
     expect(
       arbitrate({

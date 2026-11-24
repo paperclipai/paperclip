@@ -232,6 +232,7 @@ const apps = [
         serverUrl: "https://mcp.railway.com",
         scopesHint: ["openid", "offline_access", "workspace:member"],
         oauthAuthorizationParams: { prompt: "consent" },
+        tokenEndpoint: "https://backboard.railway.com/oauth/token",
       },
       "S4",
       "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
@@ -926,8 +927,8 @@ const apps = [
   ],
   [
     "anthropic",
-    "Anthropic",
-    "Use Anthropic APIs with a restricted key.",
+    "Anthropic (Claude)",
+    "Connect to Claude with Anthropic.",
     "ai",
     "anthropic.com",
     ["https://api.anthropic.com/*"],
@@ -1251,6 +1252,7 @@ const specialMethodsFor = (entry) => {
       defaults: {
         serverUrl: entry.serverUrl,
         discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        tokenEndpoint: "https://app.asana.com/-/oauth_token",
         scopesHint: ["default"],
       },
       oauthClientSecretRequired: true,

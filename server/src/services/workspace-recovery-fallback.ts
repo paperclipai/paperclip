@@ -1,3 +1,4 @@
+import { isUndispatchedRunnerApiReceipt } from "./recovery-effect-receipts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -77,6 +78,7 @@ export function retainedSourceFallbackNote(input: { runId: string; snapshotId: s
 
 async function uncertainExternalAction(db: Db, run: typeof heartbeatRuns.$inferSelect) {
   for (const receipt of Object.values(object(run.resultJson?.apiToolReceipts)).map(object)) {
+    if (isUndispatchedRunnerApiReceipt(receipt)) continue;
     let result = object(receipt.result);
     if (receipt.encryptedResult) {
       try {

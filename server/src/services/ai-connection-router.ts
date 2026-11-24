@@ -157,7 +157,7 @@ export function poolMemberRunsOnPaperclipRunner(member: { binding: { provider: s
   }
 }
 
-function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectionRouterSelection, configuredAdapterType: string) {
+export function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectionRouterSelection, configuredAdapterType: string) {
   const retainedAdapter = left.adapterType ?? right.adapterType ?? configuredAdapterType;
   const identity = (selection: AiConnectionRouterSelection) => ({
     poolId: selection.poolId,

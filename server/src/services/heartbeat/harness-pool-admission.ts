@@ -8,7 +8,7 @@ import { BUILTIN_AI_FAILOVER_ROUTER_KEY, decodeHarnessPoolConfig, harnessPoolBin
 import { parseObject } from "../../adapters/utils.js";
 import { unprocessable } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { aiConnectionRouterService, applyAiConnectionRouterTaskSettings } from "../ai-connection-router.js";
+import { aiConnectionRouterService, applyAiConnectionRouterTaskSettings, samePoolSelection } from "../ai-connection-router.js";
 import { resolvePaperclipRunnerProviderProfile, type PaperclipRunnerProviderProfile } from "../native-runtime/provider-profile.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
@@ -64,8 +64,9 @@ async function switchFreshRetryQuotaPin(input: {
       eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.id, previousRunId),
       eq(heartbeatRuns.status, "failed"), eq(heartbeatRuns.runtimeMode, "native"),
       eq(heartbeatRuns.errorCode, "native_provider_usage_limit")));
-    if (!source?.finishedAt || source.contextSnapshot?.aiRouterTaskKey !== issueId ||
-        !isDeepStrictEqual(source.contextSnapshot.aiRouterSelection, pin.selection) ||
+    const sourceSelection = source?.contextSnapshot?.aiRouterSelection as AiConnectionRouterSelection | undefined;
+    if (!source?.finishedAt || source.contextSnapshot?.aiRouterTaskKey !== issueId || !sourceSelection ||
+        !samePoolSelection(pin.selection, sourceSelection, agent.adapterType) ||
         !await hasNativeLocalProcessStop(tx, run.companyId, source.id)) return;
     const [finalization] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, issueId), eq(nativeRunFinalizations.runId, source.id))).for("update");
@@ -78,7 +79,7 @@ async function switchFreshRetryQuotaPin(input: {
       eq(heartbeatRunEvents.sourceEventId, `ai-connection-quota-attributed:${source.id}`), isNull(heartbeatRunEvents.sourceInstanceId),
     ));
     if (quota?.payload?.schema !== "paperclip.ai-connection-quota-attribution.v1" || quota.payload.runId !== source.id ||
-        quota.payload.taskKey !== issueId || !isDeepStrictEqual(quota.payload.selection, pin.selection)) return;
+        quota.payload.taskKey !== issueId || !isDeepStrictEqual(quota.payload.selection, sourceSelection)) return;
     const router = aiConnectionRouterService(tx);
     if (!(await router.currentMemberCooldown({ companyId: run.companyId, agentId: agent.id, userId,
       adapterType: agent.adapterType, member: pin.member, failureKind: "quota", sourceAdapterConfig }))?.retryAt) return;
@@ -110,7 +111,7 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
     eq(agentTaskSessions.adapterType, existingPin?.selection.adapterType ?? "paperclip_runner"), eq(agentTaskSessions.taskKey, taskKey))).limit(1);
   const identity = session?.sessionParamsJson?.paperclipAiCredentialIdentity;
   const overrides = parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig);
-  const environmentId = await harnessPoolEnvironmentScope(db, agent, task);
+  const environmentId = await harnessPoolEnvironmentScope(db, agent, task, run);
   const sourceAdapterConfig = { ...agent.adapterConfig, ...overrides };
   if (!review && existingPin) await switchFreshRetryQuotaPin({ db, run, agent, userId, pin: existingPin, environmentId, sourceAdapterConfig });
   const routerSelection = await aiConnectionRouterService(db).resolve({ companyId: agent.companyId, agentId: agent.id, poolId: pool.id,

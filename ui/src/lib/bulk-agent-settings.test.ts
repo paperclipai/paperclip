@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { createCloudHarnessPolicy } from "./cloud-harness-policy";
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { bulkAgentDisabledReason, mapBulkAgents, sameBinding } from "./bulk-agent-settings";
+
+it("withholds Cloud bulk model edits for unsupported saved native profiles", () => {
+  const agent = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" }, runtimeConfig: {}, status: "idle" } as unknown as Agent;
+  expect(bulkAgentDisabledReason(agent)).toBeUndefined();
+  expect(bulkAgentDisabledReason(agent, true, createCloudHarnessPolicy(sampleHarnesses))).toContain("not available on Paperclip Cloud");
+  expect(bulkAgentDisabledReason({ ...agent, adapterConfig: { provider: "acpx", acpxAgent: "copilot" } }, true, createCloudHarnessPolicy(sampleHarnesses))).toBeUndefined();
+});
 
 describe("bulk agent writes", () => {
   it("allows Antigravity connection/model edits while preserving router-only editing", () => {

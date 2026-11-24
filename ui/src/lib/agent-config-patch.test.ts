@@ -59,6 +59,26 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("keeps heartbeat and debug edits when removing an incompatible connection", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig.aiConnection = { provider: "anthropic", method: "subscription", mode: "responsible_user" };
+    agent.runtimeConfig.debug = { providerTrace: "raw", keep: true };
+    const { aiConnection: _removed, ...runtimeConfig } = agent.runtimeConfig;
+    const patch = buildAgentUpdatePatch(agent, makeOverlay({
+      adapterType: "opencode_local", runtime: { runtimeConfig },
+      heartbeat: { intervalSec: 600 }, debug: { providerTrace: undefined },
+    }));
+    expect(patch.runtimeConfig).toEqual({ heartbeat: { enabled: true, intervalSec: 600 }, debug: { keep: true } });
+  });
+
+  it("merges heartbeat and debug edits with a newly selected connection", () => {
+    const binding = { provider: "openai", method: "api_key", mode: "responsible_user" };
+    const patch = buildAgentUpdatePatch(makeAgent(), makeOverlay({
+      runtime: { runtimeConfig: { aiConnection: binding, heartbeat: { enabled: true, intervalSec: 300 } } },
+      heartbeat: { enabled: false }, debug: { providerTrace: "raw" },
+    }));
+    expect(patch.runtimeConfig).toEqual({ aiConnection: binding, heartbeat: { enabled: false, intervalSec: 300 }, debug: { providerTrace: "raw" } });
+  });
   it("merges the agent-scoped provider trace debug setting into runtime config", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

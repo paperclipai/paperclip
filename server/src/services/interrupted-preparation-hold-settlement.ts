@@ -6,7 +6,7 @@ import { settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js
 import { logger } from "../middleware/logger.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
-import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
+import { humanGateEvidencePredicate } from "./recovery/human-gate-evidence.js";
 import { abandonedPreparedRemoteWorkspaceExists } from "./remote-workspace-abandoned-preparation.js";
 
 /**
@@ -36,7 +36,7 @@ export function heldInterruptedPreparationWhere() {
       and hold.status = 'resolved' and hold.outcome = 'blocked' and hold.owner_user_id is null
       and hold.evidence->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'
       and hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
-      and not (hold.evidence ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation'])
+      and not ${humanGateEvidencePredicate(sql`hold.evidence`)}
       and (not (hold.evidence ?| array['workspaceRestoreFailure', 'workspaceRestoreRecovery'])
         or ${abandonedPreparedRemoteWorkspaceExists()}))`,
     sql`not exists (select 1 from environment_leases lease where lease.company_id = ${heartbeatRuns.companyId}

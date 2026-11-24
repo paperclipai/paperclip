@@ -454,7 +454,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_launch_digest_binds_authority_and_config_binds_actual_identity() {
         let mut profile = AcpxLaunchProfile {
             authority_digest: format!("sha256:{}", "a".repeat(64)),

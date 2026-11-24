@@ -83,6 +83,7 @@ export const NATIVE_STALL_MS = 5 * 60_000;
 /** Interruption presentation `userAction`s that are a person's move. */
 const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   approval: "approval",
+  question: "question",
   reconnect: "credential",
   choose_model: "credential",
   project_access: "credential",

@@ -363,6 +363,11 @@ selector checks the resolved native warm lifecycle before admission and rejects
 legacy or per-turn execution. External conversation providers keep their existing
 exemption because they own no task filesystem. Source resolution checks this
 contract again before a configured host folder can fall back to local storage.
+When the task source's project uses plugin storage that the selected
+environment cannot serve, the refusal names that storage and environment and
+ends the run `configuration_incomplete` (reason
+`project_storage_environment_incompatible`). See
+[project-environment-compatibility.md](project-environment-compatibility.md).
 
 A replacement controller reconstructs an active remote agent-directory cache
 from the registered sandbox, including unsaved files. The remote directory,

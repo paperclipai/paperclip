@@ -96,15 +96,15 @@ export function automationConversationService(
    * responsibility the task is under (the one the person started from first);
    * otherwise the organization's first-created agent that can be assigned.
    */
-  async function defaultAgentId(source: Pick<IssueRow, "id" | "companyId" | "assigneeAgentId">, responsibilityId?: string): Promise<string | null> {
+  async function defaultAgentId(source: Pick<IssueRow, "id" | "companyId" | "assigneeAgentId">, ownerUserId: string, responsibilityId?: string): Promise<string | null> {
     const [{ rows, usable }, under] = await Promise.all([
       companyAgents(source.companyId),
-      responsibilitiesSvc.lookup(source.companyId, { kind: "issue", id: source.id }, unrestricted).catch(() => []),
+      responsibilitiesSvc.lookup(source.companyId, ownerUserId, { kind: "issue", id: source.id }, unrestricted).catch(() => []),
     ]);
     const ids = [...new Set([responsibilityId, ...under.map((entry) => entry.id)].filter((id): id is string => !!id))];
     const runners = ids.length === 0 ? [] : await db.select({ id: responsibilities.id, runByAgentId: responsibilities.runByAgentId })
       .from(responsibilities)
-      .where(and(eq(responsibilities.companyId, source.companyId), inArray(responsibilities.id, ids)));
+      .where(and(eq(responsibilities.companyId, source.companyId), eq(responsibilities.ownerUserId, ownerUserId), inArray(responsibilities.id, ids)));
     const runnerIds = ids.map((id) => runners.find((row) => row.id === id)?.runByAgentId).filter((id): id is string => !!id);
     return responsibleAutomationAgentId({
       taskAgentId: source.assigneeAgentId,
@@ -114,11 +114,12 @@ export function automationConversationService(
     });
   }
 
-  async function latestConversation(source: Pick<IssueRow, "id" | "companyId">): Promise<IssueRow | null> {
+  async function latestConversation(source: Pick<IssueRow, "id" | "companyId">, ownerUserId: string): Promise<IssueRow | null> {
     const [issue] = await db.select().from(issues).where(and(
       eq(issues.companyId, source.companyId),
       eq(issues.originKind, AUTOMATION_CONVERSATION_ORIGIN_KIND),
       eq(issues.originId, source.id),
+      eq(issues.createdByUserId, ownerUserId),
       ne(issues.status, "cancelled"),
     )).orderBy(desc(issues.createdAt), desc(issues.id)).limit(1);
     return issue ?? null;
@@ -168,8 +169,8 @@ export function automationConversationService(
   }
 
   /** Where the automation conversation for a task stands. */
-  async function conversation(source: IssueRow): Promise<AutomationConversation> {
-    const [issue, agentId] = await Promise.all([latestConversation(source), defaultAgentId(source)]);
+  async function conversation(source: IssueRow, ownerUserId: string): Promise<AutomationConversation> {
+    const [issue, agentId] = await Promise.all([latestConversation(source, ownerUserId), defaultAgentId(source, ownerUserId)]);
     const proposal = issue ? await pendingProposal(issue) : null;
     const state: AutomationConversation["state"] = !issue ? "none"
       : proposal ? "proposal_waiting"
@@ -201,7 +202,7 @@ export function automationConversationService(
      * not cancelled, while it is open or has a proposal waiting). Two queries
      * whatever the count.
      */
-    async conversationsForTasks(companyId: string, taskIds: readonly string[]): Promise<Map<string, AutomationConversationRef>> {
+    async conversationsForTasks(companyId: string, taskIds: readonly string[], ownerUserId: string): Promise<Map<string, AutomationConversationRef>> {
       const found = new Map<string, AutomationConversationRef>();
       if (taskIds.length === 0) return found;
       const rows = await db.selectDistinctOn([issues.originId], {
@@ -213,6 +214,7 @@ export function automationConversationService(
       }).from(issues).where(and(
         eq(issues.companyId, companyId),
         eq(issues.originKind, AUTOMATION_CONVERSATION_ORIGIN_KIND),
+        eq(issues.createdByUserId, ownerUserId),
         inArray(issues.originId, [...new Set(taskIds)]),
         ne(issues.status, "cancelled"),
       )).orderBy(issues.originId, desc(issues.createdAt), desc(issues.id));
@@ -238,9 +240,9 @@ export function automationConversationService(
       return found;
     },
 
-    async conversationFor(issueRef: { id: string; companyId: string }) {
+    async conversationFor(issueRef: { id: string; companyId: string }, ownerUserId: string) {
       await assertEnabled();
-      return conversation(await loadSource(issueRef.companyId, issueRef.id));
+      return conversation(await loadSource(issueRef.companyId, issueRef.id), ownerUserId);
     },
 
     /**
@@ -259,11 +261,11 @@ export function automationConversationService(
       await suggestions.assertCanBeAutomated(issueRef);
       const source = await loadSource(issueRef.companyId, issueRef.id);
       await assertNotAutomatedYet(source);
-      const existing = await latestConversation(source);
+      const existing = await latestConversation(source, actor.userId);
       if (existing && (!isClosed(existing.status) || (await pendingProposal(existing)))) {
         return { source, issue: existing, created: false };
       }
-      const agentId = input.agentId ?? await defaultAgentId(source, input.responsibilityId);
+      const agentId = input.agentId ?? await defaultAgentId(source, actor.userId, input.responsibilityId);
       if (!agentId) {
         throw unprocessable("No agent in this organization can talk this through; set the automation up by hand", {
           code: "automation_conversation_no_agent",
@@ -288,14 +290,9 @@ export function automationConversationService(
         ...(hint ? ["", `Quick suggestion from its title (only a guess): ${hint.why}`] : []),
         ...(backLink ? ["", backLink] : []),
       ].join("\n");
-      // The conversation copies the task's title and identifier, so a private
-      // task's conversation is private too: only the person and the agent see it.
-      const sourceIsPrivate = source.visibility === "private" || source.privacyRootIssueId !== null
-        || (source.projectId !== null && await db.select({ id: projects.id }).from(projects)
-          .where(and(eq(projects.id, source.projectId), eq(projects.companyId, source.companyId), eq(projects.visibility, "private")))
-          .limit(1).then((rows) => rows.length > 0));
       const issue = await issuesSvc.create(source.companyId, {
-        ...(sourceIsPrivate ? { visibility: "private" as const } : {}),
+        visibility: "private",
+        responsibleUserId: actor.userId,
         title: clip(`Automate “${source.title}”`, 200),
         description,
         status: "todo",
@@ -344,7 +341,7 @@ export function automationConversationService(
           code: "automation_standing_check_no_heartbeat",
         });
       }
-      const filedUnder = (await responsibilitiesSvc.lookup(issue.companyId, { kind: "issue", id: source.id }, unrestricted))
+      const filedUnder = (await responsibilitiesSvc.lookup(issue.companyId, issue.createdByUserId!, { kind: "issue", id: source.id }, unrestricted))
         .map((entry) => ({ id: entry.id, title: entry.title }));
       const trigger: ProposeAutomationPayload["trigger"] = data.trigger.kind === "schedule"
         ? (() => {

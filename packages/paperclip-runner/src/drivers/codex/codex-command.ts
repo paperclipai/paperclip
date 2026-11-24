@@ -13,13 +13,6 @@ export function resolveCodexCommand(
     const runnerRequire = createRequire(issuer);
     let manifestPath: string | undefined;
     try {
-      if (process.platform === "win32") {
-        try {
-          manifestPath = runnerRequire.resolve("@openai/codex-native/package.json");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
-        }
-      }
       if (!manifestPath) {
         let bridgeManifest: string;
         try {

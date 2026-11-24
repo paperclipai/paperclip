@@ -5,9 +5,9 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations, heartbeatRunEvents, agentWakeupRequests, issueRecoveryActions } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, projects, projectWorkspaces, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations, heartbeatRunEvents, agentWakeupRequests, issueRecoveryActions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, LOW_TRUST_REVIEW_PRESET, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
 import { aiConnectionSessionCompatibilityInputs } from "../services/ai-connection-session.js";
 import { projectPaperclipRunnerTaskConfig, resolvePaperclipRunnerNativeProviderInput } from "../services/native-runtime/provider-profile.js";
@@ -455,10 +455,11 @@ describe("durable, authorized connection routing", () => {
     const [issue] = await db.insert(issues).values({ companyId, title: "Fresh Retry issue", status: "in_progress", assigneeAgentId: agent.id }).returning();
     const [initial] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "queued" }).returning();
     const initialClaim = await preparePoolAdapterClaim(db, initial, agent, "alice");
-    const selection = initialClaim.context.aiRouterSelection!;
-    expect(selection?.memberId).toBe(members[1]!.id);
+    const pinned = initialClaim.context.aiRouterSelection!;
+    expect(pinned?.memberId).toBe(members[1]!.id);
+    const selection = { ...pinned, runtimeConfig: { ...pinned.runtimeConfig, model: "claude-opus-5-5" } };
     const sourceRunId = initial.id;
-    await db.update(heartbeatRuns).set({ contextSnapshot: initialClaim.context, nativeIssueId: issue.id, status: "failed", errorCode: "native_provider_usage_limit", runtimeMode: "native", finishedAt: new Date() }).where(eq(heartbeatRuns.id, sourceRunId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...initialClaim.context, aiRouterSelection: selection }, nativeIssueId: issue.id, status: "failed", errorCode: "native_provider_usage_limit", runtimeMode: "native", finishedAt: new Date() }).where(eq(heartbeatRuns.id, sourceRunId));
     const retryId = randomUUID();
     const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id, status: "queued",
       contextSnapshot: { forceFreshSession: true, explicitUserContinuation: { commentId: null, taskRetryRequestId: retryId, previousRunId: sourceRunId } } }).returning();
@@ -483,6 +484,26 @@ describe("durable, authorized connection routing", () => {
       await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, identity)));
     }
   });
+  it.each(["workspace project", "saved run"])("uses the task sandbox when low trust comes from its %s", async policySource => {
+    const { harnessPoolEnvironmentScope } = await import("../services/heartbeat/harness-pool-environment.js");
+    const local = await environmentService(db).ensureLocalEnvironment(companyId);
+    const sandbox = await environmentService(db).create(companyId, { name: randomUUID(), driver: "ssh", status: "active",
+      envVars: {}, config: { host: "isolated.invalid", username: "fixture" } });
+    const sourceProjectId = randomUUID();
+    const policy = { authorizationPolicy: { trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, companyId, projectIds: [sourceProjectId] } } };
+    const [taskProject] = await db.insert(projects).values({ companyId, name: randomUUID() }).returning();
+    await db.insert(projects).values({ id: sourceProjectId, companyId, name: randomUUID(),
+      executionWorkspacePolicy: policySource === "workspace project" ? policy : null });
+    const [workspace] = await db.insert(projectWorkspaces).values({ companyId, projectId: sourceProjectId, name: "Source", cwd: home }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: randomUUID(), adapterType: "paperclip_runner",
+      defaultEnvironmentId: local.id }).returning();
+    const [task] = await db.insert(issues).values({ companyId, title: "Sandbox scope", assigneeAgentId: agent.id,
+      projectId: taskProject.id, projectWorkspaceId: workspace.id,
+      executionWorkspaceSettings: { mode: "isolated_workspace", environmentId: sandbox.id } }).returning();
+    const run = { contextSnapshot: policySource === "saved run" ? { executionPolicy: policy } : null };
+    expect(await harnessPoolEnvironmentScope(db, agent, task, run)).toBe(sandbox.id);
+  });
+
   it("pins the effective Codex adapter for a configured Claude agent", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
       name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[0]!],

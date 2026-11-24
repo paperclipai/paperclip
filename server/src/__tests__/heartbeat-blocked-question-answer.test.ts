@@ -92,9 +92,15 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId,
       status: "running", runtimeMode: "native", nativeIssueId: input.issueId, invocationSource: "automation",
       triggerDetail: "system", completionContractId: contractId, contextSnapshot: { issueId: input.issueId } });
+    const result = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked",
+      summary: "Waiting for the codename answer.", blocker: input.blocker,
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false,
+        criteria: [{ criterionId: "objective", status: "not_satisfied", evidenceRefs: [] }],
+        remainingWork: [{ description: "Write the brief after the answer.", blocksCompletion: true }] },
+      evidence: [], verification: [], attentionRequests: [], artifacts: [] };
     await db.insert(nativeRunResults).values({ id: resultId, companyId: input.companyId, issueId: input.issueId,
       runId, completionContractId: contractId, serverFingerprint: resultId, schemaStatus: "accepted",
-      resultJson: {}, canonicalSha256: resultId });
+      resultJson: { result }, canonicalSha256: resultId });
     const [snapshot] = await db.select().from(issues).where(eq(issues.id, input.issueId));
     await db.insert(workAssessments).values({ id: assessmentId, companyId: input.companyId, issueId: input.issueId,
       runId, contractId, resultId, triggerKind: "native_result", triggerActorCompanyId: input.companyId,
@@ -105,12 +111,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     const decision: NativeStatusDecision = input.blocker ? arbitrateNativeStatus({
       assessment: await classifyNativeEvidence({ db, companyId: input.companyId, issueId: input.issueId, runId,
         contract: { revision: "1", objective: "Write the brief", criteria: [{ id: "objective", requirement: "Write the brief" }] },
-        result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked",
-          summary: "Waiting for the codename answer.", blocker: input.blocker,
-          completionClaim: { contractRevision: "1", objectiveSatisfied: false,
-            criteria: [{ criterionId: "objective", status: "not_satisfied", evidenceRefs: [] }],
-            remainingWork: [{ description: "Write the brief after the answer.", blocksCompletion: true }] },
-          evidence: [], verification: [], attentionRequests: [], artifacts: [] } }),
+        result }),
       terminalState: "succeeded", workspaceFinalizeStatus: "succeeded", agentId: input.agentId,
       priorIssueStatus: snapshot!.status as "in_review",
       ...input.arbiter,
@@ -173,7 +174,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     await agentReportsBlocker({ companyId, agentId, issueId, blocker: { owner, scope,
       reasonCode: "awaiting_codename_answer", unblockAction: `Answer the existing codename question (${question.id}).` } });
     const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(blocked).toMatchObject({ status: "blocked", unblockDescriptor: { owner: scope === "task_wide" && owner.kind === "external" ? { agentId } : "board" } });
+    expect(blocked).toMatchObject({ status: "blocked", unblockDescriptor: { owner: owner.kind === "user" ? { userId } : { agentId } } });
     await answer(question);
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });

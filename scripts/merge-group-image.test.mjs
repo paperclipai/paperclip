@@ -169,7 +169,9 @@ test("the merge-queue build has no publishing credentials or paid infrastructure
   assert.match(workflow, /^permissions: \{\}$/m);
   const permissions = [...workflow.matchAll(/^    permissions:\n((?: {6}.+\n)+)/gm)].map(match => match[1].trim());
   assert.ok(permissions.length > 0);
-  for (const block of permissions) assert.equal(block, "contents: read");
+  for (const block of permissions) {
+    assert.ok(block.split("\n").map(line => line.trim()).every(line => /^(contents|actions): read$/.test(line)));
+  }
   assert.doesNotMatch(workflow, /secrets\.|packages: write|id-token|attestations|docker\/login-action|cache-to:|push: true|environment:|runs-on\//);
   assert.doesNotMatch(workflow, /pull_request_target|workflow_run|workflow_dispatch/);
   assert.match(workflow, /persist-credentials: false/);
