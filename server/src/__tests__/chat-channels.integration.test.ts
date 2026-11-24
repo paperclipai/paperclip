@@ -3413,7 +3413,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const reviewId = randomUUID();
       await db.insert(chatGitHubReviews).values({ id: reviewId, companyId: f.companyId, endpointId: f.endpoint.id,
         issueId: f.conversation.issueId!, repositoryId: "42", repository: "paperclipai/paperclip", pullNumber: 418,
-        headSha: "b".repeat(40), deliveryId: "inline-only", configurationRevision: 1, policySnapshot: {}, event: {} as never,
+        headSha: "b".repeat(40), deliveryId: "inline-only", configurationRevision: 1, policySnapshot: {} as never, event: {} as never,
         state: "completed", publicationReceipts: { "finding:1": { id: "88",
           url: "https://github.com/paperclipai/paperclip/pull/418#discussion_r88", digest: "d" } } });
       await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,

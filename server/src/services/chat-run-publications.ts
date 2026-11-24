@@ -117,7 +117,10 @@ export async function githubLatestTaskResponseUrl(
   const url = sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url',
     (select receipt.value->>'url' from ${chatGitHubReviews} review, jsonb_each(review.publication_receipts) receipt
       where review.company_id = ${chatActions.companyId} and review.endpoint_id = ${chatActions.endpointId}
-        and review.id::text = coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')
+        and review.issue_id = ${input.issueId}::uuid
+        and review.id = (case when coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')
+            ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          then coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')::uuid end)
         and receipt.value->>'url' like 'https://github.com/%'
       order by receipt.key limit 1))`;
   const [latest] = await db.select({ url }).from(chatActions).innerJoin(chatConversations, and(
