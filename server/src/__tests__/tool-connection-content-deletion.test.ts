@@ -417,6 +417,35 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(Boolean(started)).toBe(google);
   });
 
+  it("finishes once earlier work settles, even while the connection keeps making new calls", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const { deletion } = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "access_revoked");
+    await db.insert(toolInvocations).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, toolName: "read_doc", status: "executing", createdAt: new Date(Date.now() + 60_000),
+    });
+    await drain(service);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "pending" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    await db.update(toolConnectionContentDeletions).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "completed" });
+  });
+
+  it("moves an automatic deletion's cutoff when Delete data is selected later, and keeps waiting for running work", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const automatic = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "provider_access_ended");
+    await db.update(toolConnectionContentDeletions).set({ requestedAt: new Date(Date.now() - 60_000) })
+      .where(eq(toolConnectionContentDeletions.id, automatic.deletion.id));
+    const manual = await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    expect(manual).toMatchObject({ created: false, deletion: { id: automatic.deletion.id, reason: "provider_access_ended" } });
+    expect(Date.parse(manual.deletion.requestedAt)).toBeGreaterThan(Date.now() - 10_000);
+    await drain(service);
+  });
+
   it("returns the pending deletion instead of starting a second one", async () => {
     const runLogs = memoryRunLogs();
     const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });

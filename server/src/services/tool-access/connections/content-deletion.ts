@@ -778,9 +778,10 @@ export function createConnectionContentDeletion(db: Db, deps: {
   };
 
   async function countOpenWork(tx: Db, scope: Scope) {
+    const calls = and(invocationsInScopeSql(scope), cutoffSql(sql`${toolInvocations.createdAt}`, scope))!;
     const requestIds = sql`array(select ${toolActionRequests.id}::text from ${toolActionRequests}
       join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId}
-      where ${toolActionRequests.companyId} = ${scope.companyId} and ${invocationsInScopeSql(scope)})`;
+      where ${toolActionRequests.companyId} = ${scope.companyId} and ${calls})`;
     const runsInScope = scope.connectionId && scope.cutoff
       ? runsCallingConnectionSql({ ...scope, connectionId: scope.connectionId, cutoff: scope.cutoff })
       : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)})`;
@@ -788,9 +789,9 @@ export function createConnectionContentDeletion(db: Db, deps: {
       (select count(*) from ${heartbeatRuns} where ${heartbeatRuns.companyId} = ${scope.companyId}
         and ${runsInScope} and not ${settledRunSql(sql`${heartbeatRuns.id}`)})
       + (select count(*) from ${toolInvocations} where ${toolInvocations.companyId} = ${scope.companyId}
-        and ${invocationsInScopeSql(scope)} and ${toolInvocations.status} in (${listSql(UNSETTLED_INVOCATION_STATUSES)}))
+        and ${calls} and ${toolInvocations.status} in (${listSql(UNSETTLED_INVOCATION_STATUSES)}))
       + (select count(*) from ${toolActionRequests} join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId}
-        where ${toolActionRequests.companyId} = ${scope.companyId} and ${invocationsInScopeSql(scope)}
+        where ${toolActionRequests.companyId} = ${scope.companyId} and ${calls}
           and ${toolActionRequests.status} in (${listSql(UNSETTLED_ACTION_REQUEST_STATUSES)}))
       + (select count(*) from ${agentWakeupRequests} where ${agentWakeupRequests.companyId} = ${scope.companyId}
         and ${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}::text

@@ -582,7 +582,7 @@ replaceConnectionGrantMembers: async (
           )
           .returning();
         if (!updated) throw notFound("Connection grant not found");
-        if (updated.kind !== "organization") await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "access_revoked", contentDeletionActor(actor));
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "access_revoked", contentDeletionActor(actor));
         if (removedDelegations.length > 0) {
           await tx.insert(toolAccessAuditEvents).values(
             removedDelegations.map((delegation) => ({

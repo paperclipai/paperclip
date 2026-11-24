@@ -464,16 +464,17 @@ precedence, is a Google app, or its broker profile is a Google profile). The job
 | Event | `reason` | Where |
 | --- | --- | --- |
 | Connection removed | `connection_removed` | `connections/removal.ts` |
-| A per-user or per-agent grant revoked | `access_revoked` | `connections/grants.ts` |
+| A grant revoked (personal, agent or organization) | `access_revoked` | `connections/grants.ts` |
 | Refresh shows Google ended the access: broker `409 PROVIDER_REAUTHORIZATION_REQUIRED`, or `invalid_grant` from Google's token endpoint | `provider_access_ended` | `oauth/grant-refresh.ts`, `oauth/connection-refresh.ts` |
 | The grant's owner leaves the company or loses membership | `member_removed` | `services/access.ts` |
 | Paperclip Cloud removed the instance | `instance_removed` | `google-pending-revocation.ts` |
 | Company deleted | rows deleted with the company | `company-deletion.ts` (unchanged) |
 
 Not a trigger: a network failure, a broker outage, Google `5xx`, a scope
-mismatch, the Cloud-only sign-in refusal, and revoking an organization grant
-that the connection still uses (access does not end). Non-Google apps are
-unchanged.
+mismatch, the Cloud-only sign-in refusal, and a refresh answer that arrives
+after a new sign-in. Non-Google apps are unchanged. Revoking an organization
+grant starts the deletion even when the connection keeps its own credential:
+the person chose to disconnect that identity.
 
 - Scope: everything the connection saved up to the moment access ended, for
   every person who used the connection. Calls do not record which grant made
@@ -485,8 +486,10 @@ unchanged.
   until none is left, then runs every step once more and finishes. A failed
   step is retried until it succeeds, across restarts (the existing durable
   job, plus `not_before`). A task deletion keeps its 24-hour wait limit.
-- An access end while a manual deletion is pending moves that job's cutoff to
-  the access end and restarts it.
+- An access end while any deletion is pending moves that job's cutoff to the
+  access end and restarts it (a later access end must also cover calls other
+  grants made in between). "Delete data" while an automatic deletion is
+  pending moves its cutoff to now and keeps it waiting for running work.
 - Reconnect: only calls made after the access end are kept. Late records of
   a call made before the access end (a completion event, an app view, an audit
   entry written after the result came back) are deleted too. The job also

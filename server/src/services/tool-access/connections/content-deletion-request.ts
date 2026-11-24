@@ -89,7 +89,7 @@ export async function requestConnectionContentDeletion(
       .for("update");
     const now = new Date();
     let [existing] = await pendingFor();
-    if (existing && reason === "requested") return { deletion: toDeletion(existing), created: false };
+    if (existing && reason === "requested" && existing.reason === "requested") return { deletion: toDeletion(existing), created: false };
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolConnectionContentDeletion);
     if (!existing) {
       const [created] = await tx
@@ -109,13 +109,13 @@ export async function requestConnectionContentDeletion(
         .returning();
       if (created) return { deletion: toDeletion(created), created: true };
       [existing] = await pendingFor();
-      if (reason === "requested") return { deletion: toDeletion(existing!), created: false };
+      if (reason === "requested" && existing!.reason === "requested") return { deletion: toDeletion(existing!), created: false };
     }
     const counts = readProgress(existing!).counts;
     const [restarted] = await tx
       .update(toolConnectionContentDeletions)
       .set({
-        reason,
+        reason: reason === "requested" ? existing!.reason : reason,
         requestedAt: now,
         notBefore: null,
         lastError: null,

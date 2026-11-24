@@ -21,7 +21,7 @@ For most apps, this data stays until you delete it, and removing the connection 
 When Paperclip's access to a Google account ends, Paperclip deletes what agents read through that Google connection on its own. You do not need to select **Delete data**. This happens when:
 
 - You remove the Google connection.
-- A person revokes their own Google identity on the connection.
+- Someone revokes a Google identity on the connection, a person's own or the organization's.
 - Someone removes Paperclip from their Google account, or Google ends the access, and Paperclip sees this the next time it renews the access.
 - The person who connected their Google account leaves the company.
 - Paperclip Cloud removes your Paperclip instance.
