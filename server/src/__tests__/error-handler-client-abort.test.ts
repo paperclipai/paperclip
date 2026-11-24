@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -81,6 +81,50 @@ describe("errorHandler client aborts", () => {
       await settled;
       // Wait until the route's rejection has passed through the error handler.
       await expect(handled).resolves.toMatchObject({ name: "AbortError", message });
+    });
+
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("does not report a crash when the client disconnects during JSON body parsing", async () => {
+    const app = express();
+    let bodyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bodyStarted = resolve; });
+    let errorHandled!: (result: { error: unknown; status: number }) => void;
+    const handled = new Promise<{ error: unknown; status: number }>((resolve) => {
+      errorHandled = resolve;
+    });
+
+    app.use((req, _res, next) => {
+      req.once("data", bodyStarted);
+      next();
+    });
+    app.use(express.json());
+    app.use((error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        errorHandler(error, req, res, next);
+      } finally {
+        errorHandled({ error, status: res.statusCode });
+      }
+    });
+
+    await withServer(app, async (baseUrl) => {
+      const client = httpRequest(baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": 20 },
+      });
+      client.on("error", () => {});
+      try {
+        client.write("{");
+        await started;
+        client.destroy();
+        await expect(handled).resolves.toMatchObject({
+          error: { type: "request.aborted", code: "ECONNABORTED", status: 400 },
+          status: 499,
+        });
+      } finally {
+        client.destroy();
+      }
     });
 
     expect(captureExceptionMock).not.toHaveBeenCalled();
