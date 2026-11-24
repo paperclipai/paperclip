@@ -113,11 +113,12 @@ async function inheritedSwarmCommentId(db: Db, companyId: string, issueId: strin
 }
 
 async function pendingSwarmCommentId(db: Db, companyId: string, issueId: string): Promise<string | null> {
-  const [latest] = await db.select({ id: issueComments.id }).from(issueComments)
+  // A deleted latest message withdraws whatever it asked for; it never falls back to an older request.
+  const [latest] = await db.select({ id: issueComments.id, deletedAt: issueComments.deletedAt }).from(issueComments)
     .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
       isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
     .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
-  return latest?.id ?? null;
+  return latest && !latest.deletedAt ? latest.id : null;
 }
 
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {
@@ -176,10 +177,14 @@ export async function antigravitySwarmQuotaScope(db: Db, input: {
   if (!isAntigravityAgent(input.agent)) return null;
   const requested = await recordedRequest(db, { ...input, remote: false, planning: false });
   if (!requested) return null;
+  return await requestFulfilled(db, input.companyId, requested.commentId) ? null : ANTIGRAVITY_CLI_QUOTA_SCOPE;
+}
+
+async function requestFulfilled(db: Db, companyId: string, commentId: string): Promise<boolean> {
   const [fulfilled] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"),
-      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${requested.commentId}`)).limit(1);
-  return fulfilled ? null : ANTIGRAVITY_CLI_QUOTA_SCOPE;
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "succeeded"),
+      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`)).limit(1);
+  return Boolean(fulfilled);
 }
 
 /** The recorded user /swarm request this run serves, if any (before any replacement). */
@@ -191,8 +196,10 @@ async function recordedRequest(db: Db, input: Parameters<typeof resolveAntigravi
   const commentId = explicit ?? (isAntigravityAgent(input.agent) ? await pendingSwarmCommentId(db, input.companyId, input.issueId) : null);
   if (!commentId) return null;
   const [requested] = await db.select({ id: activityLog.id, body: issueComments.body }).from(activityLog)
+    // A deleted request is withdrawn: no swarm and no failure, so the run is ordinary work.
+    // The prompt therefore never comes from text the user has since deleted.
     .innerJoin(issueComments, and(eq(issueComments.id, commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId),
-      isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
+      isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId), isNull(issueComments.deletedAt)))
     .where(and(eq(activityLog.companyId, input.companyId), eq(activityLog.action, ANTIGRAVITY_SWARM_REQUESTED_ACTION),
       eq(activityLog.entityId, input.issueId), eq(activityLog.actorType, "user"), eq(activityLog.actorId, issueComments.authorUserId),
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
@@ -220,6 +227,8 @@ async function decideSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
     }
     selected = { commentId: newest.id, body: newest.body };
   }
+  // A fulfilled request never fails a later wake, whatever its text says now.
+  if (await requestFulfilled(tx, input.companyId, selected.commentId)) return null;
   const replacedCommentIds = recordedInWake.filter(id => id !== selected.commentId);
   // The swarm's only instruction is this recorded comment's own text.
   const request = antigravitySwarmRequestFromComment(selected.body);

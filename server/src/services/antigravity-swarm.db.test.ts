@@ -205,6 +205,42 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     await expect(automatic(g, (await insertRun(g, {})).id)).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
   });
 
+  describe("a deleted /swarm comment withdraws its request", () => {
+    const remove = (f: Awaited<ReturnType<typeof seed>>) => issueService(db).tombstoneComment(f.comment.id, { actorType: "user", userId: USER });
+
+    it.each(["issue_assigned", "issue_blocker_stalled", "issue_continuation_needed"])(
+      "runs a %s wake as ordinary work, with no failure, after an unfulfilled request was deleted", async wakeReason => {
+        const f = await seed();
+        await remove(f);
+        expect(await automatic(f, (await insertRun(f, {})).id, wakeReason)).toBeNull();
+        // Even a wake that still names the deleted request (its fresh wake, or a retry of it) is ordinary work.
+        expect(await resolve(f, { runId: (await insertRun(f, {})).id })).toBeNull();
+        const failed = await insertRun(f, { status: "failed", contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } });
+        expect(await resolve(f, { runId: (await insertRun(f, { retryOfRunId: failed.id })).id, context: { issueId: f.issue.id } })).toBeNull();
+        expect(await antigravitySwarmQuotaScope(db, { companyId: f.company.id, issueId: f.issue.id, runId: randomUUID(), agent: f.agent,
+          context: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } })).toBeNull();
+      });
+
+    it("runs ordinary work after a fulfilled request was deleted", async () => {
+      const f = await seed();
+      const first = await insertRun(f, {});
+      expect(await automatic(f, first.id)).toMatchObject({ request: "two helpers" });
+      await setStatus(first.id, "succeeded");
+      await remove(f);
+      expect(await automatic(f, (await insertRun(f, {})).id, "issue_continuation_needed")).toBeNull();
+    });
+
+    it("never lets a fulfilled request fail a later wake, even when its text no longer has a request", async () => {
+      const f = await seed();
+      const first = await insertRun(f, {});
+      expect(await automatic(f, first.id)).toMatchObject({ request: expect.any(String) });
+      await setStatus(first.id, "succeeded");
+      // Comments have no edit path today; this stands in for any later change to the stored text.
+      await db.update(issueComments).set({ body: "/swarm" }).where(eq(issueComments.id, f.comment.id));
+      expect(await automatic(f, (await insertRun(f, {})).id, "issue_assigned")).toBeNull();
+    });
+  });
+
   it("starts exactly one swarm for one request when two wakes arrive together", async () => {
     const f = await seed();
     const [a, b] = [await insertRun(f, {}), await insertRun(f, {})];
