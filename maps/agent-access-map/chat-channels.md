@@ -678,8 +678,7 @@ two. Every endpoint keeps the live task, company, agent and linked-user checks;
 403 denials omit only that endpoint. Preparation waits for both active checks
 before it returns an ordered result or propagates an error. Tool authority reads
 the current bot token without resolving unrelated webhook credentials. See the
-[real-database preparation controls](../../server/src/__tests__/slack-tool-preparation.test.ts)
-and [batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts).
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts).
 These local controls do not establish live Slack latency or provider access.
 
 Native tool gateways use the durable run task binding for discovery and policy
@@ -692,8 +691,7 @@ Endpoint settings, linked identity, tool profiles, and invocation policy still
 apply on each call. The native tool contract rotates older provider sessions so
 an empty retained catalog is not reused. PostgreSQL fixtures cover discovery,
 review publication, Slack reads, and revocation in
-[channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-and [provenance controls](../../server/src/services/chat-channels/run-origin.test.ts).
+[channel integration](../../server/src/__tests__/chat-channels.integration.test.ts).
 The [voice gateway fixture](../../server/src/__tests__/voice-session-store.integration.test.ts)
 also verifies durable task binding for a later personal callback invocation.
 Failure replies cannot replace final answers inherited from an earlier run.
