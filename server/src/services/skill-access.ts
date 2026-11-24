@@ -1,19 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequestHandler } from 'express';
 import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { activityLog, companySkills, companySkillSources, projectSkillSources, projects, type Db } from '@paperclipai/db';
-import { authorizationService, projectReadSqlCondition, type AuthorizationActor } from './authorization.js';
+import { authorizationService, projectReadSqlCondition } from './authorization.js';
 import { notFound } from '../errors.js';
+import { currentRequestActor, requestActorContext, withRequestActor } from './request-actor-context.js';
 
 // Carries the authenticated identity through shared services, including native API dispatch.
 // Background operations must install their stored, revalidated setup identity explicitly.
-const actors = new AsyncLocalStorage<AuthorizationActor>();
-export const currentSkillActor = () => actors.getStore();
-export function withSkillActor<T>(actor: AuthorizationActor, operation: () => T): T {
-  return actors.run(actor, operation);
-}
-export const skillAccessRequestContext: RequestHandler = (req, _res, next) => withSkillActor(req.actor, next);
+export const currentSkillActor = currentRequestActor;
+export const withSkillActor = withRequestActor;
+export const skillAccessRequestContext: RequestHandler = requestActorContext;
 
 export function skillAccessService(db: Db, actor = currentSkillActor()) {
   function canReadCompany(companyId: string) {

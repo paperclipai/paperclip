@@ -37,6 +37,7 @@ export function caseAwareActivitySource(db: Db, companyId: string) {
       entityId: sql<string>`${caseEvents.caseId}::text`.as("entity_id"),
       agentId: caseEvents.actorAgentId,
       runId: caseEvents.runId,
+      apiKeyId: caseEvents.apiKeyId,
       responsibleUserId: sql<string | null>`null::text`.as("responsible_user_id"),
       details: caseEvents.payload,
       createdAt: caseEvents.createdAt,

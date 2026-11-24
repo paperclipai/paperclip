@@ -300,9 +300,10 @@ describePostgres("agent action audit routes", () => {
       { companyId: company.id, caseNumber: 2, identifier: `${company.issuePrefix}-C2`, caseType: "receipt", title: "Private receipt" },
     ]).returning();
     await db.insert(caseAccessSources).values({ companyId: company.id, caseId: privateCase.id, sourceKind: "issue", sourceId: issue.id });
+    const apiKeyId = randomUUID();
     const events = await db.insert(caseEvents).values([
       { companyId: company.id, caseId: openCase.id, kind: "created", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-01") },
-      { companyId: company.id, caseId: openCase.id, kind: "fields_changed", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-02") },
+      { companyId: company.id, caseId: openCase.id, kind: "fields_changed", actorType: "agent", actorAgentId: agent.id, apiKeyId, createdAt: new Date("2030-01-02") },
       { companyId: company.id, caseId: openCase.id, kind: "handoff_delivered", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-03") },
       { companyId: company.id, caseId: privateCase.id, kind: "fields_changed", actorType: "agent", actorAgentId: agent.id, payload: { secret: "hidden" }, createdAt: new Date("2030-01-04") },
     ]).returning();
@@ -332,6 +333,14 @@ describePostgres("agent action audit routes", () => {
     expect(hidden.status).toBe(200);
     expect(hidden.body).toMatchObject({ items: [], nextCursor: null });
     await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&agentId=${agent.id}`).expect(403);
+
+    const fullApp = await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    });
+    const full = await request(fullApp)
+      .get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&action=case.fields_changed`)
+      .expect(200);
+    expect(full.body.items).toContainEqual(expect.objectContaining({ id: events[1].id, apiKeyId }));
   });
 
   it("keeps the default scope unchanged and gives permitted readers the full all-actors view", async () => {
@@ -547,7 +556,7 @@ describePostgres("agent action audit routes", () => {
 
     const lines = response.text.trim().split("\r\n");
     expect(lines[0]).toBe(
-      "createdAt,action,actorType,actorId,agentId,runId,responsibleUserId,entityType,entityId,issueIdentifier,issueTitle,commentExcerpt,documentKey",
+      "createdAt,action,actorType,actorId,agentId,runId,apiKeyId,responsibleUserId,entityType,entityId,issueIdentifier,issueTitle,commentExcerpt,documentKey",
     );
     // Three seeded activity rows → three CSV data rows (the export reads before it logs itself).
     expect(lines).toHaveLength(4);

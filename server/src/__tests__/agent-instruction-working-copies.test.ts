@@ -24,6 +24,8 @@ import { agentInstructionWorkingCopyService } from "../services/agent-instructio
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
+import { withRequestActor } from "../services/request-actor-context.js";
+import { agentFileStore } from "../services/agent-file-store.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_INSTRUCTION_COPY_TEST_DATABASE_URL");
 
@@ -657,6 +659,19 @@ describe("registered run instruction copies", () => {
     expect(await fs.readFile(path.join(retried.localRoot, entryFile), "utf8")).toBe("new board instructions");
     await fs.writeFile(path.join(retried.localRoot, entryFile), "retry adds a change");
     expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.state).toBe("saved");
+  });
+
+  it("records the authenticating API key on instruction and managed file changes", async () => {
+    const keyId = randomUUID();
+    const keyed = { type: "board" as const, userId, keyId, source: "board_key" as const };
+    const head = (await revisions.readCurrent(target(), board()))!;
+    const keyedEntry = await withRequestActor(keyed, () => revisions.commit({ ...target(), entryFile, baseRevisionId: head.revision.id, content: "keyed entry", source: "api" }, keyed));
+    await withRequestActor(keyed, () => agentFileStore(db).write({ ...target(), path: "notes.txt", bytes: Buffer.from("keyed notes"), baseHash: null }, keyed));
+    await withRequestActor(board(), () => revisions.commit({ ...target(), entryFile, baseRevisionId: keyedEntry.revision.id, content: "session entry", source: "api" }, board()));
+    const events = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.files_updated")));
+    const byContent = (detailPath: string) => events.filter((event) => event.details?.path === detailPath).map((event) => event.apiKeyId);
+    expect(byContent(entryFile).sort()).toEqual([keyId, null].sort());
+    expect(byContent("notes.txt")).toEqual([keyId]);
   });
 
   it("never rebases uncollected private bytes or a live warm copy onto a newer head", async () => {
