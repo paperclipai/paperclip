@@ -194,8 +194,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("admission_rejected"), taskId: providerId,
     reason: z.enum(["session_state_unavailable", "account_binding_mismatch"]) }).strict(),
   z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
-  z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]), runner: runnerArtifact.optional(),
-    archivedState: z.record(z.string(), z.unknown()).optional() }).strict(),
+  z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]), runner: runnerArtifact.optional() }).strict(),
   z.object({
     kind: z.literal("ownership"),
     taskId: providerId,
@@ -307,8 +306,7 @@ export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOpera
   const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   const rejectedSubmit = operation.kind === "submit" && result.kind === "admission_rejected";
   if (result.taskId !== taskId || (result.kind !== expected && !rejectedSubmit)) throw new Error("Invalid plugin-provided Runner execution response");
-  if (operation.kind === "resume" && result.kind === "resume" && (operation.runner
-    ? result.outcome === "resumed" && (!result.runner || !result.archivedState) : result.archivedState !== undefined)) {
+  if (operation.kind === "resume" && result.kind === "resume" && operation.runner && result.outcome === "resumed" && !result.runner) {
     throw new Error("Invalid plugin-provided Runner execution response");
   }
   return result;

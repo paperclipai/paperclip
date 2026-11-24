@@ -280,6 +280,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const audit = await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, f.company.id), eq(toolAccessAuditEvents.action, "call_completed")));
       expect(audit).toHaveLength(1);
       expect(JSON.stringify(audit[0])).toContain("Google Workspace REST");
+      expect(JSON.stringify(audit[0])).not.toContain("mcpMethod");
       expect(JSON.stringify([invocation, audit])).not.toContain("workspace-access-1");
     });
 

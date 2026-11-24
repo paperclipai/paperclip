@@ -1,9 +1,11 @@
 import { createPublicKey, verify } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request as ExpressRequest, type Response as ExpressResponse } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   canonicalJson,
+  inspectionReadPath,
   parseInspectionQuery,
+  INSPECTION_READ_PATH,
   INSPECTION_AUDIENCE,
   INSPECTION_PERMIT_TYPE,
   INSPECTION_HEADER,
@@ -180,7 +182,10 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
     if (!match) throw forbidden("Managed run bearer required");
     res.json(await customerSuccessRunAuthority(db, match[1]));
   });
-  router.post("/read", async (req, res) => {
+  // `/read` serves the original query features; `/read-v2` also serves
+  // count, order and view. Cloud picks the path from the query, so a tenant
+  // without `/read-v2` answers 404 and Cloud fails closed.
+  const read = async (req: ExpressRequest, res: ExpressResponse) => {
     if (process.env.PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_ENABLED !== "true")
       throw forbidden("Inspection is disabled");
     if (req.headers.authorization || req.headers.cookie)
@@ -209,6 +214,8 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
     }
     if (canonicalJson(query) !== canonicalJson(permit.query))
       throw forbidden("Inspection parameters do not match permit");
+    if (req.path === INSPECTION_READ_PATH && inspectionReadPath(query) !== INSPECTION_READ_PATH)
+      throw forbidden("This inspection query needs the extended read path");
     // Replay fencing and all inspection state live in Cloud. No tenant receipt.
     const consumed = await fetch(`${origin}/v1/customer-success/permits/consume`, {
       method: "POST",
@@ -223,7 +230,9 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
     if (body === null)
       throw unprocessable("Inspection response is too large; use pagination or a byte range");
     res.type("application/json").send(body);
-  });
+  };
+  router.post("/read", read);
+  router.post("/read-v2", read);
   // Cloud run liveness check for inspection authority. Cloud asks with its
   // own signed, stack-addressed, 60-second question; no agent credential,
   // identity key, actor, session or activity is involved.
