@@ -31,6 +31,7 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { captureAgentChatMessageSent } from "@/lib/analytics/onboarding-analytics";
 import { trackRecentProject } from "@/lib/recent-projects";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
@@ -5263,6 +5264,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         void queryClient.invalidateQueries({
           queryKey: queryKeys.issues.queuedComments(issueId ?? comment.issueId),
         });
+      }
+      if (issue?.conversationAgentId) {
+        captureAgentChatMessageSent(
+          issue.originKind === "onboarding_chat" ? "onboarding_chat" : "agent_chat",
+        );
       }
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
