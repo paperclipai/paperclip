@@ -311,9 +311,39 @@ behind its agent's full `maxConcurrentRuns` cap, with the queue-wait proof findi
 assignment run started ahead of it, is not graded: `SUMMARY.md` names it on a `Not graded` line and
 `hosted-release-swap.json` lists it under `notGraded`. The runs holding the slots are still graded.
 
+**Failure evidence** (`hosted-diagnostics.ts`). The health probe opens a new connection for every probe and closes it
+after the answer, so a stale keep-alive socket cannot look like an outage. Every request records its connection:
+new or reused socket (API requests, from undici's diagnostics channels), remote and local address, and the DNS,
+connect, TLS and first-byte times where they are cheap to read. Every failed request in `health.jsonl` and
+`requests.jsonl` carries a `failure` object: for an answer, its status, the headers `x-paperclip-status`, `retry-after`,
+`server`, `via`, `x-railway-request-id`, `x-railway-edge`, `cf-ray`, `date`, `content-type`, `cache-control` and
+`connection`, the first 512 bytes of the body (the health client stops reading a non-2xx body after 16 KiB), and the parsed `error` and `statusPage.code`; for an exception, undici's
+`error.cause` (`code`, `errno`, `syscall`, `hostname`, `address`, `port`, message, and the socket's addresses and byte
+counts for `UND_ERR_SOCKET`). It also records the client clock: how late an abort fired (`timerLagMs`), how far the
+wall clock moved past the monotonic clock, the event loop's longest delay (`monitorEventLoopDelay`), and the pause
+before the probe. Right after any failure the harness requests `https://www.cloudflare.com/cdn-cgi/trace` (the control
+probe) and, for a GET that did not time out, retries the same URL once with a 2 s limit, and records both outcomes and
+timings. Neither counts as a request. The failure is recorded at once and this evidence is attached in the background,
+so neither the health probe loop nor the API client's own retries wait for it. After the drain, the grade stops the
+health probe, freezes its samples, waits up to 30 s for their evidence, and detects the releases from those samples. A
+diagnosis that did not finish stays pending and counts as a failure (unclassified, and a failed probe for release detection).
+A failed probe that has no class in the summary counts as unclassified. A failed probe's line goes into `health.jsonl` when its evidence is complete. The health client follows up to
+three same-origin redirects. If an answer is cut short, its status, headers and partial body are kept with the error.
+Only the live entry point (`hosted-main.ts`) turns the control probe on; unit tests never reach the network for it.
+
+Each failure gets a class. Server-side: any HTTP answer that is not a readable 2xx; a reset or refused connection
+while the control probe succeeded; a timeout while the control probe succeeded and the client did not stall.
+Client-side: a `client_stall` (an abort more than 1 s late, a clock jump over 1 s, an event-loop delay over 1 s, or a
+pause before the probe longer than twice the interval); a control probe that failed too, once the neutral endpoint
+has answered at least once in the run (the run probes it right after sign-in; if it never answered, a failed control
+probe proves nothing and the failure stays unclassified); a client DNS failure
+(`EAI_AGAIN`, or `ENOTFOUND` that the immediate retry did not repeat). Anything else is unclassified. Release
+detection skips client-side failures, so a client-side failure in a swap gap does not make a release stop-then-start.
+
 **Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
 every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'
-R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed; no overlapping runs, duplicated
+R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed server-side or unclassified (client-side
+failures are listed under `Health probe failures` with their evidence but do not fail the gate); no overlapping runs, duplicated
 agent comments or duplicated subtasks; no release was stop-then-start; and at least one release was detected, each
 with a live run carried across it. A fixed batch (`--hosted-releases 0`) skips the release check. R1 uses the
 staging-mix budget (`stagingMixBudgetMs`); a subtask the agent created under a launched task is graded from its own creation time with the

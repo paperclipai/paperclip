@@ -406,6 +406,7 @@ import {
 import {
   addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
+  conversationInteractionResponderAllowed,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -6426,7 +6427,7 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+    if (req.actor.type === "board" && !conversationInteractionResponderAllowed(issue, req.actor.userId)) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
     // Actor-only gates deliberately precede the interaction lookup. An actor

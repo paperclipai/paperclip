@@ -98,6 +98,20 @@ async function renderPage(url = fixture.url) {
   await flush(); await flush();
   return client;
 }
+async function menuItems(trigger: HTMLButtonElement) {
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); });
+  }
+  return [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')];
+}
+
+async function chooseMenuItem(trigger: HTMLButtonElement, label: string) {
+  const item = (await menuItems(trigger)).find(option => option.textContent === label);
+  expect(item, label).toBeDefined();
+  await act(async () => item!.click());
+  await flush();
+}
+
 describe("Coordinator Needs You — Archived view and history filters (PAP-749 task 2e)", () => {
   const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null) => ({
     id, sourceKind: "issue_thread_interaction", inlineResolvable: false, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`,
@@ -117,7 +131,7 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     expect(container.querySelector("[data-attention-view-menu]")).not.toBeNull();
     expect(container.querySelector("h1")?.textContent).toBe("Archived");
     expect(container.querySelector('[aria-label="Back to Needs You"]')).not.toBeNull();
-    expect(container.querySelector('select[aria-label="Filter decisions by assignee"]')).toBeNull();
+    expect(container.querySelector('button[aria-label^="Filter decisions by assignee"]')).toBeNull();
     const archivedCard = container.querySelector<HTMLElement>('[data-attention-card="arch"]')!;
     expect(archivedCard.querySelector('[data-attention-hidden="archived"]')?.textContent).toMatch(/^Archived /);
     const group = container.querySelector<HTMLElement>("[data-attention-snoozed-group]")!;
@@ -325,11 +339,11 @@ describe("Coordinator Needs You", () => {
     expect(container.querySelector("h1")).toBeNull();
     expect(container.textContent).not.toContain("Someone needs you to choose");
     // Grouped by type by default.
-    const group = toolbar.querySelector<HTMLSelectElement>('select[aria-label="Group decisions"]')!;
+    const group = toolbar.querySelector<HTMLButtonElement>('button[aria-label^="Group decisions"]')!;
     expect(group.value).toBe("type");
-    expect([...group.options].map((option) => option.textContent)).toEqual(["By type", "By task", "By agent", "By project", "No grouping"]);
+    expect((await menuItems(group)).map((option) => option.textContent)).toEqual(["By type", "By task", "By agent", "By project", "No grouping"]);
     expect(container.querySelector('[data-needs-you-section="decisions"]')).toBeNull();
-    await act(async () => { group.value = "none"; group.dispatchEvent(new Event("change", { bubbles: true })); });
+    await chooseMenuItem(group, "No grouping");
     expect(container.querySelector("[data-needs-you-section]")).toBeNull();
     expect(container.querySelectorAll("article")).toHaveLength(3);
     // Search narrows the cards.
@@ -449,12 +463,12 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(fixture.listCalls).toContainEqual({ all: true, view: "mine" });
     expect(fixture.listCalls.some((call) => (call as { view?: string }).view !== "mine")).toBe(false);
     // PAP-775: For you is the page (no tab, no chips); the toolbar's assignee
-    // filter says "Assigned to you" and widens to the other views.
+    // filter says "By assigned" and widens to the other views.
     expect(tab("mine")).toBeNull();
     expect(tab("unassigned")).toBeNull();
-    const assignee = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
+    const assignee = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
     expect(assignee().value).toBe("me");
-    expect(assignee().selectedOptions[0]?.textContent).toBe("Assigned to you");
+    expect(assignee().textContent).toBe("By assigned");
     // Why me? is the type label's tooltip, not text on the card; your own card doesn't name you.
     expect([...container.querySelectorAll<HTMLElement>("[data-attention-type-label]")].map((label) => [label.textContent, label.title]))
       .toEqual([["Confirm or decline", "Why me? Sent to you"], ["Confirm or decline", "Why me? You are the reviewer"]]);
@@ -463,7 +477,7 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "mine"], exact: false })).toBeTruthy();
 
-    await act(async () => { assignee().value = "unassigned"; assignee().dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+    await chooseMenuItem(assignee(), "No owner yet");
     expect(container.querySelector("[data-location]")?.textContent).toBe("?view=unassigned");
     expect(assignee().value).toBe("unassigned");
     expect(fixture.listCalls).toContainEqual({ all: true, view: "unassigned" });
@@ -481,9 +495,9 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     fixture.viewCounts = { mine: 0, unassigned: 0, company: 1 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
-    const assignee = container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
+    const assignee = container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
     expect(assignee.value).toBe("company");
-    expect(assignee.selectedOptions[0]?.textContent).toBe("Company alerts");
+    expect(assignee.textContent).toBe("Company alerts");
     expect(fixture.listCalls).toContainEqual({ all: true, view: "company" });
     await flush();
     // A1 (PAP-775): the type label starts with the person the card is for.
@@ -677,10 +691,10 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
     // PAP-775: Everyone is "All assignees" in the toolbar's assignee filter, and
-    // "Assigned to you" returns to the page.
-    const assignee = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
+    // "By assigned" returns to the page.
+    const assignee = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
     await vi.waitFor(() => expect(assignee().value).toBe("all"));
-    expect(assignee().selectedOptions[0]?.textContent).toBe("All assignees");
+    expect(assignee().textContent).toBe("All assignees");
     expect(container.querySelector("[data-needs-you-summary]")?.textContent).toBe("2 decisions");
     expect(fixture.listCalls).toContainEqual({ all: true, view: "all" });
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "all"], exact: false })).toBeTruthy();
@@ -714,9 +728,9 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     await render(client); await flush();
     // A viewer has no Everyone — ?view=all falls back to For you (the page), and
     // the assignee filter offers no "All assignees" and no other people (PAP-775).
-    const assignee = container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
+    const assignee = container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
     expect(assignee.value).toBe("me");
-    expect([...assignee.options].map((option) => option.textContent)).toEqual(["Assigned to you", "No owner yet", "Company alerts"]);
+    expect((await menuItems(assignee)).map((option) => option.textContent)).toEqual(["Assigned to you", "No owner yet", "Company alerts"]);
     expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
     expect(fixture.listCalls.some((call) => (call as { view?: string }).view === "all")).toBe(false);
     client.clear();
@@ -859,25 +873,25 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     fixture.viewCounts = { mine: 1, unassigned: 1, company: 0, archived: 0, all: 3 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
-    const assignee = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
-    const choose = async (value: string) => { await act(async () => { assignee().value = value; assignee().dispatchEvent(new Event("change", { bubbles: true })); }); await flush(); };
+    const assignee = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
+    const choose = (label: string) => chooseMenuItem(assignee(), label);
     const cards = () => [...container.querySelectorAll("[data-attention-card]")].map(card => card.getAttribute("data-attention-card"));
     await vi.waitFor(() => expect(assignee().value).toBe("all"));
-    // The viewer is "Assigned to you", never a person option of their own.
-    expect([...assignee().options].map(option => [option.value, option.textContent])).toEqual([
-      ["me", "Assigned to you"], ["all", "All assignees"], ["user:dotta", "Dotta"], ["unassigned", "No owner yet"], ["company", "Company alerts"]]);
+    // The viewer is "By assigned", never a person option of their own.
+    expect((await menuItems(assignee())).map(option => option.textContent)).toEqual([
+      "Assigned to you", "All assignees", "Dotta", "No owner yet", "Company alerts"]);
     expect(cards()).toEqual(["m1", "d1", "pool"]);
     // One person narrows Everyone, and the person lives in the URL.
-    await choose("user:dotta");
+    await choose("Dotta");
     expect(container.querySelector("[data-location]")?.textContent).toBe("?view=all&for=dotta");
     expect(assignee().value).toBe("user:dotta");
     expect(cards()).toEqual(["d1"]);
     // Back to everyone drops the person.
-    await choose("all");
+    await choose("All assignees");
     expect(container.querySelector("[data-location]")?.textContent).toBe("?view=all");
     expect(cards()).toEqual(["m1", "d1", "pool"]);
-    // "Assigned to you" is the page itself.
-    await choose("me");
+    // "By assigned" is the page itself.
+    await choose("Assigned to you");
     expect(container.querySelector("[data-location]")?.textContent).toBe("");
     client.clear();
   });
@@ -887,9 +901,8 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
     await vi.waitFor(() => expect(container.querySelector('[data-attention-card="m2"]')).toBeTruthy());
-    const assignee = container.querySelector<HTMLSelectElement>('select[aria-label="Filter decisions by assignee"]')!;
+    const assignee = container.querySelector<HTMLButtonElement>('button[aria-label^="Filter decisions by assignee"]')!;
     expect(assignee.value).toBe("me");
-    expect(assignee.getAttribute("data-attention-assignee")).toBe("me");
     // The old "For anyone" filter is gone.
     expect(container.querySelector("[data-attention-audience-filter]")).toBeNull();
     expect(container.querySelector("[data-needs-you-summary]")?.textContent).toBe("2 decisions");

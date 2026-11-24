@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { workspaceArchive, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage } from "./remote-workspace-snapshot-archive.js";
+import { WORKSPACE_SOURCE_KEY_LIMIT } from "./workspace-source-key-limit.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
@@ -117,6 +118,15 @@ describe("portable remote workspace archives", () => {
     expect(await fs.readFile(path.join(restored, "work.txt"), "utf8")).toBe("unstaged\n");
     expect(await fs.readFile(path.join(restored, "new.txt"), "utf8")).toBe("untracked\n");
     await git(restored, "fsck", "--connectivity-only", "--no-dangling");
+  });
+  it("accepts the Git source roots of a source-lock scope at its key bound and refuses more", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "work.txt"), "saved\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    const owned = await fs.realpath(root), others = (count: number) => Array.from({ length: count }, (_, n) => path.join(owned, "unrelated", String(n)));
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "bounded.pcws"), singlePass: true,
+      gitSourceRoots: [owned, ...others(WORKSPACE_SOURCE_KEY_LIMIT * 3 - 1)] })).resolves.toMatchObject({ manifestDigest: expect.any(String) });
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "unbounded.pcws"), singlePass: true,
+      gitSourceRoots: [owned, ...others(WORKSPACE_SOURCE_KEY_LIMIT * 3)] })).rejects.toThrow("online_source_git_requires_shared_fence");
   });
   it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
     const cwd = await source(), repository = path.join(cwd, location);

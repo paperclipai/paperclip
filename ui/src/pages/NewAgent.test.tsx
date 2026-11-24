@@ -677,8 +677,9 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).not.toHaveBeenCalled();
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity" && !call[2]?.agentId)).toBe(true);
-    if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
-    else expect(api.adapterModels).toHaveBeenCalled();
+    // A Gemini API key gets the pinned runtime's catalog too, never a type-the-id dead end.
+    expect(api.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      acpxAgent: "antigravity", aiConnection: expect.objectContaining({ provider: "google", method }) }));
     await click("Back to agents");
     expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
   });
@@ -701,8 +702,7 @@ describe("New agent setup", () => {
       await click(method === "subscription" ? "Use saved subscription" : "Use saved API key");
       expect(api.testEnvironment).not.toHaveBeenCalled();
       expect(container.textContent).toContain("Configure your agent");
-      if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
-      else await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
         provider: "acpx", acpxAgent: "antigravity", aiConnection: expect.objectContaining({ provider: "google", method }), environmentId: "local-1",
       })));
       await click("Finish setup");
@@ -1461,7 +1461,8 @@ describe("New agent setup", () => {
     const thinking = container.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
     expect(thinking.value).toBe("max");
     expect([...thinking.options].map(option => option.value)).toEqual(["", "off", "low", "high", "max"]);
-    expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Connection"][role="combobox"]')?.textContent).toContain("Use harness sign-in");
+    expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).not.toBeNull();
   });
 
   it.each(["auto", "legacy"] as const)("keeps OpenCode %s selection consistent between testing and hiring", async runner => {
@@ -1478,6 +1479,87 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "opencode_local", expect.objectContaining({ adapterConfig: expect.objectContaining({ model }), ...(runner === "legacy" ? { runner } : {}) }));
     expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "opencode_local", adapterConfig: expect.objectContaining({ model }), ...(runner === "legacy" ? { runner } : {}) }));
     if (runner === "auto") expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("sets up OpenCode with a discovered host-auth model without attaching OpenRouter", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "zai/glm-5", label: "GLM 5" }]);
+    await render("opencode_local");
+    expect(container.textContent).not.toContain("You have no default account");
+    const chooseConnection = async (label: string) => {
+      const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+      await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await settle();
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label));
+      expect(option).toBeDefined();
+      await act(async () => option!.click());
+      await settle();
+    };
+    await chooseConnection("Responsible user’s default");
+    expect(container.textContent).toContain("You have no default account");
+    await chooseConnection("Use harness sign-in");
+    expect(container.textContent).not.toContain("You have no default account");
+    await fill("Model", "zai/glm-5");
+    await click("Run test");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "opencode_local", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "zai/glm-5" }),
+    }));
+    expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    expect(api.hire.mock.calls.at(-1)![1].runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it.each(["Run test", "Save & exit"])("clears a resumed OpenCode draft's managed connection before %s", async action => {
+    const id = "00000000-0000-4000-8000-000000000092";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "opencode_local",
+      adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6" },
+      runtimeConfig: { heartbeat: { enabled: false }, aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } },
+      pauseReason: "setup", status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "opencode_local", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    await renderCurrentParams();
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Use harness sign-in")!;
+    await act(async () => option.click());
+    await settle();
+    await fill("Model", "zai/glm-5");
+    await click(action);
+    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({ runtimeConfig: { heartbeat: { enabled: false } } }), "company-1");
+    if (action === "Run test") {
+      expect(api.update.mock.invocationCallOrder.at(-1)).toBeLessThan(api.testEnvironment.mock.invocationCallOrder.at(-1)!);
+      expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    }
+  });
+
+  it("preserves native Pi harness sign-in after saving and reopening setup", async () => {
+    const id = "00000000-0000-4000-8000-000000000095";
+    let draft = { id, companyId: "company-1", name: "Pi", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "openrouter/anthropic/claude-sonnet-4.6" },
+      runtimeConfig: { heartbeat: { enabled: false }, aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } } as Record<string, unknown>,
+      pauseReason: "setup", status: "paused" };
+    state.params = new URLSearchParams({ name: "Pi", adapterType: "pi_local", setupAgentId: id });
+    api.get.mockImplementation(async () => draft);
+    api.update.mockImplementation(async (_id, patch) => { draft = { ...draft, ...patch }; return draft; });
+    await renderCurrentParams();
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Connection"][role="combobox"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Use harness sign-in")!;
+    await act(async () => option.click());
+    await settle();
+    await click("Save & exit");
+    expect(draft.runtimeConfig.aiConnection).toBeUndefined();
+    await act(async () => root.render(null));
+    cache.removeQueries({ queryKey: queryKeys.agents.detail(id) });
+    await renderCurrentParams();
+    expect(container.querySelector('[aria-label="Connection"][role="combobox"]')?.textContent).toContain("Use harness sign-in");
+    expect(container.textContent).not.toContain("You have no default account");
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)![2].aiConnection).toBeUndefined();
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)![1].runtimeConfig.aiConnection).toBeUndefined();
   });
 
   it("retains automatic OpenCode selection while the first draft request is in flight", async () => {

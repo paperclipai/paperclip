@@ -684,6 +684,113 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await ctx.rows())[0]).toMatchObject({ status: "expired", errorCode: "access_removed", nextPollAt: null });
   });
 
+  async function personalGrantSetup(server: ReturnType<typeof taskServer>) {
+    const ctx = await setup(server);
+    for (const userId of ["task-owner", "task-opener"]) {
+      await db.insert(companyMemberships).values({ companyId: ctx.org.id, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    }
+    await db.update(heartbeatRuns).set({ responsibleUserId: "task-owner" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    return ctx;
+  }
+  const usePersonalGrants = async (ctx: Awaited<ReturnType<typeof personalGrantSetup>>) => {
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, ctx.connected.connectionId));
+    const grants = new Map<string, string>();
+    for (const userId of ["task-owner", "task-opener"]) {
+      const [grant] = await db.insert(connectionGrants).values({
+        companyId: ctx.org.id, connectionId: ctx.connected.connectionId, kind: "user", subjectUserId: userId,
+        credentialSecretRefs: [], status: "active", isDefault: false,
+      }).returning();
+      grants.set(userId, grant!.id);
+    }
+    return grants;
+  };
+  const callAs = async (ctx: Awaited<ReturnType<typeof personalGrantSetup>>, createdByUserId: string | null, ref: string,
+    extra: { runId?: string; timeoutMs?: number; idempotencyKey?: string } = {}) => {
+    const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: extra.runId ?? ctx.run.id, createdByUserId });
+    const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    return ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref }, timeoutMs: extra.timeoutMs ?? 400, idempotencyKey: extra.idempotencyKey });
+  };
+  const releaseLeases = (orgId: string) => db.update(toolMcpTasks).set({ leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.companyId, orgId));
+
+  it("keeps the opener's personal grant on a person-started task and never hands its result to another grant", async () => {
+    const server = taskServer();
+    const ctx = await personalGrantSetup(server);
+    const grants = await usePersonalGrants(ctx);
+
+    await expect(callAs(ctx, null, "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const agentTaskId = server.only().id;
+    await releaseLeases(ctx.org.id);
+    const callsBeforeOwnerRetry = server.count("tools/call");
+    await expect(callAs(ctx, "task-owner", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(callsBeforeOwnerRetry);
+    await expect(callAs(ctx, "task-opener", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const openerTaskId = server.only().id;
+    expect(openerTaskId).not.toBe(agentTaskId);
+    await releaseLeases(ctx.org.id);
+    const callsBeforeOpenerRetry = server.count("tools/call");
+    await expect(callAs(ctx, "task-opener", "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(callsBeforeOpenerRetry);
+    const rows = await ctx.rows();
+    const openerRow = rows.find((row) => row.createdByUserId === "task-opener")!;
+    expect(openerRow).toMatchObject({ grantId: grants.get("task-opener"), responsibleUserId: "task-opener" });
+    expect(rows.find((row) => row.createdByUserId === null)).toMatchObject({ grantId: grants.get("task-owner") });
+
+    server.tasks.get(openerTaskId)!.status = "completed";
+    server.tasks.get(openerTaskId)!.result = { content: [{ type: "text", text: "opener result" }], isError: false };
+    await releaseLeases(ctx.org.id);
+    const callsBeforeRetry = server.count("tools/call");
+    await expect(callAs(ctx, null, "shared-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(callsBeforeRetry);
+
+    await releaseLeases(ctx.org.id);
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.id, openerRow.id));
+    await ctx.poll();
+    const [polled] = await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, openerRow.id));
+    expect(polled!.errorCode).not.toBe("access_removed");
+
+    const [woken] = await db.insert(heartbeatRuns).values({ companyId: ctx.org.id, agentId: ctx.agent.id, invocationSource: "automation",
+      status: "running", responsibleUserId: "task-owner",
+      contextSnapshot: { issueId: ctx.issue.id, toolTask: { tool: openerRow.catalogToolName, status: "completed", taskRecordId: openerRow.id } } }).returning();
+    await releaseLeases(ctx.org.id);
+    const callsBeforeContinuation = server.count("tools/call");
+    expect(await callAs(ctx, null, "shared-ref", { runId: woken!.id, timeoutMs: 2_000 })).toMatchObject({ status: "completed" });
+    expect(server.count("tools/call")).toBe(callsBeforeContinuation);
+    const [collected] = await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, openerRow.id));
+    expect(collected!.deliveredAt).toBeInstanceOf(Date);
+
+    await expect(callAs(ctx, "task-opener", "revoked-ref")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const revokedTaskId = server.only().id;
+    const [revokedRow] = (await ctx.rows()).filter((row) => row.createdByUserId === "task-opener" && !row.deliveredAt);
+    server.tasks.get(revokedTaskId)!.status = "completed";
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grants.get("task-opener")!));
+    const [wokenAgain] = await db.insert(heartbeatRuns).values({ companyId: ctx.org.id, agentId: ctx.agent.id, invocationSource: "automation",
+      status: "running", responsibleUserId: "task-owner",
+      contextSnapshot: { issueId: ctx.issue.id, toolTask: { tool: revokedRow!.catalogToolName, status: "completed", taskRecordId: revokedRow!.id } } }).returning();
+    await releaseLeases(ctx.org.id);
+    const callsBeforeRevokedContinuation = server.count("tools/call");
+    await expect(callAs(ctx, null, "revoked-ref", { runId: wokenAgain!.id, timeoutMs: 2_000 }))
+      .rejects.toMatchObject({ reasonCode: "provider_task_expired" });
+    expect(server.count("tools/call")).toBe(callsBeforeRevokedContinuation);
+  });
+
+  it("lets any person collect a task on a shared grant, including one started before openers were recorded", async () => {
+    const server = taskServer();
+    const ctx = await personalGrantSetup(server);
+    await expect(callAs(ctx, "task-opener", "shared-grant")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const callsBefore = server.count("tools/call");
+    server.finish();
+    await releaseLeases(ctx.org.id);
+    expect(await callAs(ctx, "task-owner", "shared-grant", { timeoutMs: 2_000 })).toMatchObject({ status: "completed" });
+    expect(server.count("tools/call")).toBe(callsBefore);
+
+    await expect(callAs(ctx, null, "legacy-shared")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    const legacyCalls = server.count("tools/call");
+    server.finish();
+    await releaseLeases(ctx.org.id);
+    expect(await callAs(ctx, "task-opener", "legacy-shared", { timeoutMs: 2_000 })).toMatchObject({ status: "completed" });
+    expect(server.count("tools/call")).toBe(legacyCalls);
+  });
+
   it("keeps a completed task recoverable until its result is recorded, then wakes the agent", async () => {
     const server = taskServer();
     const ctx = await setup(server);

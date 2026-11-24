@@ -131,7 +131,7 @@ import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService, SOURCE_TERMINAL_RESOLUTION } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
-import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
@@ -476,6 +476,7 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 }
 
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
+  if (isProviderQuotaActionRequired(latestRun)) return false;
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
@@ -688,6 +689,7 @@ export function classifyAdapterFailureForRecovery(
   >,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  if (isProviderQuotaActionRequired(latestRun, now)) return null;
   // An engine prerequisite cannot be repaired by asking the same unavailable
   // engine to retry. Use the existing configuration-blocker path.
   if (latestRun.errorCode === "adapter_engine_unavailable" || latestRun.errorCode === "provider_tool_definition_invalid" || latestRun.errorCode === "native_provider_model_rejected") {
@@ -781,7 +783,8 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (isAiAuthenticationBlocked(latestRun) || (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode))) {
+  if (isAiAuthenticationBlocked(latestRun) || isProviderQuotaActionRequired(latestRun)
+      || (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode))) {
     return {
       kind: "non_retryable",
       maxAttempts: 0,
