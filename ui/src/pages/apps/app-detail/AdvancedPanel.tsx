@@ -8,7 +8,7 @@ import type {
   ToolConnection,
   ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
-import { connectionCredentialConfigPath, credentialConfigPath, getAvailableConnectionMethod, humanizeConnectionDisplayName } from "@paperclipai/shared";
+import { connectionCredentialConfigPath, credentialConfigPath, getAvailableConnectionMethod, humanizeConnectionDisplayName, isGoogleWorkspaceConnectionConfig } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +27,6 @@ import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
 import { GOOGLE_CONTENT_DELETION_NOTICE } from "@/features/connections/googleAccessRemoval";
-import { isGoogleWorkspaceConnectionConfig } from "@paperclipai/shared";
 import { describeError } from "@/api/errors";
 import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
 
