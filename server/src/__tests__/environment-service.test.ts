@@ -1714,19 +1714,86 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(switched.environment.metadata?.managedKubernetesSandbox).toBeUndefined();
   });
 
-  it.each([false, true])("preserves archive reaffirmation before company bindings exist (%s)", async (reaffirm) => {
+  it.each([false, true])("preserves unbound archives for operator review regardless of token removal (%s)", async (reaffirm) => {
     const input = { name: "Managed sandbox", provider: "daytona", platformFullyManaged: true };
     const original = await svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "old" } });
     await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
     if (reaffirm) await svc.update(original.environment.id, { status: "archived" });
     const reconcile = () => svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "current" } });
     const first = await reconcile();
-    expect(first.action).toBe(reaffirm ? "skipped" : "updated");
-    expect(first.environment.status).toBe(reaffirm ? "archived" : "active");
-    expect(first.environment.config.snapshot).toBe(reaffirm ? "old" : "current");
+    expect(first.action).toBe("skipped");
+    expect(first.environment.status).toBe("archived");
+    expect(first.environment.config.snapshot).toBe("old");
     await seedCompany();
-    expect((await reconcile()).action).toBe(reaffirm ? "skipped" : "unchanged");
-    expect((await reconcile()).environment.status).toBe(reaffirm ? "archived" : "active");
+    expect((await reconcile()).action).toBe("skipped");
+    expect((await reconcile()).environment.status).toBe("archived");
+  });
+
+  it("preserves a forged unbound archive through repeated reconciliation and later company bindings", async () => {
+    const archived = await svc.create({
+      name: "Managed sandbox",
+      driver: "sandbox",
+      status: "archived",
+      envVars: { FIXTURE_FLAG: "keep" },
+      config: { provider: "daytona", snapshot: "operator" },
+      metadata: {
+        managedByPaperclip: true,
+        managedSandboxProvider: "daytona",
+        _paperclipManagedArchiveToken: "forged-fixture-token",
+      },
+    });
+    const reconcile = (snapshot: string) => svc.ensureManagedSandboxEnvironment({
+      name: archived.name,
+      provider: "daytona",
+      config: { snapshot },
+      platformFullyManaged: true,
+    });
+    for (const snapshot of ["v1", "v1", "v2"]) {
+      expect(await reconcile(snapshot)).toMatchObject({
+        action: "skipped", stockStatus: "operator_modified", updateAvailable: true,
+        environment: { id: archived.id, status: "archived", config: archived.config, updatedAt: archived.updatedAt },
+      });
+    }
+    expect(await db.select().from(builtInManagedResources)).toHaveLength(0);
+
+    const companyId = await seedCompany();
+    const tracked = await reconcile("v3");
+    expect(tracked.action).toBe("skipped");
+    const [binding] = await db.select().from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(binding).toMatchObject({ resourceId: archived.id, stockHash: tracked.stockHash });
+    expect(binding?.defaultsJson.status).toBe("active");
+    expect(binding?.defaultsJson._paperclipManagedArchiveToken).toBeUndefined();
+    for (const snapshot of ["v3", "v4", "v4"]) {
+      expect(await reconcile(snapshot)).toMatchObject({
+        action: "skipped", stockStatus: "operator_modified", updateAvailable: true,
+        environment: {
+          id: archived.id, status: "archived", config: archived.config,
+          envVars: archived.envVars, metadata: archived.metadata, updatedAt: archived.updatedAt,
+        },
+      });
+    }
+    const [unchangedBinding] = await db.select().from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(unchangedBinding).toEqual(binding);
+  });
+
+  it("reactivates drifted platform stock only with a corroborating archive binding", async () => {
+    const companyId = await seedCompany();
+    const input = { companyId, name: "Managed sandbox", provider: "daytona", platformFullyManaged: true };
+    const original = await svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "old" } });
+    await svc.update(original.environment.id, { config: { provider: "daytona", snapshot: "drifted" } });
+    await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
+    const [binding] = await db.select().from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(binding?.defaultsJson.status).toBe("archived");
+    expect(binding?.defaultsJson._paperclipManagedArchiveToken).toBeTypeOf("string");
+    const restored = await svc.ensureManagedSandboxEnvironment({ ...input, config: { snapshot: "current" } });
+    expect(restored).toMatchObject({
+      action: "updated", stockStatus: "stock_update_available", updateAvailable: false,
+      environment: { id: original.environment.id, status: "active", config: { snapshot: "current" } },
+    });
+    expect(restored.environment.metadata?._paperclipManagedArchiveToken).toBeUndefined();
   });
 
   it("platformFullyManaged applies drift instead of preserving it, since no operator can edit this row", async () => {

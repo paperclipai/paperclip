@@ -640,10 +640,10 @@ export function environmentService(db: Db) {
         const platformOwnedRow = row.metadata?.managedByPaperclip === true;
         const platformArchivedRow = row.status === "archived" &&
           typeof rowArchiveToken === "string" &&
-          (matchingBindings.length === 0 || matchingBindings.some((binding) =>
+          matchingBindings.some((binding) =>
             binding.defaultsJson.status === "archived" &&
             binding.defaultsJson[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken,
-          ));
+          );
         if (
           input.platformFullyManaged &&
           stockStatus === "operator_modified" &&

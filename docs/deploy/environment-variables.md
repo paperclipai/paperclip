@@ -196,9 +196,13 @@ that prevent operator edits. Other callers of `ensureManagedSandboxEnvironment`
 leave it unset. Platform reconciliation requires the row's existing
 `managedByPaperclip` ownership marker even when company bindings exist: a
 tracking binding recorded for a skipped tenant-created row never authorizes
-adopting it. Only Paperclip's own archive token authorizes reactivation; an
-operator save removes that token when reaffirming an archive, including before
-the first company and its stock bindings exist.
+adopting it. Archived rows require a matching stock binding that records both
+the archive status and Paperclip's archive token before automatic reactivation.
+A token on the environment row alone is insufficient. An operator save removes
+that token when reaffirming an archive. An archived row without a corroborating
+binding stays preserved for individual operator review, including when it was
+archived before the first company existed. Later tracking-only bindings do not
+authorize its reactivation.
 
 Re-running reconciliation with the desired declaration repairs stale managed
 stock in place and is idempotent. It preserves environment identity, tenant
@@ -217,8 +221,11 @@ startup continues degraded. Set
 `PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE=true` to require every declared
 environment to reconcile before readiness and queued runs resume. The check
 includes unavailable providers and preserves existing archive decisions by
-refusing startup rather than overriding them. With no managed environment
-declarations, the check has nothing to require.
+refusing startup rather than overriding them. A skipped unmarked environment
+holding the declared name also blocks strict startup. An operator must resolve
+the declaration conflict or explicitly restore an intended archived environment
+before retrying; strict mode does not authorize adopting or reactivating those
+rows. With no managed environment declarations, the check has nothing to require.
 
 ## Secrets
 
