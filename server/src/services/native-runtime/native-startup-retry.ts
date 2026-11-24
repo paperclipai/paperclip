@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
-import { aiConnectionDefaults, connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
-import { aiRuntimeConnectionBindingSchema, readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
+import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
@@ -39,30 +39,11 @@ export type ProviderLimitCredential =
   /** The managed connection grants the next run may use. */
   | { kind: "grants"; grantIds: readonly string[] }
   /** A managed connection whose account is chosen only when the run starts. */
-  | { kind: "unresolved" };
+  | { kind: "unresolved" }
+  /** Any account: whether the agent has a live limit at all. */
+  | { kind: "any" };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The credential an agent's next run would use, from its saved AI connection. */
-export async function agentProviderLimitCredential(db: Db, input: {
-  companyId: string;
-  binding: unknown;
-  responsibleUserId: string | null;
-}): Promise<ProviderLimitCredential> {
-  if (input.binding === undefined || input.binding === null) return { kind: "host" };
-  const parsed = aiRuntimeConnectionBindingSchema.safeParse(input.binding);
-  if (!parsed.success || parsed.data.mode === "router") return { kind: "unresolved" };
-  const binding = parsed.data;
-  if (binding.mode === "shared" || binding.mode === "delegated") return { kind: "grants", grantIds: [binding.grantId] };
-  if (!input.responsibleUserId) return { kind: "unresolved" };
-  const defaults = await db.select({ grantId: aiConnectionDefaults.grantId }).from(aiConnectionDefaults).where(and(
-    eq(aiConnectionDefaults.companyId, input.companyId),
-    eq(aiConnectionDefaults.userId, input.responsibleUserId),
-    eq(aiConnectionDefaults.provider, binding.provider),
-  ));
-  const grantIds = defaults.flatMap(row => row.grantId ? [row.grantId] : []);
-  return grantIds.length > 0 ? { kind: "grants", grantIds } : { kind: "unresolved" };
-}
 
 /** The credential a run used, from the account it recorded when it started. */
 export function runProviderLimitCredential(contextSnapshot: unknown): ProviderLimitCredential {
@@ -82,10 +63,10 @@ function recordedGrantId(contextSnapshot: unknown): string | null {
  * still describes the credential the agent would use now.
  */
 function evidenceApplies(evidenceGrantId: string | null, credential: ProviderLimitCredential, activeGrantIds: ReadonlySet<string>) {
-  if (evidenceGrantId === null) return credential.kind === "host";
+  if (evidenceGrantId === null) return credential.kind === "host" || credential.kind === "any";
   if (!activeGrantIds.has(evidenceGrantId)) return false;
   if (credential.kind === "grants") return credential.grantIds.includes(evidenceGrantId);
-  return credential.kind === "unresolved";
+  return credential.kind === "unresolved" || credential.kind === "any";
 }
 
 /** Narrows the evidence read to the checked credential, so other accounts never crowd it out. */
@@ -145,7 +126,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
       ...credentialEvidenceFilter(input.credential),
       or(
-        eq(heartbeatRuns.status, "succeeded"),
+        // A check across every account reads limits only; see the loop below.
+        ...(input.credential.kind === "any" ? [] : [eq(heartbeatRuns.status, "succeeded")]),
         inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
         inArray(sql<string>`${heartbeatRuns.resultJson} #>> '{providerFailure,category}'`, PROVIDER_LIMIT_CATEGORIES),
       ),

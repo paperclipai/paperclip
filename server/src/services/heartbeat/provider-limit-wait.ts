@@ -4,9 +4,11 @@ import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
+import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import {
-  agentProviderLimitCooldown, agentProviderLimitCredential, runProviderLimitCredential,
+  agentProviderLimitCooldown, runProviderLimitCredential, type ProviderLimitCredential,
 } from "../native-runtime/native-startup-retry.js";
+import { aiConnectionService } from "../ai-connections.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -55,11 +57,12 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     const now = new Date();
     // The limit belongs to the credential it was reported on. A run that would
     // use another account, or whose limited account was revoked, is not held.
-    const cooldown = await agentProviderLimitCredential(db, {
-      companyId: run.companyId, binding: parseObject(agent.runtimeConfig).aiConnection,
-      responsibleUserId: run.responsibleUserId,
-    }).then(credential => agentProviderLimitCooldown(db, {
-      companyId: run.companyId, agentId: run.agentId, runId: run.id, credential, now,
+    // Most agents have no live limit, so resolving the account waits for one.
+    const cooldown = await agentProviderLimitCooldown(db, {
+      companyId: run.companyId, agentId: run.agentId, runId: run.id, credential: { kind: "any" }, now,
+    }).then(async anyLimit => anyLimit && agentProviderLimitCooldown(db, {
+      companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
+      credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId),
     })).catch((err: unknown) => {
       // Missing evidence must not stop work; the provider still reports its own limit.
       logger.warn({ err, runId: run.id }, "provider limit evidence unavailable before dispatch");
@@ -126,6 +129,30 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
   }
 
   return { deferRunForProviderLimit };
+}
+
+/**
+ * The account the agent's next run would use, chosen by the same selection a
+ * run makes when it starts.
+ */
+async function agentProviderLimitCredential(db: Db, agent: Agent, responsibleUserId: string | null): Promise<ProviderLimitCredential> {
+  const saved = parseObject(agent.runtimeConfig).aiConnection;
+  if (saved === undefined || saved === null) return { kind: "host" };
+  const parsed = aiRuntimeConnectionBindingSchema.safeParse(saved);
+  if (!parsed.success || parsed.data.mode === "router") return { kind: "unresolved" };
+  const binding = parsed.data;
+  const config = parseObject(agent.adapterConfig);
+  try {
+    const selection = await aiConnectionService(db).select({
+      companyId: agent.companyId, agentId: agent.id, userId: responsibleUserId, adapterType: agent.adapterType,
+      model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding,
+    });
+    return { kind: "grants", grantIds: [selection.grant.id] };
+  } catch {
+    // A run that cannot select an account fails on its own setup check. An
+    // explicit binding still names the account that check would use.
+    return binding.mode === "responsible_user" ? { kind: "unresolved" } : { kind: "grants", grantIds: [binding.grantId] };
+  }
 }
 
 export type ProviderLimitWaitRelease =
@@ -201,6 +228,9 @@ export async function releaseProviderLimitWaits(db: Db, input: {
   // this release publishes its own after its commit.
   const publications = input.publications ?? [];
   const releasedIds = await db.transaction(async tx => {
+    // Dispatch learns of the due retries before they are written, so drain and
+    // sleep account for them; the notice commits only with the write.
+    await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
     const updated = await tx.update(heartbeatRuns)
       .set({
         scheduledRetryAt: now,
@@ -215,8 +245,6 @@ export async function releaseProviderLimitWaits(db: Db, input: {
       ))
       .returning({ id: heartbeatRuns.id });
     if (updated.length === 0) return [];
-    // The schedule change and its dispatch notice commit together.
-    await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
     const updatedIds = new Set(updated.map(row => row.id));
     for (const row of released.filter(candidate => updatedIds.has(candidate.id))) {
       await logActivity(tx as unknown as Db, {

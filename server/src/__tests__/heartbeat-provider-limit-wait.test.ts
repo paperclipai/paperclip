@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues,
-  toolApplications, toolConnections,
+  aiProviderDefaults, toolApplications, toolConnectionInstalls, toolConnections,
 } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -29,6 +29,18 @@ vi.mock("../services/heartbeat/provider-limit-wait.js", async importOriginal => 
           return result;
         },
       }),
+  };
+});
+
+const retryDispatchNotice = vi.hoisted(() => ({ before: null as null | ((transaction: object) => Promise<unknown>) }));
+vi.mock("../services/run-dispatch-notifications.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/run-dispatch-notifications.js")>();
+  return {
+    ...actual,
+    notifyScheduledRetryDispatch: async (...args: Parameters<typeof actual.notifyScheduledRetryDispatch>) => {
+      await retryDispatchNotice.before?.(args[0]);
+      return actual.notifyScheduledRetryDispatch(...args);
+    },
   };
 });
 
@@ -321,6 +333,47 @@ describePostgres("heartbeat provider usage limit wait", () => {
       expect(deps.setRunStatusIfRunning).not.toHaveBeenCalled();
     });
 
+    it("follows the user's default account when the agent uses its responsible user's default", async () => {
+      const f = await seed([]);
+      const userId = `limit-user-${f.companyId}`;
+      const [application] = await db.insert(toolApplications)
+        .values({ companyId: f.companyId, name: `Personal AI ${randomUUID()}`, type: "mcp_http" }).returning();
+      const personal: Account[] = [];
+      for (const name of ["Personal A", "Personal B"]) {
+        const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+          uid: randomUUID(), name, connectionPurpose: "ai", transport: "runtime_auth", authKind: "none", enabled: true,
+          status: "active", healthStatus: "ok", config: { ai: { provider: "google", method: "subscription" }, aiIsolatedSubscription: true } }).returning();
+        const [grant] = await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: connection.id,
+          kind: "user", subjectUserId: userId }).returning();
+        await db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: connection.id,
+          targetType: "company", targetId: f.companyId });
+        personal.push({ connectionId: connection.id, grantId: grant.id });
+      }
+      // The agent names no account; each run uses its responsible user's default.
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" },
+        runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "google", method: "subscription" } } })
+        .where(eq(agents.id, f.agentId));
+      await db.insert(aiProviderDefaults).values({ companyId: f.companyId, userId, provider: "google", grantId: personal[0].grantId });
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(personal[0]) });
+      const deferAs = async () => {
+        const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+        const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+          invocationSource: "automation", triggerDetail: "system", responsibleUserId: userId,
+          contextSnapshot: { issueId: f.issueId } }).returning();
+        return createProviderLimitWait(db, {
+          setRunStatusIfRunning: async () => ({ updated: true, run: { ...run, status: "cancelled" } }),
+          setWakeupStatus: async () => undefined, appendRunEvent: async () => undefined,
+          scheduleBoundedRetryForRun: async () => ({ outcome: "scheduled" }),
+          releaseIssueExecutionAndPromote: async () => undefined, finalizeAgentStatus: async () => undefined,
+        } as never).deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false });
+      };
+      expect(await deferAs()).toBe(true);
+      await db.update(aiProviderDefaults).set({ grantId: personal[1].grantId, updatedAt: new Date() })
+        .where(eq(aiProviderDefaults.companyId, f.companyId));
+      expect(await deferAs()).toBe(false);
+    });
+
     it("stops holding work once the limited account is revoked", async () => {
       const f = await heldFixture();
       expect((await deferDirect(f)).deferred).toBe(true);
@@ -336,7 +389,19 @@ describePostgres("heartbeat provider usage limit wait", () => {
       const retry = await scheduledRetry(f.agentId);
       expect(retry!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
 
-      await agentService(db).update(f.agentId, { runtimeConfig: { aiConnection: binding(f.accounts[1]) } });
+      // Dispatch hears of the due retry before the write that makes it due.
+      const seenAtNotice: number[] = [];
+      retryDispatchNotice.before = async transaction => {
+        const [row] = await (transaction as typeof db).select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, retry!.id));
+        seenAtNotice.push(row!.at!.getTime());
+      };
+      try {
+        await agentService(db).update(f.agentId, { runtimeConfig: { aiConnection: binding(f.accounts[1]) } });
+      } finally {
+        retryDispatchNotice.before = null;
+      }
+      expect(seenAtNotice).toEqual([retry!.scheduledRetryAt!.getTime()]);
       const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
       expect(released.status).toBe("scheduled_retry");
       expect(released.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
@@ -375,7 +440,7 @@ describePostgres("heartbeat provider usage limit wait", () => {
         status: "todo", assigneeAgentId: secondAgent.id, issueNumber: 2 }).returning();
       await db.insert(heartbeatRuns).values({ companyId: sharedCompany, agentId: secondAgent.id, invocationSource: "automation",
         triggerDetail: "system", ...quotaOn(first.accounts[0]) });
-      const shared = { companyId: sharedCompany, agentId: secondAgent.id, issueId: secondIssue.id };
+      const shared = { companyId: sharedCompany, agentId: secondAgent.id as typeof first.agentId, issueId: secondIssue.id as typeof first.issueId };
       expect((await wake(first)).errorCode).toBe("provider_limit_wait");
       expect((await wake(shared)).errorCode).toBe("provider_limit_wait");
       const sharedRetry = await scheduledRetry(secondAgent.id);

@@ -14099,7 +14099,12 @@ export function issueRoutes(
     if (waitingRetry?.status === "scheduled_retry") {
       // The banner also shows "Check now" for a scheduled retry, such as a
       // usage wait. With no monitor, the check is that retry: it starts now
-      // and rechecks availability before any work.
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const retry = await heartbeat.retryScheduledRetryNow({
         issueId: issue.id,
         actor: { actorType: actor.actorType, actorId: actor.actorId },
