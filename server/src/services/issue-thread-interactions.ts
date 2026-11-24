@@ -187,6 +187,7 @@ import {
 import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
+  MergeConfirmationProviderUnavailableError,
   setBoundedPullRequestCacheEntry,
   type GitHubPullRequestReference,
   type PullRequestMergeDetailsResolver,
@@ -4446,13 +4447,13 @@ export function issueThreadInteractionService(
       const refreshedStates = await resolvePullRequestStates([
         ...uniqueReferences.values(),
       ], signal);
-      if (scope && [...refreshedStates.values()].some(result => result.state === "unknown" && result.retryAtMs === undefined)) {
-        throw new Error("Merge confirmation provider state is unavailable");
+      const results = [...refreshedStates.values()];
+      const retryAtMs = results.reduce((deadline, result) => Math.max(deadline, result.retryAtMs ?? 0), 0) || undefined;
+      if (scope && results.some(result => result.state === "unknown" && result.retryAtMs === undefined)) {
+        throw new MergeConfirmationProviderUnavailableError(retryAtMs);
       }
-      let retryAtMs: number | undefined;
       for (const [key, result] of refreshedStates) {
         if (result.retryAtMs !== undefined) {
-          retryAtMs = Math.max(retryAtMs ?? 0, result.retryAtMs);
           pullRequestStateCache.delete(key);
           continue;
         }

@@ -1,5 +1,6 @@
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { MergeConfirmationProviderUnavailableError } from "./github-pull-request-merge.js";
 import type { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
@@ -38,7 +39,12 @@ export function registerMergeConfirmationWork(
       if (scheduledRetry !== undefined && scheduledRetry > Date.now()) return { ...entry, dueAt: scheduledRetry };
       retryByCompany.delete(entry.companyId);
 
-      const result = await service.sweepMergedPullRequestConfirmations([], scope, signal);
+      const result = await service.sweepMergedPullRequestConfirmations([], scope, signal).catch((error: unknown) => {
+        if (!signal?.aborted && error instanceof MergeConfirmationProviderUnavailableError && error.retryAtMs !== undefined) {
+          retryByCompany.set(entry.companyId, error.retryAtMs);
+        }
+        throw error;
+      });
       if (signal?.aborted) return entry;
       if (result.retryAtMs !== undefined) retryByCompany.set(entry.companyId, result.retryAtMs);
       const remaining = await service.mergedPullRequestConfirmationCandidates(scope);

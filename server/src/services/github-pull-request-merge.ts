@@ -35,6 +35,13 @@ export type PullRequestMergeDetailsResolver = (
   signal?: AbortSignal,
 ) => Promise<PullRequestMergeDetails>;
 
+export class MergeConfirmationProviderUnavailableError extends Error {
+  constructor(readonly retryAtMs?: number) {
+    super("Merge confirmation provider state is unavailable");
+    this.name = "MergeConfirmationProviderUnavailableError";
+  }
+}
+
 export const PULL_REQUEST_CACHE_MAX_ENTRIES = 1_000;
 
 export function setBoundedPullRequestCacheEntry<T>(
