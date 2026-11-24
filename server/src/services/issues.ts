@@ -14261,7 +14261,7 @@ export function issueService(db: Db) {
       if (commentCanTriggerTurn && issue.conversationAgentId && actor.userId) {
         await dbOrTx.update(issues).set({ conversationState: "active" }).where(eq(issues.id, issueId));
       }
-      if (commentCanTriggerTurn && options?.mirrorToSlack && actor.userId && authorType === "user") {
+      if (options?.mirrorToSlack && actor.userId && authorType === "user") {
         await mirrorSlackBoardComment(dbOrTx, comment, { attachmentIds: options.attachmentIds });
       }
       if (commentCanTriggerTurn && (authorType === "user" || actor.userId)) {
