@@ -1,9 +1,11 @@
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
 import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-profile.js";
+import { saveUndeliveredUserComments } from "./work-intent-outbox.js";
+import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
 
 /**
  * Google Antigravity's native `/swarm`, started only by a signed-in user.
@@ -168,20 +170,26 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     // One selection at a time per task, so one request starts one swarm.
     await tx.select({ id: issues.id }).from(issues)
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns)
+    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
+      finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
         sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
     if (attempts.some(run => run.status === "succeeded")) return null;
     if (attempts.some(run => ["queued", "running"].includes(run.status))) refuse("A swarm for this request is already running.");
     // The user asked for this attempt: it is the request's first run (the
-    // fresh /swarm comment), or the user pressed Retry after the last attempt.
-    // Run context and wake reasons are not proof (recoveries copy context, and
-    // an agent can name any wake reason), so Retry is read from the user's own
-    // retry request. Everything else (recovery, sweeps, continuations,
-    // automatic retries) is automatic and bounded below.
-    const lastAttemptAt = attempts.reduce<Date | null>((latest, run) => !latest || run.createdAt > latest ? run.createdAt : latest, null);
-    const manual = lastAttemptAt === null || await userRetriedSince(tx as unknown as Db, {
-      companyId: input.companyId, agentId: input.agent.id, issueId: input.issueId, since: lastAttemptAt });
+    // fresh /swarm comment), or this run is the one the user's Retry started,
+    // clicked after the last attempt began and after any Stop. Run context and
+    // wake reasons are not proof (recoveries copy context, and an agent can
+    // name any wake reason), so Retry is read from the user's own retry
+    // request. A click that joined an attempt already running belongs to that
+    // attempt. Everything else (recovery, sweeps, continuations, automatic
+    // retries) is automatic and bounded below.
+    const latestOf = (dates: Date[]) => dates.reduce<Date | null>((latest, at) => !latest || at > latest ? at : latest, null);
+    const lastAttemptAt = latestOf(attempts.map(run => run.createdAt));
+    const stoppedAt = latestOf(attempts.filter(run => run.status === "cancelled").map(run => run.finishedAt ?? run.updatedAt));
+    const manual = lastAttemptAt === null || await userRetryStartedRun(tx as unknown as Db, {
+      companyId: input.companyId, agentId: input.agent.id, issueId: input.issueId, runId: input.runId,
+      since: stoppedAt && stoppedAt > lastAttemptAt ? stoppedAt : lastAttemptAt });
     if (!manual && attempts.some(run => run.status === "cancelled")) {
       refuse("The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again.");
     }
@@ -190,6 +198,7 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     }
     const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx as unknown as Db), agent: input.agent, remote: input.remote, planning: input.planning });
     if (refusal) refuse(refusal);
+    await queueCommentsTheSwarmDoesNotSend(tx as unknown as Db, { ...input, commentId });
     // The one stored fact every later decision reads: this run serves this request.
     await tx.update(heartbeatRuns)
       .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId })}::jsonb` })
@@ -206,17 +215,54 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   });
 }
 
-/** A Retry the signed-in user asked for on this task and agent after `since` (automatic retries excluded). */
-async function userRetriedSince(db: Db, input: { companyId: string; agentId: string; issueId: string; since: Date }): Promise<boolean> {
+/**
+ * A Retry the signed-in user asked for on this task and agent after `since`
+ * that started this run: its request is this run's wake, or is linked to this
+ * run (automatic retries excluded). Promotion renames a deferred Retry's wake
+ * reason, so a Retry is also known by its own retry intent.
+ */
+async function userRetryStartedRun(db: Db, input: { companyId: string; agentId: string; issueId: string; runId: string; since: Date }): Promise<boolean> {
   const [retry] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
-    inArray(agentWakeupRequests.reason, ["task_retry", "retry_failed_run"]),
+    or(inArray(agentWakeupRequests.reason, ["task_retry", "retry_failed_run"]),
+      sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`),
     eq(agentWakeupRequests.requestedByActorType, "user"), isNotNull(agentWakeupRequests.requestedByActorId),
     gt(agentWakeupRequests.requestedAt, input.since),
     sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId') = ${input.issueId}`,
     sql`${agentWakeupRequests.payload}->'taskRetry'->>'initiatedBy' is null`,
+    or(eq(agentWakeupRequests.runId, input.runId), sql`exists (select 1 from ${heartbeatRuns} started
+      where started.company_id = ${input.companyId} and started.id = ${input.runId}
+        and started.wakeup_request_id = ${agentWakeupRequests.id})`),
   )).limit(1);
   return Boolean(retry);
+}
+
+/**
+ * The swarm sends the provider only its request comment. Other user comments
+ * merged into this run's wake (queued-comment-delivery.ts does not count them
+ * delivered by a swarm run) are saved as their own receipt, so a following
+ * ordinary run delivers them. A comment another receipt already carries is not
+ * saved twice (a retry of the swarm copies the merged context).
+ */
+async function queueCommentsTheSwarmDoesNotSend(db: Db, input: {
+  companyId: string; issueId: string; runId: string; agent: { id: string }; context: unknown; commentId: string;
+}): Promise<void> {
+  const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+  const merged = [run?.contextSnapshot, input.context].flatMap(value => [...queuedCommentIdsFromRunContext(value),
+    record(value).wakeCommentId, record(value).commentId]);
+  const others = [...new Set(merged.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)
+    && id !== input.commentId))];
+  if (others.length === 0) return;
+  const receipts = await db.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agent.id),
+    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`));
+  const waiting = new Set(receipts.flatMap(receipt => queuedCommentIdsFromWakePayload(receipt.payload)));
+  const owed = others.filter(id => !waiting.has(id));
+  if (owed.length === 0) return;
+  await saveUndeliveredUserComments(db, { companyId: input.companyId, issueId: input.issueId, agentId: input.agent.id,
+    commentIds: owed, allowedStatuses: ["backlog", "todo", "in_progress", "in_review", "blocked"] });
 }
 
 export interface AntigravitySwarmSelection {

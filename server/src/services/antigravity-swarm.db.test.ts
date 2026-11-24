@@ -5,6 +5,9 @@ import { activityLog, agentWakeupRequests, agents, companies, createDb, EMBEDDED
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
+import { queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
+import { mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "swarm-user";
@@ -124,10 +127,12 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
   });
 
   /** The wake Retry records for the user (task-retry.ts); `initiatedBy` marks an automatic retry on their behalf. */
-  const userRetry = async (f: Awaited<ReturnType<typeof seed>>, intent: Record<string, unknown> = {}) => {
+  /** `runId` is the run the click started, or the busy run it joined (status coalesced). */
+  const userRetry = async (f: Awaited<ReturnType<typeof seed>>, intent: Record<string, unknown> = {},
+    link: { runId?: string; status?: string; reason?: string } = {}) => {
     await new Promise(resolve => setTimeout(resolve, 5));
     await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id, source: "on_demand", triggerDetail: "manual",
-      reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: USER,
+      reason: link.reason ?? "task_retry", status: link.status ?? "queued", runId: link.runId ?? null, requestedByActorType: "user", requestedByActorId: USER,
       payload: { issueId: f.issue.id, taskRetry: { schema: "paperclip.task-retry.v1", actorId: USER, ...intent } } });
   };
   const setStatus = (id: string, status: string) => db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, id));
@@ -184,12 +189,38 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     // Nor is a recovery run whose copied context still carries the request marker.
     await expect(resolve(f, { runId: (await insertRun(f, {})).id })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
     // Nor an automatic retry on the user's behalf.
-    await userRetry(f, { initiatedBy: "provider_limit_reset" });
+    const onBehalf = await insertRun(f, {});
+    await userRetry(f, { initiatedBy: "provider_limit_reset" }, { runId: onBehalf.id });
+    await expect(resolve(f, { runId: onBehalf.id, context: retryContext })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+    // Nor the user's Retry that started another run.
+    await userRetry(f, {}, { runId: onBehalf.id });
     await expect(resolve(f, { runId: (await insertRun(f, {})).id, context: retryContext })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
-    // The user's own Retry (resumeTaskRetry: reason task_retry, no marker or retry link) runs it again.
-    await userRetry(f);
+    // The user's own Retry runs it again in the run it started, also once promotion renamed the wake's reason.
     const retry = await insertRun(f, {});
+    await userRetry(f, {}, { runId: retry.id, reason: "issue_execution_promoted" });
     expect(await resolve(f, { runId: retry.id, context: retryContext })).toMatchObject({ request: expect.any(String) });
+  });
+
+  it("never restarts a stopped swarm for a Retry clicked while that swarm was still running", async () => {
+    const f = await seed();
+    const swarm = await insertRun(f, {});
+    expect(await automatic(f, swarm.id)).toMatchObject({ request: expect.any(String) });
+    // Retry while busy joins the running swarm (task-retry.ts records it coalesced onto that run).
+    await userRetry(f, {}, { runId: swarm.id, status: "coalesced" });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, swarm.id));
+    await expect(automatic(f, (await insertRun(f, {})).id, "issue_blocker_stalled")).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+  });
+
+  it("needs a Retry made after the Stop, even when an earlier click starts the next run", async () => {
+    const f = await seed();
+    const first = await insertRun(f, {});
+    expect(await automatic(f, first.id)).toMatchObject({ request: expect.any(String) });
+    const next = await insertRun(f, { status: "queued" });
+    await userRetry(f, {}, { runId: next.id });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, first.id));
+    await expect(resolve(f, { runId: next.id })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
   });
 
   it("caps automatic attempts even when a recovery copies the request marker or names a retry", async () => {
@@ -201,8 +232,58 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     }
     await expect(resolve(f, { runId: (await insertRun(f, {})).id })).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
     await expect(automatic(f, (await insertRun(f, {})).id, "task_retry")).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
-    await userRetry(f);
-    expect(await automatic(f, (await insertRun(f, {})).id, "task_retry")).toMatchObject({ request: expect.any(String) });
+    const retried = await insertRun(f, {});
+    await userRetry(f, {}, { runId: retried.id });
+    expect(await automatic(f, retried.id, "task_retry")).toMatchObject({ request: expect.any(String) });
+  });
+
+  it("leaves an ordinary comment merged into the swarm's wake queued for its own ordinary run", async () => {
+    const f = await seed();
+    const [ordinary] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user",
+      authorUserId: USER, body: "actually, use b.txt instead" }).returning();
+    const wakeContext = { issueId: f.issue.id, wakeReason: "issue_commented", antigravitySwarmCommentId: f.comment.id,
+      wakeCommentIds: [f.comment.id, ordinary!.id], wakeCommentId: ordinary!.id };
+    const run = await insertRun(f, { startedAt: new Date(Date.now() + 1000), contextSnapshot: wakeContext });
+    expect(await resolve(f, { runId: run.id, context: wakeContext })).toEqual({ commentId: f.comment.id, request: "two helpers" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 2000) }).where(eq(heartbeatRuns.id, run.id));
+    // The swarm received only its request: the ordinary comment is not delivered by it.
+    const delivered = await deliveredQueuedCommentIds(db, { companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+      commentIds: [f.comment.id, ordinary!.id] });
+    expect([...delivered]).toEqual([f.comment.id]);
+    // It waits in its own receipt, which a following ordinary run delivers.
+    const waiting = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.company.id),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect(waiting.map(wake => queuedCommentIdsFromWakePayload(wake.payload))).toEqual([[ordinary!.id]]);
+    // A retry of the swarm that copies the merged context does not queue the comment twice.
+    const retry = await insertRun(f, { retryOfRunId: run.id, contextSnapshot: wakeContext });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, run.id));
+    await resolve(f, { runId: retry.id, context: wakeContext });
+    expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.company.id),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")))).toHaveLength(1);
+  });
+
+  it("runs the swarm and re-queues an older ordinary comment that coalescing merged into its wake", async () => {
+    const f = await seed();
+    const [ordinary] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user",
+      authorUserId: USER, body: "also rename the folder", createdAt: new Date(Date.now() - 60_000) }).returning();
+    const wakeContext = mergeCoalescedContextSnapshot(
+      { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: ordinary!.id, wakeCommentIds: [ordinary!.id] },
+      { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: f.comment.id, wakeCommentIds: [f.comment.id], antigravitySwarmCommentId: f.comment.id });
+    const run = await insertRun(f, { startedAt: new Date(Date.now() + 1000), contextSnapshot: wakeContext });
+    expect(await resolve(f, { runId: run.id, context: wakeContext })).toEqual({ commentId: f.comment.id, request: "two helpers" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 2000) }).where(eq(heartbeatRuns.id, run.id));
+    expect([...await deliveredQueuedCommentIds(db, { companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+      commentIds: [f.comment.id, ordinary!.id] })]).toEqual([f.comment.id]);
+    const waiting = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.company.id),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect(waiting.map(wake => queuedCommentIdsFromWakePayload(wake.payload))).toEqual([[ordinary!.id]]);
+    // The following ordinary run is not a swarm, and it delivers the comment.
+    const followUp = await insertRun(f, { startedAt: new Date(Date.now() + 3000),
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentIds: [ordinary!.id] } });
+    expect(await automatic(f, followUp.id, "issue_commented")).toBeNull();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 4000) }).where(eq(heartbeatRuns.id, followUp.id));
+    expect(await deliveredQueuedCommentIds(db, { companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+      commentIds: [ordinary!.id] })).toEqual(new Set([ordinary!.id]));
   });
 
   it("lets a task reassigned to another kind of agent run ordinary work instead of refusing every run", async () => {

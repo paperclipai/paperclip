@@ -37,6 +37,7 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
         and (delivered_run.native_issue_id = ${issueId} or delivered_run.context_snapshot->>'issueId' = ${issueId})
         and delivered_run.started_at > ${issueComments.createdAt}
         and delivered_run.started_at >= ${issueComments.updatedAt}
+        and ${swarmRunDeliversOnlyItsRequest(sql`delivered_run`)}
         and (coalesce(delivered_run.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? ${issueComments.id}::text
           or (delivered_run.retry_of_run_id is not null and jsonb_path_exists(delivered_run.context_snapshot, '$.executionContinuation.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text))
@@ -46,6 +47,16 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
     or ${historyReadDeliveredSql(companyId, issueId, input.agentId)})`,
   ));
   return new Set(rows.map(row => row.id));
+}
+
+/**
+ * A trusted /swarm run (services/antigravity-swarm.ts) sends the provider only
+ * its recorded request comment. Other comments merged into its wake stay
+ * undelivered and wait for an ordinary run.
+ */
+function swarmRunDeliversOnlyItsRequest(run: SQL) {
+  return sql`(${run}.context_snapshot->>'antigravitySwarmCommentId' is null
+    or ${run}.context_snapshot->>'antigravitySwarmCommentId' = ${issueComments.id}::text)`;
 }
 
 export const TASK_HISTORY_READ_EVENT = "task_history.read";
