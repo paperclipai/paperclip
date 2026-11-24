@@ -24,7 +24,6 @@ export function refineTestPlan({ plan, head, owners, graphs, durations = {}, exc
     const matrix = [];
     for (const group of groups) {
       const original = entries.filter((entry) => (entry.group ?? "serialized") === group);
-      if (group === "general-chat") { matrix.push(...original); continue; }
       const owned = owners[group];
       assert.ok(owned, `Missing inventory owner: ${group}`);
       const projectByFile = new Map();
@@ -72,6 +71,7 @@ export function refineTestPlan({ plan, head, owners, graphs, durations = {}, exc
 export function selectionDurations() {
   return {
     "general-server-without-chat": loadShardDurations("scripts/general-server-shard-durations.json"),
+    "general-chat": loadShardDurations("scripts/chat-shard-durations.json"),
     serialized: loadShardDurations("scripts/serialized-shard-durations.json"),
   };
 }
