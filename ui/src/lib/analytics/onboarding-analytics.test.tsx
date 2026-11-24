@@ -4,7 +4,8 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, type BrowserAnalyticsConfig } from "@paperclipai/shared";
-import { blocksAgentCreate } from "@/components/OnboardingWizard";
+import { blocksAgentCreate } from "@/lib/onboarding-connection-test";
+import { isReportableAdapterLoginFailure } from "@/components/AgentConfigForm";
 import {
   captureProductAnalyticsEvent,
   resetProductAnalyticsForTest,
@@ -16,7 +17,6 @@ import {
   captureAgentChatMessageSent,
   captureOnboardingStepCompleted,
   captureOnboardingStepFailed,
-  isReportableAdapterLoginFailure,
   useOnboardingAnalytics,
 } from "./onboarding-analytics";
 
@@ -337,6 +337,6 @@ describe("onboarding funnel events", () => {
     expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "cancelled", hasFailure: true })).toBe(false);
     expect(isReportableAdapterLoginFailure({ active: true, retrying: true, status: "failed", hasFailure: true })).toBe(false);
     expect(isReportableAdapterLoginFailure({ active: false, retrying: false, status: "failed", hasFailure: true })).toBe(false);
-    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "pending", hasFailure: false })).toBe(false);
+    expect(isReportableAdapterLoginFailure({ active: true, retrying: false, status: "waiting_for_user", hasFailure: false })).toBe(false);
   });
 });

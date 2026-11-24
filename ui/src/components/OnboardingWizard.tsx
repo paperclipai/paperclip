@@ -3,7 +3,7 @@ import { cancelAdapterLoginSession, cancelPendingAdapterLogin, matchesAdapterLog
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
-import { runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
+import { blocksAgentCreate, runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
 import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { healthApi } from "@/api/health";
@@ -167,19 +167,6 @@ function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unkn
   return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
     ? savedAdapterType
     : "claude_local";
-}
-
-/**
- * True when an adapter-test result blocks a hire. A `fail` status always
- * blocks. A `warn` or a `pass` status blocks too when a check reports
- * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
- * working authentication, so it cannot run. A `warn` with no such check
- * still lets the hire proceed. The wizard widened the gate for missing
- * authentication only, not for every other warning.
- */
-export function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
-  if (result.status === "fail") return true;
-  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 }
 
 /** True when `value` is a plain object, so callers can spread it as env config. */
