@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, completionContracts, nativeRunResults, workspaceOperations, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -17,7 +17,11 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { endSupersededNativeFinalizationRuns, finalizeNativeRun, NATIVE_FINALIZATION_SUPERSEDED } from "./native-run-finalizer.js";
+import { projectCommittedRun } from "./native-run-projection.js";
+import { NATIVE_RUN_FINALIZATION_WORK_QUERY } from "../idle-sleep-safety.js";
+import { nativeResponsePresentationCandidates } from "./native-response-presentation-query.js";
+import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
 import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -186,6 +190,167 @@ describe("durable native provider capacity retry", () => {
     expect(provider.execute).toHaveBeenCalledTimes(1);
     // Do not leave a runnable fixture behind for the next case.
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
+  });
+
+  /**
+   * The agent's finish was accepted, then the provider refused a later request
+   * in the same turn (Antigravity streams its final reply after the finish).
+   */
+  async function acceptResultThenProviderFailure(runId: string, issueId: string, failure: {
+    provider: NativeExecutionInputV1["provider"]; error: Record<string, unknown>; savedByOlderRelease?: boolean;
+  }) {
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId)).returning();
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
+    const contractInput = buildNativeCompletionContract(issue, { revision: contract.revision });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed" });
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1", binding: { companyId, runId, issueId, agentId, executionWorkspaceId: runId },
+      provider: failure.provider,
+      task: { identifier: issueId, title: issue.title, description: null, prompt: "Continue the task using its history.", workMode: "standard" },
+      workspace: { cwd: "/tmp", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: native.normalizedSessionId, driverKind: failure.provider.kind === "opencode" ? "opencode_server" : "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1", contract: contractInput },
+      interactionResponses: [], credentialBindings: [],
+    };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: native.turnId,
+      sourceInstanceId: native.runnerInstanceId, sourceEventId: "after-finish", sourceSeq: 1, sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
+      payload: { status: "failed", error: failure.error },
+    };
+    const terminal: PrpTerminalState = { schema: "paperclip.prp.terminal.v1", turnTerminalState: "failed", runTerminalState: "failed", reportedWorkDisposition: "done" };
+    const result = { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: "The file is written and verified.",
+      completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: contractInput.revision } };
+    provider.execute.mockReset().mockImplementation(async (options: { controlPlane: ControlPlanePort }) => {
+      await options.controlPlane.openRun({ identity: { companyId, issueId, runId, agentId, sessionId: native.normalizedSessionId }, backendKind: "mock", sourceInstanceId: native.runnerInstanceId });
+      await options.controlPlane.appendEvent(event);
+      await options.controlPlane.completeRun({ result, terminal, turnId: native.turnId });
+      if (failure.savedByOlderRelease) {
+        // A result row saved before this release has no accepted outcome.
+        const [saved] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
+        const { acceptedOutcome: _dropped, ...older } = saved.resultJson as Record<string, unknown>;
+        await db.update(nativeRunResults).set({ resultJson: older }).where(eq(nativeRunResults.id, saved.id));
+        const [accepting] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await db.update(heartbeatRuns).set({ resultJson: { ...accepting.resultJson,
+          prpRunTerminalState: terminal.runTerminalState, prpTurnTerminalState: terminal.turnTerminalState } }).where(eq(heartbeatRuns.id, runId));
+      }
+      return { result, terminal, turnId: native.turnId, normalizedSessionId: native.normalizedSessionId, providerSessionId: "fixture-session", driverKind: "codex_app_server", driverVersion: "fixture", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const unexpected = async () => { throw new Error("Unexpected provider call"); };
+    const adapter = await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
+    for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    // The durable projection pass re-derives the run status from the saved
+    // result after a restart or deploy; it must reach the same outcome.
+    const [projectedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await projectCommittedRun({ db, run: projectedRun, coordinator });
+    return adapter;
+  }
+
+  /** A later finalization attempt was superseded: the run ends from its saved terminal state. */
+  async function endAsSuperseded(runId: string) {
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_FINALIZATION_SUPERSEDED, failureDetail: {} })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, errorCode: null, error: null }).where(eq(heartbeatRuns.id, runId));
+    expect(await endSupersededNativeFinalizationRuns(db, [runId])).toEqual([runId]);
+    return (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
+  }
+
+  const capacityRefusal = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", category: "overloaded",
+    message: "No capacity available for model gemini-3.8-flash-low on the server", providerCode: "UNAVAILABLE", httpStatus: 503, retryability: "transient" };
+  // The finalizer re-reads the pinned execution input, and a v1 input cannot
+  // carry an ACPX provider. The rule reads only the typed failure, so a v1
+  // provider carries Antigravity's exact refusal here.
+  const typedProvider = { kind: "opencode", model: "google/gemini-3.8-flash-low" } as NativeExecutionInputV1["provider"];
+
+  it.each([
+    ["typed capacity refusal (Antigravity 503)", typedProvider, { code: "provider_turn_failed", message: capacityRefusal.message, providerFailure: capacityRefusal }],
+    ["typed rate limit (Antigravity 429)", typedProvider, { code: "provider_turn_failed", message: "Slow down", providerFailure: { ...capacityRefusal, category: "rate_limit", httpStatus: 429, providerCode: "RESOURCE_EXHAUSTED" } }],
+    ["Codex serverOverloaded", { kind: "codex", model: "test-model" } as NativeExecutionInputV1["provider"], { codexErrorInfo: "serverOverloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE }],
+  ])("keeps an accepted finish as the outcome after a later %s, without a retry", async (_name, runProvider, error) => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Finished before capacity refusal", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
+    sentry.captureRunFailure.mockClear();
+    const adapter = await acceptResultThenProviderFailure(runId, issueId, { provider: runProvider, error });
+    await waitForPendingRunFailureReports();
+    expect(adapter).toMatchObject({ exitCode: 0, errorMessage: null, nativeFinalization: { terminal: { runTerminalState: "succeeded" } } });
+    expect(adapter.errorCode).toBeUndefined();
+    expect(adapter.resultJson).not.toHaveProperty("providerFailure");
+    expect(Object.keys(adapter.resultJson?.providerFailureAfterAcceptedResult as object).sort()).toEqual(["category", "provider"]);
+    expect(adapter.resultJson?.providerFailureAfterAcceptedResult).toMatchObject({ category: expect.stringMatching(/^(overloaded|rate_limit|server_overloaded)$/) });
+    const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(finished).toMatchObject({ status: "succeeded", error: null, errorCode: null });
+    // Recovery paths that settle from the saved run read this state.
+    expect(finished.resultJson).toMatchObject({ prpRunTerminalState: "succeeded" });
+    // A restart after the live finalizer committed but before heartbeat saved
+    // the run status leaves it running; the projection pass settles it.
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+    const [restarted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await projectCommittedRun({ db, run: restarted, coordinator });
+    await waitForPendingRunFailureReports();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "succeeded", errorCode: null });
+    // A reply not yet published (restart, failed publication) is recovered for this succeeded run.
+    const replies = nativeResponsePresentationCandidates(undefined, undefined, runId).as("pending_native_response");
+    expect((await db.select().from(replies)).map(row => row.id)).toEqual([runId]);
+    // A message the user queued and then sent proceeds once cleanup has finished.
+    const commentId = randomUUID(), queueId = randomUUID(), blocked: string[] = [];
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "capacity-owner", body: "One more thing." });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "on_demand", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "capacity-owner",
+      payload: { issueId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
+        queuedCommentInterrupt: { actorId: "capacity-owner", requestedAt: new Date().toISOString() } } });
+    await db.transaction(tx => admitExplicitNativeContinuation({ db: tx as unknown as typeof db, companyId, issueId, agentId,
+      actorType: "user", actorId: "capacity-owner", reason: "issue_commented", commentId, successorRunId: randomUUID(),
+      queuedCommentInterruptId: queueId, dryRun: true, onBlocked: reason => blocked.push(reason) }));
+    expect(blocked).not.toContain("cleanup_pending");
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
+    // Idle sleep treats this settled finalization as history, not pending work.
+    await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded" });
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, runId));
+    const pending = await db.execute(sql.raw(NATIVE_RUN_FINALIZATION_WORK_QUERY.replace("WHERE (", `WHERE f.run_id = '${runId}' AND (`)));
+    expect(Array.from(pending)).toHaveLength(0);
+    expect(await endAsSuperseded(runId)).toMatchObject({ status: "succeeded" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(sentry.captureRunFailure).not.toHaveBeenCalled();
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a model the connection cannot use", { code: "antigravity_model_unavailable", message: "Not available", providerFailure: { ...capacityRefusal, category: "model_unavailable", retryability: "requires_action" } }],
+    ["an exhausted allowance", { code: "provider_turn_failed", message: "Quota", providerFailure: { ...capacityRefusal, category: "quota_exhausted", retryability: "requires_action" } }],
+    ["a rejected sign-in", { code: "provider_turn_failed", message: "Denied", providerFailure: { ...capacityRefusal, category: "authentication", retryability: "requires_action" } }],
+    ["an untyped failure", { code: "provider_turn_failed", message: "Something broke" }],
+  ])("still fails the run after an accepted finish followed by %s", async (_name, error) => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Finished before a real failure", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
+    const adapter = await acceptResultThenProviderFailure(runId, issueId, { provider: typedProvider, error });
+    await waitForPendingRunFailureReports();
+    expect(adapter).toMatchObject({ exitCode: 1, nativeFinalization: { terminal: { runTerminalState: "failed" } } });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("failed");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).not.toBe("done");
+    for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
+  });
+
+  it("keeps a result saved by an older release on its recorded outcome through projection", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Saved before the accepted outcome", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
+    await acceptResultThenProviderFailure(runId, issueId, { provider: typedProvider, savedByOlderRelease: true,
+      error: { code: "provider_turn_failed", message: capacityRefusal.message, providerFailure: capacityRefusal } });
+    // The finalizer, the projection and the superseded path all keep the saved failed terminal.
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(settled).toMatchObject({ status: "failed", resultJson: { prpRunTerminalState: "failed" } });
+    expect(await endAsSuperseded(runId)).toMatchObject({ status: "failed" });
+    for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
   });
 
   it("does not retry or change the task after reassignment", async () => {

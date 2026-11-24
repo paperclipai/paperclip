@@ -109,6 +109,7 @@ const recipients = (description: string) => ({ type: "array", items: { type: "st
 export const createDraft = defineTool({
   definition: {
     name: "create_draft",
+    title: "Create a draft",
     description: "Creates a draft email in the signed-in user's Gmail and returns it. It does not send. To draft a reply, pass the original message's ID as replyToMessageId. Attachments are not supported yet.",
     inputSchema: {
       type: "object",

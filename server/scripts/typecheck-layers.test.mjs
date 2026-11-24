@@ -8,7 +8,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
-import { findServerSource, PREPARE_STEPS, PROJECTS, typecheckTestProjects } from "../../scripts/typecheck-test-projects.mjs";
+import {
+  findServerSource,
+  PREPARE_STEPS,
+  PROJECTS,
+  selectTestProjects,
+  typecheckTestProjects,
+} from "../../scripts/typecheck-test-projects.mjs";
 import { declarationsConfig, layerConfig, listLayers, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -315,6 +321,41 @@ describe("typecheckLayers", () => {
       { name: "cycle", emitsDeclarations: true },
       { name: "above", emitsDeclarations: true },
       { name: "tests", emitsDeclarations: false },
+    ]);
+  });
+
+  it("passes --checkers to tsc for declaration layers and single-layer checks when requested", () => {
+    const root = serverFixture();
+    const declArgs = [];
+    expect(
+      typecheckLayers({
+        serverRoot: root,
+        declarationsOnly: true,
+        checkers: 2,
+        log: () => {},
+        run: (args) => {
+          declArgs.push(args);
+          return { status: 0, signal: null };
+        },
+      }),
+    ).toBe(0);
+    expect(declArgs.every((args) => args.slice(-2).join(" ") === "--checkers 2")).toBe(true);
+
+    const layerArgs = [];
+    expect(
+      typecheckLayers({
+        serverRoot: root,
+        layer: "tests",
+        checkers: 1,
+        log: () => {},
+        run: (args) => {
+          layerArgs.push(args);
+          return { status: 0, signal: null };
+        },
+      }),
+    ).toBe(0);
+    expect(layerArgs).toEqual([
+      ["-p", path.join("node_modules", ".cache", "paperclip-typecheck", "tsconfig.tests.json"), "--checkers", "1"],
     ]);
   });
 
@@ -844,6 +885,40 @@ describe("typecheckTestProjects", () => {
     expect(layered.references.map((reference) => path.resolve(directory, reference.path))).toEqual([
       path.join(serverRoot, "node_modules", ".cache", "paperclip-typecheck", "tsconfig.declarations.json"),
     ]);
+  });
+
+  it("forwards --checkers to tsc when checking test projects", () => {
+    const tscArgs = [];
+    const status = typecheckTestProjects({
+      root: repositoryFixture(),
+      projects: ["tests/a"],
+      reuseDeclarations: true,
+      checkers: 1,
+      log: () => {},
+      listFiles: () => ({ status: 0, files: [] }),
+      run: (args) => {
+        tscArgs.push(args);
+        return { status: 0, signal: null };
+      },
+    });
+    expect(status).toBe(0);
+    expect(tscArgs).toEqual([["-p", "tests/a/tsconfig.layers.json", "--checkers", "1"]]);
+  });
+
+  it("selectTestProjects skips untouched tests/* projects in PR mode and fails closed on global or unknown inputs", () => {
+    expect(selectTestProjects(null)).toEqual(PROJECTS);
+    expect(selectTestProjects(["tsconfig.base.json"])).toEqual(PROJECTS);
+    expect(selectTestProjects(["server/src/services/isolated-unreferenced-feature.ts"])).toEqual([]);
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("server/src/__tests__/helpers/maintenance");
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("tests/runner-e2e");
+    expect(selectTestProjects(["ui/src/lib/company-routes.ts"])).toEqual(["tests/runner-e2e"]);
+    expect(selectTestProjects(["ui/src/components/Sidebar.tsx"])).toEqual([]);
+    expect(selectTestProjects(["tests/restart-chaos/invariants.ts"])).toEqual(["tests/restart-chaos"]);
+    expect(selectTestProjects(["tests/lifecycle-baseline/authority.test.ts"])).toEqual(["tests/lifecycle-baseline"]);
+    expect(selectTestProjects(["tests/speko-native/app.ts"])).toEqual(["tests/speko-native"]);
+    expect(selectTestProjects(["tests/runner-e2e/catalog.ts"])).toEqual(["tests/e2e", "tests/restart-chaos", "tests/runner-e2e"]);
+    expect(selectTestProjects(["packages/shared/src/constants.ts"])).toEqual(PROJECTS);
+    expect(selectTestProjects(["ui/src/components/Sidebar.tsx"], ["tests/custom-new"])).toEqual(["tests/custom-new"]);
   });
 });
 

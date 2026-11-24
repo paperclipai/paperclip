@@ -271,6 +271,62 @@ describe("Codex ACPX runtime adapter", () => {
     await port.close({ reason: "test finished" });
   });
 
+  it.each([true, false])("keeps an Antigravity Plan-mode run read-only at the permission boundary (readOnly=%s)", async readOnly => {
+    const pending = pendingExtensionTurn("plan-turn");
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let exit!: () => void;
+    const providerExit = new Promise<void>(resolve => { exit = resolve; });
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(command);
+    options.profile = resolveQualifiedAcpxProfile("antigravity", "gemini-3.8-flash-low");
+    options.permissionMode = "approve-all";
+    options.readOnly = readOnly;
+    options.mcpServers = [{ name: "paperclip", url: "http://127.0.0.1:3212/mcp", bearerToken: "bridge-fixture", runnerOwned: true },
+      { name: "runner_extra", url: "http://127.0.0.1:3213/mcp", bearerToken: "extra-fixture", runnerOwned: true }];
+    options.paperclipTools = ["write_document"];
+    vi.mocked(runtime.ensureSession).mockImplementationOnce(async () => {
+      created.spawnAgent?.({ command: "ignored", args: [], options: {} });
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "initialize", params: {} });
+      guard("inbound", { id: 0, result: { agentInfo: { name: "antigravity-acp", version: "1.5.2" },
+        agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } } });
+      const open = { id: 1, method: "session/new", params: { cwd: "/workspace" } as Record<string, any> };
+      guard("outbound", open);
+      const admission = open.params._meta.antigravity.paperclipAdmission;
+      guard("inbound", { id: 1, result: { sessionId: "backend-1", modes: { currentModeId: "default" },
+        _meta: { paperclipAntigravityAdmission: { ...admission, sessionId: "backend-1", connectionId: "owned-connection" } } } });
+      return HANDLE;
+    });
+    const port = await openQualifiedAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished, awaitProviderExit: () => providerExit,
+      createRuntime: value => { created = value; return runtime; },
+    });
+    const turn = port.startTurn({ text: "Plan it", requestId: "plan-turn", onPermissionRequest: vi.fn() });
+    await turn.promptStarted;
+    const ask = (toolCall: Record<string, unknown>) => created.onPermissionRequest!({ sessionId: "backend-1",
+      raw: { sessionId: "backend-1", toolCall }, inferredKind: "other" } as never, { signal: new AbortController().signal });
+    const write = { toolCallId: "w", title: "Run write_to_file?", kind: "edit", rawInput: { TargetFile: "/workspace/greeting.txt" } };
+    const command_ = { toolCallId: "c", title: "touch greeting.txt", kind: "execute", rawInput: { CommandLine: "touch greeting.txt" } };
+    const paperclip = { toolCallId: "p", title: "paperclip_write_document", kind: "other", rawInput: {},
+      _meta: { mcp: { tool: "write_document", server: "paperclip" }, is_mcp_tool_call: true } };
+    const refused = readOnly ? "reject_once" : "allow_once";
+    await expect(ask(write)).resolves.toEqual({ outcome: refused });
+    await expect(ask(command_)).resolves.toEqual({ outcome: refused });
+    // Paperclip's own tools stay governed by Paperclip's Plan-mode rules.
+    await expect(ask(paperclip)).resolves.toEqual({ outcome: "allow_once" });
+    // Another runner-owned server is not Paperclip's bridge.
+    await expect(ask({ ...paperclip, title: "runner_extra_write_file",
+      _meta: { mcp: { tool: "write_file", server: "runner_extra" }, is_mcp_tool_call: true } })).resolves.toEqual({ outcome: refused });
+    pending.settle();
+    await turn.result;
+    exit();
+    await port.close({ reason: "test finished" });
+  });
+
   it("recognises only a switch_mode request that carries plan text as a Claude plan proposal", () => {
     expect(claudeExitPlanModeProposal({ raw: { toolCall: { toolCallId: "t1", kind: "switch_mode", rawInput: { plan: "  # P  " } } } }))
       .toEqual({ toolCallId: "t1", markdown: "# P" });

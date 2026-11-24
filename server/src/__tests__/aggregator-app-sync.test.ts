@@ -11,6 +11,11 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+const track = vi.fn();
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: () => ({ track, isRegisteredEventName: () => true, hashPrivateRef: (value: string) => value, trackDynamic: vi.fn() }),
+}));
+
 // Optional reuse of the explicitly disposable browser-test cluster on hosts with limited PostgreSQL startup resources.
 const acceptanceDatabaseUrl = process.env.PAPERCLIP_AGGREGATOR_TEST_DATABASE_URL;
 if (acceptanceDatabaseUrl && !["127.0.0.1", "localhost"].includes(new URL(acceptanceDatabaseUrl).hostname)) throw new Error("The acceptance database must be local and disposable");
@@ -86,6 +91,18 @@ if (!support.supported) console.warn(`Managed-account database tests unavailable
     const other = await fixture(); expect((await other.access.listAggregatorApps(other.connection.id, other.actor)).apps).toHaveLength(0);
     await db.update(toolConnections).set({ config: { ...f.connection.config, url: "https://executor.example/rotated" } }).where(eq(toolConnections.id, f.connection.id));
     expect((await f.access.listAggregatorApps(f.connection.id, f.actor)).apps).toHaveLength(0);
+  });
+  it("emits app_linked once when a synced account first becomes connected, not on every re-sync", async () => {
+    const f = await fixture();
+    const linked = () => track.mock.calls.filter(([name]) => name === "connection.app_linked");
+    track.mockClear();
+    await sync(f);
+    await sync(f);
+    expect(linked()).toEqual([["connection.app_linked", { provider: "executor", app: "notion" }]]);
+    f.disconnect();
+    await sync(f);
+    expect(linked()).toHaveLength(1);
+    expect(JSON.stringify(track.mock.calls)).not.toMatch(/executor\.example|Work/);
   });
   it("reports unsupported Executor inventory without trying arbitrary tools", async () => {
     const f = await fixture(); await sync(f); f.calls.length = 0; await db.update(toolCatalogEntries).set({ status: "disabled" }).where(eq(toolCatalogEntries.connectionId, f.connection.id));

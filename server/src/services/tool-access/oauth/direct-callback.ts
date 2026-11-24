@@ -16,6 +16,7 @@ import { connectionGrants, companyMemberships, principalPermissionGrants, issueT
 import type { ConnectToolAppResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
+import { lockConnectionForSignIn } from "../connections/first-sign-in.js";
 import { secretService } from "../../secrets.js";
 
 import type { OAuthStateStore } from "./state.js";
@@ -134,6 +135,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     const client = await oauthClientForConnection(
       connection,
       endpoints.provider,
+      endpoints.tokenUrl,
       input.actor,
     );
     if (!client.clientId)
@@ -206,9 +208,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
           .for("update");
-        await tx.select({ id: toolConnections.id }).from(toolConnections)
-          .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-          .for("update");
+        await lockConnectionForSignIn(tx, connection);
         const subjectCredentialSecretRefs =
           existingUserGrant?.credentialSecretRefs ?? [];
         const accessRef = await createOrRotateOAuthSecret(
@@ -532,9 +532,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
-      await tx.select({ id: toolConnections.id }).from(toolConnections)
-        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-        .for("update");
+      await lockConnectionForSignIn(tx, connection);
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 

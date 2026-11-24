@@ -238,6 +238,7 @@ type Binding = {
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   connectorAssignments?: Pick<ConnectorAssignment, "tools">[];
   assignedMcpTools?: Awaited<ReturnType<typeof createAssignedMcpTools>>;
+  runAttachReservedBytes?: number;
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask" | "skill_test";
   casesEnabled?: boolean;
@@ -481,7 +482,7 @@ export class PaperclipRunnerToolAuthority {
       ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools)];
     if (!this.binding.firstPartyOnly && this.binding.assignedMcpTools) definitions.push(READ_TOOL_RESULT_DEFINITION);
     const assignedTools = this.binding.firstPartyOnly ? [] : this.binding.assignedMcpTools?.definitions((tools) =>
-      runnerCodexDynamicToolsFit([...connectionTools, ...tools, ...definitions])) ?? [];
+      runnerCodexDynamicToolsFit([...connectionTools, ...tools, ...definitions], this.binding.runAttachReservedBytes ?? 0)) ?? [];
     const all = [...connectionTools, ...assignedTools, ...definitions]
       .filter(tool => workMode !== "skill_test" || nativeSkillTestToolAllowed(String(tool.name)));
     return this.binding.museRuntime ? all.filter(definition => MUSE_NATIVE_OPERATIONS.has(String(definition.name))) : all;
