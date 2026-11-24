@@ -1215,6 +1215,11 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  /**
+   * "none" posts the comment without waking the assignee. Default: "assignee".
+   * Cannot be combined with reopen: a reopen needs a run (the server rejects it).
+   */
+  wake: z.enum(["assignee", "none"]).optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;

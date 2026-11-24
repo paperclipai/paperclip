@@ -7,6 +7,7 @@ import { HttpError, unprocessable } from "../errors.js";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { enqueueFastResponse } from "../services/fast-responses.js";
 
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
@@ -1550,6 +1551,115 @@ describe("issue comment reopen routes", () => {
         expect.objectContaining({ reason: "issue_commented" }),
       ),
     );
+  });
+
+  it("does not wake the assignee when the POST comment sets wake to none", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-wake-none",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "FYI only",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "FYI only", wake: "none" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "cancelled", "blocked"] as const)(
+    "keeps a %s assigned issue unchanged for a quiet POST comment while a normal comment still moves it to todo",
+    async (status) => {
+      const issue = makeIssue(status);
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch, updatedAt: new Date() }),
+      );
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-quiet-state",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        body: "FYI only",
+      });
+
+      const quiet = await request(await installActor(createApp()))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "FYI only", wake: "none" });
+      expect(quiet.status).toBe(201);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+
+      const normal = await request(await installActor(createApp()))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "Please continue" });
+      expect(normal.status).toBe(201);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "11111111-1111-4111-8111-111111111111",
+        { status: "todo" },
+      );
+    },
+  );
+
+  it("does not cancel a scheduled retry or move the issue for a quiet POST comment", async () => {
+    const issue = { ...makeIssue("in_progress"), executionRunId: "retry-run-1" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-quiet-retry",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "FYI only",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "FYI only", wake: "none" });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue a fast response for a quiet POST comment but does for a normal one", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-quiet-fast",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "FYI only",
+      createdAt: new Date(),
+    });
+    vi.mocked(enqueueFastResponse).mockClear();
+
+    const quiet = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "FYI only", wake: "none" });
+    expect(quiet.status).toBe(201);
+    expect(enqueueFastResponse).not.toHaveBeenCalled();
+
+    const normal = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Question?" });
+    expect(normal.status).toBe(201);
+    expect(enqueueFastResponse).toHaveBeenCalled();
+  });
+
+  it("rejects a POST comment that combines wake none with reopen", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen quietly", wake: "none", reopen: true });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("passes validated comment presentation fields to trusted board comment writes", async () => {

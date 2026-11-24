@@ -9997,6 +9997,29 @@ export function issueService(db: Db) {
         return null;
       }
 
+      // A parent that still waits on another unresolved blocker cannot make
+      // progress from a children_completed wake. The blockers_resolved wake
+      // fires once every blocker is resolved, so skip here. A cancelled blocker
+      // stays unresolved, as in the dependency-readiness check.
+      const blockerRelations = await db
+        .select({ blockerIssueId: issueRelations.issueId })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, parent.companyId),
+            eq(issueRelations.type, "blocks"),
+            eq(issueRelations.relatedIssueId, parentIssueId),
+          ),
+        );
+      const unresolvedBlockerIds = await listUnresolvedBlockerIssueIds(
+        db,
+        parent.companyId,
+        blockerRelations.map((row) => row.blockerIssueId),
+      );
+      if (unresolvedBlockerIds.some((id) => id !== completedChildResult?.issueId)) {
+        return null;
+      }
+
       const childIdsForSummaries = children
         .slice(0, MAX_CHILD_COMPLETION_SUMMARIES)
         .map((child) => child.id);
