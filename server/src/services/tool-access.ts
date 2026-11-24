@@ -133,6 +133,7 @@ import {
   unprocessable,
 } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
+import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 import { forgetMcpHttpSessions } from "./mcp-http.js";
 import { type RemoteHttpEndpointLookup } from "./remote-http-endpoint-guard.js";
@@ -4745,7 +4746,7 @@ export function toolAccessService(
     listConnections: async (
       companyId: string,
       viewerUserId?: string,
-    ): Promise<ToolConnection[]> => {
+    ): Promise<ToolConnection[]> => retryIdempotentDatabaseOperation(async () => {
       const allRows = await db
         .select()
         .from(toolConnections)
@@ -4800,7 +4801,7 @@ export function toolAccessService(
       await annotateSavedOAuthClientSecret(connections, viewerUserId);
       await firstSignInDrafts.annotateFirstSignInPending(companyId, rows, connections);
       return connections;
-    },
+    }),
 
     createConnection: async (
       companyId: string,
@@ -4909,7 +4910,7 @@ export function toolAccessService(
       connectionId: string,
       companyId?: string,
       viewerUserId?: string,
-    ): Promise<ToolConnection> => {
+    ): Promise<ToolConnection> => retryIdempotentDatabaseOperation(async () => {
       const connection = toConnection(
         await getConnectionRow(connectionId, companyId),
       );
@@ -4921,7 +4922,7 @@ export function toolAccessService(
       await annotateGitHubAuthorization([connection], viewerUserId);
       await annotateSavedOAuthClientSecret([connection], viewerUserId);
       return connection;
-    },
+    }),
     ...connectionGrantsService,
     ...toolActivity,
 

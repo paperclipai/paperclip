@@ -2647,6 +2647,37 @@ describeEmbeddedPostgres("tool access service", () => {
     expect((await service.getConnection(connected.connectionId)).agentInstructions).toEqual({ enabled: false, text: "Keep this custom guidance." });
   });
 
+  it("rebuilds connection lookups after a dropped database connection", async () => {
+    const company = await createCompany(db);
+    const connection = await createTestToolAccessService(db).createConnection(company.id, connectionInput({
+      name: "Remote fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+    }));
+    let drops = 0;
+    const droppingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "select" || drops === 0) return value;
+        return () => {
+          drops -= 1;
+          throw new Error("Failed query", { cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }) });
+        };
+      },
+    });
+    const service = createTestToolAccessService(droppingDb);
+
+    drops = 1;
+    expect((await service.getConnection(connection.id, company.id)).id).toBe(connection.id);
+    expect(drops).toBe(0);
+
+    drops = 1;
+    expect((await service.listConnections(company.id)).map((item) => item.id)).toContain(connection.id);
+    expect(drops).toBe(0);
+  });
+
   it("preserves custom instructions and opt-outs through OAuth draft recovery and reconnect", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
