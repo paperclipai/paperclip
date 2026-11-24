@@ -5,6 +5,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  latestIssueRunCannotSucceedByRepeating,
 } from "./issue-dependency-wakeups.js";
 
 const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -18,21 +19,50 @@ type WakeRow = {
   status: string;
   idempotencyKey: string | null;
   requestedAt: Date;
-  runErrorCode?: string | null;
 };
 
 function dbWithWakes(rows: WakeRow[]): Db {
-  const filtered = { where: () => Promise.resolve(rows) };
   return {
     select() {
       return {
         from() {
-          return { ...filtered, leftJoin: () => filtered };
+          return {
+            where() {
+              return Promise.resolve(rows);
+            },
+          };
         },
       };
     },
   } as unknown as Db;
 }
+
+function dbWithLatestRun(run: { status: string; errorCode: string | null } | undefined): Db {
+  const limited = { limit: () => Promise.resolve(run ? [run] : []) };
+  return {
+    select() {
+      return { from: () => ({ where: () => ({ orderBy: () => limited }) }) };
+    },
+  } as unknown as Db;
+}
+
+describe("latestIssueRunCannotSucceedByRepeating", () => {
+  const input = { companyId, issueId: dependentIssueId, agentId: "agent-1" };
+
+  it("holds a task whose latest run failed in a way a restart cannot fix", async () => {
+    for (const errorCode of ["native_run_payload_too_large", "sandbox_disk_full"]) {
+      expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "failed", errorCode }), input)).toBe(true);
+    }
+  });
+
+  it("does not hold other failures, other outcomes, or a task without runs", async () => {
+    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "failed", errorCode: "process_lost" }), input)).toBe(false);
+    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "succeeded", errorCode: null }), input)).toBe(false);
+    // A person's Retry is a newer queued or running run.
+    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "queued", errorCode: null }), input)).toBe(false);
+    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun(undefined), input)).toBe(false);
+  });
+});
 
 describe("buildIssueBlockersResolvedWakeStateKey", () => {
   it("is identical for the same dependent, blockers, and blockedTransitionAt", () => {
@@ -112,37 +142,6 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
       readyState,
     );
     expect(existing?.id).toBe("wake-cycle");
-  });
-
-  it("suppresses a failed cycle wake whose run cannot succeed by starting again", async () => {
-    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
-    for (const runErrorCode of ["native_run_payload_too_large", "sandbox_disk_full"]) {
-      const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
-        dbWithWakes([{ id: "wake-failed", status: "failed", idempotencyKey: cycleKey, requestedAt: secondCycle, runErrorCode }]),
-        readyState,
-      );
-      expect(existing?.id).toBe("wake-failed");
-    }
-  });
-
-  it("lets a cycle wake that failed for another reason be woken again", async () => {
-    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
-    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
-      dbWithWakes([{ id: "wake-failed", status: "failed", idempotencyKey: cycleKey, requestedAt: secondCycle,
-        runErrorCode: "process_lost" }]),
-      readyState,
-    );
-    expect(existing).toBeNull();
-  });
-
-  it("does not let a non-repeating failure on a legacy per-edge key suppress", async () => {
-    const legacyKey = buildIssueBlockersResolvedWakeIdempotencyKey({ dependentIssueId, resolvedBlockerIssueId: blockerIssueId });
-    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
-      dbWithWakes([{ id: "wake-legacy", status: "failed", idempotencyKey: legacyKey, requestedAt: secondCycle,
-        runErrorCode: "native_run_payload_too_large" }]),
-      readyState,
-    );
-    expect(existing).toBeNull();
   });
 
   it("does not let a completed old-key wake from a previous blocked cycle suppress", async () => {

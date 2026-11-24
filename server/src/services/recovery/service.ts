@@ -161,6 +161,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  latestIssueRunCannotSucceedByRepeating,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb, type AgentOrgRow } from "../agent-invokability.js";
 import { createRecoveryPassReads, type RecoveryPassReads } from "./pass-reads.js";
@@ -6166,6 +6167,7 @@ export function recoveryService(
       healed: 0,
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
+      nonRepeatingFailureSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -6339,6 +6341,13 @@ export function recoveryService(
         // stamps a new cycle, so the ready-state key never repeats).
         if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
           result.selfBlockedSkipped += 1;
+          continue;
+        }
+        // Each failed run blocks the task again with a new cycle, so the key
+        // above never repeats. A run that failed in a way a restart cannot fix
+        // waits for a person's Retry instead of starting again on every sweep.
+        if (await latestIssueRunCannotSucceedByRepeating(db, { companyId, issueId: candidate.id, agentId })) {
+          result.nonRepeatingFailureSkipped += 1;
           continue;
         }
 

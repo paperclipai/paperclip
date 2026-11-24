@@ -1520,6 +1520,25 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     void agentId;
   });
 
+  it("waits for a person after a run failed in a way a restart cannot fix, then heals after their retry", async () => {
+    const { companyId, agentId, blockedIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    // Each failed run blocks the task again with a new cycle, so the
+    // ready-state key alone never stops this sweep.
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: blockedIssueId, status: "failed",
+      errorCode: "native_run_payload_too_large", contextSnapshot: { issueId: blockedIssueId } });
+
+    const held = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(held.nonRepeatingFailureSkipped).toBe(1);
+    expect(held.healed).toBe(0);
+
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: blockedIssueId, status: "succeeded",
+      contextSnapshot: { issueId: blockedIssueId }, createdAt: new Date(Date.now() + 1_000) });
+    const healed = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(healed.nonRepeatingFailureSkipped).toBe(0);
+    expect(healed.healed).toBe(1);
+  });
+
   it("counts null dependency wake returns as deferred instead of enqueue failures", async () => {
     const { companyId, agentId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
