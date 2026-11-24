@@ -22,13 +22,21 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(process, "platform", descriptor); vi.restoreAllMocks(); });
 
 describe("controller process-space identity", () => {
-  it("keeps Linux boot and PID-namespace isolation without launching a command", async () => {
+  it("keeps Linux boot and PID-namespace isolation, launching only the once-per-module kernel-boot probe", async () => {
     platform("linux");
     const original = await (await fresh()).currentControllerProcess();
     expect(original.hostHash).toMatch(/^[0-9a-f]{32}$/);
     expect(state.read).toHaveBeenCalledWith("/proc/sys/kernel/random/boot_id", "utf8");
     expect(state.link).toHaveBeenCalledWith("/proc/self/ns/pid");
-    expect(state.sysctl).not.toHaveBeenCalled();
+    // The process-space hash reads files only. The local kernel-boot proof
+    // (restart recovery) asks systemd-detect-virt once when the module loads;
+    // this container answer stops it before any WSL registry read.
+    expect(state.sysctl).toHaveBeenCalledExactlyOnceWith("/usr/bin/systemd-detect-virt", ["--container"], expect.any(Object));
+    expect(original.localKernelBoot).toBeUndefined();
+    state.sysctl.mockClear();
+    await (await fresh()).currentControllerProcess();
+    expect(state.sysctl).toHaveBeenCalledTimes(1);
+    expect(state.sysctl).not.toHaveBeenCalledWith("/usr/sbin/sysctl", expect.anything(), expect.anything());
     state.link.mockReturnValue("pid:[43]");
     expect((await (await fresh()).currentControllerProcess()).hostHash).not.toBe(original.hostHash);
     state.link.mockReturnValue("pid:[42]"); state.read.mockReturnValue(secondBoot);
