@@ -28,7 +28,7 @@ import {
 import { environmentService } from "../services/environments.ts";
 import { attachPaperclipSessionMetadataToSessionParams, buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
 import { parseManagedConfigEnv } from "../services/managed-config.js";
-import { applyManagedEnvironmentsAtStartup } from "../services/managed-environments.js";
+import { applyManagedEnvironments } from "../services/managed-environments.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
@@ -1608,8 +1608,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
           environments: [{ name: "Managed sandbox", provider: "daytona", config: { snapshot: version } }],
         }),
       });
-      return applyManagedEnvironmentsAtStartup(db, config, {
-        env: { PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE: "true" },
+      return applyManagedEnvironments(db, config, {
+        env: {},
         resolveSandboxProviderDriver: async () => ({
           plugin: { id: "fixture-plugin", pluginKey: "sandbox-providers/daytona", status: "ready" },
         }),

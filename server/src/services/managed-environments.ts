@@ -733,23 +733,3 @@ export async function applyManagedEnvironments(
     pluginOutcomes,
   };
 }
-
-export async function applyManagedEnvironmentsAtStartup(
-  db: Db,
-  managedConfig: ManagedInstanceConfig | null,
-  opts: ApplyManagedEnvironmentsOptions = {},
-): Promise<ApplyManagedEnvironmentsResult | null> {
-  const flag = "PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE";
-  const value = (opts.env ?? process.env)[flag]?.trim().toLowerCase() ?? "";
-  if (!["", "false", "0", "true", "1"].includes(value)) {
-    throw new Error(`${flag} must be true, false, 1, or 0`);
-  }
-  const requireConvergence = value === "true" || value === "1";
-  const result = await applyManagedEnvironments(db, managedConfig, opts);
-  if (requireConvergence && result && (result.failed > 0 || result.skipped > 0)) {
-    throw new Error(
-      `${flag} requires every declared managed environment to converge: ${result.failed} failed, ${result.skipped} skipped`,
-    );
-  }
-  return result;
-}

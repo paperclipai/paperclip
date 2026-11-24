@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyManagedEnvironments, applyManagedEnvironmentsAtStartup, type ApplyManagedEnvironmentsOptions } from "./managed-environments.js";
+import { applyManagedEnvironments } from "./managed-environments.js";
 import {
   environmentRow,
   environmentsSeam,
@@ -438,98 +438,5 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
     expect(result).toMatchObject({ ensured: 1, failed: 0 });
-  });
-});
-
-describe("applyManagedEnvironmentsAtStartup", () => {
-  const convergenceFlag = "PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE";
-  const config = () => parsedConfig({
-    environments: [{ name: "Daytona", provider: "daytona", config: { snapshot: "current" } }],
-  });
-  const options = (overrides: Partial<ApplyManagedEnvironmentsOptions> = {}): ApplyManagedEnvironmentsOptions => ({
-    env: {},
-    environments: environmentsSeam(),
-    workerManager: runningWorkerManager(),
-    resolveSandboxProviderDriver: readyDriverResolver(),
-    ...overrides,
-  });
-
-  it.each([undefined, "false", "0"])("preserves degraded startup when convergence is disabled (%s)", async (value) => {
-    for (const outcome of ["failed", "skipped"] as const) {
-      const ensure = outcome === "failed"
-        ? vi.fn().mockRejectedValue(new Error("fixture write failure"))
-        : vi.fn().mockResolvedValue(reconciliationResult({
-            action: "skipped", stockStatus: "operator_modified", updateAvailable: true,
-          }));
-      const result = await applyManagedEnvironmentsAtStartup(noDb, config(), options({
-        env: { [convergenceFlag]: value },
-        environments: environmentsSeam({ ensureManagedSandboxEnvironment: ensure }),
-      }));
-      expect(result?.[outcome]).toBe(1);
-    }
-  });
-
-  it.each(["true", "1"])("accepts converged added, updated and unchanged stock in strict mode (%s)", async (value) => {
-    for (const action of ["added", "updated", "unchanged"] as const) {
-      const result = await applyManagedEnvironmentsAtStartup(noDb, config(), options({
-        env: { [convergenceFlag]: value },
-        environments: environmentsSeam({
-          ensureManagedSandboxEnvironment: vi.fn().mockResolvedValue(reconciliationResult({ action })),
-        }),
-      }));
-      expect(result).toMatchObject({ ensured: 1, failed: 0, skipped: 0, [action]: 1 });
-    }
-  });
-
-  it("rejects skipped stock before startup can continue", async () => {
-    const environments = environmentsSeam({
-      ensureManagedSandboxEnvironment: vi.fn().mockResolvedValue(reconciliationResult({
-        action: "skipped", stockStatus: "operator_modified", updateAvailable: true,
-      })),
-    });
-    await expect(applyManagedEnvironmentsAtStartup(noDb, config(), options({
-      env: { [convergenceFlag]: "true" }, environments,
-    }))).rejects.toThrow(`${convergenceFlag} requires every declared managed environment to converge: 0 failed, 1 skipped`);
-    expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledOnce();
-  });
-
-  it("rejects an unavailable declared provider after archiving its stale environment", async () => {
-    const environments = environmentsSeam();
-    await expect(applyManagedEnvironmentsAtStartup(noDb, config(), options({
-      env: { [convergenceFlag]: "true" }, environments,
-      resolveSandboxProviderDriver: vi.fn().mockResolvedValue(null),
-    }))).rejects.toThrow("1 failed, 0 skipped");
-    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({ provider: "daytona" });
-    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
-  });
-
-  it("rejects reconciliation exceptions that the ordinary applier counts as degraded entries", async () => {
-    await expect(applyManagedEnvironmentsAtStartup(noDb, config(), options({
-      env: { [convergenceFlag]: "true" },
-      environments: environmentsSeam({
-        ensureManagedSandboxEnvironment: vi.fn().mockRejectedValue(new Error("fixture write failure")),
-      }),
-    }))).rejects.toThrow("1 failed, 0 skipped");
-  });
-
-  it("propagates an unrecoverable applier exception", async () => {
-    await expect(applyManagedEnvironmentsAtStartup(noDb, config(), options({
-      env: { [convergenceFlag]: "true", PAPERCLIP_EXECUTION_MODE: "kubernetes" },
-    }))).rejects.toThrow(/mutually exclusive/);
-  });
-
-  it("rejects a malformed convergence flag before any reconciliation writes", async () => {
-    const environments = environmentsSeam();
-    await expect(applyManagedEnvironmentsAtStartup(noDb, config(), options({
-      env: { [convergenceFlag]: "treu" }, environments,
-    }))).rejects.toThrow(`${convergenceFlag} must be true, false, 1, or 0`);
-    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
-    expect(environments.archiveManagedSandboxEnvironment).not.toHaveBeenCalled();
-  });
-
-  it("accepts deployments without managed environment declarations", async () => {
-    const opts = options({ env: { [convergenceFlag]: "true" } });
-    expect(await applyManagedEnvironmentsAtStartup(noDb, null, opts)).toBeNull();
-    expect(await applyManagedEnvironmentsAtStartup(noDb, parsedConfig(), opts)).toBeNull();
   });
 });

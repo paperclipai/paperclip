@@ -163,7 +163,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
-  applyManagedEnvironmentsAtStartup,
+  applyManagedEnvironments,
   createManagedEnvironmentRecovery,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
@@ -1295,7 +1295,7 @@ async function startServerWithDatabaseTeardown(
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
-    const managedEnvironmentsResult = await startupTimeline.precondition("managed_environments", () => applyManagedEnvironmentsAtStartup(db as any, managedConfig, {
+    const managedEnvironmentsResult = await startupTimeline.precondition("managed_environments", () => applyManagedEnvironments(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,

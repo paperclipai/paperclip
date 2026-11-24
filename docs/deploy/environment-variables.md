@@ -30,7 +30,6 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 | `PAPERCLIP_DEBUG_WORK_SIGNALS` | (unset) | Diagnostic only. Comma-separated allowlist of work-signal topics, each optionally followed by `:N` (for example `stranded-assignments:10,run-dispatch`). For each listed topic the server writes JSON lines to stderr: every work signal (topic and hint), with the caller stack on one signal in N (default 20); remote and reconnect notifications; direct settled publishes; and the recovery queues' loads, checks and direct wakes (direct wakes always carry the caller stack). Logged values are internal ids only (company, issue, run), never secrets or user identifiers. Stack frames keep their raw file and line positions, so bundled builds map them offline with that build's source map. Each topic and event pair is capped at 10 lines per second; a `suppressed` line names the dropped event and its count. The value is read once at startup, so enabling or changing it requires a restart. Unset or empty disables it completely. |
 | `PAPERCLIP_MANAGED_CONFIG` | (unset) | Trusted deployment configuration for managed features, plugins and environments. See [Managed sandbox reconciliation](#managed-sandbox-reconciliation). |
-| `PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE` | `false` | Set to `true` or `1` to refuse startup if any declared managed environment fails reconciliation or skips a stock update. `false`, `0` or unset preserves degraded startup; other nonempty values refuse startup. |
 
 Daytona connectivity for `paperclip_runner` uses authenticated provider
 WebSocket ingress and follows the instance experimental setting
@@ -216,16 +215,43 @@ archive can reactivate automatically.
 Inspect the reconciliation's `action`, `stockStatus` and `updateAvailable`
 outcomes when verifying an update. Writing the desired configuration or seeing
 healthy HTTP responses alone does not prove that a database environment row
-converged. By default, entry failures and skipped stock updates are logged while
-startup continues degraded. Set
-`PAPERCLIP_MANAGED_ENVIRONMENTS_REQUIRE_CONVERGENCE=true` to require every declared
-environment to reconcile before readiness and queued runs resume. The check
-includes unavailable providers and preserves existing archive decisions by
-refusing startup rather than overriding them. A skipped unmarked environment
-holding the declared name also blocks strict startup. An operator must resolve
-the declaration conflict or explicitly restore an intended archived environment
-before retrying; strict mode does not authorize adopting or reactivating those
-rows. With no managed environment declarations, the check has nothing to require.
+converged. Entry failures and skipped stock updates are logged while startup
+continues degraded. Validate repeated empty-instance boots and the actual row
+in deployment qualification; do not turn a performance check into a startup gate.
+
+### Qualify a sandbox runtime before deployment
+
+The image includes `/app/server/dist/qualify-sandbox-runtime.js`. Deployment
+systems can run it without a database, network access or provider credentials:
+
+```sh
+node /app/server/dist/qualify-sandbox-runtime.js \
+  --manifest /opt/paperclip-runner/provider-pack/provider-pack.json \
+  --runner /app/packages/paperclip-runner/dist/bin/paperclip-runnerd < installed.json
+```
+
+The input has `installed` (`manifest`, hexadecimal `runnerSha256`, and `immutable`)
+and an optional nonempty `providers` list (`{ "kind": "opencode" }` or
+`{ "kind": "acpx", "agent": "claude" }`, for example). The deployment system
+chooses its provider list. Omit the list to check OpenCode and every packaged
+provider profile. The report records `allPackProviders: true` for that scope.
+Core contains no hosting-provider policy.
+
+The caller must collect the installed manifest and runner hash from the exact
+sandbox snapshot under qualification, verify its files against that manifest,
+and establish that the installation is protected against runtime writes before
+asserting `immutable: true`. This command does not make those remote observations
+itself. Its result is deployment evidence, not a signed grant or a replacement
+for file-integrity verification.
+
+The command uses the same compatibility check as task startup. Different pack
+hashes remain compatible when their interface contract and selected provider
+profiles agree. A different daemon binary, missing protected installation,
+changed contract, or changed provider profile refuses qualification. Exit code
+0 means compatible, 2 means incompatible, and 1 means invalid input or an
+unavailable qualification. The JSON result records the manifests, daemon hash
+and provider scope. Qualify the candidate before publishing or deploying it;
+a refusal should leave the current deployment serving.
 
 ## Secrets
 
