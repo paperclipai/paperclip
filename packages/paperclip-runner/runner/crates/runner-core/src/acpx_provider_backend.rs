@@ -173,6 +173,8 @@ struct AcpxProviderDescriptor {
     #[serde(default)]
     sidecar_args: Vec<String>,
     runtime_directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness_state_directory: Option<PathBuf>,
     normalized_session_id: String,
     run_id: String,
     cwd: String,
@@ -469,6 +471,7 @@ impl AcpxProviderDescriptor {
             run_id: self.run_id.clone(),
             catalog_revision: 1,
             runtime_directory: self.runtime_directory.clone(),
+            harness_state_directory: self.harness_state_directory.clone(),
             normalized_session_id: self.normalized_session_id.clone(),
             working_directory: PathBuf::from(&self.cwd),
             permission_mode: self.permission_mode,

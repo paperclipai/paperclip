@@ -61,6 +61,7 @@ fn config(scratch: &Path, mode: &str, agent: &str) -> AcpxProviderSessionConfig 
         run_id: "run-1".to_owned(),
         catalog_revision: 1,
         runtime_directory: std::env::temp_dir(),
+        harness_state_directory: None,
         normalized_session_id: "session-1".to_owned(),
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,

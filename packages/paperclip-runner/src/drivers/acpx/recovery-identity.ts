@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import type { AcpxExpectedSessionIdentity } from "./sidecar-protocol.js";
 import type { QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveHarnessStateDirectory } from "../harness-state-directory.js";
 
 export const ACPX_IDENTITY_RECORD_SCHEMA =
   "paperclip.runner.acpx-identity.v2" as const;
@@ -19,6 +20,7 @@ export interface AcpxRecoveryBinding {
   workspacePath: string;
   workspaceDigest: string;
   runtimeRoot: string;
+  harnessStateRoot?: string;
   commandDigest: string;
   profileDigest: string;
   requestedModel: string;
@@ -59,6 +61,7 @@ const SESSION_IDENTITY_ACPX_VERSION = "0.13.1";
 
 export async function createAcpxRecoveryBinding(input: {
   runtimeDirectory: string;
+  harnessStateDirectory?: string;
   normalizedSessionId: string;
   workingDirectory: string;
   profile: QualifiedAcpxProfile;
@@ -93,6 +96,9 @@ export async function createAcpxRecoveryBinding(input: {
     input.runtimeDirectory,
     input.normalizedSessionId,
   );
+  const harnessStateRoot = input.harnessStateDirectory === undefined
+    ? undefined
+    : await resolveAcpxHarnessStateRoot(input.harnessStateDirectory, input.normalizedSessionId);
   const profileDigest = digest(
     canonicalJson({
       driverKind: input.profile.driverKind,
@@ -137,6 +143,7 @@ export async function createAcpxRecoveryBinding(input: {
     workspacePath,
     workspaceDigest,
     runtimeRoot,
+    ...(harnessStateRoot === undefined ? {} : { harnessStateRoot }),
     commandDigest: input.profile.commandDigest,
     profileDigest,
     requestedModel: input.requestedModel,
@@ -393,6 +400,17 @@ export async function resolveAcpxRuntimeRoot(
     throw new Error("ACPX runtime directory must not be a filesystem root");
   return join(
     resolve(root),
+    "acpx",
+    acpxRuntimeSessionDirectoryName(sessionId),
+  );
+}
+
+export async function resolveAcpxHarnessStateRoot(
+  harnessStateDirectory: string,
+  sessionId: string,
+): Promise<string> {
+  return join(
+    await resolveHarnessStateDirectory(harnessStateDirectory),
     "acpx",
     acpxRuntimeSessionDirectoryName(sessionId),
   );

@@ -43,6 +43,7 @@ export interface AcpxSidecarEvent {
 export interface AcpxSidecarOpenParams {
   candidateAdmission?: AcpxCandidateStartupAdmission;
   runtimeDirectory: string;
+  harnessStateDirectory?: string;
   normalizedSessionId: string;
   workingDirectory: string;
   agent: QualifiedAcpxAgent;

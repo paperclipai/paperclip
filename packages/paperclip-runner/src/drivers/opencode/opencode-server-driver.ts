@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "../openrouter-attribution.js";
+import { ensurePrivateDirectory, isInside, prepareHarnessStateSessionRoot, resolveHarnessStateDirectory } from "../harness-state-directory.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -209,6 +210,7 @@ export interface OpenCodeServerDriverOptions {
     afterExit?(): void;
   };
   runtimeDirectory: string;
+  harnessStateDirectory?: string;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
@@ -396,6 +398,9 @@ export class OpenCodeServerDriver implements HarnessDriver {
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "workspace"), `${cwd}\n`, { mode: 0o600 });
     await removeLegacyIsolatedHomes(root);
+    const dataHome = this.#options.harnessStateDirectory === undefined
+      ? undefined
+      : await prepareOpenCodeHarnessStateData(this.#options.harnessStateDirectory, input.normalizedSessionId, cwd);
     const trace = await createProviderTraceFileSink({
       path: this.#options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH,
       provider: "opencode",
@@ -410,6 +415,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
         runtime = await startRuntime({
           options: this.#options,
           root,
+          ...(dataHome === undefined ? {} : { dataHome }),
           cwd,
           trace,
           onRejectedCall: (call, error) => session?.observeRejectedToolCall(call, error),
@@ -2649,6 +2655,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
 async function startRuntime(input: {
   options: OpenCodeServerDriverOptions;
   root: string;
+  dataHome?: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
   onRejectedCall?: OpenCodeMcpBridgeOptions["onRejectedCall"];
@@ -2666,7 +2673,7 @@ async function startRuntime(input: {
   const username = "paperclip";
   const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
   const configHome = join(input.root, "config");
-  const dataHome = join(input.root, "data");
+  const dataHome = input.dataHome ?? join(input.root, "data");
   const cacheHome = join(input.root, "cache");
   await Promise.all([
     mkdir(join(configHome, "opencode"), { recursive: true, mode: 0o700 }),
@@ -3429,6 +3436,24 @@ export function opencodeRuntimeSessionDirectoryName(
   if (!safe || safe === "." || safe === "..")
     throw new Error("Invalid normalized OpenCode session id");
   return safe;
+}
+
+async function prepareOpenCodeHarnessStateData(
+  harnessStateDirectory: string,
+  normalizedSessionId: string,
+  cwd: string,
+): Promise<string> {
+  const directory = await resolveHarnessStateDirectory(harnessStateDirectory);
+  const workspace = await realpath(cwd);
+  if (directory === workspace || isInside(directory, workspace) || isInside(workspace, directory)) {
+    throw new Error("Harness state directory must not overlap the OpenCode workspace");
+  }
+  const { root } = await prepareHarnessStateSessionRoot(
+    directory,
+    "opencode",
+    opencodeRuntimeSessionDirectoryName(normalizedSessionId),
+  );
+  return await ensurePrivateDirectory(join(root, "data"), root, "Harness state");
 }
 
 function sessionRoot(

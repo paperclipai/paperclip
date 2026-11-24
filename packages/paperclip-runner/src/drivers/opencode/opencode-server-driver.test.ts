@@ -329,6 +329,43 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("keeps the session store in the harness state directory and reopens from it", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-opencode-harness-state-")));
+    roots.push(root);
+    const [runtimeDirectory, harnessStateDirectory, workspace] = ["runtime", "state", "workspace"].map(name => join(root, name));
+    await Promise.all([runtimeDirectory, harnessStateDirectory, workspace].map(path => mkdir(path)));
+    const options = { model: "openrouter/test-model", command: fixture, runtimeDirectory, environment: { PATH: process.env.PATH } };
+    const driver = new OpenCodeServerDriver({ ...options, harnessStateDirectory });
+    const session = await driver.openSession({ runId: "state", normalizedSessionId: "state/1", workingDirectory: workspace });
+    const data = join(harnessStateDirectory, "opencode", "state_1", "data");
+    const sessionRoot = join(runtimeDirectory, "state_1");
+    const snapshot = await session.snapshot();
+    try {
+      expect(JSON.parse(await readFile(join(data, "fake-environment.json"), "utf8")).configHome).toBe(join(sessionRoot, "config"));
+      for (const path of [join(harnessStateDirectory, "opencode"), dirname(data), data]) expect((await stat(path)).mode & 0o777).toBe(0o700);
+      await expect(stat(join(sessionRoot, "data"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(sessionRoot, "workspace"), "utf8")).toBe(`${workspace}\n`);
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    await rm(join(data, "fake-environment.json"));
+    const recovered = await new OpenCodeServerDriver({ ...options, harnessStateDirectory }).recoverSession?.(snapshot);
+    expect(recovered).toMatchObject({ recovered: true });
+    await recovered?.session?.close({ reason: "test" });
+    expect(JSON.parse(await readFile(join(data, "fake-environment.json"), "utf8")).configHome).toBe(join(sessionRoot, "config"));
+    await expect(stat(join(sessionRoot, "data"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await symlink(harnessStateDirectory, join(root, "linked"));
+    for (const [value, message] of [[join(root, "linked"), "physical path"], ["state", "absolute normalized"], [root, "overlap"]]) {
+      await expect(new OpenCodeServerDriver({ ...options, harnessStateDirectory: value })
+        .openSession({ runId: "bad", normalizedSessionId: "bad", workingDirectory: workspace })).rejects.toThrow(message);
+    }
+    const plain = await new OpenCodeServerDriver(options).openSession({ runId: "plain", normalizedSessionId: "plain", workingDirectory: workspace });
+    await plain.close({ reason: "test" });
+    await stat(join(runtimeDirectory, "plain", "data", "fake-environment.json"));
+    await expect(stat(join(harnessStateDirectory, "opencode", "plain"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("preserves empty arrays in traces when all configured bindings are runtime-owned", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-empty-projection-"));

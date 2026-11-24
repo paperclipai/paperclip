@@ -79,6 +79,19 @@ describe("built-in provider launch preparation", () => {
       requirementsDigest: runnerLaunchRequirementsDigest(selected) })).not.toThrow();
   });
 
+  it("names the harness state directory in an ACPX descriptor only when the environment sets one", () => {
+    const selected = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "claude" },
+      requirements.identity, { model: "claude-sonnet-5" }, null, "");
+    const unset = createRunnerProviderLaunch(selected, environment);
+    expect(unset).toMatchObject({ runtimeDirectory: "/execution/state/acpx" });
+    expect(unset).not.toHaveProperty("harnessStateDirectory");
+    const launch = createRunnerProviderLaunch(selected, { ...environment,
+      options: { ...environment.options, harnessStateDirectory: "/durable/harness-state" } });
+    expect(launch).toMatchObject({ runtimeDirectory: "/execution/state/acpx", harnessStateDirectory: "/durable/harness-state" });
+    const prepared = { configurationId: "state", requirementsDigest: runnerLaunchRequirementsDigest(selected), provider: launch };
+    expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
+  });
+
   it.each([true, false])("binds Grok search policy %s into the prepared descriptor", disabled => {
     const selected = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", grokDisableWebSearch: disabled },
       requirements.identity, { model: "grok-4.7" }, null, "");

@@ -47,6 +47,10 @@ fn generation_digest(config: &AcpxProviderSessionConfig) -> String {
         "mcpBound": mcp_bound,
         "toolSet": config.tool_set,
     });
+    let mut shape = shape;
+    if let Some(directory) = &config.harness_state_directory {
+        shape["harnessStateDirectory"] = json!(directory);
+    }
     format!("sha256:{:x}", Sha256::digest(shape.to_string().as_bytes()))
 }
 

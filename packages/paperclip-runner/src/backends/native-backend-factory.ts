@@ -37,6 +37,7 @@ export interface NativeBackendFactoryOptions extends Omit<
     >;
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
+  harnessStateDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
   acpxManagedCodexCredentialSourcePath?: string;
   acpxDynamicToolHandler?: AcpxNativeSessionBackendOptions["dynamicToolHandler"];
@@ -89,6 +90,7 @@ export function createNativeSessionBackend(
     return createOpenCodeNativeSessionBackend(input, {
       completionFeedback: options.completionFeedback,
       runtimeDirectory: options.opencodeRuntimeDirectory,
+      ...(options.harnessStateDirectory === undefined ? {} : { harnessStateDirectory: options.harnessStateDirectory }),
       environment: options.opencodeEnvironment,
       command: options.opencodeCommand,
       runnerInstanceId: options.runnerInstanceId,
@@ -103,6 +105,7 @@ export function createNativeSessionBackend(
     }
     return createAcpxNativeSessionBackend(input, {
       runtimeDirectory: options.acpxRuntimeDirectory,
+      ...(options.harnessStateDirectory === undefined ? {} : { harnessStateDirectory: options.harnessStateDirectory }),
       environment: options.acpxEnvironment,
       ...(input.provider.agent === "codex"
         ? {

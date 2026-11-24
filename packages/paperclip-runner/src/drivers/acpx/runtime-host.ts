@@ -286,6 +286,7 @@ export interface OpenAcpxRuntimeHostOptions {
   /** Never persisted as session options or recovery identity. */
   clientCapabilities?: Record<string, unknown>;
   runtimeDirectory: string;
+  harnessStateDirectory?: string;
   normalizedSessionId: string;
   workingDirectory: string;
   agent: QualifiedAcpxAgent;
@@ -417,6 +418,7 @@ export class AcpxRuntimeHost {
       () =>
         createAcpxRecoveryBinding({
           runtimeDirectory: options.runtimeDirectory,
+          ...(options.harnessStateDirectory === undefined ? {} : { harnessStateDirectory: options.harnessStateDirectory }),
           normalizedSessionId: options.normalizedSessionId,
           workingDirectory: options.workingDirectory,
           profile,
@@ -619,6 +621,7 @@ export class AcpxRuntimeHost {
       // requires verified provider shutdown in the native executor.
       const agentFiles = ["cursor", "copilot", "pi", "kimi"].includes(options.agent)
         ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
+          ...(sandbox.harnessStateRoot === undefined ? [] : [sandbox.harnessStateRoot]),
           ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
         ]) : null;
       if (agentFiles) {

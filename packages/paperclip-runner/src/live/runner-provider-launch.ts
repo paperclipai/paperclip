@@ -224,7 +224,7 @@ export function preparedRunnerLaunchWorkingDirectory(
 /** Locations and provider settings resolved by the built-in execution environment. */
 export interface RunnerProviderLaunchEnvironment {
   options: Pick<CapabilityRunnerdCodexTransportOptions,
-    "acpxRuntimeDirectory" | "homeMode" | "environment" | "codexArgs" |
+    "acpxRuntimeDirectory" | "harnessStateDirectory" | "homeMode" | "environment" | "codexArgs" |
     "runnerFilesystemRoot" | "disableCodexProjectInstructions" | "externallySandboxed">;
   root: string;
   cwd: string;
@@ -308,6 +308,9 @@ export function createRunnerProviderLaunch(
               runtimeDirectory:
                 input.options.acpxRuntimeDirectory ??
                 resolve(input.root, "acpx"),
+              ...(input.options.harnessStateDirectory === undefined
+                ? {}
+                : { harnessStateDirectory: input.options.harnessStateDirectory }),
               normalizedSessionId: identity.normalizedSessionId,
               runId: identity.runId,
               cwd: input.cwd,

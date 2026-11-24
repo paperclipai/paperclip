@@ -44,6 +44,7 @@ export type GeneratedAcpxSidecarEventType =
 
 export const GENERATED_ACPX_SIDECAR_OPEN_PARAMS = [
   "runtimeDirectory",
+  "harnessStateDirectory",
   "normalizedSessionId",
   "workingDirectory",
   "agent",

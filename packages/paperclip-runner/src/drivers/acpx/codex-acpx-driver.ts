@@ -156,6 +156,7 @@ export interface CodexAcpxDriverOptions {
   /** Defaults to Codex for backward compatibility. */
   agent?: QualifiedAcpxAgent;
   runtimeDirectory: string;
+  harnessStateDirectory?: string;
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
@@ -471,6 +472,9 @@ export class CodexAcpxDriver implements HarnessDriver {
     const host = await this.#openHostForAdmission(
       {
         runtimeDirectory: this.#options.runtimeDirectory,
+        ...(this.#options.harnessStateDirectory === undefined
+          ? {}
+          : { harnessStateDirectory: this.#options.harnessStateDirectory }),
         normalizedSessionId: input.normalizedSessionId,
         workingDirectory: input.workingDirectory,
         agent: this.#options.agent ?? "codex",
