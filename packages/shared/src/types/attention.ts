@@ -10,6 +10,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "decision",
   "issue_thread_interaction",
   "join_request",
+  "secret_proposal",
   "recovery_action",
   // Legacy persisted decision sources remain readable; no feed items are generated.
   "productivity_review",
@@ -28,6 +29,7 @@ export type AttentionSubjectKind =
   | "issue"
   | "interaction"
   | "join_request"
+  | "secret_proposal"
   | "recovery_action"
   | "run"
   | "budget_incident"
@@ -551,6 +553,7 @@ export function attentionCardType(item: Pick<AttentionItem, "sourceKind" | "subj
     case "decision": return "make_choice";
     case "approval": return "board_approval";
     case "join_request": return "join_request";
+    case "secret_proposal": return "tool_access";
     case "review": return metadata.reviewAttentionState === "stalled" ? "blocked_task" : "review_task";
     case "blocker_attention": return "blocked_task";
     case "failed_run":

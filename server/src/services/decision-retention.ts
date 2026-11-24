@@ -193,7 +193,7 @@ export function decisionRetentionService(
       approval: "approvals", join_request: "join_requests", decision: "decisions",
       issue_thread_interaction: "issue_thread_interactions", recovery_action: "issue_recovery_actions",
       failed_run: "heartbeat_runs", productivity_review: "issues", blocker_attention: "issues", review: "issues",
-      budget_alert: "budget_incidents", agent_error_alert: "agents",
+      budget_alert: "budget_incidents", agent_error_alert: "agents", secret_proposal: "company_secret_proposals",
     };
     const existingState = () => database.select({ id: decisionRetention.id }).from(decisionRetention).where(and(
       eq(decisionRetention.companyId, input.companyId), eq(decisionRetention.sourceKind, input.sourceKind),

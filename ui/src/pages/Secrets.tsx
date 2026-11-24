@@ -164,6 +164,11 @@ type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
 type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
+
+/** The tab a `?tab=` value opens, or null when the value names no tab (#22712). */
+export function secretsTabFromParam(value: string | null): SecretsTab | null {
+  return value === "secrets" || value === "my-secrets" || value === "vaults" || value === "proposals" ? value : null;
+}
 /** "current" is everything still in play: active and disabled, not archived. */
 type SecretStatusFilter = "current" | "disabled" | "archived";
 
@@ -746,6 +751,13 @@ export function Secrets() {
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [providedByFilter, setProvidedByFilter] = useState<ProvidedByFilter>("all");
   const [searchParams, setSearchParams] = useSearchParams();
+  // `?tab=<tab>` opens that tab, e.g. the inbox links a pending secret proposal
+  // to `?tab=proposals` (#22712). Hidden tabs still fall back to "secrets" above.
+  const tabParam = searchParams.get("tab");
+  useEffect(() => {
+    const tab = secretsTabFromParam(tabParam);
+    if (tab) setActiveTab(tab);
+  }, [tabParam]);
   // The detail sheet is deep-linkable: `?secret=<id>` /
   // `?definition=<id>` are the source of truth for the current selection, so
   // every open secret has a shareable URL and Back closes the sheet.

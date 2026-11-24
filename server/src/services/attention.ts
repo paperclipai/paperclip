@@ -1,6 +1,6 @@
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
-import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -9,6 +9,7 @@ import {
   assets,
   companies,
   companyMemberships,
+  companySecretProposals,
   decisionBundles,
   decisionQueueItems,
   decisionQueues,
@@ -94,6 +95,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "decision",
   "issue_thread_interaction",
   "join_request",
+  "secret_proposal",
   "recovery_action",
   "productivity_review",
   "blocker_attention",
@@ -122,6 +124,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   review: 8,
   productivity_review: 9,
   join_request: 10,
+  secret_proposal: 11,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2097,6 +2100,115 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       }
 
+      if (!questionIssueIds && !options.excludeSources?.includes("secret_proposal")) {
+        // Pending secret and binding proposals (#22712). A secret proposal has no
+        // card at all, and a binding loses its card when it is auto-rejected, so
+        // without this item the board sees neither. Values never leave the table:
+        // only names, paths and ids are read.
+        const proposalRows = await db
+          .select({
+            id: companySecretProposals.id,
+            kind: companySecretProposals.kind,
+            status: companySecretProposals.status,
+            proposedName: companySecretProposals.proposedName,
+            configPath: companySecretProposals.configPath,
+            targetType: companySecretProposals.targetType,
+            targetId: companySecretProposals.targetId,
+            secretId: companySecretProposals.secretId,
+            secretProposalId: companySecretProposals.secretProposalId,
+            proposedByAgentId: companySecretProposals.proposedByAgentId,
+            originIssueId: companySecretProposals.originIssueId,
+            interactionStatus: issueThreadInteractions.status,
+            expiresAt: companySecretProposals.expiresAt,
+            createdAt: companySecretProposals.createdAt,
+            updatedAt: companySecretProposals.updatedAt,
+          })
+          .from(companySecretProposals)
+          .leftJoin(issueThreadInteractions, and(
+            eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+            eq(issueThreadInteractions.companyId, companyId),
+          ))
+          .where(and(
+            eq(companySecretProposals.companyId, companyId),
+            eq(companySecretProposals.status, "pending"),
+            gt(companySecretProposals.expiresAt, new Date(now)),
+          ))
+          .orderBy(desc(companySecretProposals.updatedAt), desc(companySecretProposals.id));
+        // A binding whose confirmation card is still pending already shows as that card.
+        const visibleProposals = proposalRows.filter((row) => !(row.kind === "binding" && row.interactionStatus === "pending"));
+        const proposalAgentIds = [...new Set(visibleProposals.flatMap((row) => [
+          row.proposedByAgentId, row.targetType === "agent" ? row.targetId : null,
+        ]).filter((id): id is string => Boolean(id)))];
+        const proposalAgentNames = new Map<string, string>();
+        if (proposalAgentIds.length > 0) {
+          const rows = await db.select({ id: agents.id, name: agents.name }).from(agents)
+            .where(and(eq(agents.companyId, companyId), inArray(agents.id, proposalAgentIds)));
+          for (const row of rows) proposalAgentNames.set(row.id, row.name);
+        }
+        const proposalIssues = await loadIssues(visibleProposals.map((row) => row.originIssueId));
+
+        for (const proposal of visibleProposals) {
+          const issue = proposal.originIssueId ? proposalIssues.get(proposal.originIssueId) ?? null : null;
+          const targetName = proposal.targetType === "agent" && proposal.targetId
+            ? proposalAgentNames.get(proposal.targetId) ?? "an agent"
+            : proposal.targetType ?? "a target";
+          const title = proposal.kind === "binding"
+            ? `Binding proposal: ${proposal.configPath ?? "unknown path"} on ${targetName}`
+            : `Secret proposal: ${proposal.proposedName ?? "unnamed"}`;
+          const expiresMs = timestamp(proposal.expiresAt);
+          const leftMs = Math.max(0, expiresMs - now);
+          const expiresIn = leftMs >= 86_400_000
+            ? `${Math.floor(leftMs / 86_400_000)}d`
+            : `${Math.max(1, Math.ceil(leftMs / 3_600_000))}h`;
+          const proposer = proposal.proposedByAgentId ? proposalAgentNames.get(proposal.proposedByAgentId) ?? null : null;
+          add(createItem({
+            companyId,
+            sourceKind: "secret_proposal",
+            subject: {
+              kind: "secret_proposal",
+              id: proposal.id,
+              companyId,
+              title,
+              identifier: null,
+              status: proposal.status,
+              href: `/${prefix}/company/settings/secrets?tab=proposals`,
+              metadata: {
+                kind: proposal.kind,
+                proposedName: proposal.proposedName,
+                configPath: proposal.configPath,
+                targetType: proposal.targetType,
+                targetId: proposal.targetId,
+                secretId: proposal.secretId,
+                secretProposalId: proposal.secretProposalId,
+                proposerAgentId: proposal.proposedByAgentId,
+                proposerAgentName: proposer,
+                originIssueId: proposal.originIssueId,
+                expiresAt: toIso(proposal.expiresAt),
+              },
+            },
+            whyNow: `${proposal.kind === "binding" ? "Binding" : "Secret"} proposal is pending a board decision. Expires in ${expiresIn}; expiry discards the proposal.`,
+            decisionVerbs: decisionVerbs(
+              { id: "review", label: "Review", description: "Open the proposal in Secrets → Proposals." },
+            ),
+            inlineResolvable: false,
+            entryRule: "company_secret_proposals.status = 'pending' and expires_at > now()",
+            exitRule: "Proposal is approved, rejected, withdrawn, or expires.",
+            dedupKey: `secret_proposal:${proposal.id}`,
+            severity: leftMs < 48 * 3_600_000 ? "high" : "medium",
+            expiresAt: toIso(proposal.expiresAt),
+            activityAt: toIso(proposal.updatedAt),
+            createdAt: toIso(proposal.createdAt),
+            updatedAt: toIso(proposal.updatedAt),
+            relatedIssue: issue ? issueSubject(prefix, issue) : null,
+            ...issueContext(issue),
+            detail: genericDetail(title, []),
+          }), { issueId: null, companyScoped: true }, {
+            content: { kind: proposal.kind, status: proposal.status },
+            since: proposal.createdAt,
+          });
+        }
+      }
+
       const recoveryRows = await db
         .select()
         .from(issueRecoveryActions)
@@ -3185,6 +3297,7 @@ const WITHDRAW_UNSUPPORTED_TEXT: Partial<Record<AttentionSourceKind, string>> = 
   review: "Approve the review or request changes, or archive the card for yourself.",
   blocker_attention: "Unblock the task on its page, or archive the card for yourself.",
   join_request: "Approve or reject the join request, or archive the card for yourself.",
+  secret_proposal: "Approve or reject the proposal in Secrets → Proposals, or archive the card for yourself.",
 };
 
 /**
