@@ -176,6 +176,12 @@
       "measuredMs": 54171
     },
     {
+      "path": "server/src/__tests__/heartbeat-slack-invitation.test.ts",
+      "category": "channel-integration-soak",
+      "reason": "External chat/voice/connector channel integration soak (25.6s in run 45238253588)",
+      "measuredMs": 25600
+    },
+    {
       "path": "server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Stale heartbeat queue invalidation recovery soak (36 cases, 145s)",
@@ -348,6 +354,12 @@
       "category": "channel-integration-soak",
       "reason": "Heavy external channel/connector integration soak (78.9s in run 45238253588)",
       "measuredMs": 78942
+    },
+    {
+      "path": "server/src/maintenance/ephemeral-migration-service.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (1.3s in run 45238253588)",
+      "measuredMs": 1291
     },
     {
       "path": "server/src/services/case-handoffs.test.ts",

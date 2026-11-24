@@ -12,7 +12,7 @@
   "coverage": {
     "measured": 1573,
     "withSetup": 1573,
-    "inventory": 1653
+    "inventory": 1655
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
@@ -468,6 +468,7 @@
     "server/src/__tests__/heartbeat-runtime-skills.test.ts": 17652,
     "server/src/__tests__/heartbeat-runtime-state.test.ts": 8979,
     "server/src/__tests__/heartbeat-scheduling-suppression.test.ts": 7604,
+    "server/src/__tests__/heartbeat-slack-invitation.test.ts": 25600,
     "server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts": 145134,
     "server/src/__tests__/heartbeat-startup-fresh-dispatch.test.ts": 13721,
     "server/src/__tests__/heartbeat-status-preserving-telemetry.test.ts": 7698,
@@ -1038,6 +1039,7 @@
     "server/src/lib/active-run-slots.test.ts": 523,
     "server/src/lib/request-promise-memo.test.ts": 791,
     "server/src/lib/single-flight.test.ts": 740,
+    "server/src/maintenance/ephemeral-migration-service.test.ts": 1291,
     "server/src/maintenance/native-harness-prestage.test.ts": 1107,
     "server/src/middleware/cloud-tenant-actor.test.ts": 9679,
     "server/src/middleware/cloud-tenant-sync-postgres.test.ts": 23600,
