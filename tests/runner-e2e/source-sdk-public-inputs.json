@@ -270,7 +270,7 @@
     "packages/shared/src/google-sign-in-deployment.test.ts": "7f0ee05e9adaec48ed71c67e2b0e8364b0d1bdb2",
     "packages/shared/src/google-sign-in-deployment.ts": "2e4e4cc3c24347642e20c91186581e1dce81d740",
     "packages/shared/src/google-workspace-connectors.test.ts": "b9948b508bcb7a27c0dcea974edee314164686e5",
-    "packages/shared/src/google-workspace-connectors.ts": "de47e936d0fbfcdda1098b3a713a9481d22cef20",
+    "packages/shared/src/google-workspace-connectors.ts": "3338962075622b929f0fae18d8ca0333f88cf23a",
     "packages/shared/src/google-workspace-setup-links.test.ts": "d86428b26e74e54ab2902d1a14c0f06f562de775",
     "packages/shared/src/grok-bot.ts": "9de68f00e7926c397729ff62bf8e277f5a41c525",
     "packages/shared/src/heartbeat-inbox.ts": "227dc89705c20460ca02194091cb162e11503186",

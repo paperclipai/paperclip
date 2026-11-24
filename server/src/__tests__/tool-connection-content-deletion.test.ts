@@ -32,7 +32,11 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createConnectionContentDeletion, requestConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
-import { createGoogleTechnicalInformationRetention, GOOGLE_TECHNICAL_INFORMATION_TTL_MS } from "../services/tool-access/connections/google-technical-information.js";
+import {
+  createGoogleTechnicalInformationRetention,
+  GOOGLE_TECHNICAL_INFORMATION_TTL_MS,
+  readIdleGoogleTechnicalInformationSchedule,
+} from "../services/tool-access/connections/google-technical-information.js";
 import { deleteGoogleContentWhenAccessEnds } from "../services/tool-access/connections/google-content-retention.js";
 import type { RunLogHandle, RunLogStore } from "../services/run-log-store.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
@@ -443,6 +447,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
 
     it("schedules nothing while no Google connection exists", async () => {
       expect(await createGoogleTechnicalInformationRetention(db).nextDeadline()).toBeNull();
+      expect(await readIdleGoogleTechnicalInformationSchedule(db, Date.now())).toMatchObject({ blocked: false, deadlines: [] });
     });
 
     it("strips it after 30 days, right away once access ended, and keeps the bare activity row", async () => {
@@ -505,6 +510,9 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       expect(keptActivity).toMatchObject({ action: "tool.invoked", entityId: googleOld!.id, details: { toolName: "get_message", status: "failed" } });
 
       expect(await retention.nextDeadline(now)).toBe(googleRecent!.createdAt.getTime() + GOOGLE_TECHNICAL_INFORMATION_TTL_MS);
+      expect(await readIdleGoogleTechnicalInformationSchedule(db, now)).toMatchObject({
+        blocked: false, deadlines: [googleRecent!.createdAt.getTime() + GOOGLE_TECHNICAL_INFORMATION_TTL_MS],
+      });
       await db.delete(activityLog).where(eq(activityLog.companyId, company!.id));
       await db.delete(companies).where(eq(companies.id, company!.id));
     });
