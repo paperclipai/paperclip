@@ -1,8 +1,19 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, issueRelations, issues } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { NATIVE_RUN_PAYLOAD_TOO_LARGE } from "./native-runtime/native-run-payload-too-large.js";
+
+// A run that failed with one of these codes would fail the same way when it
+// starts again, so retries never repeat it and a person must change the setup
+// and press Retry. Its wake covers the ready state: the liveness backstop must
+// not start a new run on every sweep.
+const NON_REPEATING_RUN_ERROR_CODES: ReadonlySet<string> = new Set([
+  NATIVE_RUN_PAYLOAD_TOO_LARGE,
+  // NATIVE_SANDBOX_DISK_FULL; its module loads the plugin SDK, too heavy for this path.
+  "sandbox_disk_full",
+]);
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
@@ -189,6 +200,7 @@ function wakeCoversIssueBlockersResolvedReadyState(
     status: string;
     idempotencyKey: string | null;
     requestedAt: Date;
+    runErrorCode?: string | null;
   },
   keys: {
     cycleKey: string;
@@ -201,7 +213,8 @@ function wakeCoversIssueBlockersResolvedReadyState(
   if (!idempotencyKey) return false;
 
   if (idempotencyKey === keys.cycleKey) {
-    return IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(wake.status);
+    return IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(wake.status)
+      || (wake.runErrorCode != null && NON_REPEATING_RUN_ERROR_CODES.has(wake.runErrorCode));
   }
 
   if (idempotencyKey === keys.oldStateKey) {
@@ -265,8 +278,13 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
       status: agentWakeupRequests.status,
       idempotencyKey: agentWakeupRequests.idempotencyKey,
       requestedAt: agentWakeupRequests.requestedAt,
+      runErrorCode: heartbeatRuns.errorCode,
     })
     .from(agentWakeupRequests)
+    .leftJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.id, agentWakeupRequests.runId),
+      eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+    ))
     .where(
       and(
         eq(agentWakeupRequests.companyId, input.companyId),

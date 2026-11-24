@@ -1,6 +1,19 @@
 import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 import { createHash } from "node:crypto";
 
+/**
+ * The wake prompt bounds the continuation history to fit one runner turn.
+ * The paged full context returns the complete envelope this run started with,
+ * and only for the run's own task.
+ */
+export function runExecutionContinuation(contextSnapshot: unknown, issueId: string) {
+  const snapshot = contextSnapshot && typeof contextSnapshot === "object" ? contextSnapshot as Record<string, unknown> : {};
+  const continuation = snapshot.executionContinuation;
+  if (!continuation || typeof continuation !== "object" || Array.isArray(continuation)) return {};
+  const value = continuation as Record<string, unknown>;
+  return value.version === 1 && value.issueId === issueId ? { executionContinuation: value } : {};
+}
+
 const CHILD_CONTEXT_MAX_BYTES = 128 * 1024;
 const CHILD_TEXT_MAX_BYTES = 1024;
 

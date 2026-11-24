@@ -1,7 +1,7 @@
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { authorizationDeniedDetails } from "../authorization.js";
 import { budgetServiceInTransaction } from "../budgets.js";
-import { fitNativeTaskContext, nativeChildTaskContext, nativeTaskContextPage } from "./native-task-context.js";
+import { fitNativeTaskContext, nativeChildTaskContext, nativeTaskContextPage, runExecutionContinuation } from "./native-task-context.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
@@ -1071,6 +1071,9 @@ export class PaperclipRunnerToolAuthority {
               allowResolvedByRunId: this.binding.runId,
             }))?.interaction,
           } : {}),
+          // The wake prompt bounds this history to fit one turn. The paged full
+          // view returns the complete envelope this run was started with.
+          ...(input.view === "full" ? runExecutionContinuation(context.run.contextSnapshot, this.binding.issueId) : {}),
         };
         return input.view === "full" ? nativeTaskContextPage(taskContext, input) : fitNativeTaskContext(taskContext);
       }

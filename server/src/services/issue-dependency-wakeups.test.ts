@@ -18,18 +18,16 @@ type WakeRow = {
   status: string;
   idempotencyKey: string | null;
   requestedAt: Date;
+  runErrorCode?: string | null;
 };
 
 function dbWithWakes(rows: WakeRow[]): Db {
+  const filtered = { where: () => Promise.resolve(rows) };
   return {
     select() {
       return {
         from() {
-          return {
-            where() {
-              return Promise.resolve(rows);
-            },
-          };
+          return { ...filtered, leftJoin: () => filtered };
         },
       };
     },
@@ -114,6 +112,37 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
       readyState,
     );
     expect(existing?.id).toBe("wake-cycle");
+  });
+
+  it("suppresses a failed cycle wake whose run cannot succeed by starting again", async () => {
+    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    for (const runErrorCode of ["native_run_payload_too_large", "sandbox_disk_full"]) {
+      const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+        dbWithWakes([{ id: "wake-failed", status: "failed", idempotencyKey: cycleKey, requestedAt: secondCycle, runErrorCode }]),
+        readyState,
+      );
+      expect(existing?.id).toBe("wake-failed");
+    }
+  });
+
+  it("lets a cycle wake that failed for another reason be woken again", async () => {
+    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([{ id: "wake-failed", status: "failed", idempotencyKey: cycleKey, requestedAt: secondCycle,
+        runErrorCode: "process_lost" }]),
+      readyState,
+    );
+    expect(existing).toBeNull();
+  });
+
+  it("does not let a non-repeating failure on a legacy per-edge key suppress", async () => {
+    const legacyKey = buildIssueBlockersResolvedWakeIdempotencyKey({ dependentIssueId, resolvedBlockerIssueId: blockerIssueId });
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([{ id: "wake-legacy", status: "failed", idempotencyKey: legacyKey, requestedAt: secondCycle,
+        runErrorCode: "native_run_payload_too_large" }]),
+      readyState,
+    );
+    expect(existing).toBeNull();
   });
 
   it("does not let a completed old-key wake from a previous blocked cycle suppress", async () => {

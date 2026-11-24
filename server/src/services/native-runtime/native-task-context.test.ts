@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { fitNativeTaskContext, nativeChildTaskContext, nativeTaskContextPage } from "./native-task-context.js";
+import { fitNativeTaskContext, nativeChildTaskContext, nativeTaskContextPage, runExecutionContinuation } from "./native-task-context.js";
 
 it("keeps child text excerpts valid and leaves complete source records unchanged", () => {
   const source = { id: "child", title: "💊".repeat(1000), description: '💊"\\\n'.repeat(2000) };
@@ -52,4 +52,22 @@ it("preserves exact accepted and source plan references while paging their compl
   expect(nativeTaskContextPage({ ...source, activeTask: { id: "changed" } }, { offset: 32_000, contextDigest: "contextDigest" in first ? first.contextDigest : "" }))
     .toMatchObject({ code: "paperclip_runner_context_changed" });
   expect(nativeTaskContextPage(source, { offset: 10 })).toMatchObject({ code: "paperclip_runner_context_page_invalid" });
+});
+
+it("pages the complete continuation of the run's own task, never another task's", () => {
+  const continuation = { version: 1, issueId: "task-1", messages: Array.from({ length: 300 }, (_, index) => ({ id: `m-${index}`, body: "x".repeat(2_000) })) };
+  expect(runExecutionContinuation({ executionContinuation: continuation }, "task-1")).toEqual({ executionContinuation: continuation });
+  expect(runExecutionContinuation({ executionContinuation: continuation }, "task-2")).toEqual({});
+  expect(runExecutionContinuation({ executionContinuation: { ...continuation, version: 2 } }, "task-1")).toEqual({});
+  expect(runExecutionContinuation(null, "task-1")).toEqual({});
+  // Larger than one delivery, so the agent reads it through the paged full view.
+  let page = nativeTaskContextPage({ activeTask: { id: "task-1" }, ...runExecutionContinuation({ executionContinuation: continuation }, "task-1") }, {});
+  let text = "";
+  for (let guard = 0; guard < 100 && "jsonText" in page; guard += 1) {
+    text += page.jsonText;
+    if (page.nextOffset === null) break;
+    page = nativeTaskContextPage({ activeTask: { id: "task-1" }, ...runExecutionContinuation({ executionContinuation: continuation }, "task-1") },
+      { offset: page.nextOffset, contextDigest: page.contextDigest });
+  }
+  expect(JSON.parse(text).executionContinuation.messages).toHaveLength(300);
 });
