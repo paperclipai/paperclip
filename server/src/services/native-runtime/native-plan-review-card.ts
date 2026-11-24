@@ -1,11 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { documentRevisions, documents, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { documentService } from "../documents.js";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
-import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { activeIssueInteractionCondition, governedActionPayloadSql, GOVERNED_REVIEW_PAYLOAD_KEYS, hasGovernedPayload } from "../issue-question-context.js";
 import { isConversation } from "../../lib/conversation-wake-policy.js";
 
 /**
@@ -39,6 +39,51 @@ const record = (value: unknown): Record<string, unknown> =>
 
 export function planReviewCardIdempotencyKey(revisionId: string): string {
   return `plan-review:v1:${revisionId}`;
+}
+
+/**
+ * The one Plan-review card shape, for the card Paperclip opens from a
+ * provider's plan event (Codex, Claude) and the one it opens on settle.
+ */
+export function planReviewConfirmationInput(input: {
+  issueId: string;
+  documentId: string;
+  revisionId: string;
+  revisionNumber: number;
+  sourceRunId: string;
+  idempotencyKey: string;
+  source: "provider_plan" | "plan_document";
+}) {
+  return {
+    kind: "request_confirmation" as const,
+    idempotencyKey: input.idempotencyKey,
+    sourceRunId: input.sourceRunId,
+    title: `Review plan revision ${input.revisionNumber}`,
+    summary: input.source === "provider_plan"
+      ? "Review the synchronized Paperclip plan."
+      : "Review the plan before the agent starts the work.",
+    continuationPolicy: "wake_assignee" as const,
+    payload: {
+      version: 1 as const,
+      prompt: `Approve plan revision ${input.revisionNumber}?`,
+      ...(input.source === "provider_plan"
+        ? { detailsMarkdown: "The completed provider plan has been synchronized to the canonical Plan document." }
+        : {}),
+      acceptLabel: "Approve plan",
+      rejectLabel: "Request changes",
+      rejectRequiresReason: true,
+      supersedeOnUserComment: false,
+      target: {
+        type: "issue_document" as const,
+        issueId: input.issueId,
+        documentId: input.documentId,
+        key: "plan",
+        revisionId: input.revisionId,
+        revisionNumber: input.revisionNumber,
+        label: `Plan v${input.revisionNumber}`,
+      },
+    },
+  };
 }
 
 async function coveringCard(db: Db, binding: Binding, revision: { id: string; createdAt: Date }, conversationMode: boolean) {
@@ -76,13 +121,15 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     if (card.kind === "ask_user_questions") return card.status === "pending";
     // Governed-action cards (tool calls, secrets, connections, quality
     // reviews) are about something else and never stand in for a plan review.
-    const payload = record(card.payload);
-    if (["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => payload[key] != null)) return false;
+    if (hasGovernedPayload(card.payload)) return false;
     const revisionId = targetRevision(card.payload);
     if (revisionId) return revisionId === revision.id;
     return card.createdByAgentId === binding.agentId && card.createdAt >= revision.createdAt;
   };
-  const pending = cards.find(card => card.status === "pending" && active.has(card.id) && covers(card));
+  // A pending card bound to this revision always gates it, also when the
+  // conversation prior-turn rule would leave it out of the active set.
+  const pending = cards.find(card => card.status === "pending" && covers(card) &&
+    (active.has(card.id) || targetRevision(card.payload) === revision.id));
   if (pending) return { kind: "pending" as const, interactionId: pending.id };
   const answered = cards.find(card => card.kind === "request_confirmation" && card.status !== "expired" && covers(card));
   if (answered) return { kind: "reviewed" as const, revisionId: revision.id };
@@ -144,37 +191,22 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
   try {
     const interaction = await interactions.create(
       { id: binding.issueId, companyId: binding.companyId },
-      {
-        kind: "request_confirmation",
+      planReviewConfirmationInput({
+        issueId: binding.issueId, documentId: plan.id, revisionId: revision.id, revisionNumber: revision.revisionNumber,
+        sourceRunId: binding.runId, source: "plan_document",
         // One card per revision, whichever run, retry or reconcile opens it.
         idempotencyKey: planReviewCardIdempotencyKey(revision.id),
-        sourceRunId: binding.runId,
-        title: `Review plan revision ${revision.revisionNumber}`,
-        summary: "Review the plan before the agent starts the work.",
-        continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          prompt: `Approve plan revision ${revision.revisionNumber}?`,
-          acceptLabel: "Approve plan",
-          rejectLabel: "Request changes",
-          rejectRequiresReason: true,
-          supersedeOnUserComment: false,
-          target: {
-            type: "issue_document",
-            issueId: binding.issueId,
-            documentId: plan.id,
-            key: "plan",
-            revisionId: revision.id,
-            revisionNumber: revision.revisionNumber,
-            label: `Plan v${revision.revisionNumber}`,
-          },
-        },
-      } as never,
+      }) as never,
       { agentId: binding.agentId, runId: binding.runId },
       {
-        // Leave the agent's other pending cards (tool approvals, questions)
-        // answerable; stale plan reviews were expired above.
-        supersedePendingSiblingInteractions: false,
+        // Replace the agent's own earlier plan confirmations (an ACPX agent's
+        // card has no target, so the document cleanup above cannot see it)
+        // while its tool, secret, connection and quality-review cards stay
+        // answerable. A plain card made after this revision covers it, so any
+        // sibling left here is about an older plan.
+        supersedeSiblingFilter: sql`not ${governedActionPayloadSql(GOVERNED_REVIEW_PAYLOAD_KEYS)}
+          and coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'issue_document'
+            and ${issueThreadInteractions.payload}->'target'->>'key' = 'plan', ${issueThreadInteractions.payload}->'target' is null)`,
         // Only the call that inserted the card records it; a concurrent or
         // repeated settle replays the same card and logs nothing.
         afterInsertInTransaction: async (tx, row) => {

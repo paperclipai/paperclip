@@ -88,7 +88,7 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
   });
 
   let prefix = 0;
-  async function seed(workMode: "standard" | "planning" = "planning") {
+  async function seed(workMode: "standard" | "planning" = "planning", options: { conversation?: boolean } = {}) {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -102,6 +102,7 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     await db.insert(issues).values({
       id: issueId, companyId, goalId, title: "Create crash-proof.txt", status: "in_progress",
       priority: "medium", assigneeAgentId: agentId, workMode,
+      ...(options.conversation ? { conversationAgentId: agentId, conversationUserId: "local-board", conversationState: "active" } : {}),
     });
     const newRun = async () => {
       const runId = randomUUID();
@@ -238,6 +239,37 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ status: "pending" });
     expect(cards[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
+  });
+
+  it("replaces the agent's untargeted card for the plan a crashed run wrote, leaving one answerable card", async () => {
+    const t = await seed();
+    const crashed = await t.newRun();
+    await t.writePlan(crashed);
+    // The agent opened its plan card without a target (as Antigravity does), then the process died.
+    await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+      kind: "request_confirmation", idempotencyKey: "own-v1", sourceRunId: crashed, continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt: "Proceed with plan v1?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
+    } as never, { agentId: t.agentId, runId: crashed });
+    const recovered = await t.newRun();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await t.writePlan(recovered, `${PLAN}\n3. Revised after recovery.`);
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(recovered))).resolves.toMatchObject({ kind: "created" });
+
+    const pending = (await t.cards()).filter(card => card.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.payload).toMatchObject({ target: { revisionNumber: 2 } });
+  });
+
+  it("keeps an earlier run's pending card as the gate in a Plan-mode conversation", async () => {
+    const t = await seed("planning", { conversation: true });
+    const first = await t.newRun();
+    await t.writePlan(first);
+    await expect(ensureNativePlanReviewCard(db, t.binding(first))).resolves.toMatchObject({ kind: "created" });
+    const second = await t.newRun();
+
+    await expect(ensureNativePlanReviewCard(db, t.binding(second))).resolves.toMatchObject({ kind: "pending" });
+    expect((await t.cards()).filter(card => card.status === "pending")).toHaveLength(1);
   });
 
   async function interactionsAccept(t: Awaited<ReturnType<typeof seed>>, id: string) {

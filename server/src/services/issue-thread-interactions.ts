@@ -14,7 +14,7 @@ import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { historicalQuestionCondition } from "./issue-question-context.js";
+import { hasGovernedPayload, historicalQuestionCondition } from "./issue-question-context.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -38,6 +38,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -228,6 +229,8 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Narrows which of the creating agent's pending sibling cards the new card supersedes. */
+  supersedeSiblingFilter?: SQL;
   /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
   afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
@@ -695,7 +698,7 @@ async function isEquivalentAcceptedReplay(
   if (
     !replayAcceptedInteractionIds.includes(row.id)
     || !isRequestConfirmationLikeKind(row.kind)
-    || ["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => Object.hasOwn(row.payload, key))
+    || hasGovernedPayload(row.payload)
     || row.status !== "accepted"
     || row.result?.outcome !== "accepted"
     || !row.resolvedAt
@@ -5393,6 +5396,7 @@ export function issueThreadInteractionService(
             sql`${issueThreadInteractions.payload}->'qualityReview' IS NULL`,
             sql`not coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'custom'
               and ${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review', false)`,
+            options.supersedeSiblingFilter,
           );
           if (data.kind === "request_confirmation") {
             // The issue lock above excludes concurrent interaction creation.

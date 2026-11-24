@@ -5105,6 +5105,12 @@ export function recoveryService(
         issue.status === "in_progress" &&
         latestRun?.status === "succeeded" &&
         latestRun.agentId === agentId &&
+        // An accepted native plan waits for the user's next message; its
+        // answered plan question is the review. Never ask for it again.
+        parseObject(latestRun.resultJson).finalizationReasonCode !== "native_plan_accepted_waiting_for_continuation" &&
+        !(await hasCommittedNativePlanWait(db, {
+          companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+        })) &&
         (await ensureNativePlanReviewCard(db, {
           companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
         })).kind === "created"

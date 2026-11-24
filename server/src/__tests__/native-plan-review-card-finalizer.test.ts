@@ -35,6 +35,16 @@ vi.mock("../services/native-runtime/native-plan-review-card.js", async (importOr
   };
 });
 
+const committedPlanWait = vi.hoisted(() => ({ runIds: new Set<string>() }));
+vi.mock("../services/native-runtime/native-plan-wait.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/native-runtime/native-plan-wait.js")>();
+  return {
+    ...actual,
+    hasCommittedNativePlanWait: async (...args: Parameters<typeof actual.hasCommittedNativePlanWait>) =>
+      committedPlanWait.runIds.has(args[1].runId) || actual.hasCommittedNativePlanWait(...args),
+  };
+});
+
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PLAN_REVIEW_FINALIZER_TEST_DATABASE_URL");
 
 // The live failure: the Antigravity process was killed mid Plan-mode run; the
@@ -168,6 +178,22 @@ describe("Plan-mode run settle opens the plan review", () => {
       .reconcileStrandedAssignedIssues({ companyId, issueId: settled.issueId });
     const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, settled.issueId));
     expect(cards).toEqual([expect.objectContaining({ kind: "request_confirmation", status: "pending" })]);
+  });
+
+  it.each(["finalization reason", "committed plan wait"])("never opens a second card for a plan the user already accepted (%s)", async (proof) => {
+    const settled = await settleRun({ workMode: "planning", writePlan: true });
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, settled.issueId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, settled.issueId));
+    if (proof === "finalization reason") {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, settled.runId));
+      await db.update(heartbeatRuns).set({ resultJson: { ...(run!.resultJson as Record<string, unknown>),
+        finalizationReasonCode: "native_plan_accepted_waiting_for_continuation" } }).where(eq(heartbeatRuns.id, settled.runId));
+    } else committedPlanWait.runIds.add(settled.runId);
+
+    await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) })
+      .reconcileStrandedAssignedIssues({ companyId, issueId: settled.issueId });
+
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, settled.issueId))).toHaveLength(0);
   });
 
   it("leaves a Standard-mode response wait unchanged", async () => {

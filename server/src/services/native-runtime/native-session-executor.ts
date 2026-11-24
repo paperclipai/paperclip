@@ -335,6 +335,7 @@ import {
   type NativeStatusDecision,
 } from "./status-arbiter.js";
 import { conflict, HttpError } from "../../errors.js";
+import { planReviewConfirmationInput } from "./native-plan-review-card.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
 import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
@@ -2322,33 +2323,15 @@ export async function synchronizeCompletedProviderPlan(input: {
         id: input.execution.binding.issueId,
         companyId: input.execution.binding.companyId,
       },
-      {
-        kind: "request_confirmation",
-        idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
+      planReviewConfirmationInput({
+        issueId: input.execution.binding.issueId,
+        documentId: current.id,
+        revisionId: revision.id,
+        revisionNumber: revision.revisionNumber,
         sourceRunId: input.execution.binding.runId,
-        title: `Review plan revision ${revision.revisionNumber}`,
-        summary: "Review the synchronized Paperclip plan.",
-        continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          prompt: `Approve plan revision ${revision.revisionNumber}?`,
-          detailsMarkdown:
-            "The completed provider plan has been synchronized to the canonical Plan document.",
-          acceptLabel: "Approve plan",
-          rejectLabel: "Request changes",
-          rejectRequiresReason: true,
-          supersedeOnUserComment: false,
-          target: {
-            type: "issue_document",
-            issueId: input.execution.binding.issueId,
-            documentId: current.id,
-            key: "plan",
-            revisionId: revision.id,
-            revisionNumber: revision.revisionNumber,
-            label: `Plan v${revision.revisionNumber}`,
-          },
-        },
-      } as never,
+        source: "provider_plan",
+        idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
+      }) as never,
       {
         agentId: input.execution.binding.agentId,
         runId: input.execution.binding.runId,
