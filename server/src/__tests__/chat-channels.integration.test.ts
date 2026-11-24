@@ -3240,7 +3240,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none",
           commentAction: "none", reasonCodes: ["yielded_control_plane_wait"] },
       } }).where(eq(heartbeatRuns.id, f.run.id));
-      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      // The run waits on purpose and the task is open: the request keeps waiting.
+      expect([...f.responseComments.values()][0].body).toContain("Working on this");
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
       expect([...f.responseComments.values()][0].body).toContain("without publishing a final response");
     });
     it.each(["same_head", "new_head"] as const)("reuses one main GitHub PR comment across review requests: %s", async headCase => {
@@ -3359,6 +3364,91 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const writes = f.responseWrites.length;
       await responses.processPending();
       expect(f.responseWrites).toHaveLength(writes);
+    });
+    const passiveWait = (key: string) => ({ status: "succeeded" as const, runtimeMode: "native" as const, nativePhase: "committed", resultJson: {
+      finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+        continuation: { kind: "response_wake", idempotencyKey: key } },
+      presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none",
+        commentAction: "none", reasonCodes: ["yielded_control_plane_wait"] } } });
+    it("links a GitHub thread whose run waited to the response a later run published", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set(passiveWait("first-wait")).where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      // The run waits on purpose and the task is still open, so the thread waits too.
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      // A response on another pull request bound to the same task is not linked.
+      const [other] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+        externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:4180" }).returning();
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: other.id,
+        kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+        payload: { operation: "comment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        result: { id: "77", url: "https://github.com/paperclipai/paperclip/pull/4180#issuecomment-77" } });
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "Fixed this one too", userId: "42", userName: "octocat", mentioned: true }) });
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
+        }) }).returning();
+      await githubChatReviewService(db, f.providerFetch).execute({ ...f.session, runId: next.id }, "comment",
+        { body: "Re-reviewed both threads", idempotencyKey: "later-response" });
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, next.id));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toMatch(/See the \[latest response\]\(https:\/\/github\.com\//);
+    });
+    it("links a waiting GitHub thread to a later review published only as inline findings", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set(passiveWait("inline-only-wait")).where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      const reviewId = randomUUID();
+      await db.insert(chatGitHubReviews).values({ id: reviewId, companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId!, repositoryId: "42", repository: "paperclipai/paperclip", pullNumber: 418,
+        headSha: "b".repeat(40), deliveryId: "inline-only", configurationRevision: 1, policySnapshot: {} as never, event: {} as never,
+        state: "completed", publicationReceipts: { "finding:1": { id: "88",
+          url: "https://github.com/paperclipai/paperclip/pull/418#discussion_r88", digest: "d" } } });
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
+        kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+        payload: { operation: "assessment", reviewId, session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        result: { reviewId, summaryUrl: null } });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
+      // The outgoing-text projection drops URL fragments, so the link names the pull request.
+      expect(f.responseComments.get(firstId)?.body).toContain("See the [latest response](https://github.com/paperclipai/paperclip/pull/418)");
+      expect(f.responseComments.get(firstId)?.body).not.toContain("ended without publishing");
+    });
+    it("settles a waiting GitHub thread once the task finishes without a later response", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set(passiveWait("only-wait")).where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("ended without publishing a final response");
+    });
+    it("settles a GitHub thread whose run's final reply could not be published", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: {
+        finalizationPhase: "committed", finalizationReasonCode: "governed_gate_pending",
+        responsePublication: { schema: "paperclip.native_response_publication.v1", state: "failed", attempts: 6,
+          reasonCode: "native_response_publication_failed", lastReason: "publication_refused", nextAttemptAt: null } } })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      for (let pass = 0; pass < 2; pass++) await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("reply could not be published");
     });
     it("ignores a review request addressed to an external GitHub bot", async () => {
       const f = await subscribedGitHubFixture("github:paperclipai/paperclip:419");

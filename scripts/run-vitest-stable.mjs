@@ -14,6 +14,8 @@ import {
   resolveNightlyOnlySuitesPath,
 } from "./ci/nightly-only-suites.mjs";
 import { runUnderSharedPostgres, shouldWrapWithSharedPostgres } from "./ci/vitest-shared-postgres.mjs";
+import { resolveServerParallelWorkers, resolveWorkspaceParallelWorkers } from "./ci/vitest-workers.mjs";
+import { selectWorkspaceProjectsShard } from "./ci/workspaces-b-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -148,12 +150,12 @@ function activeNativeRunnerSuites() {
   return nativeRunnerSuites.filter((file) => !activeNightlyOnlySuites.has(file));
 }
 
-function resolveServerParallelWorkers(defaultWorkers) {
-  const raw = process.env.PAPERCLIP_VITEST_MAX_WORKERS?.trim();
-  if (!raw) {
-    return defaultWorkers;
+function resolveWorkers(lane) {
+  try {
+    return resolveServerParallelWorkers(lane);
+  } catch (error) {
+    fail(error.message);
   }
-  return parsePositiveInteger(raw, "PAPERCLIP_VITEST_MAX_WORKERS");
 }
 
 // Release verification selects this explicit group and runs the omitted suites
@@ -387,12 +389,12 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)
+      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName].includes(group)
         || Boolean(process.env.PAPERCLIP_CI_TEST_SELECTION)
-          && [generalWorkspacesBGroupName, generalWorkspacesCGroupName].includes(group)));
+          && generalWorkspacesCGroupName === group));
   if (!shardAllowed && shardIndex !== null) {
     fail(
-      "--shard-index/--shard-count require serialized mode, a shardable general server/chat/workspaces-a group, or a selected workspace group.",
+      "--shard-index/--shard-count require serialized mode, a shardable general server/chat/workspaces-a/workspaces-b group, or a selected workspace group.",
     );
   }
 
@@ -550,7 +552,7 @@ async function runGeneralSuites(routeTests, chatShards) {
   }
 }
 
-async function runProjectGroup(projects, groupName, shardIndex = null, shardCount = null, excludedFiles = []) {
+async function runProjectGroup(projects, groupName, shardIndex = null, shardCount = null, excludedFiles = [], extraArgs = []) {
   // Run the whole group in a single multi-project Vitest invocation so Vitest
   // boots once and shares module transform/worker pool overhead across packages.
   // With shard args, Vitest's native --shard deterministically partitions the
@@ -563,7 +565,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
   const label = projects.length === 1
     ? `${groupName} project ${projects[0]}${shardSuffix}`
     : `${groupName} (${projects.length} projects)${shardSuffix}`;
-  await runVitest([...projectArgs, ...excludeArgs, ...shardArgs], label);
+  await runVitest([...projectArgs, ...excludeArgs, ...shardArgs, ...extraArgs], label);
 }
 
 function chatShardWorkers(index, count) {
@@ -637,9 +639,9 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     await runVitest(
       ["--project", "@paperclipai/server",
         // Each file owns its database, home, and processes. Keep cases serial,
-        // but overlap long real lease windows in four isolated fork workers.
+        // but overlap long real lease windows across isolated fork workers.
         ...(hasSharedTestDatabase ? serializedServerVitestArgs
-          : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveServerParallelWorkers(4)}`]),
+          : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveWorkers("general")}`]),
         ...suites],
       "native runner vertical-slice suite",
     );
@@ -662,7 +664,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
         return;
       }
 
-      const workers = resolveServerParallelWorkers(4);
+      const workers = resolveWorkers("general");
       await runVitest(
         [
           "--project",
@@ -708,13 +710,22 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     // The ui project dominates this lane (~224s of a 319s job in actions run
     // 31371439296, 2026-08-10, where workspaces-a was the slowest PR check).
     // Its test files shard cleanly with Vitest's native --shard, so the lane
-    // splits across runners without a duration manifest.
-    await runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount);
+    // splits across runners without a duration manifest. Pass --maxWorkers at
+    // the top level so both projects share one worker pool (Vitest 5 rejects
+    // per-project maxWorkers mismatches within the same sequence.groupOrder).
+    await runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount, [], [
+      `--maxWorkers=${resolveWorkspaceParallelWorkers()}`,
+    ]);
     return;
   }
 
   if (groupName === generalWorkspacesBGroupName) {
-    await runProjectGroup(generalWorkspacesBProjects, groupName);
+    const projects = selectWorkspaceProjectsShard(generalWorkspacesBProjects, shardIndex, shardCount);
+    if (projects.length === 0) {
+      console.log(`\n[test:run] ${groupName} shard ${shardIndex + 1}/${shardCount}: 0 projects; skipping`);
+      return;
+    }
+    await runProjectGroup(projects, groupName);
     return;
   }
 
@@ -758,7 +769,7 @@ async function runSerializedSuites(suites, shardIndex, shardCount) {
   const serialOnlyTests = shardTests.filter((test) => strictlySerialServerTests.has(test.repoPath));
 
   if (parallelTests.length > 0) {
-    const workers = resolveServerParallelWorkers(3);
+    const workers = resolveWorkers("serialized");
     await runVitest(
       [
         "--project",
@@ -912,7 +923,7 @@ if (options.dryRun) {
           options.group === generalWorkspacesAGroupName
             ? generalWorkspacesAProjects
             : options.group === generalWorkspacesBGroupName
-              ? generalWorkspacesBProjects
+              ? selectWorkspaceProjectsShard(generalWorkspacesBProjects, options.shardIndex, options.shardCount)
               : options.group === generalWorkspacesCGroupName
                 ? generalWorkspacesCProjects
                 : null,
@@ -949,8 +960,8 @@ try {
         : hasSharedTestDatabase
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
           : options.mode === serializedModeName
-            ? ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveServerParallelWorkers(3)}`]
-            : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveServerParallelWorkers(4)}`];
+            ? ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveWorkers("serialized")}`]
+            : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveWorkers("general")}`];
       await runVitest(["--project", project, ...serverArgs, ...files],
         `selected ${project}: ${files.length} files`, null, true);
     }

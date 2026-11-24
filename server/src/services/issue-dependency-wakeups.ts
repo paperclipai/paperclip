@@ -1,46 +1,8 @@
-import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { agentWakeupRequests, issueRelations, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { NATIVE_RUN_PAYLOAD_TOO_LARGE } from "./native-runtime/native-run-payload-too-large.js";
-
-// A run that failed with one of these codes would fail the same way when it
-// starts again, so retries never repeat it and a person must change the setup
-// and press Retry.
-const NON_REPEATING_RUN_ERROR_CODES: ReadonlySet<string> = new Set([
-  NATIVE_RUN_PAYLOAD_TOO_LARGE,
-  // NATIVE_SANDBOX_DISK_FULL; its module loads the plugin SDK, too heavy for this path.
-  "sandbox_disk_full",
-]);
-
-/**
- * True when the agent's latest run on this task failed in a way that starting
- * again cannot fix. Each failed run blocks the task again with a new blocked
- * cycle, so the ready-state key never repeats: without this check the liveness
- * backstop started a new run on every sweep. A person's Retry creates a newer
- * run and lifts the hold.
- */
-export async function latestIssueRunCannotSucceedByRepeating(
-  db: Db,
-  input: { companyId: string; issueId: string; agentId: string },
-): Promise<boolean> {
-  const [latest] = await db
-    .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
-    .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.companyId, input.companyId),
-      eq(heartbeatRuns.agentId, input.agentId),
-      or(
-        eq(heartbeatRuns.issueId, input.issueId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
-      ),
-    ))
-    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-    .limit(1);
-  return latest?.status === "failed" && latest.errorCode != null
-    && NON_REPEATING_RUN_ERROR_CODES.has(latest.errorCode);
-}
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 

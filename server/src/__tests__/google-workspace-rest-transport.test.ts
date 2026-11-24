@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues,
   toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations,
@@ -84,6 +84,10 @@ const GOOGLE_MCP_SCHEMAS: Record<string, Record<string, unknown>> = {
     },
     required: ["documentId", "requests"],
   },
+  create_draft: {
+    type: "object",
+    properties: { to: { type: "array", items: { type: "string" } }, subject: { type: "string" }, body: { type: "string" } },
+  },
   get_message: {
     type: "object",
     properties: { messageId: { type: "string" }, messageFormat: { type: "string", enum: ["MINIMAL", "FULL_CONTENT", "METADATA_ONLY"] } },
@@ -96,6 +100,14 @@ const support = await getEmbeddedPostgresTestSupport();
   let db: ReturnType<typeof createDb>;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   const savedTransport = { ...GOOGLE_WORKSPACE_TOOL_TRANSPORT };
+  const REST_TRANSPORT: Record<GoogleWorkspaceService, GoogleWorkspaceToolTransport> = {
+    ...savedTransport, gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest",
+    sheets: "paperclip_rest", slides: "paperclip_rest", calendar: "paperclip_rest",
+  };
+
+  beforeEach(() => {
+    Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, REST_TRANSPORT);
+  });
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-google-rest-transport-");
@@ -280,6 +292,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const audit = await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, f.company.id), eq(toolAccessAuditEvents.action, "call_completed")));
       expect(audit).toHaveLength(1);
       expect(JSON.stringify(audit[0])).toContain("Google Workspace REST");
+      expect(JSON.stringify(audit[0])).not.toContain("mcpMethod");
       expect(JSON.stringify([invocation, audit])).not.toContain("workspace-access-1");
     });
 
@@ -502,10 +515,11 @@ const support = await getEmbeddedPostgresTestSupport();
       ["calendar__create_event", { summary: "Planning", startTime: "2026-11-24T10:00:00Z", endTime: "2026-11-24T10:30:00Z", timeZone: "UTC" }, "www.googleapis.com POST /calendar/v3/calendars/primary/events"],
     ];
 
-    it("puts exactly the six launch services on paperclip_rest and leaves the rest on google_mcp", () => {
+    it("ships every service on google_mcp, and the REST fallback still covers the six launch services", () => {
+      expect(Object.values(savedTransport).every((transport) => transport === "google_mcp")).toBe(true);
       expect(Object.entries(GOOGLE_WORKSPACE_TOOL_TRANSPORT).filter(([, transport]) => transport === "paperclip_rest").map(([service]) => service).sort())
         .toEqual([...LAUNCH_SERVICES].sort());
-      expect(GOOGLE_WORKSPACE_TOOL_TRANSPORT).toMatchObject({ chat: "google_mcp", people: "google_mcp", search: "google_mcp" });
+      expect(restDispatch.googleWorkspaceRestTransportGaps(REST_TRANSPORT)).toEqual([]);
     });
 
     it("lists all 36 allowlisted actions for a full read & write grant without contacting a Google MCP server", async () => {
@@ -585,7 +599,7 @@ const support = await getEmbeddedPostgresTestSupport();
       for (const service of LAUNCH_SERVICES) useTransport(service, "google_mcp");
       const f = await connectWorkspace();
       expect(names(f.catalog)).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_message", "gmail__search_threads"]);
-      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, REST_TRANSPORT);
       const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);
       expect(names(refreshed.catalog)).toEqual(gmailCatalog(true));
       expect(refreshed.catalog.filter((entry) => entry.status !== "active")).toEqual([]);
@@ -602,7 +616,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(saved.inputSchema).toEqual(GOOGLE_MCP_SCHEMAS.update_doc);
       const before = await f.toolNamed("docs__update_doc");
       expect(before.parametersSchema).toMatchObject({ required: ["documentId", "requests"] });
-      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, REST_TRANSPORT);
       f.restRequests.length = 0;
       const refreshesBefore = f.mcpRequests.length;
 
@@ -666,7 +680,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .filter((tool) => tool.connectionId === f.connectionId).map((tool) => tool.upstreamToolName).sort();
       expect(await listed()).toEqual(["docs__read_doc", "gmail__create_draft"]);
 
-      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, REST_TRANSPORT);
       const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);
       expect(refreshed.catalog.find((entry) => entry.toolName === "gmail__get_message")).toMatchObject({ status: "active", quarantineReason: null });
       expect(refreshed.catalog.filter((entry) => entry.status !== "active")).toEqual([]);
@@ -689,7 +703,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .filter((tool) => tool.connectionId === f.connectionId).map((tool) => tool.upstreamToolName).sort();
       const draft = { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." };
 
-      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, REST_TRANSPORT);
       expect(await listed()).toEqual(["docs__read_doc", "gmail__search_threads"]);
       for (let refresh = 0; refresh < 2; refresh += 1) {
         const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);

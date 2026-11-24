@@ -5,7 +5,6 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
   findExistingIssueBlockersResolvedWakeForReadyState,
-  latestIssueRunCannotSucceedByRepeating,
 } from "./issue-dependency-wakeups.js";
 
 const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -36,33 +35,6 @@ function dbWithWakes(rows: WakeRow[]): Db {
     },
   } as unknown as Db;
 }
-
-function dbWithLatestRun(run: { status: string; errorCode: string | null } | undefined): Db {
-  const limited = { limit: () => Promise.resolve(run ? [run] : []) };
-  return {
-    select() {
-      return { from: () => ({ where: () => ({ orderBy: () => limited }) }) };
-    },
-  } as unknown as Db;
-}
-
-describe("latestIssueRunCannotSucceedByRepeating", () => {
-  const input = { companyId, issueId: dependentIssueId, agentId: "agent-1" };
-
-  it("holds a task whose latest run failed in a way a restart cannot fix", async () => {
-    for (const errorCode of ["native_run_payload_too_large", "sandbox_disk_full"]) {
-      expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "failed", errorCode }), input)).toBe(true);
-    }
-  });
-
-  it("does not hold other failures, other outcomes, or a task without runs", async () => {
-    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "failed", errorCode: "process_lost" }), input)).toBe(false);
-    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "succeeded", errorCode: null }), input)).toBe(false);
-    // A person's Retry is a newer queued or running run.
-    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun({ status: "queued", errorCode: null }), input)).toBe(false);
-    expect(await latestIssueRunCannotSucceedByRepeating(dbWithLatestRun(undefined), input)).toBe(false);
-  });
-});
 
 describe("buildIssueBlockersResolvedWakeStateKey", () => {
   it("is identical for the same dependent, blockers, and blockedTransitionAt", () => {

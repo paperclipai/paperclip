@@ -15,6 +15,7 @@ import {
 import { assertManifestSource } from "../ci/pr-run-durations.mjs";
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
 import { chatManifestData, entryDurations } from "../ci/refresh-chat-shard-durations.mjs";
+import { defaultServerParallelWorkers } from "../ci/vitest-workers.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -37,6 +38,7 @@ function workflowEnv(envOverrides = {}) {
     "PAPERCLIP_CI_EXCLUDE_NIGHTLY",
     "PAPERCLIP_CI_NIGHTLY_SUITES_FILE",
     "PAPERCLIP_VITEST_MAX_WORKERS",
+    "PAPERCLIP_VITEST_CPU_COUNT",
     "PAPERCLIP_TEST_POSTGRES_ADMIN_URL",
   ]) {
     if (!(key in envOverrides)) {
@@ -101,12 +103,10 @@ test("general shards retain scripts and route-named suites outside the serialize
   ]) assert.ok(general.selectedGeneralServerSuites.includes(file), `missing configured server suite: ${file}`);
 });
 
-for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
-  test(`shard flags are rejected for the ${group} group`, () => {
-    const result = dryRun(["--mode", "general", "--group", group, "--shard-index", "0", "--shard-count", "3"]);
-    assert.notEqual(result.status, 0, `${group} must not accept shard flags`);
-  });
-}
+test("shard flags are rejected for the general-workspaces-c group", () => {
+  const result = dryRun(["--mode", "general", "--group", "general-workspaces-c", "--shard-index", "0", "--shard-count", "3"]);
+  assert.notEqual(result.status, 0, "general-workspaces-c must not accept shard flags");
+});
 
 test("workspace lanes cover every non-server project in the root Vitest configuration", () => {
   const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
@@ -183,11 +183,19 @@ test("workspaces-c runs the db project alone and workspaces-b no longer carries 
     const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
     assert.ok(sharded.length > 0 && sharded.every(entry => entry.keys.includes("shard_index") && entry.keys.includes("shard_count")),
       `${workflow} must carry the sharded workspaces-a entries`);
-    for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
-      const matching = entries.filter(entry => entry.group === group);
-      assert.equal(matching.length, 1, `${workflow} must run ${group} exactly once`);
-      assert.ok(matching[0].keys.includes("group_label"), `${workflow} must label the ${group} job`);
-      assert.deepEqual(matching[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} must run ${group} unsharded`);
+    const workspacesCEntries = entries.filter(entry => entry.group === "general-workspaces-c");
+    assert.equal(workspacesCEntries.length, 1, `${workflow} must run general-workspaces-c exactly once`);
+    assert.ok(workspacesCEntries[0].keys.includes("group_label"), `${workflow} must label the general-workspaces-c job`);
+    assert.deepEqual(workspacesCEntries[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} must run general-workspaces-c unsharded`);
+
+    const workspacesBEntries = entries.filter(entry => entry.group === "general-workspaces-b");
+    assert.ok(workspacesBEntries.length >= 1, `${workflow} must run general-workspaces-b`);
+    assert.ok(workspacesBEntries.every(entry => entry.keys.includes("group_label")), `${workflow} must label every general-workspaces-b job`);
+    if (workspacesBEntries.length === 1) {
+      assert.deepEqual(workspacesBEntries[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} single general-workspaces-b entry must be unsharded`);
+    } else {
+      assert.ok(workspacesBEntries.every(entry => entry.keys.includes("shard_index") && entry.keys.includes("shard_count")),
+        `${workflow} multi-shard general-workspaces-b entries must declare shard_index and shard_count`);
     }
   }
 });
@@ -885,11 +893,12 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   }
 });
 
-for (const [label, modeArgs, parallelWorkers] of [
-  ["general-server-native-runner", ["--mode", "general", "--group", "general-server-native-runner"], 4],
-  ["general-server-without-chat-or-native-runner", ["--mode", "general", "--group", "general-server-without-chat-or-native-runner", "--shard-index", "0", "--shard-count", "12"], 4],
-  ["serialized", ["--mode", "serialized", "--shard-index", "4", "--shard-count", "9"], 3],
+for (const [label, modeArgs, lane] of [
+  ["general-server-native-runner", ["--mode", "general", "--group", "general-server-native-runner"], "general"],
+  ["general-server-without-chat-or-native-runner", ["--mode", "general", "--group", "general-server-without-chat-or-native-runner", "--shard-index", "0", "--shard-count", "12"], "general"],
+  ["serialized", ["--mode", "serialized", "--shard-index", "4", "--shard-count", "9"], "serialized"],
 ]) test(`${label} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
+  const parallelWorkers = defaultServerParallelWorkers(lane);
   const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
   const receipt = path.join(directory, "args.json");
   const fakePnpm = path.join(directory, "pnpm");
