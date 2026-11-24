@@ -10,8 +10,35 @@ type Json = unknown;
 
 const HEX4 = /^[0-9a-fA-F]{4}$/;
 
-/** The RE2 form of an ECMAScript pattern, or null when it has none (a lone surrogate). */
+/**
+ * The first construct in `pattern` that RE2 refuses (lookaround, backreference,
+ * a \u or \c escape), or null. Conservative: it does not prove a pattern valid.
+ */
+export function re2Incompatibility(pattern: string): string | null {
+  for (let index = 0; index < pattern.length; index++) {
+    if (pattern[index] !== "\\") continue;
+    const next = pattern[index + 1] ?? "";
+    if (next === "u") return "\\u escape";
+    if (/[1-9]/.test(next)) return "backreference";
+    if (next === "k") return "named backreference";
+    if (next === "c") return "control escape";
+    index++;
+  }
+  if (/\(\?<?[=!]/.test(pattern)) return "lookaround";
+  return null;
+}
+
+/**
+ * The RE2 form of an ECMAScript pattern, or null when it has none (a lone
+ * surrogate, lookaround, a backreference). A schema served without such a
+ * pattern is looser for the client only; the Runner validates the original.
+ */
 export function re2PortablePattern(pattern: string): string | null {
+  const portable = escapesToRe2(pattern);
+  return portable !== null && re2Incompatibility(portable) === null ? portable : null;
+}
+
+function escapesToRe2(pattern: string): string | null {
   let output = "";
   for (let index = 0; index < pattern.length; index++) {
     const character = pattern[index]!;
