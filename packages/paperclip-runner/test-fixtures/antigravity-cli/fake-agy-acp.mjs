@@ -17,6 +17,7 @@
 //   hang-helpers   the follow-up wait never ends
 //   mode-flip      the CLI switches back to default mode right after the model is set
 //   mode-flip-idle the CLI switches back to default mode after the session opened, between turns
+//   outside-edit   the coordinator edits a file outside the workspace
 //   cautious-brief a helper brief says "Do not create debug.log"; the run is correct
 // FAKE_AGY_LOG (optional) appends every client message, one JSON per line.
 import { spawn } from "node:child_process";
@@ -74,6 +75,11 @@ async function prompt(id, params) {
   update(state.sessionId, { sessionUpdate: "session_info_update", title: "Swarm" });
   if (scenario === "refusal") { say("\n⚠ agent executor error: Error 402 Your prepayment credits are depleted. Status: RESOURCE_EXHAUSTED\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   if (scenario === "quota") { say("\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
+  if (scenario === "outside-edit") {
+    update(state.sessionId, { sessionUpdate: "tool_call", toolCallId: "call_out", name: "write_file", kind: "edit", status: "in_progress", title: "Write /etc/elsewhere.txt", locations: [{ path: "/etc/elsewhere.txt" }] });
+    if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
+    return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+  }
   if (scenario === "escape") { await tool("swarm", { action: "add", name: "writer-a", workspace: "branch", brief: "Write a.txt." }); if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   await addWriters();
   say("I have configured and launched the swarm.\n\nRun /swarm board (default shortcut alt+s) to open the live board.");

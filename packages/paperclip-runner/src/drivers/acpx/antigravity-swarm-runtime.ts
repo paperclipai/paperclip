@@ -1,6 +1,6 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { lstat, readdir } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
 import { retireAntigravityProcess } from "./antigravity-process.js";
 import {
@@ -211,6 +211,23 @@ function changedFiles(before: Map<string, string>, after: Map<string, string>): 
   return [...changed, ...removed].sort();
 }
 
+/**
+ * A visible edit, delete or move whose location is outside the task folder.
+ * Only the coordinator's calls reach the client; helper calls are confined by
+ * the CLI's auto mode and are not visible here.
+ */
+function outsideEdit(update: Json, workspace: string): string | null {
+  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return null;
+  if (!["edit", "delete", "move"].includes(String(update.kind))) return null;
+  const locations = Array.isArray(update.locations) ? update.locations.map(record) : [];
+  for (const location of locations) {
+    if (typeof location.path !== "string" || !isAbsolute(location.path)) continue;
+    const inside = relative(workspace, location.path);
+    if (inside.startsWith("..") || isAbsolute(inside)) return location.path;
+  }
+  return null;
+}
+
 function addUsage(total: Json | null, usage: unknown): Json | null {
   const value = record(usage);
   if (Object.keys(value).length === 0) return total;
@@ -371,6 +388,12 @@ export async function openAntigravitySwarmRuntime(
           `Swarm stopped: helper ${escaped} was asked to work on its own copy of the task folder, which Paperclip does not allow.`));
         return;
       }
+      const outside = outsideEdit(update, workspace);
+      if (outside) {
+        halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
+          `Swarm stopped: it tried to change ${outside}, which is outside the task folder.`));
+        return;
+      }
       const args = { ...record(update.rawInput), ...record(update.args) };
       if (update.sessionUpdate === "tool_call" && update.name === "swarm" && args.action === "add" && typeof args.name === "string") {
         helpers.set(args.name, typeof args.brief === "string" ? args.brief : "");
@@ -481,7 +504,8 @@ export async function openAntigravitySwarmRuntime(
 
   const port: AcpxRuntimePort = {
     async identity(): Promise<AcpxRuntimePortIdentity> {
-      return { mode: ANTIGRAVITY_SWARM_MODE, acpxRecordId: `antigravity-cli-${sessionId}`, backendSessionId: sessionId, agentSessionId: sessionId };
+      // The record is stable per provider session key; the CLI session id is per run and never reloaded.
+      return { mode: ANTIGRAVITY_SWARM_MODE, acpxRecordId: `antigravity-cli:${options.providerSessionKey}`, backendSessionId: sessionId, agentSessionId: sessionId };
     },
     async getStatus(): Promise<AcpxModelStatus> {
       return { ...structuredClone(status), models: { currentModelId: model, availableModelIds: [model] } };

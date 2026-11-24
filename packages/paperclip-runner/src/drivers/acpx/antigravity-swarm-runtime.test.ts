@@ -158,6 +158,18 @@ describe("Antigravity CLI swarm runtime", () => {
     await runtime.close({ reason: "done" });
   });
 
+  it("stops the swarm when a visible edit targets a file outside the task folder", async () => {
+    const run = await runTurn("outside-edit");
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE" } });
+  });
+
+  it("keeps a stable record identity while the CLI session id is per run", async () => {
+    const { options } = setup("success");
+    const runtime = await openAntigravitySwarmRuntime(options);
+    expect((await runtime.identity()).acpxRecordId).toBe("antigravity-cli:key");
+    await runtime.close({ reason: "done" });
+  });
+
   it("refuses a helper on its own workspace copy", async () => {
     const run = await runTurn("escape");
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE" } });
