@@ -121,7 +121,7 @@ export async function readDispositionRepairDurableWaitingState(
       where ${issueRelations.companyId} = ${issue.companyId}
         and ${issueRelations.relatedIssueId} = ${issue.id}
         and ${issueRelations.type} = 'blocks'
-        and ${issues.status} not in ('done', 'cancelled')
+        and ${issues.status} <> 'done'
         and ${issues.hiddenAt} is null) as "hasBlocker",
     exists (select 1 from ${issueThreadInteractions}
       where ${issueThreadInteractions.companyId} = ${issue.companyId}
@@ -161,7 +161,7 @@ export async function collectDispositionRepairSourceState(
             eq(issueRelations.companyId, issue.companyId),
             eq(issueRelations.relatedIssueId, issue.id),
             eq(issueRelations.type, "blocks"),
-            notInArray(issues.status, ["done", "cancelled"]),
+            ne(issues.status, "done"),
             sql`${issues.hiddenAt} is null`,
           ),
         ),
