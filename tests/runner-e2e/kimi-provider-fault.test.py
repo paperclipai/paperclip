@@ -22,7 +22,8 @@ BOOT = '12345678-1234-1234-1234-123456789abc'
 ROOT = {'pid': 21, 'ppid': 1, 'startTicks': '100', 'bootId': BOOT}
 PARENT = {'pid': 22, 'ppid': 21, 'startTicks': '101', 'bootId': BOOT}
 TARGET = {'pid': 23, 'ppid': 22, 'startTicks': '102', 'bootId': BOOT}
-DIST = '/tmp/paperclip-acpx-native-fixture/distribution'
+LAUNCH = '/tmp/paperclip-acpx-native-fixture/launch'
+STORE = '/tmp/paperclip-verified-native-501'
 RUNTIME = '/workspace/.paperclip-runtime/paperclip-runner'
 HOST_NODE = fault.PACK + '/node_modules/node/bin/node'
 LOADER = 'admitted guarded loader'
@@ -40,15 +41,18 @@ class IdentityTests(unittest.TestCase):
         self.config = {'root': ROOT, 'binding': {'remoteCwd': '/workspace', 'runId': 'run'}, 'runtimeEnvironmentLeaseId': 'workspace-id',
                        'runnerdSha256': 'sha256:' + fault.digest(b'runner'), 'nodeSha256': 'sha256:' + fault.digest(fault.NODE.encode()),
                        'guardLoaderSha256': 'sha256:' + fault.digest(LOADER.encode()), 'closureSha256': fault.digest(json.dumps(self.entries, separators=(',', ':')).encode()),
-                       'bootstrapTemplate': 'bootstrap ' + fault.PLACEHOLDER, 'guardTemplate': 'const digests={};'}
-        bootstrap, guard = fault.expected_sources(self.config, DIST, self.entries)
-        self.files = {DIST + '/' + fault.NODE: (fault.NODE.encode(), (1, 100)), DIST + '/' + fault.ENTRY: (fault.ENTRY.encode(), (1, 101)),
-                      DIST + '/' + fault.BOOTSTRAP: (bootstrap, (1, 102)), DIST + '/' + fault.GUARD: (guard, (1, 103)),
+                       'bootstrapTemplate': 'bootstrap ' + fault.PLACEHOLDER + ' ' + fault.LAUNCH_PLACEHOLDER, 'guardTemplate': 'const digests={};'}
+        self.dist = STORE + '/' + self.config['closureSha256'] + '/distribution'
+        bootstrap, guard = fault.expected_sources(self.config, LAUNCH, self.dist, self.entries)
+        self.paths = {fault.NODE: self.dist + '/' + fault.NODE, fault.ENTRY: self.dist + '/' + fault.ENTRY, fault.BOOTSTRAP: LAUNCH + '/' + fault.BOOTSTRAP, fault.GUARD: LAUNCH + '/' + fault.GUARD}
+        self.files = {self.paths[fault.NODE]: (fault.NODE.encode(), (1, 100)), self.paths[fault.ENTRY]: (fault.ENTRY.encode(), (1, 101)),
+                      self.paths[fault.BOOTSTRAP]: (bootstrap, (1, 102)), self.paths[fault.GUARD]: (guard, (1, 103)),
                       RUNTIME + '/bin/paperclip-runnerd': (b'runner', (1, 90)), HOST_NODE: (fault.NODE.encode(), (1, 110)),
                       fault.PACK + '/provider-assets/kimi/linux-x64/native-closure.json': (json.dumps({'entries': self.entries}, indent=2).encode(), (1, 80))}
         self.table = {21: ROOT, 22: PARENT, 23: TARGET}
         self.args = {21: [RUNTIME + '/bin/paperclip-runnerd', '--run-id', 'run', '--environment-lease-id', 'workspace-id', '--lifecycle-mode', 'per_turn', '--state-dir', RUNTIME + '/sessions/' + 'a' * 64 + '/runner'],
-                     22: [HOST_NODE, '--eval', LOADER, DIST, fault.BOOTSTRAP, '0', '0', 'commonjs', '[]', '0'], 23: ['kimi-code']}
+                     22: [HOST_NODE, '--eval', LOADER, LAUNCH, fault.BOOTSTRAP, '0', '0', 'commonjs', '[]', '0'], 23: ['kimi-code']}
+        self.links = {'/proc/22/exe': HOST_NODE, '/proc/23/exe': self.paths[fault.NODE], '/proc/24/exe': self.paths[fault.NODE]}
         self.stats = {'/proc/21/exe': (90, stat.S_IFREG), '/proc/23/exe': (100, stat.S_IFREG), '/proc/23/fd/7': (100, stat.S_IFREG),
                       '/proc/24/exe': (100, stat.S_IFREG), '/proc/24/fd/7': (100, stat.S_IFREG),
                       '/proc/22/exe': (110, stat.S_IFREG), '/proc/22/fd/10': (110, stat.S_IFREG), '/proc/22/fd/4': (2, stat.S_IFDIR), '/proc/22/fd/3': (3, stat.S_IFIFO)}
@@ -60,7 +64,7 @@ class IdentityTests(unittest.TestCase):
                    patch.object(fault, 'checked_runner', side_effect=lambda name: self.files[name]), patch.object(fault, 'checked_file', side_effect=checked_fixture_file),
                    patch.object(Path, 'read_text', return_value=BOOT), patch.object(os, 'listdir', side_effect=lambda name: [str(pid) for pid in self.table]),
                    patch.object(os, 'getpgid', return_value=21), patch.object(os, 'lstat', return_value=SimpleNamespace(st_mode=stat.S_IFDIR | 0o500, st_dev=1, st_ino=2)),
-                   patch.object(os.path, 'realpath', side_effect=lambda name: HOST_NODE if name == '/proc/22/exe' else name),
+                   patch.object(os.path, 'realpath', side_effect=lambda name: self.links.get(name, name)),
                    patch.object(os, 'readlink', return_value='/workspace'), patch.object(os, 'stat', side_effect=lambda name: SimpleNamespace(st_dev=1, st_ino=self.stats[name][0], st_mode=self.stats[name][1]))]
         for mocked in patches:
             mocked.start()
@@ -82,7 +86,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_memfd_parent_uses_the_live_descriptor_without_reopening_deleted_alias(self):
         self.args[22][0] = '/proc/self/fd/10'
-        with patch.object(os.path, 'realpath', side_effect=lambda name: '/memfd:paperclip-verified-launch (deleted)' if name == '/proc/22/exe' else name), self.parent_descriptor(True):
+        self.links['/proc/22/exe'] = '/memfd:paperclip-verified-launch (deleted)'
+        with self.parent_descriptor(True):
             receipt = fault.inspect(self.config)
         self.assertEqual(receipt['target'], TARGET)
         self.assertFalse(any('/memfd:' in str(call) for call in fault.checked_file.call_args_list))
@@ -129,17 +134,39 @@ class IdentityTests(unittest.TestCase):
 
     def test_native_main_node_guard_bootstrap_and_parent_code_are_exact(self):
         for name in [fault.NODE, fault.ENTRY, fault.GUARD, fault.BOOTSTRAP]:
-            original = self.files[DIST + '/' + name]
-            self.files[DIST + '/' + name] = (b'changed', original[1])
+            original = self.files[self.paths[name]]
+            self.files[self.paths[name]] = (b'changed', original[1])
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 fault.inspect(self.config)
-            self.files[DIST + '/' + name] = original
+            self.files[self.paths[name]] = original
         for index, value in [(2, 'foreign loader'), (5, '1'), (8, '["module"]'), (0, '/foreign/node')]:
             original = self.args[22][index]
             self.args[22][index] = value
             with self.subTest(index=index), self.assertRaises(RuntimeError):
                 fault.inspect(self.config)
             self.args[22][index] = original
+
+    def test_native_child_must_run_from_the_sealed_store_of_the_pinned_closure(self):
+        for executable in ['/tmp/paperclip-verified-native-501/' + '0' * 64 + '/distribution/' + fault.NODE,
+                           '/tmp/paperclip-acpx-native-fixture/distribution/' + fault.NODE,
+                           '/home/user/paperclip-verified-native-501/' + self.config['closureSha256'] + '/distribution/' + fault.NODE,
+                           self.dist + '/node/bin/other']:
+            with self.subTest(executable=executable), self.assertRaisesRegex(RuntimeError, 'snapshot_path'):
+                self.links['/proc/23/exe'] = executable
+                fault.inspect(self.config)
+        self.links['/proc/23/exe'] = self.paths[fault.NODE]
+        self.args[22][3] = '/tmp/paperclip-acpx-native-fixture/distribution'
+        with self.assertRaisesRegex(RuntimeError, 'snapshot_path'):
+            fault.inspect(self.config)
+
+    def test_bootstrap_naming_another_store_or_launch_is_refused(self):
+        for launch, distribution in [(LAUNCH, STORE + '/' + 'f' * 64 + '/distribution'), ('/tmp/paperclip-acpx-native-other/launch', self.dist)]:
+            bootstrap, _ = fault.expected_sources(self.config, launch, distribution, self.entries)
+            original = self.files[self.paths[fault.BOOTSTRAP]]
+            self.files[self.paths[fault.BOOTSTRAP]] = (bootstrap, original[1])
+            with self.subTest(launch=launch), self.assertRaisesRegex(RuntimeError, 'native_bootstrap_bytes'):
+                fault.inspect(self.config)
+            self.files[self.paths[fault.BOOTSTRAP]] = original
 
     def test_live_executable_and_retained_descriptors_must_match(self):
         for name in ['/proc/23/exe', '/proc/23/fd/7', '/proc/22/fd/4']:
@@ -316,7 +343,10 @@ class PidfdTests(unittest.TestCase):
         self.assertIsNotNone(node)
         base = Path(tempfile.mkdtemp(prefix='kimi-fault-calibration-', dir='/tmp'))
         snapshot = Path(tempfile.mkdtemp(prefix='paperclip-acpx-native-', dir='/tmp'))
-        distribution = snapshot / 'distribution'
+        launch = snapshot / 'launch'
+        store = Path(tempfile.mkdtemp(prefix='paperclip-verified-native-', dir='/tmp'))
+        staged = store / 'staged' / 'distribution'
+        distribution = staged
         workspace = base / 'workspace'
         runtime = workspace / '.paperclip-runtime/paperclip-runner'
         pack = base / 'pack'
@@ -335,21 +365,27 @@ class PidfdTests(unittest.TestCase):
             closure = pack / 'provider-assets/kimi/linux-x64/native-closure.json'
             closure.parent.mkdir(parents=True)
             closure.write_text(json.dumps({'entries': entries}))
+            closure_sha256 = fault.digest(json.dumps(entries, separators=(',', ':'), ensure_ascii=False).encode())
+            # Publish the store under its closure digest, as the runner does.
+            (store / 'staged').rename(store / closure_sha256)
+            distribution = store / closure_sha256 / 'distribution'
+            launch.mkdir()
             loader = 'const source=require("node:fs").readFileSync(3,"utf8");require("node:vm").runInThisContext(source);'
-            template = 'const fs=require("node:fs"),cp=require("node:child_process");const fd=fs.openSync(' + json.dumps(fault.PLACEHOLDER + '/' + fault.NODE) + ',"r");const child=cp.spawn("/proc/self/fd/7",["--require",' + json.dumps(fault.PLACEHOLDER + '/' + fault.GUARD) + ',' + json.dumps(fault.PLACEHOLDER + '/' + fault.ENTRY) + ',"acp"],{stdio:["ignore","ignore","ignore","ignore","ignore","ignore","ignore",fd]});fs.closeSync(fd);child.on("exit",()=>process.exit(0));process.on("SIGTERM",()=>child.kill("SIGTERM"));'
+            template = 'const fs=require("node:fs"),cp=require("node:child_process");const fd=fs.openSync(' + json.dumps(fault.PLACEHOLDER + '/' + fault.NODE) + ',"r");const child=cp.spawn("/proc/self/fd/7",["--require",' + json.dumps(fault.LAUNCH_PLACEHOLDER + '/' + fault.GUARD) + ',' + json.dumps(fault.PLACEHOLDER + '/' + fault.ENTRY) + ',"acp"],{stdio:["ignore","ignore","ignore","ignore","ignore","ignore","ignore",fd]});fs.closeSync(fd);child.on("exit",()=>process.exit(0));process.on("SIGTERM",()=>child.kill("SIGTERM"));'
             config = {'binding': {'remoteCwd': str(workspace), 'runId': 'fixture'}, 'runtimeEnvironmentLeaseId': 'workspace-id', 'runnerdSha256': 'sha256:' + fault.digest((runtime / 'bin/paperclip-runnerd').read_bytes()),
-                      'closureSha256': fault.digest(json.dumps(entries, separators=(',', ':'), ensure_ascii=False).encode()), 'nodeSha256': 'sha256:' + fault.digest((distribution / fault.NODE).read_bytes()),
+                      'closureSha256': closure_sha256, 'nodeSha256': 'sha256:' + fault.digest((distribution / fault.NODE).read_bytes()),
                       'guardLoaderSha256': 'sha256:' + fault.digest(loader.encode()), 'bootstrapTemplate': template, 'guardTemplate': 'const digests={};'}
-            bootstrap, guard = fault.expected_sources(config, str(distribution), entries)
-            (distribution / fault.BOOTSTRAP).write_bytes(bootstrap)
-            (distribution / fault.GUARD).write_bytes(guard)
+            bootstrap, guard = fault.expected_sources(config, str(launch), str(distribution), entries)
+            (launch / fault.BOOTSTRAP).write_bytes(bootstrap)
+            (launch / fault.GUARD).write_bytes(guard)
             script = base / 'root.cjs'
-            script.write_text('const fs=require("node:fs"),cp=require("node:child_process");const directory=fs.openSync(' + json.dumps(str(distribution)) + ',"r");const child=cp.spawn(' + json.dumps(str(host_node)) + ',["--eval",' + json.dumps(loader) + ',' + json.dumps(str(distribution)) + ',' + json.dumps(fault.BOOTSTRAP) + ',"0","0","commonjs","[]","0"],{detached:true,stdio:["ignore","ignore","ignore","pipe",directory]});fs.closeSync(directory);child.stdio[3].end(fs.readFileSync(' + json.dumps(str(distribution / fault.BOOTSTRAP)) + '));process.on("SIGTERM",()=>{if(child.exitCode!==null||child.signalCode!==null)process.exit(0);child.once("exit",()=>process.exit(0));child.kill("SIGTERM")});setInterval(()=>{},1000);')
-            for directory, _, files in os.walk(snapshot):
-                for name in files:
-                    path = Path(directory) / name
-                    path.chmod(0o500 if path == distribution / fault.NODE else 0o400)
-                Path(directory).chmod(0o500)
+            script.write_text('const fs=require("node:fs"),cp=require("node:child_process");const directory=fs.openSync(' + json.dumps(str(launch)) + ',"r");const child=cp.spawn(' + json.dumps(str(host_node)) + ',["--eval",' + json.dumps(loader) + ',' + json.dumps(str(launch)) + ',' + json.dumps(fault.BOOTSTRAP) + ',"0","0","commonjs","[]","0"],{detached:true,stdio:["ignore","ignore","ignore","pipe",directory]});fs.closeSync(directory);child.stdio[3].end(fs.readFileSync(' + json.dumps(str(launch / fault.BOOTSTRAP)) + '));process.on("SIGTERM",()=>{if(child.exitCode!==null||child.signalCode!==null)process.exit(0);child.once("exit",()=>process.exit(0));child.kill("SIGTERM")});setInterval(()=>{},1000);')
+            for sealed in (snapshot, store / closure_sha256):
+                for directory, _, files in os.walk(sealed):
+                    for name in files:
+                        path = Path(directory) / name
+                        path.chmod(0o500 if path == distribution / fault.NODE else 0o400)
+                    Path(directory).chmod(0o500)
             check_cancelled()
             root_child = subprocess.Popen([str(runtime / 'bin/paperclip-runnerd'), str(script), '--run-id', 'fixture', '--environment-lease-id', 'workspace-id', '--lifecycle-mode', 'per_turn', '--state-dir', str(runtime / 'sessions' / ('a' * 64) / 'runner')], cwd=workspace, env={'PATH': '/usr/bin:/bin'}, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             owned.append(os.pidfd_open(root_child.pid))
@@ -397,9 +433,10 @@ class PidfdTests(unittest.TestCase):
                             pass
             for fd in owned:
                 os.close(fd)
-            for directory, _, _ in os.walk(snapshot):
-                os.chmod(directory, 0o700)
-            shutil.rmtree(snapshot)
+            for sealed in (snapshot, store):
+                for directory, _, _ in os.walk(sealed):
+                    os.chmod(directory, 0o700)
+                shutil.rmtree(sealed)
             shutil.rmtree(base)
 
 

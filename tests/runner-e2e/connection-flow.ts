@@ -5,7 +5,7 @@ import { getConnectableAppDefinition } from "../../packages/shared/src/app-defin
 import { connectionCell, type ConnectionHarness, type ConnectionMode } from "./connection-cases.js";
 import { ConnectionBlock, ConnectionFailure, type ConnectionConfig, type resolveConnectionSettings } from "./connection-config.js";
 import { ConnectionApi, connectionDelay } from "./connection-target.js";
-import { createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
+import { createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, connectionVerificationFailureCodes, type ConnectionCreationFailureCode, type ConnectionEvidence } from "./connection-evidence.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { collectRunEvents } from "./run-observations.js";
 import type { MatrixExecution } from "./types.js";
@@ -56,8 +56,8 @@ async function submitConnection(input: ConnectionFlowInput, submit: () => Promis
   if (!created) throw new ConnectionFailure("connection_request_timeout");
   if (created.ok()) return;
   const payload = await created.json().catch(() => ({}));
-  const allowed = ["ai_connection_api_key_rejected", "ai_connection_verification_failed"];
-  const code = allowed.includes(payload?.details?.code) ? payload.details.code : "connection_request_rejected";
+  const allowed: readonly string[] = connectionVerificationFailureCodes;
+  const code: ConnectionCreationFailureCode = allowed.includes(payload?.details?.code) ? payload.details.code : "connection_request_rejected";
   input.evidence.creationFailure = { status: created.status(), code };
   if (code === "ai_connection_api_key_rejected") throw new ConnectionBlock("missing_credential", code);
   throw new ConnectionFailure(code);

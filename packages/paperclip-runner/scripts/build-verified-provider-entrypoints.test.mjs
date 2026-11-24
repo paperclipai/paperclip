@@ -79,5 +79,6 @@ import "./provision-pi-package.test.mjs";
 
 import "./antigravity-provisioner-layout.test.mjs";
 import "./materialize-antigravity-distribution.test.mjs";
+import "./materialize-antigravity-cli-distribution.test.mjs";
 import "./probe-antigravity-metadata.test.mjs";
 import "./patch-antigravity-runtime.test.mjs";

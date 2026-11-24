@@ -18,7 +18,7 @@ export function validateSelection(manifest, { head, hash } = {}) {
   const seen = new Set();
   for (const [group, lane] of Object.entries(manifest.lanes)) {
     assert.ok(selectableGroups.includes(group), `Unknown selection group: ${group}`);
-    assert.ok(Array.isArray(lane.shards) && lane.shards.length > 0 && lane.shards.length <= 12);
+    assert.ok(Array.isArray(lane.shards) && lane.shards.length > 0 && lane.shards.length <= 24);
     for (const shard of lane.shards) {
       assert.ok(shard && typeof shard === "object" && !Array.isArray(shard));
       let count = 0;

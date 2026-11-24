@@ -72,6 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
+import { parseRunnerGoalCommand, planSubmission, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -189,68 +190,8 @@ interface TaskChatComposerProps {
   ) => Promise<void> | void;
 }
 
-export type RunnerGoalComposerCommand =
-  | { action: "focus" }
-  | { action: "create"; objective: string }
-  | { action: "edit" }
-  | { action: "pause" }
-  | { action: "resume" }
-  | { action: "clear" };
-
-export type ParsedRunnerGoalCommand =
-  | { matched: false }
-  | { matched: true; command: RunnerGoalComposerCommand }
-  | { matched: true; error: string };
-
-function normalizeRunnerGoalCommandText(value: string): string {
-  const trimmed = value.trim();
-  // MDXEditor's link extension can reinterpret a selected action command plus
-  // its subsequently typed argument as one relative autolink. Accept only the
-  // exact whole-document shape it generates so the action still cannot fall
-  // through as a comment. Ordinary Markdown links remain ordinary comments.
-  const relativeAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\(<(\/goal(?:[ \t\u00a0].*)?)>\)$/s,
-  );
-  if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
-
-  const encodedAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\((\/goal(?:%20|%C2%A0).*)\)$/s,
-  );
-  if (encodedAutolink) {
-    try {
-      return decodeURIComponent(encodedAutolink[1]!).replaceAll("\u00a0", " ");
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed.replaceAll("\u00a0", " ");
-}
-
-export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
-  const trimmed = normalizeRunnerGoalCommandText(value);
-  if (!trimmed) return { matched: false };
-  const firstWhitespace = trimmed.search(/\s/);
-  const firstToken =
-    firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
-  if (firstToken !== "/goal") return { matched: false };
-  const remainder =
-    firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
-  if (!remainder) return { matched: true, command: { action: "focus" } };
-  const [subcommand, ...extra] = remainder.split(/\s+/);
-  if (["edit", "pause", "resume", "clear"].includes(subcommand)) {
-    if (extra.length > 0) {
-      return {
-        matched: true,
-        error: `/goal ${subcommand} does not accept extra arguments.`,
-      };
-    }
-    return {
-      matched: true,
-      command: { action: subcommand as "edit" | "pause" | "resume" | "clear" },
-    };
-  }
-  return { matched: true, command: { action: "create", objective: remainder } };
-}
+export { parsePlanCommand, parseRunnerGoalCommand } from "./composer-commands";
+export type { ParsedRunnerGoalCommand, RunnerGoalComposerCommand } from "./composer-commands";
 
 function identityInitials(label: string): string {
   const parts = label.trim().split(/\s+/).filter(Boolean);
@@ -681,6 +622,14 @@ export function TaskChatComposer({
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
+  const planCommandOption: ActionCommandOption = {
+    id: "action:plan",
+    kind: "action",
+    command: "plan",
+    name: "Plan",
+    description: "Plan before acting. Nothing changes until you accept the plan.",
+    aliases: ["plan", "planning"],
+  };
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
@@ -915,12 +864,22 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
+      // Only a composer that offers Plan mode reads /plan; elsewhere it stays text.
+      const plan = onWorkModeChange
+        ? planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length))
+        : ({ kind: "none" } as const);
+      if (plan.kind === "switch_mode" && !submittingRef.current) {
+        changeMode("planning");
+        creation.onChange("");
+        editorRef.current?.clear();
+        return;
+      }
       if (submittingRef.current || uploadPending || uploadFailed || creation.submitDisabled || (!bodyRef.current.trim() && !creation.canSubmitWithoutBody)) return;
       submittingRef.current = true;
       setSubmitting(true);
       setActionError(null);
       try {
-        await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
+        await creation.onSubmit(plan.kind === "send" ? plan.text : bodyRef.current, plan.kind === "send" ? "planning" : pendingMode, runSettings);
       } catch (error) {
         setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
@@ -940,7 +899,20 @@ export function TaskChatComposer({
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
     const submittedModeGeneration = modeChoiceGeneration.current;
-    const trimmed = submittedBody.trim();
+    // Plan mode belongs to tasks; a queued edit keeps its exact text.
+    const planCommand = queuedEdit || conversationMode || !onWorkModeChange
+      ? ({ kind: "none" } as const)
+      : planSubmission(submittedBody, attachedRefs.length > 0);
+    if (planCommand.kind === "switch_mode") {
+      changeMode("planning");
+      bodyRef.current = "";
+      if (draftKey) clearDraft(draftKey);
+      setBody("");
+      editorRef.current?.clear();
+      return;
+    }
+    const sendMode = planCommand.kind === "send" ? "planning" : pendingMode;
+    const trimmed = planCommand.kind === "send" ? planCommand.text : submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
@@ -1068,8 +1040,8 @@ export function TaskChatComposer({
         onCancelQueuedEdit?.();
         return;
       }
-      if (pendingMode !== workMode && onWorkModeChange) {
-        await onWorkModeChange(pendingMode);
+      if (sendMode !== workMode && onWorkModeChange) {
+        await onWorkModeChange(sendMode);
       }
       const retainedAfterMode = draftKey ? loadDraftSubmission(draftKey) : null;
       if (retainedAfterMode) {
@@ -1437,11 +1409,13 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission || Boolean(creation && (submitting || creation.readOnly))}
               mentions={mentions}
-              actionCommands={creation ? [] : conversationMode ? [{
+              actionCommands={conversationMode ? [{
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
-              }] : [goalCommandOption]}
+              }] : creation ? (onWorkModeChange ? [planCommandOption] : [])
+                // A queued edit keeps its exact text, so /plan cannot select Plan mode there.
+                : onWorkModeChange && !queuedEdit ? [planCommandOption, goalCommandOption] : [goalCommandOption]}
               onSubmit={() => void submit()}
               submitKey={submitKey}
               fileDropTarget="parent"

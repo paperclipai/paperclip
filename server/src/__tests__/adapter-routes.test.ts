@@ -168,12 +168,50 @@ describe("adapter routes", () => {
       expect(response.status).toBe(200);
       expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
     }
+    // A cloud environment whose platform is unknown is never offered a candidate.
     const remote = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "ssh" }) }))
       .get("/api/adapters?companyId=company-1&environmentId=remote");
     expect(remote.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
     const disabled = await request(local).get("/api/adapters?companyId=company-1");
     expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
+  });
+
+  it("offers a cloud environment the candidate only for the company's linux-x64 grant", async () => {
+    // The real resolver binds a grant to the execution target it names.
+    const grant = (platform: string, architecture: string) => (input: { companyId?: string; target?: { platform: string; architecture: string } }) => {
+      if (input.companyId !== "company-1") return undefined;
+      if (input.target && (input.target.platform !== platform || input.target.architecture !== architecture)) {
+        throw new Error("Antigravity candidate admission does not match the execution target");
+      }
+      return { agent: "antigravity", model: "exact-google-model", platform, architecture };
+    };
+    const candidates = async (target: RunnerTarget, companyId = "company-1") => {
+      const response = await request(createApp({}, { resolveRunnerTarget: async () => target }))
+        .get(`/api/adapters?companyId=${companyId}&environmentId=cloud`);
+      expect(response.status).toBe(200);
+      return response.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses;
+    };
+    const offered = [{ agent: "antigravity", model: "exact-google-model" }];
+
+    mockCandidateAdmission.mockImplementation(grant("linux", "x64"));
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
+    expect(mockCandidateAdmission).toHaveBeenLastCalledWith({ companyId: "company-1", target: { platform: "linux", architecture: "x64" } });
+    expect(await candidates({ driver: "sandbox", managedCloudImage: true })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "musl" })).toBeUndefined();
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.31" })).toBeUndefined();
+    // Another company, another platform, or no Computer gets nothing.
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64" }, "other-company")).toBeUndefined();
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "arm64" })).toBeUndefined();
+    expect(await candidates({ driver: "sandbox" })).toBeUndefined();
+    expect(await candidates({ driver: "unavailable" })).toBeUndefined();
+    // A plugin Runner-task environment cannot launch Antigravity yet.
+    expect(await candidates({ driver: "plugin", runnerTasks: true })).toBeUndefined();
+
+    // A grant for this host does not open a cloud environment.
+    mockCandidateAdmission.mockImplementation(grant("darwin", "arm64"));
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64" })).toBeUndefined();
   });
 
   it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {

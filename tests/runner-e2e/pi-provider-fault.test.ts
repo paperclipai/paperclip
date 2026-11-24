@@ -22,7 +22,7 @@ it("calibrates the exact Pi fault helper with metadata negatives and native Linu
   expect(result.error).toBeUndefined();
   expect(result.signal).toBeNull();
   expect(result.status, result.stderr).toBe(0);
-  expect(result.stderr).toContain("Ran 21 tests");
+  expect(result.stderr).toContain("Ran 22 tests");
   if (process.platform === "linux") expect(result.stderr).not.toContain("skipped");
   else expect(result.stderr).toContain("skipped=3");
   console.info(result.stderr.trim());

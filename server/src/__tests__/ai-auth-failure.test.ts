@@ -13,6 +13,34 @@ const failure = (missingBindings: unknown, reason = "secret_binding_missing") =>
 });
 
 describe("personal AI credential preflight recovery", () => {
+  it.each(["startup", "turn"])("routes a typed %s authentication failure through the persisted reconnect request", phase => {
+    const run = { errorCode: "native_session_interrupted", resultJson: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "openai", phase,
+      category: "authentication", message: "Invalid API key", retryability: "requires_action",
+    } } };
+    expect(isAiAuthenticationRepairable(run)).toBe(true);
+    expect(aiBindingForAuthRecovery("paperclip_runner", { provider: "codex" }, run))
+      .toMatchObject({ provider: "openai" });
+    expect(aiBindingForAuthRecovery("claude_local", {}, run)).toBeUndefined();
+    expect(isAiAuthenticationBlocked({ ...run, livenessState: "failed" })).toBe(false);
+    expect(classifyRunLiveness({ ...run, runStatus: "failed", issue: null, authenticationRepairRequested: true }))
+      .toMatchObject({ livenessState: "blocked", nextAction: "Complete the connection request to continue this task" });
+  });
+
+  it.each(["quota_exhausted", "permission", "rate_limit"])("does not reconnect for typed %s failures", category => {
+    expect(isAiAuthenticationRepairable({ errorCode: "native_session_interrupted", resultJson: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+      category, message: "Provider refused the request", retryability: "requires_action",
+    } } })).toBe(false);
+  });
+
+  it("does not offer model sign-in for sandbox authentication", () => {
+    expect(isAiAuthenticationRepairable({ resultJson: { providerFailure: {
+      schema: "paperclip.provider-failure.v1", provider: "sandbox", phase: "startup",
+      category: "authentication", message: "Sandbox credentials rejected", retryability: "requires_action",
+    } } })).toBe(false);
+  });
+
   it.each(["user_secret_missing", "secret_inactive"])("offers Claude setup for %s without adopting another provider", errorCode => {
     const run = failure([{ ...missingClaudeKey, errorCode }]);
     expect(isAiAuthenticationRepairable(run)).toBe(true);

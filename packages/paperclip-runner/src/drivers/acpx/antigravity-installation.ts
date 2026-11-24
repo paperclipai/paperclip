@@ -6,21 +6,14 @@ import { ANTIGRAVITY_DISTRIBUTION_PINS } from "./generated-profiles.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
+import { realRuntimeCachePath } from "./runtime-cache-path.js";
 import { QUALIFIED_ACPX_PROFILES, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 
 /** Owned cache resolution is independent of the isolated provider's HOME. */
 export function antigravityRuntimeCachePath(closure: string, platform: string, architecture: string, home = userInfo().homedir): string {
   if (!/^[a-f0-9]{64}$/.test(closure) || !Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, `${platform}-${architecture}`)
     || !isAbsolute(home) || home.includes("\0")) throw new Error("Invalid Antigravity runtime cache identity");
-  let directory = home;
-  for (const part of [".paperclip", "runtimes", "antigravity", `${platform}-${architecture}`, closure]) {
-    directory = join(directory, part);
-    try {
-      const stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Antigravity runtime cache must contain real directories");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  }
-  return directory;
+  return realRuntimeCachePath(home, "antigravity", `${platform}-${architecture}`, closure, "Antigravity runtime cache must contain real directories");
 }
 
 export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch): NativeAcpxDistributionInput {
@@ -37,7 +30,7 @@ export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = pr
     distributionRoot = antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
   }
   return { distributionRoot, manifestPath: join(distributionRoot, ".paperclip-antigravity-closure.json"), expectedClosureSha256: pin.closureSha256,
-    executable: pin.executable, fixedArguments: [...pin.args] };
+    executable: pin.executable, fixedArguments: [...pin.args], storeFamily: "antigravity" };
 }
 
 export async function verifyAntigravityInstallation(profile: QualifiedAcpxProfile, candidateAdmission?: AcpxCandidateStartupAdmission): Promise<VerifiedAcpxInstallation> {
