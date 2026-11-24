@@ -1210,8 +1210,12 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
-      const ordinaryTaskReply = (!conversation || currentConversation) &&
-        !isExternalChatPresentationContext(run.contextSnapshot) &&
+      // A task woken by an external chat message (for example a GitHub review
+      // comment) gets the same final reply as on the live completion path,
+      // which a post-result failure such as copy-back can skip.
+      const externalChatContext = isExternalChatPresentationContext(run.contextSnapshot);
+      const externalChatTaskReply = !conversation && externalChatContext;
+      const ordinaryTaskReply = (!conversation || (currentConversation && !externalChatContext)) &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
@@ -1223,9 +1227,10 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.turnTerminalState === "completed" &&
         (ordinaryTaskReply || blockedTaskReply);
       const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
-      const externalChatReply = blockedTaskReply &&
+      const externalChatBlockedReply = blockedTaskReply &&
         isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
-      if (taskReplyEligible && replyAuthorization && (blockedTaskReply || replyAuthorization === "internal_agent_write")) {
+      if (taskReplyEligible && replyAuthorization &&
+          (blockedTaskReply || externalChatTaskReply || replyAuthorization === "internal_agent_write")) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
             eq(heartbeatRunEvents.companyId, input.companyId),
@@ -1259,7 +1264,8 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(issueComments.issueId, input.issueId),
             eq(issueComments.createdByRunId, run.id),
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
-        const resolved = resolveHeartbeatRunResponse({
+        const existingComment = findHeartbeatRunCompletionComment(comments, run.resultJson);
+        const responseInput = {
           resultJson: { ...record(run.resultJson), nativeResult: result },
           nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
@@ -1267,9 +1273,20 @@ async function recoverCommittedNativeChatResponseInScope(
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
-          existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
+          existingComment,
           finalAgentMessage,
-          preferFinalResponseOverExistingComment: externalChatReply,
+        };
+        // An external-chat reply presents its final answer, as on the live
+        // path, over an earlier run comment such as a progress note. A saved
+        // copy of the text that answer resolves to, including a deleted one, is
+        // reused instead, so recovery never posts the same reply twice.
+        const preferredText = externalChatTaskReply || externalChatBlockedReply
+          ? resolveHeartbeatRunResponse({ ...responseInput, existingComment: null, preferFinalResponseOverExistingComment: true }).text
+          : null;
+        const resolved = resolveHeartbeatRunResponse({
+          ...responseInput,
+          preferFinalResponseOverExistingComment: Boolean(preferredText) &&
+            existingComment?.body.trim() !== preferredText?.trim(),
         });
         if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
           // The reply is already on the task (for example, the live path wrote

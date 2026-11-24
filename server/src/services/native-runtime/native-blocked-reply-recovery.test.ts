@@ -137,6 +137,20 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
     expect(await comments(f.issueId)).toHaveLength(1);
   });
 
+  it("reuses a channel task's blocked reply that the live path saved without recording it", async () => {
+    const f = await blockedRun({ source: "chat:slack", finalReply: true });
+    await retryCopyBack(f.runId, { skipNativeResponsePresentation: true });
+    const [saved] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: finalReply }).returning();
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: f.companyId, issueId: f.issueId });
+    expect(entry).toMatchObject({ id: f.runId });
+    await expect(work.check(entry)).resolves.toBeNull();
+    expect(await comments(f.issueId)).toEqual([saved]);
+    expect(((await run(f.runId)).resultJson as Record<string, any>).presentationDecision)
+      .toMatchObject({ commentAction: "reuse", commentId: saved.id });
+  });
+
   it("does not present a stale blocker after a later status decision or once the task moved on", async () => {
     const f = await blockedRun();
     await retryCopyBack(f.runId, { skipNativeResponsePresentation: true });
