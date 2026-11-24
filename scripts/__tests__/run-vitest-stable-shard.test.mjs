@@ -724,7 +724,6 @@ test("chat file shards form a complete, non-overlapping, duration-balanced parti
     dryRunJson(["--mode", "general", "--group", "general-chat"], { PAPERCLIP_TEST_DATABASE_URL: "" }).selectedChatSuites,
     allChatSuites,
   );
-  // Over-sharded trailing shards yield an empty list cleanly.
   const trailing = dryRunJson(
     ["--mode", "general", "--group", "general-chat", "--shard-index", String(allChatSuites.length), "--shard-count", String(allChatSuites.length + 2)],
     { PAPERCLIP_TEST_DATABASE_URL: "" },
