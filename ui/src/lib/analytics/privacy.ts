@@ -132,8 +132,11 @@ function secretValueRange(text: string, index: number): { from: number; to: numb
  * field and a preceding `user=bob` still show.
  *
  * `minValueStart` is for text that follows other text on its line (see
- * `redactReplaySecrets`): a value that began before that index is left to the
- * node it began in, and the scan resumes at that index.
+ * `redactReplaySecrets`): an unquoted value that began before that index is
+ * left to the node it began in, and the scan resumes at that index. A quoted
+ * value that began earlier and is still open keeps masking through this
+ * text up to its closing quote, so `Password: "correct **horse** battery"`
+ * masks every word while the text after the closing quote shows.
  */
 function redactSecretAssignments(text: string, minValueStart = 0): string {
   const pattern = new RegExp(ASSIGNMENT_START.source, "g");
@@ -142,8 +145,17 @@ function redactSecretAssignments(text: string, minValueStart = 0): string {
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     if (!labelNamesSecret(match[1] ?? "")) continue;
-    const range = secretValueRange(text, match.index + match[0].length);
+    const valueStart = match.index + match[0].length;
+    const range = secretValueRange(text, valueStart);
     if (range.from < minValueStart) {
+      const quoted = range.from === valueStart + 1;
+      if (quoted && range.to > minValueStart) {
+        const from = Math.max(copied, minValueStart);
+        result += text.slice(copied, from) + maskCharacters(text.slice(from, range.to));
+        copied = range.to;
+        pattern.lastIndex = Math.max(range.end, pattern.lastIndex);
+        continue;
+      }
       pattern.lastIndex = Math.max(pattern.lastIndex, minValueStart);
       continue;
     }

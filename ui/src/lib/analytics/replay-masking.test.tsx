@@ -421,6 +421,15 @@ describe("session replay text masking", () => {
       expect(recordedTextOf(work("<ul><li>Staging token: <code>blue-green-42</code></li><li>Owner: <code>ana</code></li></ul>"), "ana")).toBe("ana");
     }));
 
+    it("masks a quoted value with formatting inside it, and shows the text after its closing quote", () => withVisibleWorkContent(() => {
+      const html = work('<p>Password: "correct <strong>horse</strong> battery <em>staple</em>" and then sign in</p>');
+      expect(recordedTextOf(html, "Password")).toBe('Password: "******* ');
+      expect(recordedTextOf(html, "horse")).toBe("*****");
+      expect(recordedTextOf(html, "battery")).toBe(" ******* ");
+      expect(recordedTextOf(html, "staple")).toBe("******");
+      expect(recordedTextOf(html, "and then sign in")).toBe('" and then sign in');
+    }));
+
     it("shows the sentence after an inline assignment, and masks a later secret in it", () => withVisibleWorkContent(() => {
       const html = work("<p>Set <code>API_KEY=abc123</code> in the env file, then use password: hunter2</p>");
       expect(recordedTextOf(html, "API_KEY")).toBe("API_KEY=******");
