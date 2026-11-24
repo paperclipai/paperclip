@@ -189,6 +189,14 @@ function remoteWorkspaceRestoreFailureDetail(step: RemoteWorkspaceRestoreStep, c
   return `${step === "snapshot_download" ? "storage" : "transport"}=${label}${code ? ` code=${code}` : ""}${status ? ` status=${status}` : ""}`;
 }
 
+// A restore stage that reports a full sandbox disk, in the grammar of SANDBOX_SETUP_CAUSE.
+const RESTORE_DISK_FULL = /(?:^|; )remote_workspace_restore_failed: stage=[a-z_]{1,32}(?: [a-z_]+=[A-Za-z0-9_]{1,64}){0,16}? reason=sandbox_disk_full(?: |$)/;
+
+/** A sandbox restore refused because the sandbox disk is full, at any restore stage. */
+export function isRemoteWorkspaceRestoreDiskFull(error: unknown): boolean {
+  return error instanceof Error && RESTORE_DISK_FULL.test(error.message);
+}
+
 /** The restore failure carried by a setup error, through at most four causes. */
 export function findRemoteWorkspaceRestoreError(error: unknown): RemoteWorkspaceRestoreError | null {
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {

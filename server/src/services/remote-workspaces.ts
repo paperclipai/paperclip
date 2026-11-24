@@ -10,7 +10,7 @@ import path from "node:path";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { sandboxDiskFullFaultTarget } from "./sandbox-disk-full-fault.js";
-import { isRestoreSandboxDiskFullRefusal, retireFullReusableSandbox } from "./full-reusable-sandbox.js";
+import { retireFullReusableSandbox } from "./full-reusable-sandbox.js";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
@@ -33,7 +33,7 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./r
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
-  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
+  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, isRemoteWorkspaceRestoreDiskFull, type RemoteWorkspaceRestoreStep,
   type RemoteWorkspaceSavePhaseTiming, syncRemoteWorkspaceRecoveryDirectory,
 } from "./remote-workspace-transport.js";
 import {
@@ -496,7 +496,7 @@ export async function prepareRemoteWorkspace(input: {
         // owner, a rejected archive) repeats on retry, so it goes to the board.
         // A full disk on a reused sandbox leaves reuse, so the retry gets a new sandbox.
         let retryable = false;
-        const movedOffFullSandbox = step === "sandbox_restore" && isRestoreSandboxDiskFullRefusal(error)
+        const movedOffFullSandbox = step === "sandbox_restore" && isRemoteWorkspaceRestoreDiskFull(error)
           && await retireFullReusableSandbox(input.db, input.lease, input.runId);
         const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message) && !movedOffFullSandbox
           && !(step === "sandbox_restore" && /; remote_workspace_restore_failed: stage=restore_lock reason=restore_lock_busy$/.test(error.message));
