@@ -162,6 +162,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
@@ -174,17 +175,6 @@ function toMs(value: Date | string | null | undefined): number {
 
 function normalizedMessageText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
-}
-
-function safeResourceHref(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith("/") || value.startsWith("#")) return value;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function formatResourceBytes(value: number): string {
@@ -1441,7 +1431,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ]
             .filter(Boolean)
             .join(" · "),
-          href: safeResourceHref(href),
+          href: safeNavigableUrl(href),
           timestamp: new Date(workProduct.createdAt).toISOString(),
           workProduct,
         },
@@ -1463,7 +1453,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           resourceKind: "attachment",
           title: attachment.originalFilename ?? "Agent attachment",
           subtitle: `${attachment.contentType} · ${formatResourceBytes(attachment.byteSize)}`,
-          href: safeResourceHref(attachment.openPath ?? attachment.contentPath),
+          href: safeNavigableUrl(attachment.openPath ?? attachment.contentPath),
           timestamp: new Date(attachment.createdAt).toISOString(),
           attachment,
         },

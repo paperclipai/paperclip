@@ -68,9 +68,20 @@ Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
 to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
 own tools over Google's REST APIs, in the server process
 (`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
-and results. Every service is on `google_mcp` today. A service can move to
+and results. Gmail, Drive, Docs, Sheets, Slides and Calendar run on
+`paperclip_rest` (since 2026-11-23), so the combined connection lists all 36
+allowlisted actions for a full read and write grant. Chat, People and Search,
+which new setup does not offer, stay on `google_mcp`. A service can move to
 `paperclip_rest` only when Paperclip implements every tool on its allowlist; a
-test enforces that. On either transport, the same grant scope checks, approvals,
+test enforces that. Actions of a service on `paperclip_rest` are Paperclip's
+own definitions. Agents receive them at once, also for a connection saved
+before the switch, and the next catalog refresh saves them without holding
+any for review. That refresh also clears the review hold of held actions,
+without enabling them: actions turned Off stay Off and Ask first settings
+stay, also for a held action. Only the two Gmail actions the connection never
+had get the default for new actions. The setting applies only to the combined `google-workspace`
+connection; saved individual product connections (for example the Gmail app)
+still call Google's MCP servers directly. On either transport, the same grant scope checks, approvals,
 audit, token refresh and reconnection, prompt-injection screening, cancellation
 and experimental-feature gate apply. On `paperclip_rest`, discovery and health
 checks prove the token with one cheap REST read per service that the granted
@@ -88,6 +99,44 @@ for what it covers and what it does not.
 The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
+
+## Who can use Paperclip's Google sign-in
+
+Paperclip's own Google sign-in ("Connect with Paperclip") is available only on
+Paperclip Cloud workspaces. Google's restricted-scope verification and security
+assessment cover Paperclip's infrastructure, so Paperclip does not give
+restricted-scope Google tokens to servers it does not run.
+
+A self-hosted Paperclip connects Google with its own Google OAuth client (the
+"Use your own Google OAuth app" method). See
+[Self-hosted instances: use your own Google client](#self-hosted-instances-use-your-own-google-client).
+
+The app decides Cloud or self-hosted with `isCloudManagedInstance()`
+(`server/src/services/cloud-instance.ts`), the same check every other Cloud
+behavior uses, through `paperclipGoogleSignInAvailable()`
+(`server/src/services/google-sign-in-availability.ts`). The board UI uses the
+health response's `cloud` block (`useCloudInstance`), which the server fills
+from the same check. On a self-hosted instance:
+
+- The gallery and setup validation leave out every Paperclip-managed Google
+  method (`appDefinitionForDeployment` in
+  `packages/shared/src/google-sign-in-deployment.ts`). Setup shows only the
+  customer-owned Google client, with a short explanation and a link to
+  Google's client setup guide. It never offers instance enrollment for Google.
+- Starting a Paperclip-managed Google authorization fails with
+  `google_sign_in_cloud_only` before any call to Paperclip Cloud.
+- A broker refusal with `PROVIDER_CLOUD_ONLY` (for example a broker that
+  sees the instance as self-hosted) maps to the same message on start.
+
+Google connections that a self-hosted instance already made through
+Paperclip keep refreshing until a sunset date the owner sets on the broker.
+After it, a refresh fails with `oauth_reauthorization_required` and reason
+`google_sign_in_cloud_only`, the grant is marked for reconnection, and the
+message tells the user to reconnect with their own Google OAuth client.
+Removing the connection still works. Cloud workspaces are not affected.
+
+The app works with brokers from before and after this change: an older broker
+never refuses, and the app's own check already hides and refuses the method.
 
 ## Combined profile deployment and verification
 
@@ -302,9 +351,63 @@ distinct tokens sent:
 | Outcomes | `result` | Message |
 | --- | --- | --- |
 | Every token `revoked` | `ended` | Access was ended at Google |
-| Any other code (failure, not known, unavailable, error) | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
+| Any retryable code (`provider_revocation_failed`, `revocation_in_progress`, `broker_unavailable`, `broker_error`, `unexpected_error`) and the token was kept for a retry | `retrying` | Google has not confirmed yet; Paperclip keeps trying automatically. No link, no action. |
+| Any other code (`binding_not_known`, `provider_revocation_disabled`, `revocation_not_available`, `credential_unavailable`), or a retryable code whose token could not be kept | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
 | Only `other_connections_remain` | `other_connections_remain` | Other connections keep access |
 | At least one `revoked`, the rest `other_connections_remain` | `ended_unconfirmed` | Access was ended; check Google if more than one account was connected; link to the same page |
+
+### Pending revocation (retry until Google answers)
+
+Owner decision, 2026-11-23: when access must end and Google cannot be reached
+or does not confirm, the app keeps the refresh token and retries. Paperclip
+Cloud still stores no provider token.
+
+- Before the broker call, the app copies the sent token version's encrypted
+  material (the same `local_encrypted` ciphertext as the connection secret) into
+  `google_pending_revocations`, keyed by company and the token's SHA-256 (one
+  row per token in a company).
+  The row is not a company secret: it is not listed, cannot be bound to an agent
+  or environment, and no route reads it. `company_id` has no foreign key, so the
+  row outlives a deleted company. The first `next_attempt_at` is 2 minutes out,
+  so a restart during the call is retried by the worker.
+- After the call: a final outcome (`revoked`, `other_connections_remain`,
+  `binding_not_known`, `provider_revocation_disabled`,
+  `revocation_not_available`) deletes the row. A retryable outcome keeps it and
+  the result is `retrying`. If a live grant or connection still selects the
+  same token after the conditional delete, the row is deleted. A sign-in during
+  the call that writes a new token keeps the row: the broker's last-binding rule
+  answers `other_connections_remain` for the old token while the new sign-in is
+  live. Cleanup for a removed instance moves an existing row to
+  `instance_removed`.
+- The `google-pending-revocation` delivery queue drains due rows. Each attempt
+  takes a 2-minute lease on the row, then calls the broker with a 15-second
+  timeout. Backoff is 1, 2, 4 ... minutes, capped at 6 hours. A row stops
+  without a call when a company secret holds the same token and a live grant
+  or connection uses it (for example, the user signed in again and Google
+  returned the same token). A source secret that a restart left behind on a
+  revoked grant does not count. A row queued for a removed instance skips this
+  check: no connection may use the token then. After 30 days
+  the row is deleted without a call (`gave_up`). Google already expires a
+  refresh token unused for six months, and only the broker can refresh this one,
+  so the 30-day hard stop limits how long Paperclip holds a token nobody uses.
+- When a retry ends, the connection gets a `connection.google_access_retry`
+  audit event (`reasonCode` `ended`, `other_connections_remain`, `not_ended` or
+  `gave_up`) and an activity entry `tool_connection.google_access_ended` or
+  `tool_connection.google_access_not_ended`. A row whose company was deleted
+  writes only a server log line.
+- Company deletion queues every managed Google refresh token of the company in
+  the delete transaction (`reason = company_deleted`), before the secrets go.
+- When an instance admin's Cloud connection status check gets a signed answer
+  that the instance is `removed` (a `401` alone does not count), the app, in
+  in one transaction for all companies (so the work is saved before any token
+  is dropped),
+  queues every managed Google refresh token (`reason = instance_removed`), then
+  deletes each connection secret. Those connections need a reconnect after a new
+  enrollment. The broker accepts a Google revoke from a removed instance after
+  the November 23 broker release; an older broker answers `403
+  INSTANCE_SUSPENDED`, which the app retries until the hard stop.
+- The worker does no work and holds no deadline when the table is empty, and
+  nothing here runs on turn start or on a tool call.
 
 The last row is the sequence the broker returns for two tokens of one Google
 grant sent one at a time, but two different Google accounts can return it too.
@@ -330,7 +433,9 @@ whose provider, profile, or exact scope set does not match its closed registry.
 
 ## Instance configuration
 
-All Paperclip-managed Google methods use the existing enrolled-instance keys:
+All Paperclip-managed Google methods use the existing enrolled-instance keys.
+Only Paperclip Cloud workspaces use them for Google; see
+[Who can use Paperclip's Google sign-in](#who-can-use-paperclips-google-sign-in).
 
 ```dotenv
 PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=https://my.paperclip.app
@@ -346,14 +451,12 @@ OAuth client ID and secret and stores them through the normal instance-vault
 path.
 
 Cloud-hosted stacks receive these values through the existing per-stack secret
-delivery path. A self-hosted instance creates its keys during enrollment and
-stores them with owner-only permissions in the instance's ignored secret
-directory. The setup page supplies its authenticated same-origin HTTPS address
-to enrollment, so a normal Tailscale-hosted self-hoster does not need to edit
-`config.json` or set `PAPERCLIP_PUBLIC_URL`; the enrolled origin becomes the
-durable callback binding. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
-Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
-reconnect legacy grants before their old access tokens expire.
+delivery path. A self-hosted instance does not enroll with Paperclip Cloud
+for Google: it uses its own Google OAuth client (see
+[Self-hosted instances: use your own Google client](#self-hosted-instances-use-your-own-google-client)).
+Enrollment of a self-hosted instance still serves other Paperclip-managed
+providers, such as GitHub and Asana. The former `PAPERCLIP_ID_CONNECTOR_*`
+values use an incompatible Paperclip ID protocol and are not read aliases.
 
 The gallery requests the broker capability document with a short cache. A
 Paperclip-managed method is omitted unless its exact profile is enabled at the
@@ -364,6 +467,24 @@ collapsing the nine cards into one app.
 See [Gmail connection](./GMAIL.md) for the detailed enrollment, signing,
 encryption, environment-isolation, and security review runbook inherited by all
 profiles.
+
+## Self-hosted instances: use your own Google client
+
+1. In the Google Cloud console, create or choose a project and enable the APIs
+   for the services you want (Gmail, Drive, Docs, Sheets, Slides, Calendar).
+2. Configure the OAuth consent screen. Add the scopes for the services you
+   will select. Paperclip asks only for the services you choose.
+3. Create an OAuth client of type "Web application". Add Paperclip's callback
+   URL as an authorized redirect URI. The setup screen shows the exact URL to
+   copy.
+4. In Paperclip, open **Apps**, choose **Google Workspace**, and enter the
+   client ID and client secret. Paperclip stores them in the instance vault.
+5. Choose the services and sign in with Google.
+
+Google's guide:
+[Configure Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers).
+An unverified Google app shows a warning screen and has a user cap; only you
+can decide whether to submit your own app for Google's verification.
 
 ## Safety boundary
 

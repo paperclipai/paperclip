@@ -12,6 +12,7 @@ import { unionAll } from "drizzle-orm/pg-core";
 import { EXECUTION_RECONCILIATION_CAUSES, HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
+import { isProviderQuotaActionRequired } from "./provider-quota-reset.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
@@ -421,6 +422,8 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "failed", canRetry: false,
       retryWait: { reason: "cleanup_quarantined", message: NATIVE_CLEANUP_SETTLING_MESSAGE } };
   }
+  if (run.status === "failed" && isProviderQuotaActionRequired(run, new Date(now)))
+    return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "provider_billing", canRetry: true };
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
 }
 

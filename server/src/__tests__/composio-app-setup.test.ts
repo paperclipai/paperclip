@@ -11,6 +11,13 @@ import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { aggregatorAppTelemetrySlug } from "../services/connector-telemetry.js";
+
+const track = vi.fn();
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: () => ({ track, isRegisteredEventName: () => true, hashPrivateRef: (value: string) => value, trackDynamic: vi.fn() }),
+}));
+const appEvents = () => track.mock.calls.filter(([name]) => String(name).startsWith("connection.app_"));
 
 describe("Composio app authorization evidence", () => {
   it("completes app setup without an agent selection", () => {
@@ -321,6 +328,51 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.operations).toEqual(["add"]);
     expect(await db.select().from(issues).where(eq(issues.companyId, f.company.id))).toHaveLength(0);
     expect((await f.access.getEffectiveProfilesForAgent(f.company.id, f.agent.id)).allowedTools).toEqual([]);
+  });
+  it("reports each user app request and emits app_linked only when an app becomes connected", async () => {
+    const f = await fixture();
+    const app = aggregatorAppTelemetrySlug("composio", "circleback_mcp");
+    expect(app).not.toBe("other");
+    track.mockClear();
+    await f.access.setupComposioApp(f.connection.id, "circleback_mcp", { action: "start" }, f.actor);
+    expect(appEvents()).toEqual([["connection.app_requested", { provider: "composio", app, origin: "user", outcome: "needs_auth" }]]);
+    track.mockClear();
+    await f.access.refreshComposioApps(f.connection.id, ["circleback_mcp"], f.actor);
+    expect(appEvents()).toEqual([]);
+    f.activate();
+    await f.access.refreshComposioApps(f.connection.id, ["circleback_mcp"], f.actor);
+    await f.access.refreshComposioApps(f.connection.id, ["circleback_mcp"], f.actor);
+    await f.access.setupComposioApp(f.connection.id, "circleback_mcp", { action: "complete" }, f.actor);
+    expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app }]]);
+    track.mockClear();
+    f.disconnect();
+    await f.access.refreshComposioApps(f.connection.id, ["circleback_mcp"], f.actor);
+    f.activate();
+    await f.access.refreshComposioApps(f.connection.id, ["circleback_mcp"], f.actor);
+    expect(appEvents()).toEqual([]);
+    expect(JSON.stringify(track.mock.calls)).not.toContain("never-store-this-token");
+  });
+  it("keeps app_linked for apps saved before a later app in the same check fails", async () => {
+    const f = await fixture();
+    f.activate();
+    f.failToolkit("notion");
+    track.mockClear();
+    await expect(f.access.refreshComposioApps(f.connection.id, ["circleback_mcp", "notion"], f.actor)).rejects.toThrow();
+    expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp") }]]);
+  });
+  it("emits app_linked once when the same app is named twice in one check", async () => {
+    const f = await fixture();
+    f.activate();
+    track.mockClear();
+    await f.access.refreshAggregatorApps(f.connection.id, ["circleback_mcp", "circleback_mcp"], f.actor);
+    expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp") }]]);
+  });
+  it("reports a failed app request when Composio does not confirm the new account", async () => {
+    const f = await fixture();
+    f.setMutationStatus(500);
+    track.mockClear();
+    await expect(f.access.manageComposioAppAccount(f.connection.id, "circleback_mcp", { action: "add" }, f.actor)).rejects.toThrow();
+    expect(appEvents()).toEqual([["connection.app_requested", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp"), origin: "user", outcome: "failed" }]]);
   });
   it("retains previous observations when a list result is incomplete or fails", async () => {
     const f = await fixture(); f.activate();

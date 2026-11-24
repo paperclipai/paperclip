@@ -316,6 +316,7 @@ describe("AWS connector with minted credentials", () => {
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     expect(row!.healthMessage ?? JSON.stringify(health)).toContain("AWS refused this connection's role");
     expect(row!.healthMessage ?? "").not.toContain("123456789012");
+    expect(health).toMatchObject({ status: 422, details: { code: "aws_role_access_denied" } });
 
     // The instance's address changes: Paperclip stops with a clear message instead of a role refusal from AWS.
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://renamed.paperclip.app");

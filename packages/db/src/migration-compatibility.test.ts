@@ -284,7 +284,7 @@ describe("checkNewMigrationCompatibility", () => {
     expect(error).toContain("CREATE INDEX CONCURRENTLY");
     expect(error).toContain("expand migration now and a contract migration in a later release");
     expect(error).toContain("-- paperclip:migration-compat online_compatible: <why");
-    expect(error).toContain("-- paperclip:migration-compat requires_staging: <what");
+    expect(error).toContain("-- paperclip:migration-compat requires_staging: <why this cannot be split and who accepts the maintenance deploy>");
     expect(error).toContain("doc/DATABASE.md");
   });
 
@@ -320,10 +320,37 @@ describe("checkNewMigrationCompatibility", () => {
       .toEqual([expect.stringContaining("0505_again.sql")]);
   });
 
-  it("does not fail requires_staging, and prints a notice instead", () => {
-    const result = checkNewMigrationCompatibility([staged]);
+  it("fails a requires_staging migration without an override and tells the author what to do", () => {
+    const result = checkNewMigrationCompatibility([additive, staged]);
+    expect(result.passed).toBe(false);
+    expect(result.notices).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    const [error] = result.errors;
+    expect(error).toContain("0502_staged.sql: requires_staging");
+    expect(error).toContain("drop_column (statement 1)");
+    expect(error).toContain("maintenance deploy");
+    expect(error).toContain("backward-compatible expand and contract migrations");
+    expect(error).toContain("-- paperclip:migration-compat requires_staging: <why");
+    expect(error).toContain("doc/DATABASE.md");
+  });
+
+  it("lists the lock hazards of a requires_staging migration alongside its breaking changes", () => {
+    const mixed = { fileName: "0506_mixed.sql", sql: `DROP INDEX "issues_a_idx";${BP}UPDATE "issues" SET a = 'x';${BP}DELETE FROM "issues" WHERE a IS NULL;` };
+    const [error] = checkNewMigrationCompatibility([mixed]).errors;
+    expect(error).toContain("delete_rows (statement 3)");
+    expect(error).toContain("lock_hazard_data_backfill (statement 2)");
+  });
+
+  it("passes a requires_staging migration that carries a justified override, with a notice", () => {
+    const result = checkNewMigrationCompatibility([{ ...staged, sql: `-- paperclip:migration-compat requires_staging: the column rename cannot be split and ops accepts a maintenance deploy\n${staged.sql}` }]);
     expect(result).toMatchObject({ passed: true, errors: [] });
-    expect(result.notices).toEqual([expect.stringMatching(/0502_staged\.sql: requires_staging[\s\S]*drop_column \(statement 1\)[\s\S]*does not fail the check yet/)]);
+    expect(result.notices).toEqual([expect.stringMatching(/0502_staged\.sql: requires_staging by override, so it ships with a maintenance deploy: the column rename/)]);
+  });
+
+  it("fails a requires_staging override without a justification", () => {
+    const result = checkNewMigrationCompatibility([{ ...staged, sql: `-- paperclip:migration-compat requires_staging:\n${staged.sql}` }]);
+    expect(result.passed).toBe(false);
+    expect(result.errors).toEqual([expect.stringMatching(/0502_staged\.sql: .*needs a justification/)]);
   });
 });
 

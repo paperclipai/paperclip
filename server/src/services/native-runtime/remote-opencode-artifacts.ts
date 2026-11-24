@@ -43,7 +43,7 @@ const copyQualified=(source,target,expected,limit)=>{
   return total;
  }finally{fs.closeSync(input);if(output!==undefined)fs.closeSync(output)}
 };
-const verify=(root)=>{checkDir(root);let total=0;for(const e of x.entries){let d=root;const parts=e.path.split('/');for(const part of parts.slice(0,-1)){d=p.join(d,part);checkDir(d)}const f=p.join(root,e.path),s=fs.lstatSync(f);if(s.isSymbolicLink()||!s.isFile()||s.uid!==x.uid||(s.mode&0o022)||(total+=s.size)>512*1024*1024)bad();hash(f,e.sha256);if(e.name!=='opencodeProxy'){const fd=fs.openSync(f,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),b=Buffer.alloc(4);try{if(fs.readSync(fd,b,0,4,0)!==4||b.toString('hex')!=='7f454c46')bad()}finally{fs.closeSync(fd)}}}};
+const verify=(root)=>{checkDir(root);let total=0;for(const e of x.entries){let d=root;const parts=e.path.split('/');for(const part of parts.slice(0,-1)){d=p.join(d,part);checkDir(d)}const f=p.join(root,e.path),s=fs.lstatSync(f);if(s.isSymbolicLink()||!s.isFile()||s.uid!==x.uid||(s.mode&0o022)||(total+=s.size)>512*1024*1024)bad();hash(f,e.sha256);if(e.name!=='opencodeProxy'){const fd=fs.openSync(f,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),b=Buffer.alloc(8);try{if(fs.readSync(fd,b,0,8,0)!==8)bad();if(x.target.platform==='darwin'){const cpu=x.target.architecture==='arm64'?0x0100000c:x.target.architecture==='x64'?0x01000007:0;if(b.readUInt32LE(0)!==0xfeedfacf||!cpu||b.readUInt32LE(4)!==cpu)bad()}else if(x.target.platform!=='linux'||b.subarray(0,4).toString('hex')!=='7f454c46')bad()}finally{fs.closeSync(fd)}}}};
 if(x.mode==='inspect'){try{verify(x.root);process.stdout.write('ready')}catch(e){if(e.code!=='ENOENT')throw e}process.exit(0)}
 if(x.mode==='publish'){verify(x.pending);try{fs.renameSync(x.pending,x.root)}catch(e){if(e.code!=='EEXIST'&&e.code!=='ENOTEMPTY')throw e;verify(x.root);fs.rmSync(x.pending,{recursive:true})}verify(x.root);process.exit(0)}
 try{fs.mkdirSync(x.pending,{mode:0o700})}catch(e){if(e.code!=='EEXIST')throw e}checkDir(x.pending);
@@ -127,6 +127,7 @@ export async function prepareRemoteOpenCodeArtifacts(input: {
         pending,
         digest: input.manifest.digest.slice(7),
         entries,
+        target: input.manifest.payload.target,
         source: input.restored ? null : input.sourceRoot,
         mode,
       }),

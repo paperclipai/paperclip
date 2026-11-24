@@ -12,7 +12,7 @@ export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trus
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
-import { bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
+import { bindAcpxCandidateAdmission, isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveClaudeEffort, admittedClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { resolveGrokEffort, admittedGrokEffort } from "../drivers/acpx/grok-effort.js";
@@ -88,6 +88,7 @@ import {
   type RunnerProcessHandle,
   type RunnerProcessConnection,
   type DurablePrpControlPlaneOptions,
+  runAttachToolCatalogFits,
 } from "../control-plane/durable-prp-control-plane.js";
 import {
   type QualifiedAcpxAgent,
@@ -2610,6 +2611,10 @@ function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
 
+function controllerCommandDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(durableRecoveryInternals.controllerJson(value)).digest("hex")}`;
+}
+
 function approvedRunnerArtifact(runnerBinaryPath: string): {
   version: string;
   digest: string;
@@ -2823,7 +2828,7 @@ function completedMaintenanceTerminalReceipt(
   };
   if (
     record(state.runner.processedCommandFingerprints)[pending.commandId] !==
-    commandDigest(wire).slice("sha256:".length)
+    controllerCommandDigest(wire).slice("sha256:".length)
   )
     return null;
   if (command.status === "pending") {
@@ -2861,13 +2866,13 @@ function completedMaintenanceTerminalReplayMatches(
     after.runner.pendingTerminalDelivery == null &&
     after.runner.pendingProviderCleanup == null &&
     after.providerFingerprint === before.providerFingerprint &&
-    commandDigest(after.runner.processedCommands) ===
-      commandDigest(before.runner.processedCommands) &&
-    commandDigest(after.runner.processedCommandFingerprints) ===
-      commandDigest(before.runner.processedCommandFingerprints) &&
+    controllerCommandDigest(after.runner.processedCommands) ===
+      controllerCommandDigest(before.runner.processedCommands) &&
+    controllerCommandDigest(after.runner.processedCommandFingerprints) ===
+      controllerCommandDigest(before.runner.processedCommandFingerprints) &&
     after.runner.lastControllerCommandSeq ===
       before.runner.lastControllerCommandSeq &&
-    commandDigest(after.control.commands) === commandDigest(expectedCommands)
+    controllerCommandDigest(after.control.commands) === controllerCommandDigest(expectedCommands)
   );
 }
 
@@ -3487,8 +3492,8 @@ async function settleRetainedRunnerdSessionOwned(
         settled.runner.pendingTerminalDelivery != null ||
         commandDigest(settled.runner.pendingProviderCleanup) !==
           commandDigest(pendingTerminal) ||
-        commandDigest(settled.control.commands) !==
-          commandDigest(before.control.commands) ||
+        controllerCommandDigest(settled.control.commands) !==
+          controllerCommandDigest(before.control.commands) ||
         epochProviderPids.size !== 0 ||
         ![...pids].every(maintenanceProcessAbsent)
       )
@@ -3726,7 +3731,7 @@ function acpxRunnerLaunchProfile(
     `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   let candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   if (options.acpxCandidateAdmission) {
-    if (!identity || options.acpxCandidateAdmission.agent === "antigravity" && options.runnerFilesystemRoot) throw new Error("ACPX candidate requires an actual authorized startup identity");
+    if (!identity) throw new Error("ACPX candidate requires an actual authorized startup identity");
     candidateAdmission = bindAcpxCandidateAdmission(options.acpxCandidateAdmission, identity);
   }
   if (!options.runnerFilesystemRoot) {
@@ -3862,7 +3867,7 @@ function authorizedToolSet(
   return {
     schema: "paperclip.runner.authorized-tools.v1",
     schemaVersion: 1,
-    catalogDigest: commandDigest(operations),
+    catalogDigest: controllerCommandDigest(operations),
     operations,
   };
 }
@@ -3881,12 +3886,18 @@ export function authorizedToolSetForProvider(
 /** Include the completion tools that the Codex driver adds at session startup. */
 export function runnerCodexDynamicToolsFit(
   tools: readonly Readonly<Record<string, unknown>>[],
+  reservedRunAttachBytes = 0,
 ): boolean {
   const supplied = [...tools, ...codexSemanticToolSpecs()];
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
-  return supplied.length <= 256 &&
-    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+  if (supplied.length > 256) return false;
+  try {
+    const catalog = authorizedToolSet(supplied);
+    return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog, reservedRunAttachBytes);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -4398,12 +4409,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
       this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
       if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
-        || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
+      // A local grant names this host. A remote grant names the cloud pack's
+      // only Antigravity target, linux-x64; the remote Runner checks that grant
+      // again against its own host before it starts the provider.
+      const remote = options.runnerFilesystemRoot !== undefined;
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx"
+        || (remote ? admitted.platform !== "linux" || admitted.architecture !== "x64"
+          : !isAntigravityNativeTarget(process.platform, process.arch) || admitted.platform !== process.platform || admitted.architecture !== process.arch
+            || options.prepareLaunch || options.runnerProcessLauncher)
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId
         )) {
-        throw new Error("ACPX candidate admission supports only a fresh local isolated per-turn execution");
+        throw new Error("ACPX candidate admission supports only a fresh isolated per-turn execution on its admitted platform");
       }
     }
     if (options.acpxCandidateAdmission?.agent === "antigravity" && options.resumeProviderSession) {
@@ -5165,7 +5182,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
+      previous === undefined ? undefined : {contextReused:current === undefined || controllerCommandDigest(current) === controllerCommandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
   #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
@@ -7258,7 +7275,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? core.getCommand(warmRecovery.commandId)?.payload.provider
           : exactAuthority ? record(controlPlaneState!.runAttachTemplate).provider : undefined;
         if ((exactAuthority || warmRecovery !== null)
-          && (recordedProvider === undefined || commandDigest(recordedProvider) !== commandDigest(saved.prepared.provider))) {
+          && (recordedProvider === undefined || controllerCommandDigest(recordedProvider) !== controllerCommandDigest(saved.prepared.provider))) {
           throw new Error("runner_prepared_launch_recovery_changed");
         }
         template.provider = saved.prepared.provider;
@@ -7324,7 +7341,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
       if (sourceAttachmentTarget) {
         await this.options.onStagedRunAttachment?.(core, { sourceIdentity: desiredIdentity,
-          targetIdentity: sourceAttachmentTarget, templateDigest: commandDigest(runAttachTemplate) });
+          targetIdentity: sourceAttachmentTarget, templateDigest: controllerCommandDigest(runAttachTemplate) });
         core.stageRunAttachment(sourceAttachmentTarget, runAttachTemplate);
       } else {
         core.persistRunAttachTemplate(runAttachTemplate);
@@ -8262,8 +8279,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (existing) {
       if (
         existing.type !== type ||
-        durableRecoveryInternals.canonicalJson(existing.payload) !==
-          durableRecoveryInternals.canonicalJson(payload)
+        durableRecoveryInternals.controllerJson(existing.payload) !==
+          durableRecoveryInternals.controllerJson(payload)
       ) {
         throw new Error(
           `PRP steering correlation ${correlationId} was reused with different content`,

@@ -22,6 +22,8 @@ export {
   trackConnectionCreated,
   trackConnectionUpdated,
   trackConnectionInvoked,
+  trackConnectionAppLinked,
+  trackConnectionAppRequested,
   trackServerStarted,
   trackModelConnected,
   trackTaskCreated,
