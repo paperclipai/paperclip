@@ -5,6 +5,9 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EntityRow } from "../components/EntityRow";
+import { NavigationPinButton } from "../components/NavigationPinButton";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
+import { projectPinKey, usePinnedNavigation } from "../hooks/usePinnedNavigation";
 import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
@@ -69,6 +72,8 @@ function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir:
 
 export function Projects() {
   const { selectedCompanyId } = useCompany();
+  const workspace = useCoordinatorWorkspaceEnabled();
+  const pins = usePinnedNavigation(workspace.enabled && workspace.loaded ? workspace.userId : null);
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
@@ -143,6 +148,8 @@ export function Projects() {
       <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={sortField} sortDir={sortDir}
         onSortChange={(field, direction) => { setSortField(field); setSortDir(direction); }} onNewProject={openNewProject} />
 
+      {pins.error && <p role="alert" className="text-sm text-destructive">{pins.error}</p>}
+
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
@@ -186,10 +193,9 @@ export function Projects() {
                         key={project.id}
                         leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
                         title={project.name}
-                        subtitle={project.description ?? undefined}
-                        reserveSubtitleSpace
+                        subtitle={project.description?.trim() || undefined}
                         to={projectUrl(project)}
-                        className={state === "left" ? "group text-foreground/55" : "group"}
+                        className={state === "left" ? "group min-h-14 text-foreground/55" : "group min-h-14"}
                         trailing={
                           <div className="flex items-center gap-3">
                             {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
@@ -210,36 +216,48 @@ export function Projects() {
                               </span>
                             )}
                             <StatusBadge status={project.status} />
-                            <MembershipAction
-                              state={state}
-                              pending={joinLeavePending}
-                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-                              resourceName={project.name}
-                              onJoin={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "joined",
-                              })}
-                              onLeave={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "left",
-                              })}
-                            />
-                            <StarToggle
-                              size="row"
-                              starred={starred}
-                              pending={starPending}
-                              resourceName={project.name}
-                              onToggle={(next) => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                starred: next,
-                              })}
-                            />
+                            {pins.canPin && (
+                              <NavigationPinButton
+                                pinKey={projectPinKey(project)}
+                                label={project.name}
+                                pins={pins}
+                                className="size-6 shrink-0 hover:bg-accent"
+                              />
+                            )}
+                            {workspace.loaded && !workspace.enabled && (
+                              <>
+                                <MembershipAction
+                                  state={state}
+                                  pending={joinLeavePending}
+                                  pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                                  resourceName={project.name}
+                                  onJoin={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "joined",
+                                  })}
+                                  onLeave={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "left",
+                                  })}
+                                />
+                                <StarToggle
+                                  size="row"
+                                  starred={starred}
+                                  pending={starPending}
+                                  resourceName={project.name}
+                                  onToggle={(next) => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    starred: next,
+                                  })}
+                                />
+                              </>
+                            )}
                           </div>
                         }
                       />
