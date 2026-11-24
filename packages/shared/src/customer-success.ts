@@ -65,10 +65,28 @@ export const INSPECTION_RESOURCES = [
   "threads",
 ] as const;
 export type InspectionResource = (typeof INSPECTION_RESOURCES)[number];
+export const INSPECTION_ORDERS = ["newest", "oldest"] as const;
+export type InspectionOrder = (typeof INSPECTION_ORDERS)[number];
+export const INSPECTION_VIEWS = ["summary"] as const;
+export type InspectionView = (typeof INSPECTION_VIEWS)[number];
+/** The tenant path for queries that use only the original (version 1) features. */
+export const INSPECTION_READ_PATH = "/read";
+/**
+ * The tenant path for queries that use `count`, `order` or `view`. A tenant
+ * that predates them answers 404 here, so Cloud fails closed with
+ * `tenant_inspection_version_unsupported` instead of misreading the query.
+ */
+export const INSPECTION_EXTENDED_READ_PATH = "/read-v2";
+export interface InspectionCount {
+  total: number;
+  /** Counts grouped by the resource's `status` column, or null when it has none. */
+  byStatus: Record<string, number> | null;
+}
 export interface InspectionQuery {
   operation:
     | "list"
     | "get"
+    | "count"
     | "instructions.file"
     | "skills.file"
     | "runs.log"
@@ -85,6 +103,10 @@ export interface InspectionQuery {
   limit?: number;
   offset?: number;
   range?: { start: number; end: number };
+  /** `list` only: order by creation time instead of by id. */
+  order?: InspectionOrder;
+  /** `list`/`get` on `runs` only: leave out the large JSON columns. */
+  view?: InspectionView;
   context?: {
     projectId?: string;
     workspaceId?: string;
@@ -129,6 +151,11 @@ export function canonicalJson(value: unknown): string {
   }
   throw new Error("Invalid JSON value");
 }
+export function inspectionReadPath(query: InspectionQuery): string {
+  return query.operation === "count" || query.order !== undefined || query.view !== undefined
+    ? INSPECTION_EXTENDED_READ_PATH
+    : INSPECTION_READ_PATH;
+}
 export function parseInspectionQuery(value: unknown): InspectionQuery {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Invalid inspection query");
@@ -144,6 +171,8 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
     "limit",
     "offset",
     "range",
+    "order",
+    "view",
     "context",
   ]);
   if (Object.keys(q).some((k) => !allowed.has(k)))
@@ -152,6 +181,7 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
     ![
       "list",
       "get",
+      "count",
       "instructions.file",
       "skills.file",
       "runs.log",
@@ -169,11 +199,21 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
   if (q.resource !== undefined && !INSPECTION_RESOURCES.includes(q.resource))
     throw new Error("Unsupported inspection resource");
   if (q.operation === "get" && !q.resourceId) throw new Error("resourceId required");
-  if (["get", "list"].includes(q.operation) && !q.resource) throw new Error("resource required");
+  if (["get", "list", "count"].includes(q.operation) && !q.resource)
+    throw new Error("resource required");
   if (!(q.operation === "list" && q.resource === "companies") && !q.companyId)
     throw new Error("companyId required");
-  if (!["get", "list"].includes(q.operation) && !q.resourceId)
+  if (!["get", "list", "count"].includes(q.operation) && !q.resourceId)
     throw new Error("resourceId required");
+  if (q.operation === "count" && q.resourceId !== undefined)
+    throw new Error("count does not take resourceId");
+  if (q.order !== undefined && (q.operation !== "list" || !INSPECTION_ORDERS.includes(q.order)))
+    throw new Error("Invalid order");
+  if (
+    q.view !== undefined &&
+    (!["list", "get"].includes(q.operation) || q.resource !== "runs" || !INSPECTION_VIEWS.includes(q.view))
+  )
+    throw new Error("Invalid view");
   if (
     q.path !== undefined &&
     (typeof q.path !== "string" || q.path.length > 1024 || q.path.includes("\0"))

@@ -13,6 +13,7 @@ import {
   INSPECTION_HEADER,
   INSPECTION_PERMIT_TYPE,
   INSPECTION_RESOURCES,
+  inspectionReadPath,
   parseInspectionQuery,
   type InspectionQuery,
   type InspectionPermit,
@@ -21,6 +22,8 @@ import { customerSuccessRunAuthority } from "../services/customer-success-author
 import {
   readCustomerSuccessResource,
   inspectionReaders,
+  RUN_SUMMARY_COLUMNS,
+  primaryKeyColumns,
 } from "../services/customer-success-inspection.js";
 import {
   customerSuccessRoutes,
@@ -438,6 +441,29 @@ describe("customer-success read authority", () => {
     expect((await request(app).post("/api/customer-success/v1/unknown").send({})).status).toEqual(
       404,
     );
+    // Count, order and view live only on the extended path, so a tenant that
+    // predates them answers 404 there and Cloud fails closed.
+    const countQuery: InspectionQuery = { operation: "count", resource: "tasks", companyId };
+    const countToken = () => token({ ...claims, jti: randomUUID(), query: countQuery });
+    expect(
+      (
+        await request(app)
+          .post("/api/customer-success/v1/read")
+          .set(INSPECTION_HEADER, countToken())
+          .send(countQuery)
+      ).status,
+    ).toEqual(403);
+    const counted = await request(app)
+      .post("/api/customer-success/v1/read-v2")
+      .set(INSPECTION_HEADER, countToken())
+      .send(countQuery);
+    expect(counted.status).toEqual(200);
+    expect(counted.body).toEqual({ total: expect.any(Number), byStatus: expect.any(Object) });
+    const original = await request(app)
+      .post("/api/customer-success/v1/read-v2")
+      .set(INSPECTION_HEADER, token())
+      .send(query);
+    expect(original.status).toEqual(200);
     fetcher.mockResolvedValue(new Response("", { status: 503 }));
     expect(
       (
@@ -691,6 +717,153 @@ describe("customer-success read authority", () => {
       parentId: skill.id,
     })) as { items: unknown[] };
     expect(versions.items).toHaveLength(1);
+  });
+  it("counts by status, orders newest first, and returns lean run summaries, company scoped", async () => {
+    const [company, other] = await db
+      .insert(schema.companies)
+      .values([
+        { name: "Counted", issuePrefix: "CNT" },
+        { name: "Elsewhere", issuePrefix: "ELS" },
+      ])
+      .returning();
+    const [countedAgent] = await db
+      .insert(schema.agents)
+      .values({ companyId: company.id, name: "Counted agent", adapterType: "process" })
+      .returning();
+    const [otherAgent] = await db
+      .insert(schema.agents)
+      .values({ companyId: other.id, name: "Other agent", adapterType: "process" })
+      .returning();
+    const heavy = { transcript: "x".repeat(200_000) };
+    const at = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes));
+    const runs = await db
+      .insert(schema.heartbeatRuns)
+      .values([
+        { companyId: company.id, agentId: countedAgent.id, status: "succeeded", createdAt: at(1), startedAt: at(1), finishedAt: at(3), resultJson: heavy, contextSnapshot: heavy },
+        { companyId: company.id, agentId: countedAgent.id, status: "failed", createdAt: at(5), startedAt: at(5), finishedAt: at(6), errorCode: "adapter_failed", resultJson: heavy },
+        { companyId: company.id, agentId: countedAgent.id, status: "failed", createdAt: at(9), startedAt: at(9), resultJson: heavy },
+        { companyId: other.id, agentId: otherAgent.id, status: "failed", createdAt: at(20) },
+      ])
+      .returning();
+    await db.insert(schema.issues).values([
+      { companyId: company.id, title: "Open", status: "todo" },
+      { companyId: company.id, title: "Shipped", status: "done" },
+      { companyId: other.id, title: "Not ours", status: "done" },
+    ]);
+
+    expect(
+      await readCustomerSuccessResource(db, storage, { operation: "count", resource: "runs", companyId: company.id }),
+    ).toEqual({ total: 3, byStatus: { succeeded: 1, failed: 2 } });
+    expect(
+      await readCustomerSuccessResource(db, storage, { operation: "count", resource: "tasks", companyId: company.id }),
+    ).toEqual({ total: 2, byStatus: { todo: 1, done: 1 } });
+    expect(
+      await readCustomerSuccessResource(db, storage, {
+        operation: "count",
+        resource: "comments",
+        companyId: company.id,
+      }),
+    ).toEqual({ total: 0, byStatus: null });
+
+    const latest = (await readCustomerSuccessResource(db, storage, {
+      operation: "list",
+      resource: "runs",
+      companyId: company.id,
+      order: "newest",
+      view: "summary",
+      limit: 1,
+    })) as { items: Array<Record<string, unknown>>; nextOffset: number | null };
+    expect(latest.items.map((r) => r.id)).toEqual([runs[2].id]);
+    expect(latest.nextOffset).toEqual(1);
+    expect(Object.keys(latest.items[0]).sort()).toEqual([...RUN_SUMMARY_COLUMNS, "durationMs"].sort());
+    expect(latest.items[0].durationMs).toBeNull();
+    expect(JSON.stringify(latest).length).toBeLessThan(2_000);
+
+    const page = (await readCustomerSuccessResource(db, storage, {
+      operation: "list",
+      resource: "runs",
+      companyId: company.id,
+      order: "newest",
+      view: "summary",
+      limit: 2,
+      offset: 1,
+    })) as { items: Array<Record<string, unknown>> };
+    expect(page.items.map((r) => [r.id, r.durationMs])).toEqual([
+      [runs[1].id, 60_000],
+      [runs[0].id, 120_000],
+    ]);
+    const oldest = (await readCustomerSuccessResource(db, storage, {
+      operation: "list",
+      resource: "runs",
+      companyId: company.id,
+      order: "oldest",
+      limit: 1,
+    })) as { items: Array<Record<string, unknown>> };
+    expect(oldest.items[0].id).toEqual(runs[0].id);
+    expect(oldest.items[0]).toHaveProperty("resultJson");
+
+    const one = (await readCustomerSuccessResource(db, storage, {
+      operation: "get",
+      resource: "runs",
+      companyId: company.id,
+      resourceId: runs[1].id,
+      view: "summary",
+    })) as Record<string, unknown>;
+    expect(one).toMatchObject({ id: runs[1].id, status: "failed", errorCode: "adapter_failed", durationMs: 60_000 });
+    expect(one).not.toHaveProperty("resultJson");
+    expect(one).not.toHaveProperty("contextSnapshot");
+  });
+  it("ordered pages cover rows that share a creation time exactly once", async () => {
+    for (const resource of INSPECTION_RESOURCES)
+      expect(primaryKeyColumns(inspectionReaders[resource].table).length, resource).toBeGreaterThan(0);
+    const [company] = await db
+      .insert(schema.companies)
+      .values({ name: "Labelled", issuePrefix: "LBL" })
+      .returning();
+    const [issue] = await db.insert(schema.issues).values({ companyId: company.id, title: "Tagged" }).returning();
+    const labels = await db
+      .insert(schema.labels)
+      .values(Array.from({ length: 5 }, (_, i) => ({ companyId: company.id, name: `label-${i}`, color: "#000000" })))
+      .returning();
+    const createdAt = new Date(Date.UTC(2026, 0, 2));
+    await db
+      .insert(schema.issueLabels)
+      .values(labels.map((label) => ({ companyId: company.id, issueId: issue.id, labelId: label.id, createdAt })));
+    for (const order of ["newest", "oldest"] as const) {
+      const seen: string[] = [];
+      for (let offset = 0; offset < labels.length; offset += 2) {
+        const page = (await readCustomerSuccessResource(db, storage, {
+          operation: "list",
+          resource: "taskLabels",
+          companyId: company.id,
+          order,
+          limit: 2,
+          offset,
+        })) as { items: Array<{ labelId: string }> };
+        seen.push(...page.items.map((row) => row.labelId));
+      }
+      expect(seen.sort()).toEqual(labels.map((label) => label.id).sort());
+    }
+  });
+  it("count, order and view are bounded and take the extended read path", () => {
+    expect(inspectionReadPath(parseInspectionQuery({ operation: "list", resource: "runs", companyId }))).toEqual("/read");
+    for (const value of [
+      { operation: "count", resource: "runs", companyId },
+      { operation: "list", resource: "runs", companyId, order: "newest" },
+      { operation: "get", resource: "runs", companyId, resourceId: agentId, view: "summary" },
+    ])
+      expect(inspectionReadPath(parseInspectionQuery(value))).toEqual("/read-v2");
+    for (const value of [
+      { operation: "count", companyId },
+      { operation: "count", resource: "runs" },
+      { operation: "count", resource: "runs", companyId, resourceId: agentId },
+      { operation: "get", resource: "runs", companyId, resourceId: agentId, order: "newest" },
+      { operation: "list", resource: "runs", companyId, order: "random" },
+      { operation: "list", resource: "tasks", companyId, view: "summary" },
+      { operation: "list", resource: "runs", companyId, view: "full" },
+      { operation: "runs.log", companyId, resourceId: agentId, view: "summary" },
+    ])
+      expect(() => parseInspectionQuery(value)).toThrow();
   });
   it("the operation contract has no writes, credentials or unknown parameters", () => {
     for (const value of [

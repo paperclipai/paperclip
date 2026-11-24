@@ -36,6 +36,12 @@ export function dependencyNewAgentRuns(runs: Row[], startingRuns: Row[]) {
   const priorIds = new Set(startingRuns.map(run => run.id));
   return runs.filter(run => !priorIds.has(run.id));
 }
+export function dependencyRunProjectionsAgree(point: DependencyPoint, startingRuns: Row[], expectedRun?: Row) {
+  const newRuns = dependencyNewAgentRuns(point.agentRuns, startingRuns);
+  return point.dependentRuns.length === 1 && newRuns.length === 1
+    && runFacts(point.dependentRuns[0]!) === runFacts(newRuns[0]!)
+    && (!expectedRun || runFacts(point.dependentRuns[0]!) === runFacts(expectedRun));
+}
 export function dependencyRunIssueId(run: Row) {
   const ids = [run.issueId, run.nativeIssueId, run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].filter(value => value != null);
   return ids.length && ids.every(nonempty) && new Set(ids).size === 1 ? ids[0] as string : undefined;

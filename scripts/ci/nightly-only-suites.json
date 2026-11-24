@@ -290,6 +290,12 @@
       "measuredMs": 89949
     },
     {
+      "path": "server/src/services/ssh-remote-workspace-heartbeat-cli.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Real SSH server remote-workspace CLI heartbeat soak (88.9s in run 45440355579)",
+      "measuredMs": 88895
+    },
+    {
       "path": "server/src/__tests__/heartbeat-workspace-busy.test.ts",
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (85.1s in run 45238253588)",
@@ -380,6 +386,12 @@
       "measuredMs": 69649
     },
     {
+      "path": "server/src/services/ssh-remote-workspace-heartbeat-codex.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Real SSH server remote-workspace Codex heartbeat soak (69.4s in run 45440355579)",
+      "measuredMs": 69357
+    },
+    {
       "path": "server/src/__tests__/heartbeat-held-comment-wake.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (67.8s in run 45238253588)",
@@ -402,6 +414,18 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (65.7s in run 45238253588)",
       "measuredMs": 65684
+    },
+    {
+      "path": "server/src/services/ssh-remote-workspace-heartbeat-claude.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Real SSH server remote-workspace Claude heartbeat soak (64.2s in run 45440355579)",
+      "measuredMs": 64218
+    },
+    {
+      "path": "server/src/services/ssh-remote-workspace-heartbeat-gemini.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Real SSH server remote-workspace Gemini heartbeat soak (61.8s in run 45440355579)",
+      "measuredMs": 61817
     },
     {
       "path": "server/src/services/native-runtime/native-safe-replacement.test.ts",
@@ -698,6 +722,12 @@
       "measuredMs": 38856
     },
     {
+      "path": "server/src/services/quarantined-task-retry.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Quarantined task retry soak (38.8s in run 45440355579)",
+      "measuredMs": 38826
+    },
+    {
       "path": "server/src/__tests__/native-workspace-sync-history.test.ts",
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (38.5s in run 45238253588)",
@@ -902,6 +932,12 @@
       "measuredMs": 30390
     },
     {
+      "path": "server/src/services/remote-workspace-readonly-inventory-entries.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Remote workspace readonly inventory entries soak (30.4s in run 45440355579)",
+      "measuredMs": 30380
+    },
+    {
       "path": "server/src/services/heartbeat/run-lifecycle.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (30.4s in run 45238253588)",
@@ -1064,6 +1100,12 @@
       "measuredMs": 25170
     },
     {
+      "path": "server/src/__tests__/heartbeat-isolated-continuation-hold.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Isolated continuation hold soak (25.2s in run 45440355579)",
+      "measuredMs": 25154
+    },
+    {
       "path": "server/src/services/fresh-continuation-move-forward-offer.test.ts",
       "category": "restart-lease-soak",
       "reason": "Heavy native-runtime continuation, lease, handoff, or multi-turn soak (24.9s in run 45238253588)",
@@ -1194,6 +1236,12 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (22.3s in run 45238253588)",
       "measuredMs": 22254
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-clean-continuation-dispatch.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Clean continuation dispatch soak (22.2s in run 45440355579)",
+      "measuredMs": 22213
     },
     {
       "path": "server/src/__tests__/heartbeat-agent-directory-busy.test.ts",
@@ -1340,6 +1388,12 @@
       "measuredMs": 20305
     },
     {
+      "path": "server/src/__tests__/environment-retained-orphan-listing-cost.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Retained orphan listing SQL query-cost benchmark (20.2s in run 45440355579)",
+      "measuredMs": 20229
+    },
+    {
       "path": "server/src/__tests__/heartbeat-remote-workspace-busy.test.ts",
       "category": "workspace-recovery-soak",
       "reason": "Remote/git workspace recovery, migration, or heavy working-copy soak (20.2s in run 45238253588)",
@@ -1394,6 +1448,12 @@
       "measuredMs": 19765
     },
     {
+      "path": "server/src/__tests__/plugin-loader-activation-timeout.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Real-clock plugin loader activation timeout soak (19.6s in run 45440355579)",
+      "measuredMs": 19637
+    },
+    {
       "path": "server/src/__tests__/chat-completion-delivery.test.ts",
       "category": "channel-integration-soak",
       "reason": "External chat/voice/connector channel integration soak (19.6s in run 45238253588)",
@@ -1442,6 +1502,12 @@
       "measuredMs": 19117
     },
     {
+      "path": "server/src/__tests__/abandoned-workspace-files-hold.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Abandoned workspace files hold soak (19.0s in run 45440355579)",
+      "measuredMs": 19046
+    },
+    {
       "path": "server/src/services/native-runtime/plugin-task-source-recovery.integration.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (18.7s in run 45238253588)",
@@ -1452,6 +1518,12 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (18.6s in run 45238253588)",
       "measuredMs": 18587
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-answer-behind-settling-run.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Settling-run answer race soak (18.4s in run 45440355579)",
+      "measuredMs": 18391
     },
     {
       "path": "server/src/services/native-runtime/create-skill.integration.test.ts",
@@ -1470,6 +1542,18 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (18.0s in run 45238253588)",
       "measuredMs": 17969
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-context-compaction-execution.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heartbeat context compaction execution soak (18.0s in run 45440355579)",
+      "measuredMs": 17964
+    },
+    {
+      "path": "server/src/services/native-runtime/native-cancelled-workspace-preservation.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Cancelled workspace preservation soak (17.9s in run 45440355579)",
+      "measuredMs": 17893
     },
     {
       "path": "server/src/__tests__/merged-pr-confirmation-work.test.ts",
@@ -1526,6 +1610,12 @@
       "measuredMs": 16813
     },
     {
+      "path": "server/src/__tests__/legacy-workspace-rehome.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Legacy workspace rehome migration soak (16.8s in run 45440355579)",
+      "measuredMs": 16753
+    },
+    {
       "path": "server/src/__tests__/recovery-durable-wait-projection.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (16.8s in run 45238253588)",
@@ -1574,6 +1664,12 @@
       "measuredMs": 16226
     },
     {
+      "path": "server/src/__tests__/heartbeat-lease-release-before-runner-attach.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Heartbeat lease release before runner attach soak (16.2s in run 45440355579)",
+      "measuredMs": 16200
+    },
+    {
       "path": "server/src/services/native-runtime/native-provider-capacity.integration.test.ts",
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (16.1s in run 45238253588)",
@@ -1584,6 +1680,12 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (16.0s in run 45238253588)",
       "measuredMs": 16037
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-reassignment-deferred-wake.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heartbeat reassignment deferred-wake soak (16.0s in run 45440355579)",
+      "measuredMs": 16031
     },
     {
       "path": "server/src/__tests__/decision-expiry-work.test.ts",
@@ -1598,6 +1700,12 @@
       "measuredMs": 15693
     },
     {
+      "path": "server/src/services/setup-failure-after-work-continuation.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Setup failure after work continuation soak (15.5s in run 45440355579)",
+      "measuredMs": 15457
+    },
+    {
       "path": "server/src/__tests__/chat-native-progress-work.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (15.3s in run 45238253588)",
@@ -1608,6 +1716,12 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (15.2s in run 45238253588)",
       "measuredMs": 15224
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-workspace-finalize-branch.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Heartbeat workspace finalize-branch git soak (15.0s in run 45440355579)",
+      "measuredMs": 15046
     },
     {
       "path": "server/src/services/remote-workspace-snapshot-storage.test.ts",
@@ -1728,6 +1842,12 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock soak, watchdog, drain, sweep, archive, or heavy lifecycle integration (13.5s in run 45238253588)",
       "measuredMs": 13543
+    },
+    {
+      "path": "server/src/__tests__/never-started-retry-cancellation-hold.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Never-started retry cancellation hold soak (13.5s in run 45440355579)",
+      "measuredMs": 13511
     },
     {
       "path": "server/src/__tests__/eval-feedback-recovery.integration.test.ts",
@@ -1958,6 +2078,12 @@
       "measuredMs": 10495
     },
     {
+      "path": "server/src/__tests__/plugin-connector-tool-timeout.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Real-clock plugin connector tool timeout soak (10.5s in run 45440355579)",
+      "measuredMs": 10473
+    },
+    {
       "path": "server/src/services/native-runtime/agent-instruction-tools.integration.test.ts",
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (10.4s in run 45238253588)",
@@ -1986,6 +2112,12 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (10.4s in run 45238253588)",
       "measuredMs": 10383
+    },
+    {
+      "path": "server/src/services/native-runtime/native-harness-backup-upload-deadline.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Native harness backup upload deadline soak (10.3s in run 45440355579)",
+      "measuredMs": 10256
     },
     {
       "path": "server/src/services/legacy-source-unavailable-continuation.test.ts",
@@ -2046,6 +2178,12 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (9.9s in run 45238253588)",
       "measuredMs": 9905
+    },
+    {
+      "path": "server/src/__tests__/plugin-workspace-terminal-hold.integration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Plugin workspace terminal hold integration soak (9.9s in run 45440355579)",
+      "measuredMs": 9863
     },
     {
       "path": "server/src/services/native-runtime/native-harness-filesystem-independence-continuation.integration.test.ts",
@@ -2138,6 +2276,12 @@
       "measuredMs": 9454
     },
     {
+      "path": "server/src/services/online-durable-data-migration-postgres.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Online durable-data migration Postgres soak (9.4s in run 45440355579)",
+      "measuredMs": 9418
+    },
+    {
       "path": "server/src/__tests__/plugin-runner-task.integration.test.ts",
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (9.4s in run 45238253588)",
@@ -2154,6 +2298,12 @@
       "category": "workspace-recovery-soak",
       "reason": "Heavy git/worktree workspace preparation, rotation, or cleanup soak (9.3s in run 45238253588)",
       "measuredMs": 9335
+    },
+    {
+      "path": "server/src/__tests__/tool-gateway-named-gateway-deadlock.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Tool gateway named-gateway deadlock soak (9.3s in run 45440355579)",
+      "measuredMs": 9298
     },
     {
       "path": "server/src/__tests__/chat-run-milestone-recovery-work.test.ts",
@@ -2178,6 +2328,12 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (9.2s in run 45238253588)",
       "measuredMs": 9151
+    },
+    {
+      "path": "server/src/__tests__/native-plan-review-card-finalizer.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Native plan-review card finalizer soak (9.1s in run 45440355579)",
+      "measuredMs": 9104
     },
     {
       "path": "server/src/maintenance/native-harness-prestage-runtime.test.ts",
@@ -2208,6 +2364,12 @@
       "category": "integration-soak",
       "reason": "Heavy multi-component integration suite (covered on master/release-verify/full-ci) (9.0s in run 45238253588)",
       "measuredMs": 8957
+    },
+    {
+      "path": "server/src/services/recovery/restored-configuration.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Restored configuration recovery soak (8.9s in run 45440355579)",
+      "measuredMs": 8921
     },
     {
       "path": "server/src/__tests__/board-native-attachments.integration.test.ts",

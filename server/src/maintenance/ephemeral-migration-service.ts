@@ -7,6 +7,27 @@ export interface EphemeralMigrationResult {
   decisionSigningSecret: string;
 }
 
+const OWNER_CODE = /^[a-z_]{1,80}$/;
+// Owners that refuse with their fixed reason list as `owner_code:reason,...`.
+// Only these may carry reasons; any other colon message is not an owner code.
+const OWNER_REASON_LISTS = new Set(["remote_workspace_migration_blocked"]);
+const MAX_REPORTED_REASONS = 32;
+
+/** Reports an owner's refusal without echoing arbitrary error text. A known
+ * owner keeps its code when its reason list is malformed or too long. */
+export function ownerRefusalCode(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (OWNER_CODE.test(message)) return message;
+  const separator = message.indexOf(":");
+  const owner = message.slice(0, separator);
+  if (separator < 0 || !OWNER_REASON_LISTS.has(owner)) return "owner_migration_failed";
+  const reasons = message.slice(separator + 1).split(",");
+  if (!reasons.every(reason => OWNER_CODE.test(reason))) return owner;
+  return reasons.length > MAX_REPORTED_REASONS
+    ? `${owner}:${[...reasons.slice(0, MAX_REPORTED_REASONS - 1), "more_reasons_truncated"].join(",")}`
+    : `${owner}:${reasons.join(",")}`;
+}
+
 /** A dedicated maintenance process, never mounted on the ordinary app router.
  * Cloud supplies a fresh attempt token and keeps tenant routing closed. Only
  * the authenticated export transfers the original key to its durable vault. */
@@ -59,9 +80,11 @@ export async function startEphemeralMigrationService(input: {
     } catch (error) {
       // Owner codes are safe diagnostics. Never echo arbitrary SDK errors,
       // credential-bearing URLs, file contents or stack traces through HTTP.
-      const code = error instanceof Error ? error.message : "owner_migration_failed";
-      failure = /^[a-z_]{1,80}$/.test(code) ? code : "owner_migration_failed";
+      failure = ownerRefusalCode(error);
       state = "blocked";
+      // The maintenance process has no other log. Record the same fixed codes
+      // so the provider's deployment log names the refusal too.
+      console.error(JSON.stringify({ event: "ephemeral_migration_blocked", phase, failure }));
     } finally {
       // Successful export authority expires at the original deadline too.
       // A failed migration has no export authority to retain.

@@ -482,7 +482,8 @@ profiles.
 5. Choose the services and sign in with Google.
 
 Google's guide:
-[Configure Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers).
+[Create an OAuth client ID](https://developers.google.com/workspace/guides/create-credentials#oauth-client-id).
+The setup screen links to the same guide.
 An unverified Google app shows a warning screen and has a user cap; only you
 can decide whether to submit your own app for Google's verification.
 
