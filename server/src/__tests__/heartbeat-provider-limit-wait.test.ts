@@ -295,7 +295,9 @@ describePostgres("heartbeat provider usage limit wait", () => {
       return { ...f, accounts: list };
     }
 
-    async function deferDirect(f: { companyId: string; agentId: string; issueId: string }) {
+    async function deferDirect(f: { companyId: string; agentId: string; issueId: string }, environment: {
+      early?: () => Promise<"host" | "managed" | null | "undecided">; dispatch?: "host" | "managed" | null;
+    } = {}) {
       const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
       const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
         invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId: f.issueId } }).returning();
@@ -306,9 +308,11 @@ describePostgres("heartbeat provider usage limit wait", () => {
         scheduleBoundedRetryForRun: vi.fn(async () => ({ outcome: "scheduled" })),
         releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
         finalizeAgentStatus: vi.fn(async () => undefined),
+        ...(environment.early ? { sshAuthentication: environment.early } : {}),
       };
       const deferred = await createProviderLimitWait(db, deps as never)
-        .deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false });
+        .deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false,
+          ...(environment.dispatch !== undefined ? { sshAuthentication: environment.dispatch } : {}) });
       return { deferred, deps };
     }
 
@@ -421,6 +425,27 @@ describePostgres("heartbeat provider usage limit wait", () => {
       expect((await deferDirect(f)).deferred).toBe(true);
     });
 
+    it("checks a task's own environment only once dispatch knows which account it signs in with", async () => {
+      // Account A (the agent's binding) is limited; the host sign-in is not.
+      const f = await heldFixture();
+      // Before preparation the task's environment is undecided, so nothing is held yet.
+      expect((await deferDirect(f, { early: async () => "undecided" })).deferred).toBe(false);
+      // A low-trust environment with managed credentials uses account A: held.
+      expect((await deferDirect(f, { dispatch: "managed" })).deferred).toBe(true);
+      // One that keeps the host's login does not use account A: not held.
+      expect((await deferDirect(f, { dispatch: "host" })).deferred).toBe(false);
+    });
+
+    it("holds a host limit when the task's environment keeps the host login, and not when it uses managed credentials", async () => {
+      const f = await heldFixture();
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+      // Only the host sign-in is limited.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(f.accounts[0]), contextSnapshot: {} });
+      expect((await deferDirect(f, { dispatch: "host" })).deferred).toBe(true);
+      expect((await deferDirect(f, { dispatch: "managed" })).deferred).toBe(false);
+    });
+
     it("clears a limit only after a success on the same account", async () => {
       const f = await heldFixture();
       const succeededOn = (account: Account) => ({ status: "succeeded", startedAt: new Date(Date.now() - 2 * 60_000),
@@ -486,6 +511,30 @@ describePostgres("heartbeat provider usage limit wait", () => {
         .where(eq(connectionGrants.id, f.accounts[0].grantId));
       expect(await releaseProviderLimitWaits(db, { companyId: f.companyId, reason: "ai_connection_revoked",
         grantIds: [f.accounts[0].grantId] })).toEqual([retry!.id]);
+      expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
+    }, 60_000);
+
+    it("commits a revocation and its release together, so a revoked account never leaves work waiting", async () => {
+      const f = await heldFixture();
+      await wake(f);
+      const retry = await scheduledRetry(f.agentId);
+      const revokeWithRelease = (fail: boolean) => db.transaction(async tx => {
+        await tx.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
+          .where(eq(connectionGrants.id, f.accounts[0].grantId));
+        await releaseProviderLimitWaits(tx as unknown as typeof db, { companyId: f.companyId, reason: "ai_connection_revoked",
+          grantIds: [f.accounts[0].grantId] });
+        if (fail) throw new Error("release step failed");
+      });
+      // A failure anywhere in the revocation leaves both the account and the wait as they were.
+      await expect(revokeWithRelease(true)).rejects.toThrow("release step failed");
+      const [grantAfterFailure] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.accounts[0].grantId));
+      expect(grantAfterFailure.status).toBe("active");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime())
+        .toBe(retry!.scheduledRetryAt!.getTime());
+      // A committed revocation has already made the waiting work due.
+      await revokeWithRelease(false);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id)))[0].scheduledRetryAt!.getTime())
+        .toBeLessThanOrEqual(Date.now());
       expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).toContain(retry!.id);
     }, 60_000);
 

@@ -22,6 +22,8 @@ import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "
 import { notFound } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
+import { publishActivity } from "../../activity-log.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
@@ -294,30 +296,35 @@ async function removeConnection(
       },
     });
     if (grantsToRevoke.length > 0) {
-      await db
-        .update(connectionGrants)
-        .set({
-          status: "revoked",
-          isDefault: false,
-          revokedAt: now,
-          revokedByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          revokedByUserId:
-            binding.actorType === "user" ? binding.actorId : null,
-          updatedAt: now,
-        })
-        .where(
-          inArray(
-            connectionGrants.id,
-            grantsToRevoke.map((row) => row.id),
-          ),
-        );
-      // Usage limits reported on a removed account no longer hold work.
-      await releaseProviderLimitWaits(db, {
-        companyId: connection.companyId, reason: "ai_connection_revoked",
-        grantIds: grantsToRevoke.map((row) => row.id),
-        ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
-      }).catch((err: unknown) => logger.warn({ err, connectionId: connection.id }, "failed to release usage waits for a removed account"));
+      // Usage limits reported on a removed account no longer hold work. The
+      // release commits with the revocation, so waiting work never outlives it.
+      const releasedWaitPublications: ActivityPublication[] = [];
+      await db.transaction(async (tx) => {
+        await tx
+          .update(connectionGrants)
+          .set({
+            status: "revoked",
+            isDefault: false,
+            revokedAt: now,
+            revokedByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            revokedByUserId:
+              binding.actorType === "user" ? binding.actorId : null,
+            updatedAt: now,
+          })
+          .where(
+            inArray(
+              connectionGrants.id,
+              grantsToRevoke.map((row) => row.id),
+            ),
+          );
+        await releaseProviderLimitWaits(tx as unknown as Db, {
+          companyId: connection.companyId, reason: "ai_connection_revoked",
+          grantIds: grantsToRevoke.map((row) => row.id), publications: releasedWaitPublications,
+          ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+        });
+      });
+      releasedWaitPublications.forEach(publishActivity);
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;

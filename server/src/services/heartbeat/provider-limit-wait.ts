@@ -30,9 +30,16 @@ export interface ProviderLimitWaitDependencies {
   }) => Promise<{ outcome: string }>;
   releaseIssueExecutionAndPromote: (run: HeartbeatRun) => Promise<unknown>;
   finalizeAgentStatus: (agentId: string, outcome: "cancelled") => Promise<unknown>;
-  /** How an SSH environment signs the harness in, as run admission decides it. */
-  sshAuthentication?: (agent: Agent) => Promise<"host" | "managed" | null>;
+  /**
+   * How the run's SSH environment signs the harness in, as run admission
+   * decides it, or "undecided" when only later preparation knows the
+   * environment (a low-trust task's own environment).
+   */
+  sshAuthentication?: (agent: Agent, run: HeartbeatRun) => Promise<SshAuthentication | "undecided">;
 }
+
+/** How an SSH environment signs the harness in; null when no SSH environment applies. */
+export type SshAuthentication = "host" | "managed" | null;
 
 /** Holds new work while the agent's provider account is out of allowance. */
 export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependencies) {
@@ -51,7 +58,11 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
   async function deferRunForProviderLimit(
     run: HeartbeatRun,
     agent: Agent,
-    options: { resumingAdmittedRun: boolean; conversation: boolean },
+    options: {
+      resumingAdmittedRun: boolean; conversation: boolean;
+      /** Set once dispatch has chosen the run's environment. */
+      sshAuthentication?: SshAuthentication;
+    },
   ): Promise<boolean> {
     if (options.resumingAdmittedRun || options.conversation) return false;
     if (run.invocationSource === "on_demand" && run.triggerDetail === "manual") return false;
@@ -62,10 +73,17 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     // Most agents have no live limit, so resolving the account waits for one.
     const cooldown = await agentHasProviderLimitEvidence(db, {
       companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
-    }).then(async limited => limited ? agentProviderLimitCooldown(db, {
-      companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
-      credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId, deps.sshAuthentication),
-    }) : null).catch((err: unknown) => {
+    }).then(async limited => {
+      if (!limited) return null;
+      const ssh = options.sshAuthentication !== undefined ? options.sshAuthentication
+        : deps.sshAuthentication ? await deps.sshAuthentication(agent, run) : null;
+      // Dispatch checks again once the environment, and so the account, is known.
+      if (ssh === "undecided") return null;
+      return agentProviderLimitCooldown(db, {
+        companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
+        credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId, ssh),
+      });
+    }).catch((err: unknown) => {
       // Missing evidence must not stop work; the provider still reports its own limit.
       logger.warn({ err, runId: run.id }, "provider limit evidence unavailable before dispatch");
       return null;
@@ -138,14 +156,12 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
  * run makes when it starts.
  */
 async function agentProviderLimitCredential(
-  db: Db, agent: Agent, responsibleUserId: string | null,
-  sshAuthentication?: ProviderLimitWaitDependencies["sshAuthentication"],
+  db: Db, agent: Agent, responsibleUserId: string | null, ssh: SshAuthentication,
 ): Promise<ProviderLimitCredential> {
   const saved = parseObject(agent.runtimeConfig).aiConnection;
   if (saved === undefined || saved === null) return { kind: "host" };
   // Run admission ignores the saved account when the harness uses the host's
   // own sign-in: an SSH host that keeps its login, or a preconfigured home.
-  const ssh = sshAuthentication ? await sshAuthentication(agent) : null;
   if (ssh === "host" || (ssh !== "managed" && agent.adapterType === "paperclip_runner"
     && parseObject(agent.adapterConfig).homeMode === "preconfigured")) return { kind: "host" };
   const parsed = aiRuntimeConnectionBindingSchema.safeParse(saved);
