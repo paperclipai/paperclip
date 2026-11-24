@@ -290,6 +290,24 @@ describe("Codex skill home store", () => {
     await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
   });
 
+  it("rejects changed skill bytes even when an agent also rewrote the stat record", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await chmod(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), 0o644);
+    await writeFile(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha, changed by another session\n");
+    await chmod(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), 0o444);
+    // Forge the stat record so it matches the changed file.
+    const recordPath = join(storeRoot, `${first.digest}.stat.json`);
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    const changedInfo = await lstat(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), { bigint: true });
+    record.files = record.files.map((entry: string[]) => entry[0] === ".agents/skills/alpha/SKILL.md"
+      ? [entry[0], String(changedInfo.ino), String(changedInfo.size), String(changedInfo.ctimeNs)] : entry);
+    await writeFile(recordPath, JSON.stringify(record));
+    const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    expect(second.created).toBe(true);
+    await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
+  });
+
   it("rejects a home whose files or directories were made writable", async () => {
     const { storeRoot, assigned } = await fixture();
     const first = await ensureCodexSkillHome({ storeRoot, context: assigned });

@@ -130,9 +130,9 @@ async function buildManifest(home: string, digest: string): Promise<Manifest> {
 /*
  * After sealing, each file's inode, size and ctime are recorded next to the home.
  * ctime cannot be set back by an unprivileged process and changes on any write,
- * chmod or replacement, so a matching record proves the bytes were not touched
- * since they were hashed. Reuse then needs only a walk and lstat; any mismatch
- * falls back to a full content verification.
+ * chmod or replacement. The record lives in the store, which a same-user agent
+ * can rewrite, so only recovery without the assigned skills relies on it; a
+ * launch that knows its skills verifies the home against their bundles.
  */
 type StatEntry = [path: string, inode: string, size: string, ctimeNs: string];
 
@@ -183,7 +183,12 @@ async function reusableCodexSkillHome(
   digest: string,
   context: NativeRuntimeContextSnapshot | null,
 ): Promise<boolean> {
-  if (await matchesStatRecord(storeRoot, home, digest)) return true;
+  // The stat record sits in the same store an agent of this user can write, so it
+  // cannot prove a home unchanged: with the assigned skills at hand, a launch
+  // always checks the home against their bundles (a skill set is small now that
+  // a repository skill delivers only its own folder). Only recovery without a
+  // runtime context falls back to the record and the home's own manifest.
+  if (!context && await matchesStatRecord(storeRoot, home, digest)) return true;
   try {
     await verifyCodexSkillHome(home, context);
   } catch {
