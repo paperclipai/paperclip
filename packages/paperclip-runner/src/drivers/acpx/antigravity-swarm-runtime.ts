@@ -12,7 +12,7 @@ import {
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
-import { GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
+import { GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
 import { antigravitySwarmEvent } from "./antigravity-swarm-presentation.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import type { AcpxModelStatus } from "./model-verification.js";
@@ -307,7 +307,7 @@ export async function openAntigravitySwarmRuntime(
   if (!bridge) throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm needs Paperclip's own tools, which are not available for this run.");
   const home = options.launchEnvironment.HOME ?? userInfo().homedir;
   const instructions = [options.systemInstructions, ANTIGRAVITY_SWARM_INSTRUCTIONS].filter(Boolean).join("\n\n");
-  const channel = options.antigravitySwarm?.channel ?? "provider_default";
+  const channel = options.antigravitySwarm?.channel ?? GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL;
   const guard = createAntigravitySwarmGuard({ model, instructions, workspace: options.cwd, channel });
 
   options.assertWorkspaceHeld?.();

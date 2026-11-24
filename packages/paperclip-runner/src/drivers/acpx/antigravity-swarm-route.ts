@@ -6,6 +6,10 @@ import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
 import { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunchOptions } from "./antigravity-cli-installation.js";
 import { ANTIGRAVITY_CLI_STABLE_ENDPOINT, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError } from "./antigravity-swarm-guard.js";
+import {
+  GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD, GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, readGeneratedAntigravitySwarmCredentialFacts,
+  type GeneratedAntigravitySwarmChannel,
+} from "./generated-sidecar-contract.js";
 import type { VerifiedAcpxInstallation } from "./installation-integrity.js";
 
 /** The Antigravity CLI route is selected only by the trusted `swarm` provider mode. */
@@ -25,7 +29,7 @@ export function antigravitySwarmStateDirectory(agentHomeDirectory: string): stri
  * pins Google's stable endpoint (which, on 2026-11-24, offered no Gemini 4 Neon).
  * The deployment chooses it (server env PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL).
  */
-export type AntigravitySwarmChannel = "provider_default" | "stable";
+export type AntigravitySwarmChannel = GeneratedAntigravitySwarmChannel;
 
 /** Plain words for the channel, for the swarm's start step and diagnostics. */
 export function antigravitySwarmChannelLabel(channel: AntigravitySwarmChannel): string {
@@ -38,7 +42,7 @@ export function antigravitySwarmLogFile(stateDirectory: string): string {
 }
 
 /** Driver-owned CLI flags: private state and log, the channel, no telemetry. Self-update is off through the pinned environment. */
-export function antigravitySwarmArguments(stateDirectory: string, channel: AntigravitySwarmChannel = "provider_default"): string[] {
+export function antigravitySwarmArguments(stateDirectory: string, channel: AntigravitySwarmChannel = GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL): string[] {
   return ["--gemini-dir", stateDirectory, "--log-file", antigravitySwarmLogFile(stateDirectory),
     ...(channel === "stable" ? ["--cloud_code_endpoint", ANTIGRAVITY_CLI_STABLE_ENDPOINT] : []), "--disable-telemetry"];
 }
@@ -56,15 +60,12 @@ export function antigravityAccountDigest(email: string): string {
  * channel and an unknown account.
  */
 export function antigravitySwarmBinding(environment: NodeJS.ProcessEnv): { channel: AntigravitySwarmChannel; accountDigest: string | null } {
-  let facts: Record<string, unknown> = {};
+  let facts: ReturnType<typeof readGeneratedAntigravitySwarmCredentialFacts> = null;
   try {
-    const parsed = JSON.parse(environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET ?? "{}") as Record<string, unknown>;
-    if (parsed?.paperclip && typeof parsed.paperclip === "object" && !Array.isArray(parsed.paperclip)) facts = parsed.paperclip as Record<string, unknown>;
+    const parsed = JSON.parse(environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET ?? "{}") as Record<string, unknown> | null;
+    facts = readGeneratedAntigravitySwarmCredentialFacts(parsed?.[GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD]);
   } catch { /* the route refusal reports a missing credential */ }
-  return {
-    channel: facts.swarmChannel === "stable" ? "stable" : "provider_default",
-    accountDigest: typeof facts.accountSha256 === "string" && /^[a-f0-9]{64}$/.test(facts.accountSha256) ? facts.accountSha256 : null,
-  };
+  return { channel: facts?.swarmChannel ?? GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, accountDigest: facts?.accountSha256 ?? null };
 }
 
 /**

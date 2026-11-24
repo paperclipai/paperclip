@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createProviderFailure } from "../provider-failure.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
-import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE } from "./generated-sidecar-contract.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE, type GeneratedAntigravitySwarmChannel } from "./generated-sidecar-contract.js";
 
 /**
  * Google Antigravity CLI route (`agy acp`), used only for a turn the signed-in
@@ -127,7 +127,7 @@ export interface AntigravitySwarmReceipt {
 export interface AntigravitySwarmGuardOptions {
   model: string;
   /** The Google channel the CLI was launched on; a refusal on `stable` names the fix. */
-  channel?: "provider_default" | "stable";
+  channel?: GeneratedAntigravitySwarmChannel;
   instructions: string;
   workspace: string;
 }

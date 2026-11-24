@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sanitizeAntigravityCredential, verifyAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
+import {
+  GENERATED_ANTIGRAVITY_SWARM_CHANNELS, GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD, GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL,
+  readGeneratedAntigravitySwarmCredentialFacts, sanitizeAntigravityCredential, verifyAntigravityCredential,
+  type GeneratedAntigravitySwarmChannel,
+} from "../../vendor/paperclip-runner/index.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanupForHome, retainGoogleCredentialCleanup, type RetainedGoogleCleanupScope } from "../retained-google-credential-cleanup.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -42,8 +46,10 @@ export function bindAntigravityTransportRetirement(bundle: RunnerdTransport): Ru
  * `stable` (Google's stable endpoint, which may offer fewer models).
  */
 export const ANTIGRAVITY_SWARM_CHANNEL_ENV = "PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL";
-export function antigravitySwarmChannel(env: NodeJS.ProcessEnv = process.env): "provider_default" | "stable" {
-  return env[ANTIGRAVITY_SWARM_CHANNEL_ENV]?.trim().toLowerCase() === "stable" ? "stable" : "provider_default";
+export function antigravitySwarmChannel(env: NodeJS.ProcessEnv = process.env): GeneratedAntigravitySwarmChannel {
+  const value = env[ANTIGRAVITY_SWARM_CHANNEL_ENV]?.trim().toLowerCase();
+  return (GENERATED_ANTIGRAVITY_SWARM_CHANNELS as readonly string[]).includes(value ?? "")
+    ? value as GeneratedAntigravitySwarmChannel : GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL;
 }
 
 /** Same digest as the Runner's antigravityAccountDigest: a one-way, non-identifying account comparison. */
@@ -80,10 +86,11 @@ export async function prepareAntigravityRunnerCredentials(input: {
   // Run facts bound to this credential for the swarm route (channel, account
   // digest). The Runner's credential sanitizer drops them before any write, so
   // the staged token and its writeback comparison are unchanged.
-  environment[AUTH_SECRET] = JSON.stringify({ ...JSON.parse(credential) as Record<string, unknown>, paperclip: {
-    swarmChannel: antigravitySwarmChannel(),
-    ...(input.accountEmail ? { accountSha256: antigravityAccountDigest(input.accountEmail) } : {}),
-  } });
+  // Facts follow the declared sidecar schema (antigravitySwarmCredentialFacts); the reader proves the shape.
+  const facts = readGeneratedAntigravitySwarmCredentialFacts({ swarmChannel: antigravitySwarmChannel(),
+    ...(input.accountEmail ? { accountSha256: antigravityAccountDigest(input.accountEmail) } : {}) });
+  if (!facts) throw new Error("Antigravity swarm credential facts do not match the sidecar contract");
+  environment[AUTH_SECRET] = JSON.stringify({ ...JSON.parse(credential) as Record<string, unknown>, [GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD]: facts });
   return { environment, home, credential };
 }
 

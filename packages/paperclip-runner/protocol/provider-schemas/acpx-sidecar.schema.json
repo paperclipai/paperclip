@@ -20,6 +20,15 @@
       },
       "additionalProperties": false
     },
+    "antigravitySwarmCredentialFacts": {
+      "description": "Run facts the controller binds to the selected Google credential document for the Antigravity swarm route, under the document's `paperclip` member (the credential sanitizer drops it before anything is written). `swarmChannel` selects the Google channel the CLI is launched on: `provider_default` passes no endpoint (the CLI's own default, Google's non-stable daily channel) and `stable` pins Google's stable endpoint. `accountSha256` is the lowercase hex sha256 of `paperclip.antigravity-account.v1:` plus the connection account, lowercased, compared with the CLI's own sign-in; neither account is recorded. Absent or invalid facts mean `provider_default` and an unknown account.",
+      "type": "object",
+      "properties": {
+        "swarmChannel": { "enum": ["provider_default", "stable"] },
+        "accountSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
     "turnDispatchJournalFile": {
       "description": "File name of the sidecar's prompt-dispatch journal in the session runtime directory. It holds turnDispatchJournalRecord lines for the latest turn only.",
       "const": "paperclip-turn-dispatch.jsonl"
