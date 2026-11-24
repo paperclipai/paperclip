@@ -19,16 +19,19 @@ function setup(scenario: string, overrides: Partial<AcpxRuntimePortOpenOptions> 
   const workerPidFile = join(root, "worker.pid");
   const cwd = join(root, "workspace");
   mkdirSync(cwd);
+  // The run's private --gemini-dir, laid out as Paperclip does: <agent home>/antigravity-cli.
+  const geminiDirectory = join(root, "agent-home", "antigravity-cli");
+  mkdirSync(geminiDirectory, { recursive: true });
   const options = {
     command: {
-      spawn: (_args: readonly string[] = [], spawnOptions: Record<string, unknown> = {}) => spawn(process.execPath, [FIXTURE], {
+      spawn: (_args: readonly string[] = [], spawnOptions: Record<string, unknown> = {}) => spawn(process.execPath, [FIXTURE, "--gemini-dir", geminiDirectory], {
         ...spawnOptions, detached: true, stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, FAKE_AGY_SCENARIO: scenario, FAKE_AGY_LOG: log, FAKE_AGY_WORKER_PID_FILE: workerPidFile },
       }),
       close: async () => {},
     },
     profile: { agent: "antigravity", reportedModelId: "gemini-3.8-flash-low", qualificationModel: "gemini-3.8-flash-low" },
-    cwd, stateDirectory: root, providerSessionKey: "key", permissionMode: "approve-reads", mode: "swarm",
+    cwd, stateDirectory: root, antigravityStateDirectory: geminiDirectory, providerSessionKey: "key", permissionMode: "approve-reads", mode: "swarm",
     permissionPolicy: {}, launchEnvironment: {}, credentialFenceFds: null, activateCredentialFenceOwner: null,
     systemInstructions: "Paperclip instructions",
     mcpServers: [{ name: "paperclip", url: "http://127.0.0.1:9/mcp", bearerToken: "bridge-secret", runnerOwned: true }],
@@ -36,7 +39,7 @@ function setup(scenario: string, overrides: Partial<AcpxRuntimePortOpenOptions> 
     ...overrides,
   } as unknown as AcpxRuntimePortOpenOptions;
   const clientMessages = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
-  return { root, cwd, options, clientMessages, workerPidFile };
+  return { root, cwd, geminiDirectory, options, clientMessages, workerPidFile };
 }
 
 async function runTurn(scenario: string, extra: { helperWaitTimeoutMs?: number; onEvent?: (event: AcpRuntimeEvent, cancel: () => Promise<void>) => void } = {}) {
@@ -163,6 +166,19 @@ describe("Antigravity CLI swarm runtime", () => {
   });
 
   it.each(["outside-edit", "dotdot-edit", "symlink-edit", "shell-escape"])("stops the swarm on a visible change outside the task folder: %s", async scenario => {
+    const run = await runTurn(scenario);
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE", message: expect.stringMatching(/outside the task folder/) } });
+  });
+
+  it("keeps running when the coordinator writes its swarm_pane plan into its own private state directory", async () => {
+    const run = await runTurn("plan");
+    expect(run.result).toMatchObject({ status: "completed" });
+    expect(readFileSync(join(run.cwd, "a.txt"), "utf8")).toBe("A");
+    const plan = join(run.geminiDirectory, "antigravity-cli", "brain", "e6536314-e108-4ecd-a0cf-efa59061510d", ".system_generated", "swarm", "plan.json");
+    expect(JSON.parse(readFileSync(plan, "utf8")).tasks["writer-a"]).toBe("Write a.txt");
+  });
+
+  it.each(["plan-sibling", "plan-dotdot", "plan-symlink", "plan-home"])("still stops a plan write that leaves the private state directory: %s", async scenario => {
     const run = await runTurn(scenario);
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE", message: expect.stringMatching(/outside the task folder/) } });
   });

@@ -207,6 +207,8 @@ export interface AcpxRuntimePortOpenOptions {
   profile: QualifiedAcpxProfile;
   cwd: string;
   stateDirectory: string;
+  /** The Antigravity CLI's private `--gemini-dir` for this run (swarm route only). */
+  antigravityStateDirectory?: string;
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
   readOnly?: boolean;
@@ -723,6 +725,7 @@ export class AcpxRuntimeHost {
             profile,
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,
+            ...(swarmStateDirectory === null ? {} : { antigravityStateDirectory: swarmStateDirectory }),
             providerSessionKey: binding.profileSessionKey,
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,

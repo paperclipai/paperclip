@@ -23,12 +23,20 @@
 //   shell-escape   the coordinator runs `printf E > /tmp/...` (the CLI's shell sandbox allows temp dirs)
 //   shell-read     the coordinator reads outside the workspace and copies into it (allowed)
 //   cautious-brief a helper brief says "Do not create debug.log"; the run is correct
+//   plan           the coordinator loads swarm_pane and writes its plan.json into its own
+//                  --gemini-dir (recorded shape, run1); the run is correct
+//   plan-sibling | plan-dotdot | plan-symlink | plan-home   the same plan write aimed at
+//                  <gemini-dir>-evil, a .. escape out of it, a symlink inside it pointing
+//                  outside, and the real ~/.gemini; never written, the swarm must stop
 // FAKE_AGY_LOG (optional) appends every client message, one JSON per line.
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const scenario = process.env.FAKE_AGY_SCENARIO ?? "success";
+// Like the real CLI, private state lives under --gemini-dir (it adds its own antigravity-cli/ inside).
+const geminiDirectory = process.argv[process.argv.indexOf("--gemini-dir") + 1];
 const log = message => { if (process.env.FAKE_AGY_LOG) appendFileSync(process.env.FAKE_AGY_LOG, `${JSON.stringify(message)}\n`); };
 const write = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 const update = (sessionId, value) => write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: value } });
@@ -58,6 +66,33 @@ const addWriters = async () => {
   await tool("swarm", { action: "add", name: "verifier", workspace: "inherit", brief: scenario === "cautious-brief"
     ? "Wait for writer-a and writer-b, then read a.txt and b.txt. Do not create debug.log or any other file. Write docs.google.com links only if v1.2 asks." : "Wait for writer-a and writer-b, then read a.txt and b.txt and report." });
   await tool("swarm", { action: "add", name: "monitor", workspace: "inherit", brief: "You are this swarm's stall monitor. Load the swarm_monitor skill and follow it." });
+};
+const PLAN = `${JSON.stringify({ goal: { title: "Write a.txt and b.txt", line: "Two writers, then verify." },
+  tasks: { "writer-a": "Write a.txt", "writer-b": "Write b.txt", verifier: "Verify a.txt and b.txt", monitor: "Watch swarm for stalls" },
+  threads: [{ id: "t-files", title: "Task files", goal: "Create a.txt and b.txt in the workspace.", tasks: ["writer-a", "writer-b"] },
+    { id: "t-verify", title: "Verification and swarm health", goal: "Confirm both files.", tasks: ["verifier", "monitor"] }] }, null, 2)}\n`;
+const planPath = () => {
+  const brain = join(geminiDirectory, "antigravity-cli", "brain", state.sessionId);
+  return {
+    plan: join(brain, ".system_generated", "swarm", "plan.json"),
+    "plan-sibling": join(`${geminiDirectory}-evil`, "antigravity-cli", "brain", state.sessionId, "plan.json"),
+    "plan-dotdot": `${brain}/../../../../escape-plan.json`,
+    "plan-symlink": join(brain, "link", "plan.json"),
+    "plan-home": `~/.gemini/antigravity-cli/brain/${state.sessionId}/.system_generated/swarm/plan.json`,
+  }[scenario];
+};
+/** The swarm_pane plan write as CLI 1.5.15 reports it: write_file, kind edit, args Content/Overwrite/Path. */
+const writePlan = async path => {
+  const toolCallId = "call_13884031054897948910";
+  const args = { Content: PLAN, Overwrite: true, Path: path };
+  const shape = { toolCallId, name: "write_file", kind: "edit", title: `File ${path}`, locations: [{ path }], args };
+  update(state.sessionId, { sessionUpdate: "tool_call", status: "in_progress", ...shape });
+  if (scenario !== "plan") { if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; }); return false; }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, PLAN);
+  await sleep(2);
+  update(state.sessionId, { sessionUpdate: "tool_call_update", status: "completed", ...shape, rawOutput: {}, content: [{ type: "diff", path, newText: PLAN }] });
+  return true;
 };
 const writeFiles = () => {
   writeFileSync(join(state.cwd, "a.txt"), "A");
@@ -96,6 +131,14 @@ async function prompt(id, params) {
   }
   if (scenario === "escape") { await tool("swarm", { action: "add", name: "writer-a", workspace: "branch", brief: "Write a.txt." }); if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   await addWriters();
+  if (scenario.startsWith("plan")) {
+    if (scenario === "plan-symlink") {
+      const brain = join(geminiDirectory, "antigravity-cli", "brain", state.sessionId);
+      mkdirSync(brain, { recursive: true });
+      symlinkSync(tmpdir(), join(brain, "link"));
+    }
+    if (!await writePlan(planPath())) return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+  }
   say("I have configured and launched the swarm.\n\nRun /swarm board (default shortcut alt+s) to open the live board.");
   if (scenario === "cancel" || scenario === "die") {
     // A helper is a real descendant in the CLI's process group.

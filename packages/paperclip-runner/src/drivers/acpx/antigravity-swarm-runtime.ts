@@ -423,7 +423,7 @@ export async function openAntigravitySwarmRuntime(
           `Swarm stopped: helper ${escaped} was asked to work on its own copy of the task folder, which Paperclip does not allow.`));
         return;
       }
-      const outside = antigravityOutsideChange(update, workspace, home);
+      const outside = antigravityOutsideChange(update, workspace, home, options.antigravityStateDirectory);
       if (outside) {
         halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
           `Swarm stopped: it tried to change ${outside}, which is outside the task folder.`));
