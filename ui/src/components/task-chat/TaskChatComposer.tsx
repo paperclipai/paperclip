@@ -202,19 +202,21 @@ export type ParsedRunnerGoalCommand =
   | { matched: true; command: RunnerGoalComposerCommand }
   | { matched: true; error: string };
 
-function normalizeRunnerGoalCommandText(value: string): string {
+function normalizeActionCommandText(value: string, command: "goal" | "plan"): string {
   const trimmed = value.trim();
   // MDXEditor's link extension can reinterpret a selected action command plus
   // its subsequently typed argument as one relative autolink. Accept only the
   // exact whole-document shape it generates so the action still cannot fall
   // through as a comment. Ordinary Markdown links remain ordinary comments.
+  // The label is any prefix of the command typed before it was selected.
+  const label = command === "goal" ? "(?:go(?:al)?)?" : "(?:p(?:l(?:an?)?)?)?";
   const relativeAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\(<(\/goal(?:[ \t\u00a0].*)?)>\)$/s,
+    new RegExp(`^\\[\\/${label}[ \\t\\u00a0]*\\]\\(<(\\/${command}(?:[ \\t\\u00a0].*)?)>\\)$`, "s"),
   );
   if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
 
   const encodedAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\((\/goal(?:%20|%C2%A0).*)\)$/s,
+    new RegExp(`^\\[\\/${label}[ \\t\\u00a0]*\\]\\((\\/${command}(?:%20|%C2%A0).*)\\)$`, "s"),
   );
   if (encodedAutolink) {
     try {
@@ -226,8 +228,21 @@ function normalizeRunnerGoalCommandText(value: string): string {
   return trimmed.replaceAll("\u00a0", " ");
 }
 
+/**
+ * `/plan <request>` is the typed form of the Plan mode control: the request is
+ * sent in Plan mode, without the command. Only a leading command in what the
+ * user submits counts; a `/plan` anywhere else, including quoted or pasted
+ * text, stays ordinary text.
+ */
+export function parsePlanCommand(value: string): { matched: false } | { matched: true; request: string } {
+  const trimmed = normalizeActionCommandText(value, "plan");
+  const match = /^\/plan(?=\s|$)/.exec(trimmed);
+  if (!match) return { matched: false };
+  return { matched: true, request: trimmed.slice(match[0].length).trim() };
+}
+
 export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
-  const trimmed = normalizeRunnerGoalCommandText(value);
+  const trimmed = normalizeActionCommandText(value, "goal");
   if (!trimmed) return { matched: false };
   const firstWhitespace = trimmed.search(/\s/);
   const firstToken =
@@ -681,6 +696,14 @@ export function TaskChatComposer({
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
+  const planCommandOption: ActionCommandOption = {
+    id: "action:plan",
+    kind: "action",
+    command: "plan",
+    name: "Plan",
+    description: "Plan before acting. Nothing changes until you accept the plan.",
+    aliases: ["plan", "planning"],
+  };
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
@@ -915,12 +938,19 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
+      const plan = parsePlanCommand(bodyRef.current);
+      if (plan.matched && !plan.request && !submittingRef.current) {
+        changeMode("planning");
+        creation.onChange("");
+        editorRef.current?.clear();
+        return;
+      }
       if (submittingRef.current || uploadPending || uploadFailed || creation.submitDisabled || (!bodyRef.current.trim() && !creation.canSubmitWithoutBody)) return;
       submittingRef.current = true;
       setSubmitting(true);
       setActionError(null);
       try {
-        await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
+        await creation.onSubmit(plan.matched ? plan.request : bodyRef.current, plan.matched ? "planning" : pendingMode, runSettings);
       } catch (error) {
         setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
@@ -940,7 +970,20 @@ export function TaskChatComposer({
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
     const submittedModeGeneration = modeChoiceGeneration.current;
-    const trimmed = submittedBody.trim();
+    // Plan mode belongs to tasks; a queued edit keeps its exact text.
+    const planCommand = queuedEdit || conversationMode || !onWorkModeChange
+      ? ({ matched: false } as const)
+      : parsePlanCommand(submittedBody);
+    if (planCommand.matched && !planCommand.request && attachedRefs.length === 0) {
+      changeMode("planning");
+      bodyRef.current = "";
+      if (draftKey) clearDraft(draftKey);
+      setBody("");
+      editorRef.current?.clear();
+      return;
+    }
+    const sendMode = planCommand.matched ? "planning" : pendingMode;
+    const trimmed = planCommand.matched ? planCommand.request : submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
@@ -1068,8 +1111,8 @@ export function TaskChatComposer({
         onCancelQueuedEdit?.();
         return;
       }
-      if (pendingMode !== workMode && onWorkModeChange) {
-        await onWorkModeChange(pendingMode);
+      if (sendMode !== workMode && onWorkModeChange) {
+        await onWorkModeChange(sendMode);
       }
       const retainedAfterMode = draftKey ? loadDraftSubmission(draftKey) : null;
       if (retainedAfterMode) {
@@ -1437,11 +1480,12 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission || Boolean(creation && (submitting || creation.readOnly))}
               mentions={mentions}
-              actionCommands={creation ? [] : conversationMode ? [{
+              actionCommands={conversationMode ? [{
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
-              }] : [goalCommandOption]}
+              }] : creation ? (onWorkModeChange ? [planCommandOption] : [])
+                : onWorkModeChange ? [planCommandOption, goalCommandOption] : [goalCommandOption]}
               onSubmit={() => void submit()}
               submitKey={submitKey}
               fileDropTarget="parent"

@@ -9,7 +9,7 @@ import {
   buildSkillMentionHref,
   instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
-import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { parsePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2000,6 +2000,64 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+  });
+
+  describe("/plan command", () => {
+    it("matches only the user's leading /plan token", () => {
+      expect(parsePlanCommand(" /plan Add a greeting file ")).toEqual({ matched: true, request: "Add a greeting file" });
+      expect(parsePlanCommand("/plan")).toEqual({ matched: true, request: "" });
+      expect(parsePlanCommand("/plan\n\nLine one\nLine two")).toEqual({ matched: true, request: "Line one\nLine two" });
+      expect(parsePlanCommand("[/pl](</plan Add a greeting file>)")).toEqual({ matched: true, request: "Add a greeting file" });
+      // A /plan anywhere else is ordinary text, including quoted or pasted content.
+      expect(parsePlanCommand("Please /plan this first")).toEqual({ matched: false });
+      expect(parsePlanCommand("> /plan from a pasted email")).toEqual({ matched: false });
+      expect(parsePlanCommand("```\n/plan\n```")).toEqual({ matched: false });
+      expect(parsePlanCommand("\\/plan ordinary text")).toEqual({ matched: false });
+      expect(parsePlanCommand("/planning notes")).toEqual({ matched: false });
+    });
+
+    it("sends the request in Plan mode without the command", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange });
+      typeText("/plan Add a greeting file");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+      expect(onAdd).toHaveBeenCalledWith("Add a greeting file", undefined, undefined, undefined, expect.any(String));
+      expect(onWorkModeChange.mock.invocationCallOrder[0]).toBeLessThan(onAdd.mock.invocationCallOrder[0]!);
+    });
+
+    it("switches to Plan mode without sending when no request follows", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/plan");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+      expect(editable().textContent).toBe("");
+    });
+
+    it("leaves a /plan inside the message as ordinary text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange });
+      typeText("Please /plan this first");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onWorkModeChange).not.toHaveBeenCalled();
+      expect(onAdd).toHaveBeenCalledWith("Please /plan this first", undefined, undefined, undefined, expect.any(String));
+    });
+
+    it("creates a new task in Plan mode", async () => {
+      const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+        submitLabel: "Create", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
+      render(<TaskChatComposer creation={creation} workMode="standard" onWorkModeChange={vi.fn()} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("Add a greeting file", "planning", null);
+    });
   });
 
   describe("/goal action commands", () => {
