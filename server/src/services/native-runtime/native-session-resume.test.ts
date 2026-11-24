@@ -314,6 +314,98 @@ describe("a source whose saved provider session the runner proved incompatible",
   });
 });
 
+describe("a session saved by the previous Claude or Codex ACPX runtime", () => {
+  // The previous release bundled Agent SDK 0.3.286 and Codex 0.160.0 behind the
+  // same bridge command digests. The saved provider records that runtime, so the
+  // next run after the upgrade starts a fresh provider session in the same
+  // workspace instead of resuming a conversation the new runtime cannot restore.
+  const acpxExecution = (runId: string, acpxAgent: "claude" | "codex", model: string) =>
+    buildNativeExecutionInput({
+      companyId,
+      runId,
+      issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+      taskPrompt: "Only the current turn",
+      agentId,
+      workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId,
+      provider: "acpx",
+      acpxAgent,
+      model,
+      acpxPermissionMode: "approve-all",
+      completionContract: execution(runId).completionContract,
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+  const sourceWith = (nativeExecutionInput: ReturnType<typeof acpxExecution>) => {
+    const source = previousRun();
+    return { ...source, runnerProfileJson: { ...source.runnerProfileJson, nativeExecutionInput } };
+  };
+
+  it.each([
+    ["claude", "claude-opus-5-5", "0.3.286"],
+    ["codex", "gpt-6.1-sol", "0.160.0"],
+  ] as const)("starts a fresh %s provider session in the same workspace", (acpxAgent, model, priorRuntime) => {
+    const current = acpxExecution(currentRunId, acpxAgent, model);
+    const sameRelease = sourceWith(acpxExecution(previousRunId, acpxAgent, model));
+    expect(rebindNativeSessionCheckpoint({ previousRun: sameRelease, currentExecution: current })).not.toBeNull();
+
+    const saved = acpxExecution(previousRunId, acpxAgent, model);
+    const profile = (saved.provider as { profile: { agentRuntimeVersion: string | null } }).profile;
+    expect(profile.agentRuntimeVersion).not.toBe(priorRuntime);
+    profile.agentRuntimeVersion = priorRuntime;
+    const source = sourceWith(saved);
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = acpxExecution(currentRunId, acpxAgent, model);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.workspace).toEqual(current.workspace);
+  });
+});
+
+describe("a Google Antigravity session saved by the pending candidate", () => {
+  // The candidate's saved provider binds its pending profile. After the flip,
+  // the next run carries the task into a fresh provider session in the same
+  // workspace (the automatic replacement), never a Retry of the old session.
+  const antigravityExecution = (runId: string) => buildNativeExecutionInput({
+    companyId, runId,
+    issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn", agentId,
+    workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId, provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low",
+    acpxPermissionMode: "approve-all", completionContract: execution(runId).completionContract,
+    runtimeContext: nativeRuntimeContextFixture(),
+  });
+
+  it("starts the next run on the qualified release in a fresh provider session in the same workspace", () => {
+    const saved = antigravityExecution(previousRunId);
+    const source = { ...previousRun(), runnerProfileJson: { ...previousRun().runnerProfileJson, nativeExecutionInput: saved } };
+    // The flip bumps the profile version (the snapshot carries no qualification status).
+    const released = (runId: string) => {
+      const built = antigravityExecution(runId);
+      (built.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion += 1;
+      return built;
+    };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: antigravityExecution(currentRunId) })).not.toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: released(currentRunId) })).toBeNull();
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => {
+        const built = released(currentRunId);
+        built.session.normalizedSessionId = sessionId;
+        built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+        return built;
+      } });
+    expect(result.checkpoint).toBeNull();
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.workspace).toEqual(released(currentRunId).workspace);
+  });
+});
+
 describe("a source whose provider state was not saved after its result was accepted", () => {
   const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
     reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };
@@ -668,9 +760,7 @@ const recoveryFakeCodex = resolve(
       const address = server.address();
       if (!address || typeof address === "string")
         throw new Error("Missing test listener");
-      setupRunnerPrpWebSocketServer(server, {
-        apiUrl: `http://127.0.0.1:${address.port}`,
-      });
+      setupRunnerPrpWebSocketServer(server);
       const makeExecution = (runId: string): NativeExecutionInput => {
         const { runtimeContext: _runtimeContext, ...value } = execution(
           runId,

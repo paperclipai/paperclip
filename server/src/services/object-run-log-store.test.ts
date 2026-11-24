@@ -66,6 +66,18 @@ const event = (seq: number) => ({
 });
 
 describe("S3 run log store", () => {
+  it("removes every object of a finalized log and stays removable", async () => {
+    const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs",
+      assertWriterAuthority: async () => undefined });
+    const handle = await store.begin(input);
+    await store.append(handle, { ...event(1), chunk: "tool result content" });
+    await store.finalize(handle);
+    expect([...m.objects.keys()].some((key) => key.includes(handle.logRef))).toBe(true);
+    await store.remove!(handle);
+    await store.remove!(handle);
+    expect([...m.objects.keys()].filter((key) => key.includes(handle.logRef) && !key.endsWith("/head.json"))).toEqual([]);
+    await expect(store.read(handle)).rejects.toThrow("Run log not found");
+  });
   it("awaits a successor flush started by another drain waiter before finalizing", async () => {
     const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 1000,
       segmentBytes: 1024, assertWriterAuthority: async () => undefined });

@@ -57,16 +57,11 @@ export function recoverableSandboxCreationCondition() {
   ));
 }
 
-/** A run lease the ownership settle moved to cleanup (an orphaned active
- * lease, or a retained orphan sandbox nothing references any more), or a warm
- * sandbox whose warm window ended, before its first cleanup attempt. Its
- * holder is proven gone, so the first stop or teardown is
- * due now regardless of how recently the lease was used; a failed attempt
- * counts and the normal retry backoff applies from then on. */
-export function recoveredOrphanFirstAttemptSql() {
+export function recoveredCleanupFirstAttemptSql() {
   return sql`(${environmentLeases.failureReason} in ('orphaned_active_lease_recovered', 'retained_orphan_sandbox_released')
     or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true'
-    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'warmWindowExpired' = 'true')
+    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'warmWindowExpired' = 'true'
+    or ${environmentLeases.metadata}->'workspaceRecoveryCleanup'->>'runId' = ${environmentLeases.heartbeatRunId}::text)
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupRetryAttempts', '0') = '0'
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`;
 }
@@ -84,7 +79,7 @@ export function pendingCleanupDeadlineSql(now = Date.now()) {
 }
 
 export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_CLEANUP_RETRY_MS): Promise<number | null> {
-  const [row] = await db.select({ next: sql<string | null>`min(case when ${recoveredOrphanFirstAttemptSql()}
+  const [row] = await db.select({ next: sql<string | null>`min(case when ${recoveredCleanupFirstAttemptSql()}
     then ${pendingCleanupDeadlineSql()} else greatest(
     extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${backoffMs},
     ${pendingCleanupDeadlineSql()}) end)` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));

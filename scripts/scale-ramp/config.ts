@@ -21,6 +21,8 @@ export interface Thresholds {
   queueWaitP95Ms: number;
   firstActivityP95Ms: number;
   minConcurrencyRatio: number;
+  maxFailedRunRatio: number;
+  recoveryGraceMs: number;
   maxEventLoopUtilization: number;
   runEventLatenessP99Ms: number;
   agentApiPreHandlerP99Ms: number;
@@ -49,6 +51,8 @@ export interface Options {
   pollMs: number;
   boardProbeMs: number;
   taskMinutes: number;
+  startTimeoutMs: number;
+  agentReadyTimeoutMs: number;
   maxTasks: number | null;
   companyId: string | null;
   environmentId: string | null;
@@ -141,6 +145,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
       "poll-seconds": { type: "string" },
       "board-probe-seconds": { type: "string" },
       "task-minutes": { type: "string" },
+      "start-timeout-minutes": { type: "string" },
+      "agent-ready-minutes": { type: "string" },
       "max-tasks": { type: "string" },
       company: { type: "string" },
       environment: { type: "string" },
@@ -155,6 +161,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
       "max-queue-wait-p95-seconds": { type: "string" },
       "max-first-activity-p95-seconds": { type: "string" },
       "min-concurrency-ratio": { type: "string" },
+      "max-failed-run-percent": { type: "string" },
+      "recovery-grace-minutes": { type: "string" },
     },
   });
   if (values["dry-run"] && values["cleanup-only"]) throw new Error("--dry-run and --cleanup-only exclude each other");
@@ -180,6 +188,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
     pollMs: number(values["poll-seconds"], "--poll-seconds", 15, 1, 300) * 1_000,
     boardProbeMs: number(values["board-probe-seconds"], "--board-probe-seconds", 10, 1, 300) * 1_000,
     taskMinutes: number(values["task-minutes"], "--task-minutes", 3, 0.5, 120),
+    startTimeoutMs: number(values["start-timeout-minutes"], "--start-timeout-minutes", 5, 1, 60) * 60_000,
+    agentReadyTimeoutMs: number(values["agent-ready-minutes"], "--agent-ready-minutes", 10, 1, 60) * 60_000,
     maxTasks: values["max-tasks"] === undefined ? null : number(values["max-tasks"], "--max-tasks", 0, 1, 1_000_000),
     companyId: values.company ?? env.PAPERCLIP_SCALE_COMPANY_ID ?? null,
     environmentId: values.environment ?? env.PAPERCLIP_SCALE_ENVIRONMENT_ID ?? null,
@@ -192,6 +202,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
       queueWaitP95Ms: number(values["max-queue-wait-p95-seconds"], "--max-queue-wait-p95-seconds", 60, 1, 3_600) * 1_000,
       firstActivityP95Ms: number(values["max-first-activity-p95-seconds"], "--max-first-activity-p95-seconds", 60, 1, 3_600) * 1_000,
       minConcurrencyRatio: number(values["min-concurrency-ratio"], "--min-concurrency-ratio", 0.9, 0.1, 1),
+      maxFailedRunRatio: number(values["max-failed-run-percent"], "--max-failed-run-percent", 2, 0, 100) / 100,
+      recoveryGraceMs: number(values["recovery-grace-minutes"], "--recovery-grace-minutes", 15, 1, 120) * 60_000,
       maxEventLoopUtilization: 0.6,
       runEventLatenessP99Ms: 1_000,
       agentApiPreHandlerP99Ms: 100,

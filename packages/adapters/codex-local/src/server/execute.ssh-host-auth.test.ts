@@ -144,7 +144,7 @@ exec /bin/cp "$@"
         if (mode.startsWith("partial_upload")) throw new Error("fixture partial SSH upload");
       });
       runChildProcess.mockImplementation(async (...args: unknown[]) => {
-        if ((args[2] as string[]).includes("--version")) return { exitCode: 0, signal: null, timedOut: false, stdout: mode === "unqualified_observability" ? "codex-cli 0.159.0\n" : "codex-cli 0.160.0\n", stderr: "", pid: 123, startedAt: new Date().toISOString() };
+        if ((args[2] as string[]).includes("--version")) return { exitCode: 0, signal: null, timedOut: false, stdout: mode === "unqualified_observability" ? "codex-cli 0.159.0\n" : "codex-cli 0.170.0\n", stderr: "", pid: 123, startedAt: new Date().toISOString() };
         const env = (args[3] as { env: Record<string, string> }).env;
         expect(env.CODEX_HOME).toBe(native);
         expect(env.HOME).toBeUndefined();

@@ -110,7 +110,8 @@ Eyes should appear after authorized task/comment persistence, independently of
 file preparation, subscription and agent startup. Duplicate delivery must keep
 one receipt; the final reply must remove only its source message's eyes. Record
 live mention-to-reaction timing separately from the PostgreSQL fixture tests and
-the `chat.slack.receipt` transport span described in [Observability](../../doc/observability.md).
+the `chat.slack.receipt` transport span in
+[`receipt-timing.ts`](../../server/src/services/chat-channels/slack/receipt-timing.ts).
 
 During a top-level DM run, verify that the bot adds eyes to the source message
 and removes them when the final reply arrives. The pinned Slack SDK encodes a
@@ -250,7 +251,7 @@ Capability ID: `chat-channels/attachments`.
 Scope: ui
 Storybook: Mount TaskChatBubble attachments and ChatEndpointDetail provider-specific consent/upload/delivery failure and unknown-outcome states. Local email attachment dialog remains a prototype.
 Production: Transfer a disposable supported file through each affected provider; verify recipient delivery, read scope, duplicate/replay handling and failure/unknown state without treating notification as file-upload proof.
-Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [TaskChatBubble.test.tsx](../../ui/src/components/task-chat/TaskChatBubble.test.tsx), [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [chat-channels.integration.test.ts](../../server/src/__tests__/chat-channels.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
+Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [chat-channels.integration.test.ts](../../server/src/__tests__/chat-channels.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
 
 ### Documentation scope: Chat and email channel setup
 

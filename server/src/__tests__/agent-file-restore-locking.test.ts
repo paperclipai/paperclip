@@ -47,9 +47,10 @@ describe("agent file restore locking", () => {
   const board = () => ({ type: "board" as const, userId, source: "session" as const });
   const target = () => ({ companyId, agentId });
 
+  const lockCheckQuery = () => sql`select id from agents where id = ${agentId} for share nowait`;
   async function agentRowLocked(): Promise<boolean> {
     try {
-      await observer.transaction(async tx => { await tx.execute(sql`select id from agents where id = ${agentId} for update nowait`); });
+      await observer.transaction(async tx => { await tx.execute(lockCheckQuery()); });
       return false;
     } catch (error) {
       const code = (error as { code?: string; cause?: { code?: string } }).code ?? (error as { cause?: { code?: string } }).cause?.code;
@@ -106,6 +107,30 @@ describe("agent file restore locking", () => {
     await fs.rm(home, { recursive: true, force: true });
   });
 
+  async function whileHolding(lock: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>, check: () => Promise<void>) {
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let holding!: () => void;
+    const held = new Promise<void>(resolve => { holding = resolve; });
+    const holder = db.transaction(async tx => { await lock(tx); holding(); await released; });
+    await Promise.race([held, holder]);
+    try { await check(); } finally { release(); }
+    await holder;
+  }
+
+  it("a lock check does not block another lock check", async () => {
+    await whileHolding(tx => tx.execute(lockCheckQuery()), async () => {
+      expect(await agentRowLocked()).toBe(false);
+    });
+  });
+
+  it("a lock check detects the product's agent row lock", async () => {
+    await whileHolding(tx => tx.select().from(agents).where(eq(agents.id, agentId)).for("update"), async () => {
+      expect(await agentRowLocked()).toBe(true);
+    });
+    expect(await agentRowLocked()).toBe(false);
+  });
+
   it("downloads a stale projection without holding the agent row lock", async () => {
     await loseLocalProjection();
     objects.probe = agentRowLocked;
@@ -138,6 +163,21 @@ describe("agent file restore locking", () => {
     expect(objects.downloads).toEqual([{ objectKey: expect.any(String), agentRowLocked: false }]);
     expect(lockedMs).toBeLessThan(150);
     expect(await fs.readFile(path.join(path.dirname(root), "file-sync", "durable-generation"), "utf8")).toBe((await head()).generation);
+    expect(await stagingLeftovers()).toEqual([]);
+  });
+
+  it.each(["history", "revision"] as const)("a %s read downloads a stale projection without holding the agent row lock", async (operation) => {
+    const service = agentInstructionRevisionService(db);
+    const current = await service.readCurrent(target(), board());
+    await loseLocalProjection();
+    objects.probe = agentRowLocked;
+    if (operation === "history") {
+      await expect(service.history({ ...target(), entryFile }, board())).resolves.toMatchObject({ revisions: expect.any(Array) });
+    } else {
+      await expect(service.readRevision({ ...target(), entryFile, revisionId: current!.revision.id }, board()))
+        .resolves.toMatchObject({ content: "# Policy\n" });
+    }
+    expect(objects.downloads).toEqual([{ objectKey: expect.any(String), agentRowLocked: false }]);
     expect(await stagingLeftovers()).toEqual([]);
   });
 

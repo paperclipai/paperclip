@@ -2875,6 +2875,1049 @@
   {
     "allowedModes": [
       "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List a person's areas and responsibilities: each area with its responsibilities (status, bar, health, the agent that runs it, and counts of filed projects, routines and tasks), responsibilities with no area, and uncovered work (company routines, projects and open tasks filed under no responsibility). Defaults to the person this run works for; never ask for their user ID. Use this before asking the person what they are responsible for. A turned-off error means the feature is off, not that the list is empty.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Return only this area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "includeArchivedAreas": {
+          "default": false,
+          "description": "Include archived areas.",
+          "type": "boolean"
+        },
+        "includeLetGo": {
+          "default": false,
+          "description": "Include responsibilities the person let go.",
+          "type": "boolean"
+        },
+        "includeProposed": {
+          "default": true,
+          "description": "Include responsibilities proposed but not yet confirmed.",
+          "type": "boolean"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "operationId": "list_responsibilities",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List responsibilities",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), its skills (filed by hand, with a link ID, and computed from the agents doing its work), and its latest status report.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities or find_responsibilities_for.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Read responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the proposed and active responsibilities a project, task, routine or company skill is filed under, directly or (for a task or routine) through its project. An empty list means it is uncovered.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The item's ID. For a task, an identifier such as PAP-123 also works.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "description": "What the item is.",
+          "enum": [
+            "project",
+            "task",
+            "routine",
+            "skill"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "type": "object"
+    },
+    "operationId": "find_responsibilities_for",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Find responsibilities for an item",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete an area permanently. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. Prefer update_area with status archived, which can be undone.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "moveResponsibilitiesTo": {
+          "description": "Another area for its responsibilities. Without one they are left with no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID. Send areaId or areaTitle, not both.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "areaTitle": {
+          "description": "Area by title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Why you created it, shown to the person on a proposal.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileItems": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 0,
+          "type": "array"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs the work and keeps the metric current.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "standard": {
+          "description": "The bar as one sentence: what must be true.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Default active. Use proposed to let the person confirm it.",
+          "enum": [
+            "active",
+            "proposed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Move it to this area; null for no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "areaTitle": {
+          "description": "Move it to the area with this title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthNote": {
+          "description": "Why the health is overridden.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthOverride": {
+          "description": "Override the computed health; null clears it.",
+          "enum": [
+            "behind",
+            "at_risk",
+            "on_track",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs it; null for none.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "standard": {
+          "description": "The bar as one sentence.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "proposed",
+            "let_go",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete a responsibility permanently, with its bar and metric history. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. To stop a responsibility without losing it, use update_responsibility with status let_go.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "moveFrom": {
+          "description": "A responsibility ID to move the items from, or all.",
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID to file under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "file_under_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "File work under responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine",
+                  "skill"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "remove_from_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Remove work from responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "Only routines this agent runs.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 50.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "query": {
+          "description": "Words in the title or instructions.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Only routines under this responsibility, filed directly or through its project. Needs Responsibilities on.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "responsibleUserId": {
+          "description": "Only routines this person is responsible for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "unfiled": {
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active. Needs Responsibilities on.",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_routines",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "routines:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List routines",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "The agent that runs it.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileUnder": {
+          "description": "A responsibility ID to file the routine under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "What each run should do, written out in full.",
+          "maxLength": 200000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "routineId": {
+          "description": "Routine ID from list_routines.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "schedule": {
+          "additionalProperties": false,
+          "description": "When it runs, in the person's local time. null turns its schedule off.",
+          "properties": {
+            "dayOfMonth": {
+              "description": "For monthly.",
+              "maximum": 28,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "dayOfWeek": {
+              "description": "For weekly.",
+              "enum": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday"
+              ],
+              "type": "string"
+            },
+            "frequency": {
+              "enum": [
+                "daily",
+                "weekdays",
+                "weekly",
+                "monthly"
+              ],
+              "type": "string"
+            },
+            "time": {
+              "description": "24-hour HH:MM.",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone.",
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "frequency",
+            "time"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "routineId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_routine",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update routine",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories; send tagline, categories or both. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "description": "Replaces its categories.",
+          "items": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "skillId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "tagline": {
+          "description": "One line shown with the skill; null clears it.",
+          "maxLength": 120,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "skillId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_skill_details",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update skill details",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "skill_test"
     ],
     "description": "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",

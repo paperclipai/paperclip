@@ -226,6 +226,69 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("classifies a blocked parent whose children are all done as covered while its own children-completed run is queued", async () => {
+    const { companyId, agentId } = await createCompany("PBS");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "PBS-1",
+      title: "Parent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    for (const identifier of ["PBS-2", "PBS-3"]) {
+      const childId = await insertIssue({
+        companyId,
+        identifier,
+        title: `Done child ${identifier}`,
+        status: "done",
+        parentId,
+        assigneeAgentId: agentId,
+      });
+      await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+    }
+    await activeRun({ companyId, agentId, issueId: parentId, status: "queued" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: null,
+      unresolvedBlockerCount: 0,
+      attentionBlockerCount: 0,
+      blockingTreeLive: true,
+      terminalBlockerIssueId: null,
+    });
+  });
+
+  it("keeps a blocked issue with no unresolved blockers and no active run as needs_attention", async () => {
+    const { companyId, agentId } = await createCompany("PBN");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "PBN-1",
+      title: "Parent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBN-2",
+      title: "Done child",
+      status: "done",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: parentId, status: "succeeded" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      terminalBlockerIssueId: parentId,
+    });
+  });
+
   it("does not cover a blocked parent through a wake whose created run already finished", async () => {
     const { companyId, agentId } = await createCompany("PBF");
     const parentId = await insertIssue({ companyId, identifier: "PBF-1", title: "Parent", status: "blocked" });

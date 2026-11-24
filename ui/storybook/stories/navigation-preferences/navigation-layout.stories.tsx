@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   Bot,
@@ -34,6 +35,9 @@ import { Tabs } from "@/components/ui/tabs";
 import { BreadcrumbProvider, useBreadcrumbs, type Breadcrumb } from "@/context/BreadcrumbContext";
 import { useNavigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
+import { prepareFixtureApi } from "../../support/capability-gaps/api";
 import {
   storybookAgents,
   storybookIssues,
@@ -368,6 +372,43 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const BoardChromeMatrix: Story = {};
+
+function CloudSidebar() {
+  useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  return (
+    <div className="flex h-dvh w-60 flex-col border-r border-border bg-background">
+      <div className="min-h-0 flex-1 overflow-hidden"><Sidebar /></div>
+      <SidebarAccountMenu deploymentMode="authenticated" />
+    </div>
+  );
+}
+
+export const CloudSlackFeedback: Story = {
+  render: () => <CloudSidebar />,
+  beforeEach: ({ parameters }) => prepareFixtureApi([
+    { path: "/api/health", read: () => ({ status: "ok", deploymentMode: "authenticated", cloud: {
+      managed: true, managedBy: "paperclip-cloud", stackSlug: "example", cloudBaseUrl: "https://cloud.example.test",
+    } }) },
+    { path: "/api/cloud/stacks", read: () => ({
+      stacks: [{ displayName: "Example", stackSlug: "example", primaryHost: "example.test", lifecycleState: "active", sleepState: "awake", role: "owner", isCurrent: true }],
+      slackFeedback: parameters.invitePending
+        ? { message: "We emailed a Slack invitation to your organization’s owner. Check that inbox and accept the invitation to join your private channel with the Paperclip team." }
+        : { href: "https://slack.com/app_redirect?channel=CEXAMPLE" },
+    }) },
+  ]).cleanup,
+  parameters: {
+    layout: "fullscreen",
+    paperclip: {
+      capabilities: ["navigation-preferences/navigation"], implementation: "production", boundary: "fixtures",
+      notes: "Mounts the workspace sidebar and account footer with a simulated Cloud portfolio. The Slack channel ID is a fixture.",
+    },
+  },
+};
+
+export const CloudSlackInvitationPending: Story = {
+  ...CloudSlackFeedback,
+  parameters: { ...CloudSlackFeedback.parameters, invitePending: true },
+};
 
 // PAP-10676 verification harness: renders the real Sidebar at a fixed width so a
 // screenshot of the expanded state and a screenshot of the pinned-collapsed rail

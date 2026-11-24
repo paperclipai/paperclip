@@ -51,6 +51,7 @@ import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
 import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
   recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
+import { emitSystemTaskBlockedAfterCommit } from "./product-telemetry.js";
 
 export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
   RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-pacing.js";
@@ -827,7 +828,7 @@ export async function settleUnrecoverableExecutions(
             companyId: run.companyId, issueId: task.id, runId: run.id,
           }).limit(1).for("update") : [];
           if (!hold) return void await continueNativeInterruption(tx as unknown as Db, { action, run, coordinator, now });
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
             resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
@@ -910,6 +911,7 @@ export async function settleUnrecoverableExecutions(
               updatedAt: now,
             })
             .where(eq(issues.id, task.id)).returning();
+          await emitSystemTaskBlockedAfterCommit(tx, projected!, task.status);
           // Only a transition owned by this failure grants a recovery receipt.
           // An already-blocked task may have a separate human/dependency hold.
           if (task.status !== "blocked" && run.runtimeMode === "native") {
@@ -962,7 +964,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })

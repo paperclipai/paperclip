@@ -83,6 +83,7 @@ export const NATIVE_STALL_MS = 5 * 60_000;
 /** Interruption presentation `userAction`s that are a person's move. */
 const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   approval: "approval",
+  question: "question",
   reconnect: "credential",
   choose_model: "credential",
   project_access: "credential",
@@ -91,6 +92,7 @@ const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   resume: "agent_paused",
   confirm_owner_stop: "board_confirmation",
   confirm_run_stopped: "board_confirmation",
+  unblock: "assignee_declared_block",
 };
 
 /** Active recovery-action causes that name a person's move. Every other cause

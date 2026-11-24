@@ -8,7 +8,7 @@ Operators define repeatable work, configure its inputs and triggers, run it on d
 
 Feature ID: `routines`.
 
-Implementation: [routine list](../../ui/src/pages/Routines.tsx), [routine detail](../../ui/src/pages/RoutineDetail.tsx), [trigger editor](../../ui/src/components/routine-triggers/TriggerWizard.tsx).
+Implementation: [routine list](../../ui/src/pages/Routines.tsx), [routine detail](../../ui/src/pages/RoutineDetail.tsx), [routine page](../../ui/src/components/routine-page/RoutinePage.tsx), [edit dialog](../../ui/src/components/routine-page/RoutineEditDialog.tsx), [webhook dialog](../../ui/src/components/routine-page/RoutineWebhookDialog.tsx).
 
 Agent access: [companion](../agent-access-map/routines.md).
 
@@ -24,12 +24,17 @@ Agent access: [companion](../agent-access-map/routines.md).
 
 ### `routine-editor`
 
-Open `/routines`, create one, and inspect `/routines/:routineId` and its edit sections.
+Open `/routines`, create one (New routine opens the edit dialog), and inspect
+`/routines/:routineId`. Edit opens the same dialog; older section addresses
+redirect to the page.
 
 ### `trigger-history`
 
-Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **History** records configuration versions, not executions.
+Schedules and webhooks are listed under Repeats on the routine page; a webhook
+opens its dialog there, and both are added or changed in the Edit dialog. Tasks
+the routine created are under History on the page. The page menu leads to
+**Version history** (`/routines/:routineId/history`, configuration versions, not
+executions) and **Audit log** (`/routines/:routineId/activity`). Lists also offer Run now.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -37,7 +42,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routine detail helper](../../ui/src/pages/RoutineDetail.test.tsx) tests project-selector options, not the rendered editor. [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts. Saving and running through the editor remain manual checks.
+Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (mocked `RoutineDetail` page tests were removed; verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 
@@ -48,7 +53,7 @@ complete the generated task or establish a useful task output.
 
 ### `trigger-history`
 
-Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWizard.test.tsx) is component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
+Automated: [webhook instructions](../../ui/src/components/routine-triggers/webhook-instructions.test.ts) and [webhook fields](../../ui/src/components/routine-triggers/WebhookFields.test.tsx) are component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
@@ -84,7 +89,7 @@ Capability ID: `routines/run-now`.
 Scope: ui
 Storybook: Mount RoutineRunVariablesDialog through actual RoutineDetail with required/default inputs, project/workspace overrides, pending, blocked and failed submission. RunButton-only no-op examples do not supply/run inputs.
 Production: POST /routines/{id}/run must validate variables, create one attributed execution/task and obey pause/access/budget gates; inspect actual task outcome separately.
-Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/RoutineRunVariablesDialog.tsx), [RoutineDetail.tsx](../../ui/src/pages/RoutineDetail.tsx), [routines.ts](../../server/src/routes/routines.ts). Tests: [RoutineRunVariablesDialog.test.tsx](../../ui/src/components/RoutineRunVariablesDialog.test.tsx), [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts), [routines-e2e.test.ts](../../server/src/__tests__/routines-e2e.test.ts)
+Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/RoutineRunVariablesDialog.tsx), [RoutineDetail.tsx](../../ui/src/pages/RoutineDetail.tsx), [routines.ts](../../server/src/routes/routines.ts). Tests: [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts), [routines-e2e.test.ts](../../server/src/__tests__/routines-e2e.test.ts)
 
 ### Documentation scope: Routines, cases, and status cards
 

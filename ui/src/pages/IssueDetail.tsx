@@ -1,4 +1,5 @@
 import { createUuid } from "@/lib/uuid";
+import { invalidateInteractionRecordViews } from "@/lib/attention-record-views";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -77,6 +78,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { SubtaskCancellationError, TaskCancellationDismissedError, useTaskCancellation } from "../hooks/useTaskCancellation";
 import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
@@ -90,7 +92,7 @@ import {
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
 import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
-import { isRestoredSavedRead } from "../lib/persisted-query-cache";
+import { isRestoredSavedRead, recordTaskOpen } from "../lib/persisted-query-cache";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -231,6 +233,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import { hasVisibleRunAnswer } from "@/lib/run-answer-visibility";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
@@ -352,7 +355,7 @@ import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
 } from "../lib/issue-thread-interactions";
-import { resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "../lib/issue-document-deep-link";
+import { chatSidebarDocumentHash, resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
   shouldRenderRichSubIssuesSection,
@@ -423,6 +426,7 @@ import {
 import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { openSafeUrl } from "@/lib/safe-url";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -1670,7 +1674,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     ...(Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs ?? []),
     ...(conversationMode && !historyExpanded ? commentRuns.data ?? [] : []),
   ].map(run => [run.runId, run])).values()], [linkedRunHistory, conversationMode, historyExpanded, commentRuns.data]);
-  const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true;
+  const earlierRun = Array.isArray(linkedRunHistory) ? undefined : linkedRunHistory?.earlierRun;
+  const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true && !(
+    earlierRun?.status === "succeeded" && hasVisibleRunAnswer(comments, earlierRun.runId, earlierRun.resultJson)
+  );
   const resolvedActivity = useMemo(
     () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
     [activity, inputFacts.data],
@@ -1793,8 +1800,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               run.contextCommentId.length > 0
             ? run.contextCommentId
             : null;
-      const inputIds =
-        batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : [];
+      // Messages posted while the run was starting, which its first turn took.
+      const firstTurnIds = Array.isArray(run.firstTurnCommentIds)
+        ? run.firstTurnCommentIds.filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          )
+        : [];
+      const inputIds = [...new Set([
+        ...(batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : []),
+        ...firstTurnIds,
+      ])];
       const anchorAt = run.startedAt ?? run.createdAt;
       const anchorMs = new Date(anchorAt).getTime();
       inputIds.forEach((commentId, sequence) => {
@@ -3248,9 +3263,12 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
 /** One controller and surface for both task URLs and agent conversations. */
 export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
   agent: Agent; issue: Issue | null; ensureIssue: () => Promise<Issue>;
+  onReady?: () => void;
 } }) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const isAgentChatRoute = Boolean(conversation);
+  const persistedAgentChat = Boolean(conversation?.issue);
   const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
   useEffect(() => setLoadingTitleIssueId(null), [issueId, companyPrefix]);
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
@@ -3267,7 +3285,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     streamlinedUiEnabled,
     loaded: taskInterfaceSettingsLoaded,
     coordinatorWorkspaceEnabled,
-  } = useTaskDetailInterfaceMode(!!conversation);
+  } = useTaskDetailInterfaceMode(isAgentChatRoute);
   const designSandbox = useDesignSandbox();
   const proposedTaskHeader = (designSandbox || coordinatorWorkspaceEnabled) && streamlinedTaskDetailEnabled;
   // Chat-style: the page wrapper spans the full center pane so the thread's
@@ -3282,6 +3300,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     closePanel,
     panelVisible,
     setPanelVisible,
+    setPanelShowsArtifact,
     requestPanelMaximize,
     clearPanelMaximizeRequest,
   } = usePanel();
@@ -3346,6 +3365,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const readReceiptRef = useRef<{
     issueId: string;
+    companyId: string;
     account: ReturnType<typeof bindAccount>;
     attemptedSessionAt?: number;
     confirmed: boolean;
@@ -3471,6 +3491,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       issue.identifier?.toLowerCase() === issueId.toLowerCase())
       ? issue
       : null;
+  const openedIssueId = loadedIssue ? loadedIssue.id : null;
+  useEffect(() => {
+    if (openedIssueId) recordTaskOpen(queryClient, { id: openedIssueId });
+  }, [queryClient, openedIssueId]);
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
@@ -3553,7 +3577,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [linkedComment.data, windowComments],
   );
 
+  const contentNavigationStartedAt = useRef(Infinity);
   useLayoutEffect(() => {
+    contentNavigationStartedAt.current = performance.now();
     beginIssueDetailNavigation();
   }, [issueId]);
   // The task page is loaded when its conversation content has painted: the
@@ -3561,6 +3587,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // chat with no saved task never records that mark, so it uses the generic rule.
   const contentPaintedAt = useIssueDetailContentPaintedAt();
   usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
+  useEffect(() => {
+    if (contentPaintedAt !== null && contentPaintedAt >= contentNavigationStartedAt.current) conversation?.onReady?.();
+  }, [contentPaintedAt, conversation?.onReady]);
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
@@ -3825,10 +3854,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const recentTaskVisit = useRef<string | null>(null);
   useEffect(() => {
-    if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
-    recordRecentTask(issue, currentUserId);
-  }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
+    if (!(streamlinedUiEnabled || coordinatorWorkspaceEnabled) || !loadedIssue || !sessionResolved
+      || conversation || loadedIssue.conversationAgentId || loadedIssue.hiddenAt) return;
+    const visit = `${loadedIssue.companyId}:${currentUserId}:${loadedIssue.id}`;
+    recordRecentTask(loadedIssue, currentUserId, recentTaskVisit.current === visit ? undefined : Date.now());
+    recentTaskVisit.current = visit;
+  }, [loadedIssue, currentUserId, sessionResolved, streamlinedUiEnabled, coordinatorWorkspaceEnabled, conversation]);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -4314,7 +4347,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const breadcrumbTitle = issue?.title ?? issueHeaderSeed?.title ?? "";
   const breadcrumbIdentifier =
-    issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : undefined);
+    issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : issue?.id.slice(0, 8));
   const breadcrumbStatus = issue?.status ?? issueHeaderSeed?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -4553,6 +4586,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const upsertInteractionInCache = useCallback(
     (interaction: IssueThreadInteraction) => {
+      invalidateInteractionRecordViews(queryClient, interaction.companyId, interaction);
       queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
         queryKeys.issues.interactions(issueId!),
         (current) => {
@@ -4570,9 +4604,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           return next;
         },
       );
-      queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
-      queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention(interaction.companyId) });
     },
     [issueId, queryClient],
   );
@@ -4606,6 +4637,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     onSuccess: (_data, receipt) => {
       receipt.confirmed = true;
+      // A late receipt belongs to its original company, even after navigation.
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(receipt.companyId) });
       if (selectedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),
@@ -4643,7 +4676,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
       if (streamlinedUiEnabled && sessionResolved) {
-        recordRecentTask(nextIssue, currentUserId);
+        recordRecentTask(nextIssue, currentUserId, Date.now());
       }
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.activity(issueId!),
@@ -4865,6 +4898,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) }),
     ]),
   });
+  const cancelTask = useTaskCancellation();
   const stopAndFinalizeRun = useMutation({
     mutationFn: async ({
       runId,
@@ -4873,6 +4907,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       runId: string;
       status: "cancelled" | "done";
     }) => {
+      if (status === "cancelled") {
+        let stopped = false;
+        try {
+          return await cancelTask(issueId!, { status }, async () => {
+            await heartbeatsApi.cancel(runId);
+            stopped = true;
+          });
+        } catch (err) {
+          if (err instanceof TaskCancellationDismissedError || err instanceof SubtaskCancellationError) throw err;
+          throw stopped ? createRunCancelledStatusUpdateError(err) : err;
+        }
+      }
       await heartbeatsApi.cancel(runId);
       try {
         return await issuesApi.update(issueId!, { status });
@@ -4898,6 +4944,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err, { status }) => {
+      if (err instanceof TaskCancellationDismissedError) return;
+      if (err instanceof SubtaskCancellationError) {
+        invalidateIssueRunState();
+        pushToast({ title: "Some subtasks could not be canceled", body: err.message, tone: "error" });
+        return;
+      }
       const runWasStopped = didRunCancelBeforeStatusUpdateFail(err);
       pushToast({
         title: runWasStopped
@@ -4931,9 +4983,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [updateIssue.mutate],
   );
 
-  const updateChildIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+  const updateChildIssue = useUpdateIssueMutation({
+    companyId: resolvedCompanyId,
     onSuccess: () => {
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({
@@ -4943,16 +4994,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKey: queryKeys.sidebarBadges(resolvedCompanyId),
         });
       }
-    },
-    onError: (err) => {
-      pushToast({
-        title: "Task update failed",
-        body:
-          err instanceof Error
-            ? err.message
-            : "Unable to save sub-task changes",
-        tone: "error",
-      });
     },
   });
   const handleChildIssueUpdate = useCallback(
@@ -5679,6 +5720,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         if (!historyExpanded) {
           await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!), exact: true, refetchType: "none" });
         }
+        if (streamlinedUiEnabled && sessionResolved) {
+          recordRecentTask(nextIssue, currentUserId, new Date(comment.createdAt).getTime());
+        }
       }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
@@ -6069,7 +6113,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [breadcrumbParentRef, resolvedIssueDetailState, location.state, location.search]);
   useEffect(() => {
-    if (conversationAgent) {
+    if (isAgentChatRoute) {
       setBreadcrumbs([{ label: "Chat" }]);
       return;
     }
@@ -6096,7 +6140,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       },
     ]);
   }, [
-    conversationAgent,
+    isAgentChatRoute,
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
@@ -6235,7 +6279,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const receipt = readReceiptRef.current?.issueId === issue.id
       ? readReceiptRef.current
       : (readReceiptRef.current = pendingReadReceiptsRef.current.get(issue.id)
-        ?? { issueId: issue.id, account: bindAccount(queryClient), confirmed: false });
+        ?? { issueId: issue.id, companyId: issue.companyId, account: bindAccount(queryClient), confirmed: false });
     if (receipt.confirmed || pendingReadReceiptsRef.current.has(issue.id) || !receipt.account.isCurrentScope()) return;
     // Retry after a successful session read, without looping on a failed check.
     if (receipt.attemptedSessionAt === sessionUpdatedAt) return;
@@ -6328,7 +6372,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const handleChatImageClick = useCallback(
     (src: string) => {
-      if (!openIssueGallery(src)) window.open(src, "_blank");
+      if (!openIssueGallery(src)) openSafeUrl(src);
     },
     [openIssueGallery],
   );
@@ -6401,6 +6445,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
             {...sharedProps}
+            showDocumentSourceTask={persistedAgentChat}
+            onArtifactVisibilityChange={persistedAgentChat ? setPanelShowsArtifact : undefined}
             accountScope={taskPanelAccountScope}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
@@ -6439,6 +6485,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     handleSkillOpened,
     panelChildIssues,
     panelIssue,
+    persistedAgentChat,
+    setPanelShowsArtifact,
     suppressPanelUntilPlan,
     relationIssueLinkState,
     streamlinedTaskDetailEnabled,
@@ -6700,7 +6748,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (!rawHref) return;
 
       const currentUrl = new URL(`${location.pathname}${location.search}${location.hash}`, window.location.origin);
-      const hash = sameIssueDocumentHash(rawHref, currentUrl, [issue?.id, issue?.identifier, issueId].filter((id): id is string => !!id));
+      const issueReferences = [issue?.id, issue?.identifier, issueId].filter((id): id is string => !!id);
+      const hash = persistedAgentChat && anchor.hasAttribute("data-sidebar-document-link")
+        ? chatSidebarDocumentHash(rawHref, currentUrl, issueReferences)
+        : sameIssueDocumentHash(rawHref, currentUrl, issueReferences);
       if (!hash) return;
       const route = resolveIssueDocumentDeepLink(hash);
       if (route?.kind === "properties-pane" && (!taskInterfaceSettingsLoaded || !taskChatShellEnabled)) return;
@@ -6727,6 +6778,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     issue?.id,
     issue?.identifier,
     issueId,
+    persistedAgentChat,
     navigate,
     location.hash,
     location.key,
@@ -9046,6 +9098,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
                     issue={issue}
+                    showDocumentSourceTask={persistedAgentChat}
                     accountScope={taskPanelAccountScope}
                     childIssues={childIssues}
                     issueLinkState={

@@ -72,6 +72,9 @@ export interface RunnerToolBridgeOptions {
 export interface RunnerToolBridge {
   readonly url: string;
   readonly secret: string;
+  /** Every tool name this bridge admits: the served catalog, its reserved
+   * finish and block tools, and any private tools. */
+  readonly admittedToolNames: readonly string[];
   close(): Promise<void>;
 }
 
@@ -243,6 +246,7 @@ export async function startRunnerToolBridge(
   return Object.freeze({
     url: typeof address === "string" ? "http://localhost/mcp" : `http://127.0.0.1:${address.port}/mcp`,
     secret,
+    admittedToolNames: Object.freeze(admittedTools.map((tool) => tool.name)),
     async close() {
       if (closed) return;
       closed = true;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   activityLog,
   agentTaskSessions,
@@ -20,7 +20,6 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { evaluateAgentInvokability } from "../agent-invokability.js";
-import { changedTaskCondition } from "./changed-tasks.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -29,6 +28,7 @@ import { legacyControllerOwnerStamp } from "../legacy-controller-lease.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type LocalOwnerStamp } from "../owner-proof.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
@@ -205,9 +205,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     };
     const agentIds = [...new Set(issueRows.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []))];
     const blockedRows = issueRows.filter(issue => issue.status === "blocked");
-    const notSupersededByUserContinuation = interactionNotSupersededSql(issueThreadInteractions.companyId,
-      sql`${issueThreadInteractions.issueId}::text`, issueThreadInteractions.createdAt);
-
     const [activeRuns, latestRuns, wakes, chatWakes, nativePending, handoffs, goals, interactions, approvalRows,
       blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions,
       savedWorkRows] = await Promise.all([
@@ -263,12 +260,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         goalDesiredState: agentTaskSessions.goalDesiredState })
         .from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, companyId), inArray(agentTaskSessions.taskKey, ids),
           sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)),
-      // A pending question counts as the person's move until the person
-      // answers it another way: a Retry or message started after the question
-      // was asked (an explicit user continuation) supersedes it as a wait.
       database.select({ issueId: issueThreadInteractions.issueId, count: sql<number>`count(*)::int` }).from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
-          eq(issueThreadInteractions.status, "pending"), notSupersededByUserContinuation))
+          eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition()))
         .groupBy(issueThreadInteractions.issueId),
       database.select({ issueId: issueApprovals.issueId, count: sql<number>`count(*)::int` }).from(issueApprovals)
         .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
@@ -513,7 +507,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null;
-    changedSince?: Date },
+    changed?: SQL },
     cursor: string | null, limit: number) {
     const at = now();
     const liveRun = sql`exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
@@ -533,7 +527,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       scope.issueIds ? inArray(issues.id, scope.issueIds) : undefined,
       cursor ? sql`${issues.id} > ${cursor}` : undefined,
       scope.createdAfter ? gte(issues.createdAt, scope.createdAfter) : undefined,
-      scope.changedSince ? changedTaskCondition(scope.changedSince) : undefined,
+      scope.changed,
       inArray(issues.status, [...OPEN_STATUSES]),
       sql`${issues.assigneeAgentId} is not null`,
       isNull(issues.assigneeUserId),
@@ -553,9 +547,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
             or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))
         and not exists (select 1 from heartbeat_runs wake_run where wake_run.id = w.run_id
           and ${queuedRunStalledSql(aliasedRun("wake_run"), at)})))`,
-      sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
-        and t.issue_id = ${issues.id} and t.status = 'pending'
-        and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,
+      sql`not exists (select 1 from ${issueThreadInteractions} where ${issueThreadInteractions.companyId} = ${issues.companyId}
+        and ${issueThreadInteractions.issueId} = ${issues.id} and ${issueThreadInteractions.status} = 'pending'
+        and ${activeIssueInteractionCondition()})`,
       // Plain waits on someone else, decided without the full read. The
       // predicate re-checks every task this lets through.
       sql`not exists (select 1 from issue_relations rel inner join issues blocker
@@ -1020,16 +1014,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
 }
-
-/** A pending interaction no explicit user continuation (Retry or message)
- * started after it. Uses the (company, issueId, created) run index. */
-function interactionNotSupersededSql(companyId: SQLWrapper, issueIdText: SQLWrapper, createdAt: SQLWrapper) {
-  return sql`not exists (select 1 from heartbeat_runs retry where retry.company_id = ${companyId}
-    and (retry.context_snapshot->>'issueId') = ${issueIdText}
-    and jsonb_typeof(retry.context_snapshot->'explicitUserContinuation') = 'object'
-    and retry.created_at > ${createdAt})`;
-}
-
 
 /** The status a block replaced, from the activity entry that blocked the task:
  * the normal update route records it as `_previous.status`, recovery as

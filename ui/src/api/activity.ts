@@ -38,6 +38,8 @@ export interface RunForIssue {
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   wakeCommentIds?: string[] | null;
+  /** Queued messages this run's first provider turn took while it was starting. */
+  firstTurnCommentIds?: string[] | null;
   wakeCommentId?: string | null;
   contextCommentId?: string | null;
   contextIssueId?: string | null;

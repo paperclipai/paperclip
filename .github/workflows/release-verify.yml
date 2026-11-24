@@ -564,6 +564,28 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Exact-key master cache for PR e2e_shards (read-only restore in
+      # pr-trusted.yml). Only canonical master pushes write this entry.
+      - name: Check for prebuilt E2E UI assets cache
+        id: e2e_ui_dist
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          lookup-only: true
+          path: server/ui-dist
+          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+
+      - name: Stage prebuilt UI assets for E2E cache
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.e2e_ui_dist.outputs.cache-hit != 'true' }}
+        run: PAPERCLIP_RELEASE_REUSE_UI_DIST=1 bash scripts/prepare-server-ui-dist.sh
+
+      - name: Save prebuilt UI assets for PR E2E shards
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.e2e_ui_dist.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: server/ui-dist
+          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+
   runner_binary_targets:
     if: inputs.runner_binaries_only
     name: Read exact-source daemon targets

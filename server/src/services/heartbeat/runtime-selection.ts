@@ -1,4 +1,5 @@
 import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
+import { antigravityForcesSameSessionRecovery } from "../native-runtime/antigravity-release.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
@@ -125,7 +126,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
+    persistedExecutionWorkspace: { id: string; companyId?: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: (Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> & {
@@ -325,7 +326,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
-  if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
+  const sshAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
+  if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native", {
+    adapterType: agent.adapterType,
+    environmentDriver: executionTarget?.kind === "remote" ? executionTarget.transport : null,
+    remoteAuthority: Boolean(sshAuthority?.location && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      && persistedExecutionWorkspace?.companyId === agent.companyId && sshAuthority.writerRunId === run.id
+      && executionTarget.spec.remoteCwd === executionTarget.remoteCwd
+      && sshAuthority.location.environmentId === executionTarget.environmentId
+      && sshAuthority.location.leaseId === executionTarget.leaseId),
+    remoteCwd: executionTarget?.kind === "remote" ? executionTarget.remoteCwd : null,
+    authorityCwd: sshAuthority?.location?.remoteCwd ?? null,
+  });
   let nativeExecution: NativeExecutionInput | null = null;
   let toolRefreshOnResume: boolean | undefined;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
@@ -599,12 +611,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         );
       if ("runtimeContext" in nativeExecution) {
         const savedVersions = parseObject(run.contextSnapshot?.skillVersions);
-        const accessibleKeys = new Set(runtimeSkillEntries.filter(entry => entry.sourceStatus !== "missing").map(entry => entry.key));
-        if (nativeExecution.runtimeContext.skills.some(skill =>
-          Object.prototype.hasOwnProperty.call(savedVersions, skill.key) && !accessibleKeys.has(skill.key))) {
+        const currentEntries = new Map(runtimeSkillEntries.map(entry => [entry.key, entry]));
+        const savedSkills = nativeExecution.runtimeContext.skills.filter(skill =>
+          Object.prototype.hasOwnProperty.call(savedVersions, skill.key));
+        if (savedSkills.some(skill => !currentEntries.has(skill.key))) {
           throw new ConfigurationIncompleteFailure("Project skill access changed while this execution was suspended. Restore access or start a new execution.", {
             configurationIncomplete: { reason: "skill_access_changed", actionUrl: "/skills" },
           });
+        }
+        const unprepared = savedSkills.find(skill => currentEntries.get(skill.key)?.sourceStatus === "missing");
+        if (unprepared) {
+          const detail = currentEntries.get(unprepared.key)?.missingDetail?.trim() || "its saved files are unavailable";
+          throw new Error(`Saved skill "${unprepared.key}" could not be prepared for this resumed execution: ${detail}`);
         }
       }
       // Recover only the originally admitted request. A stored idle
@@ -934,8 +952,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
     }
-    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
-      && nativeExecution.provider.agent === "antigravity") {
+    if (nativeResumeCheckpoint && antigravityForcesSameSessionRecovery(nativeExecution.provider)) {
       nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
     }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
@@ -1184,6 +1201,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
                 then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'
+                then jsonb_build_object('remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace')
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
         updatedAt: new Date(),
       })

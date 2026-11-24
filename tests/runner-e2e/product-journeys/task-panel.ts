@@ -19,11 +19,14 @@ export async function openTaskPanelTab(page: Page, tabName: "Properties" | "Arti
   for (let step = 0; step < 4; step++) {
     await expect.poll(() => anyVisible(ready, tab, option, newTab, toggle, opener)).toBe(true);
     if (await ready.isVisible()) return;
-    if (await option.isVisible()) await option.click();
-    else if (await tab.isVisible()) await tab.click();
-    else if (await newTab.isVisible()) await newTab.click();
-    else if (await toggle.isVisible()) await toggle.click();
-    else await opener.click();
+    if (await option.isVisible()) { await option.click(); await expect(ready).toBeVisible(); }
+    else if (await tab.isVisible()) { await tab.click(); await expect(ready).toBeVisible(); }
+    else if (await newTab.isVisible()) { await newTab.click(); await expect(option).toBeVisible(); }
+    else {
+      if (await toggle.isVisible()) await toggle.click();
+      else await opener.click();
+      await expect.poll(() => anyVisible(ready, tab, option, newTab)).toBe(true);
+    }
   }
   await expect(ready).toBeVisible();
 }

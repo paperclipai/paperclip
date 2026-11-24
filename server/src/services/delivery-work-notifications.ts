@@ -79,6 +79,8 @@ export const DELIVERY_QUEUES = {
 
   decisionArchiveDelivery: "decision-archive-delivery",
   toolConnectionHealth: "tool-connection-health",
+  toolConnectionContentDeletion: "tool-connection-content-deletion",
+  googlePendingRevocation: "google-pending-revocation",
   toolReviewProjection: "tool-review-projection",
   toolReviewInterruption: "tool-review-interruption",
   toolReviewRecovery: "tool-review-recovery",
