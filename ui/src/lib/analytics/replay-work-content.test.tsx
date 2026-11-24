@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   companyId: "co-1" as string | null,
   session: { browserAnalytics: { replayEnabled: true } } as unknown,
-  boardAccess: vi.fn(),
   connections: vi.fn(),
   chatEndpoints: vi.fn(),
   refresh: vi.fn(),
@@ -18,12 +17,10 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: mocks.companyId }),
 }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => mocks.session } }));
-vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: () => mocks.boardAccess() } }));
 vi.mock("@/api/tools", () => ({ toolsApi: { listConnections: (id: string) => mocks.connections(id) } }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: (id: string) => mocks.chatEndpoints(id) } }));
 vi.mock("./product-analytics", () => ({ refreshSessionReplay: () => mocks.refresh() }));
 
-import type { CurrentBoardAccess } from "@/api/access";
 import { REPLAY_WORK_CONTENT_ATTRIBUTE } from "./privacy";
 import {
   ReplayWorkContentVisibility,
@@ -31,21 +28,13 @@ import {
   connectionCarriesConnectedAccountData,
   isReplayWorkContentSourceChange,
   replayWorkContentQueryKeys,
-  viewerSeesEveryConnection,
 } from "./replay-work-content";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
-type BoardAccess = Pick<CurrentBoardAccess, "isInstanceAdmin" | "memberships" | "source">;
-type BoardRole = NonNullable<BoardAccess["memberships"]>[number]["membershipRole"];
-
-function boardAccess(role: BoardRole, overrides: Partial<BoardAccess> = {}): BoardAccess {
-  return {
-    isInstanceAdmin: false,
-    source: "session",
-    memberships: ["co-1", "co-2"].map((companyId) => ({ companyId, membershipRole: role, status: "active" as const })),
-    ...overrides,
-  };
+/** A complete connection list, as the server sends it to a board reader. */
+function connectionList(connections: ReturnType<typeof connection>[] = [], hiddenCount = 0) {
+  return { connections, hiddenCount };
 }
 
 function connection(overrides: { name?: string; config?: Record<string, unknown>; transportConfig?: Record<string, unknown> } = {}) {
@@ -90,31 +79,20 @@ describe("connectionCarriesConnectedAccountData", () => {
 describe("companyAllowsReplayWorkContent", () => {
   it("needs both lists loaded and no Google or Slack source", () => {
     expect(companyAllowsReplayWorkContent(undefined, [])).toBe(false);
-    expect(companyAllowsReplayWorkContent([], undefined)).toBe(false);
-    expect(companyAllowsReplayWorkContent([], [])).toBe(true);
-    expect(companyAllowsReplayWorkContent([connection()], [{ provider: "github" } as never])).toBe(true);
-    expect(companyAllowsReplayWorkContent([connection({ config: { sourceTemplateKey: "gmail" } })], [])).toBe(false);
-    expect(companyAllowsReplayWorkContent([], [{ provider: "slack" } as never])).toBe(false);
-  });
-});
-
-describe("viewerSeesEveryConnection", () => {
-  it("trusts only a viewer the server shows every connection", () => {
-    expect(viewerSeesEveryConnection("co-1", boardAccess("owner"))).toBe(true);
-    expect(viewerSeesEveryConnection("co-1", boardAccess("admin"))).toBe(true);
-    expect(viewerSeesEveryConnection("co-1", boardAccess("member", { isInstanceAdmin: true }))).toBe(true);
-    expect(viewerSeesEveryConnection("co-1", boardAccess(null, { source: "local_implicit", memberships: [] }))).toBe(true);
+    expect(companyAllowsReplayWorkContent(connectionList(), undefined)).toBe(false);
+    expect(companyAllowsReplayWorkContent(connectionList(), [])).toBe(true);
+    expect(companyAllowsReplayWorkContent(connectionList([connection()]), [{ provider: "github" } as never])).toBe(true);
+    expect(companyAllowsReplayWorkContent(connectionList([connection({ config: { sourceTemplateKey: "gmail" } })]), [])).toBe(false);
+    expect(companyAllowsReplayWorkContent(connectionList(), [{ provider: "slack" } as never])).toBe(false);
   });
 
-  it("does not trust a viewer the server may hide draft connections from", () => {
-    for (const role of ["operator", "member", "viewer", null] as const) {
-      expect(viewerSeesEveryConnection("co-1", boardAccess(role))).toBe(false);
-    }
-    expect(viewerSeesEveryConnection("co-3", boardAccess("owner"))).toBe(false);
-    expect(viewerSeesEveryConnection("co-1", boardAccess("owner", {
-      memberships: [{ companyId: "co-1", membershipRole: "owner", status: "suspended" }],
-    }))).toBe(false);
-    expect(viewerSeesEveryConnection("co-1", undefined)).toBe(false);
+  it("needs a connection list the server did not filter", () => {
+    // Another person's draft (an expired Google sign-in returns to draft) or
+    // a connector whose plugin is unavailable: the hidden row can be Google.
+    expect(companyAllowsReplayWorkContent(connectionList([], 1), [])).toBe(false);
+    expect(companyAllowsReplayWorkContent(connectionList([connection()], 2), [])).toBe(false);
+    // An older server sends no count.
+    expect(companyAllowsReplayWorkContent({ connections: [] }, [])).toBe(false);
   });
 });
 
@@ -166,8 +144,7 @@ describe("ReplayWorkContentVisibility", () => {
   beforeEach(() => {
     mocks.companyId = "co-1";
     mocks.session = { browserAnalytics: { replayEnabled: true } };
-    mocks.boardAccess.mockReset().mockResolvedValue(boardAccess("owner"));
-    mocks.connections.mockReset().mockResolvedValue({ connections: [] });
+    mocks.connections.mockReset().mockResolvedValue(connectionList());
     mocks.chatEndpoints.mockReset().mockResolvedValue([]);
     mocks.refresh.mockReset();
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -189,7 +166,7 @@ describe("ReplayWorkContentVisibility", () => {
   });
 
   it("keeps work content masked when the company has a Google connection", async () => {
-    mocks.connections.mockResolvedValue({ connections: [connection({ config: { sourceTemplateKey: "google-workspace" } })] });
+    mocks.connections.mockResolvedValue(connectionList([connection({ config: { sourceTemplateKey: "google-workspace" } })]));
     await render();
     expect(visible()).toBeNull();
     expect(mocks.refresh).not.toHaveBeenCalled();
@@ -207,18 +184,18 @@ describe("ReplayWorkContentVisibility", () => {
     expect(visible()).toBeNull();
   });
 
-  it("keeps work content masked for a viewer the server may hide a draft connection from", async () => {
+  it("keeps work content masked when the server hid a connection from this viewer", async () => {
     // A Google connection returns to draft when its sign-in expires, and the
-    // list hides another person's draft from a member, so an empty list
-    // proves nothing for this viewer.
-    mocks.boardAccess.mockResolvedValue(boardAccess("member"));
+    // list hides another person's draft from a member, so the visible part
+    // of the list proves nothing.
+    mocks.connections.mockResolvedValue(connectionList([], 1));
     await render();
     expect(visible()).toBeNull();
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
-  it("keeps work content masked when the viewer's access cannot be read", async () => {
-    mocks.boardAccess.mockRejectedValue(new Error("500"));
+  it("keeps work content masked when the server does not say whether the list is complete", async () => {
+    mocks.connections.mockResolvedValue({ connections: [] });
     await render();
     expect(visible()).toBeNull();
   });
@@ -229,7 +206,6 @@ describe("ReplayWorkContentVisibility", () => {
     expect(visible()).toBeNull();
     expect(mocks.connections).not.toHaveBeenCalled();
     expect(mocks.chatEndpoints).not.toHaveBeenCalled();
-    expect(mocks.boardAccess).not.toHaveBeenCalled();
   });
 
   it("masks again as soon as a source change resets the check, and stays masked for a new Google connection", async () => {
@@ -242,7 +218,7 @@ describe("ReplayWorkContentVisibility", () => {
     });
     await settle();
     expect(visible()).toBeNull();
-    finishReload({ connections: [connection({ config: { sourceTemplateKey: "gmail" } })] });
+    finishReload(connectionList([connection({ config: { sourceTemplateKey: "gmail" } })]));
     await settle();
     expect(visible()).toBeNull();
     expect(mocks.connections).toHaveBeenCalledTimes(2);
@@ -270,7 +246,7 @@ describe("ReplayWorkContentVisibility", () => {
     await render();
     expect(visible()).toBe("visible");
     mocks.companyId = "co-2";
-    mocks.connections.mockResolvedValue({ connections: [connection({ config: { sourceTemplateKey: "gmail" } })] });
+    mocks.connections.mockResolvedValue(connectionList([connection({ config: { sourceTemplateKey: "gmail" } })]));
     await render();
     expect(visible()).toBeNull();
     mocks.companyId = "co-1";
@@ -279,7 +255,7 @@ describe("ReplayWorkContentVisibility", () => {
     await render();
     // The first answer for co-1 is gone: nothing shows until a new one loads.
     expect(visible()).toBeNull();
-    finishReload({ connections: [] });
+    finishReload(connectionList());
     await settle();
     expect(visible()).toBe("visible");
     expect(mocks.refresh).toHaveBeenCalledTimes(2);

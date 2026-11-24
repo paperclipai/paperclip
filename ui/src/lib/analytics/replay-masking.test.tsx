@@ -436,6 +436,24 @@ describe("session replay text masking", () => {
       expect(recordedTextOf(html, "in the env file")).toBe(" in the env file, then use password: *******");
     }));
 
+    it("masks a value whose label follows an inline assignment in an earlier node", () => withVisibleWorkContent(() => {
+      // The first value ends with its inline code, so the scan reads on and
+      // finds the label that sits between the two code elements.
+      const html = work("<p>Set <code>API_KEY=abc123</code> and password: <code>hunter2</code> today</p>");
+      expect(recordedTextOf(html, "hunter2")).toBe("*******");
+      expect(recordedTextOf(html, "today")).toBe(" today");
+      const quoted = work("<p>Use <code>token=\"abc123\"</code> with pin: <code>4821</code></p>");
+      expect(recordedTextOf(quoted, "4821")).toBe("****");
+    }));
+
+    it("masks an unquoted value with formatting inside it, to the end of its line", () => withVisibleWorkContent(() => {
+      const html = work("<p><strong>Password:</strong> correct <em>horse</em> battery<br>Next line</p>");
+      expect(recordedTextOf(html, "correct")).toBe(" ******* ");
+      expect(recordedTextOf(html, "horse")).toBe("*****");
+      expect(recordedTextOf(html, "battery")).toBe(" *******");
+      expect(recordedTextOf(html, "Next line")).toBe("Next line");
+    }));
+
     it("masks a value split across syntax highlight spans", () => withVisibleWorkContent(() => {
       const env = work("<pre><code><span>PASSWORD</span>=abc<span>$def</span>\n<span>REGION</span>=us</code></pre>");
       expect(recordedTextOf(env, "=abc")).toBe("=***");
@@ -470,10 +488,10 @@ describe("session replay text masking", () => {
     it("never shows more with line context than without it", () => {
       // A gutter number glued to a key breaks the word boundary of the known
       // formats. The text is still redacted by itself.
-      expect(redactReplaySecrets("sk-proj-abcdefghijklmnop1234", { before: "12", preformatted: true }))
+      expect(redactReplaySecrets("sk-proj-abcdefghijklmnop1234", { before: "12", continues: () => true }))
         .toBe(stars("sk-proj-abcdefghijklmnop1234"));
-      expect(redactReplaySecrets("password: hunter2", { before: "note: ", preformatted: false })).toBe("password: *******");
-      expect(redactReplaySecrets("plain words", { before: "note: ", preformatted: false })).toBe("plain words");
+      expect(redactReplaySecrets("password: hunter2", { before: "note: ", continues: () => false })).toBe("password: *******");
+      expect(redactReplaySecrets("plain words", { before: "note: ", continues: () => false })).toBe("plain words");
     });
 
     it("stays fast on a long highlighted line", () => withVisibleWorkContent(() => {

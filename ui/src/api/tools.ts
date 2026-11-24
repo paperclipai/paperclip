@@ -86,7 +86,15 @@ import { api, detachInflightGet, type RequestOptions } from "./client";
  */
 
 export type ToolApplicationsResponse = { applications: ToolApplication[] };
-export type ToolConnectionsResponse = { connections: ToolConnection[] };
+export type ToolConnectionsResponse = {
+  connections: ToolConnection[];
+  /**
+   * How many of the company's connections the server left out of
+   * `connections` for this board reader: another person's draft, or a
+   * connector whose plugin is unavailable. Absent from an older server.
+   */
+  hiddenCount?: number;
+};
 export type ToolCatalogResponse = { catalog: ToolCatalogEntry[] };
 export type ToolRuntimeSlotsResponse = { runtimeSlots: ToolRuntimeSlot[] };
 export type ToolRuntimeHealthResponse = ToolRuntimeHealthSummary;

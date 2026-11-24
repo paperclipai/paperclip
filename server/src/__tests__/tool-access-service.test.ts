@@ -19483,6 +19483,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(memberRes.body.connections).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: otherDraft.id })]),
     );
+    // The member's list is incomplete, and the response says so.
+    expect(memberRes.body.hiddenCount).toBe(1);
 
     const ownerApp = createRouteApp(
       db,
@@ -19498,6 +19500,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expect.objectContaining({ id: activeConnection.id }),
       ]),
     );
+    expect(ownerRes.body.hiddenCount).toBe(0);
   });
 
   it("keeps direct profile and policy mutation routes viewer-safe", async () => {

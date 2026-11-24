@@ -131,14 +131,17 @@ function secretValueRange(text: string, index: number): { from: number; to: numb
  * `password="correct horse battery staple"` masks in full while the next JSON
  * field and a preceding `user=bob` still show.
  *
- * `minValueStart` is for text that follows other text on its line (see
- * `redactReplaySecrets`): an unquoted value that began before that index is
- * left to the node it began in, and the scan resumes at that index. A quoted
- * value that began earlier and is still open keeps masking through this
- * text up to its closing quote, so `Password: "correct **horse** battery"`
- * masks every word while the text after the closing quote shows.
+ * `nodeStart` and `continues` are for text that follows other text on its
+ * line (see `redactReplaySecrets`). A value that began before `nodeStart`
+ * masks on through this node in two cases: it is quoted and still open (up to
+ * its closing quote, so `Password: "correct **horse** battery"` masks every
+ * word while the text after the closing quote shows), or `continues` says an
+ * unquoted value runs into this node. Otherwise the value is left to the
+ * node it began in. The scan then goes on from the text after its operator,
+ * so a later label in the earlier text (`KEY=abc and password: `) still
+ * masks this node.
  */
-function redactSecretAssignments(text: string, minValueStart = 0): string {
+function redactSecretAssignments(text: string, nodeStart: number, continues: (offset: number) => boolean): string {
   const pattern = new RegExp(ASSIGNMENT_START.source, "g");
   let result = "";
   let copied = 0;
@@ -147,17 +150,15 @@ function redactSecretAssignments(text: string, minValueStart = 0): string {
     if (!labelNamesSecret(match[1] ?? "")) continue;
     const valueStart = match.index + match[0].length;
     const range = secretValueRange(text, valueStart);
-    if (range.from < minValueStart) {
+    if (range.from < nodeStart) {
       const quoted = range.from === valueStart + 1;
-      if (quoted && range.to > minValueStart) {
-        const from = Math.max(copied, minValueStart);
-        result += text.slice(copied, from) + maskCharacters(text.slice(from, range.to));
-        copied = range.to;
-        pattern.lastIndex = Math.max(range.end, pattern.lastIndex);
+      const runsOn = range.to > nodeStart && (quoted || continues(range.from));
+      if (!runsOn) {
+        // A closed quoted value has a known end. An unquoted one does not, so
+        // read on inside it: that can only find more to mask.
+        if (quoted) pattern.lastIndex = Math.max(pattern.lastIndex, range.end);
         continue;
       }
-      pattern.lastIndex = Math.max(pattern.lastIndex, minValueStart);
-      continue;
     }
     if (range.to > range.from) {
       result += text.slice(copied, range.from) + maskCharacters(text.slice(range.from, range.to));
@@ -219,8 +220,8 @@ function mergeMasks(text: string, first: string, second: string): string {
 }
 
 /** Every redaction keeps the text length, so a slice of the result lines up with the input. */
-function redactSecretsInLine(text: string, minValueStart: number): string {
-  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters), minValueStart)
+function redactSecretsInLine(text: string, nodeStart: number, continues: (offset: number) => boolean): string {
+  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters), nodeStart, continues)
     .replace(SECRET_FLAG, (_match, flag: string, value: string) => `${flag}${maskCharacters(value)}`)
     .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
     .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
@@ -232,12 +233,16 @@ export type ReplayLineContext = {
   /** The text before the node on the same line. */
   before: string;
   /**
-   * True inside preformatted text, where a line is one statement: a secret
-   * value that began in `before` runs on through this node. In prose it does
-   * not, so the sentence after an inline `KEY=value` still shows.
+   * Whether a secret value that starts at this offset of `before` runs on
+   * into the node. A value runs to the end of its line (or its closing quote)
+   * inside the element it starts in: `Password: "correct **horse** battery"`
+   * masks all three nodes, while the sentence after an inline
+   * `KEY=value` still shows.
    */
-  preformatted: boolean;
+  continues: (offset: number) => boolean;
 };
+
+const never = () => false;
 
 /**
  * Masks secrets inside text that is otherwise shown in replays: known key and
@@ -249,15 +254,16 @@ export type ReplayLineContext = {
  *
  * rrweb records one text node at a time, and Markdown and syntax highlighting
  * split a line into several nodes (`**Password:** hunter2`, a value in inline
- * code). `context` carries the text before the node on its line, so a label
- * in an earlier node still masks the value in this one. Context only adds
- * masking: whatever the text masks by itself stays masked.
+ * code, a value with bold text inside). `context` carries the text before the
+ * node on its line, so a label or an unfinished value in an earlier node
+ * still masks this one. Context only adds masking: whatever the text masks by
+ * itself stays masked.
  */
 export function redactReplaySecrets(text: string, context?: ReplayLineContext): string {
-  const alone = redactSecretsInLine(text, 0);
+  const alone = redactSecretsInLine(text, 0, never);
   if (!context?.before) return alone;
   const { before } = context;
-  const inLine = redactSecretsInLine(before + text, context.preformatted ? 0 : before.length).slice(before.length);
+  const inLine = redactSecretsInLine(before + text, before.length, context.continues).slice(before.length);
   return mergeMasks(text, alone, inLine);
 }
 
@@ -292,15 +298,19 @@ function lastTextChild(node: Node): Node | null {
   return child;
 }
 
+/** The text before a node on its line, and the text node each part came from. */
+type LineBefore = { text: string; parts: Array<{ end: number; node: Text }> };
+
 /**
  * The text before `node` on its line inside `root`: earlier text nodes, back
  * to a line break, a block element or `root`. Bounded, so recording a long
  * line stays linear.
  */
-function lineTextBefore(node: Text, root: Element): string {
-  let before = "";
+function lineBefore(node: Text, root: Element): LineBefore {
+  const found: Array<{ data: string; node: Text }> = [];
+  let length = 0;
   let current: Node = node;
-  for (let visited = 0; visited < LINE_CONTEXT_MAX_NODES && before.length < LINE_CONTEXT_MAX_LENGTH; visited += 1) {
+  for (let visited = 0; visited < LINE_CONTEXT_MAX_NODES && length < LINE_CONTEXT_MAX_LENGTH; visited += 1) {
     let previous: Node | null = current.previousSibling;
     if (!previous) {
       const parent = current.parentNode;
@@ -311,21 +321,32 @@ function lineTextBefore(node: Text, root: Element): string {
     current = previous;
     if (isHiddenFromText(previous)) continue;
     if (startsNewLine(previous)) break;
+    let reachedBlock = false;
     for (let child = lastTextChild(previous); child; child = lastTextChild(previous)) {
       previous = child;
-      if (startsNewLine(previous)) return before.slice(-LINE_CONTEXT_MAX_LENGTH);
+      if (startsNewLine(previous)) {
+        reachedBlock = true;
+        break;
+      }
     }
+    if (reachedBlock) break;
     current = previous;
     if (previous.nodeType !== TEXT_NODE) continue;
     const data = (previous as Text).data;
     const lineBreak = Math.max(data.lastIndexOf("\n"), data.lastIndexOf("\r"));
-    if (lineBreak >= 0) {
-      before = data.slice(lineBreak + 1) + before;
-      break;
-    }
-    before = data + before;
+    const onLine = lineBreak >= 0 ? data.slice(lineBreak + 1) : data;
+    found.unshift({ data: onLine, node: previous as Text });
+    length += onLine.length;
+    if (lineBreak >= 0) break;
   }
-  return before.slice(-LINE_CONTEXT_MAX_LENGTH);
+  // Keep the end of the line when it is longer than the limit.
+  const dropped = Math.max(0, length - LINE_CONTEXT_MAX_LENGTH);
+  let end = -dropped;
+  const parts = found.map((part) => {
+    end += part.data.length;
+    return { end, node: part.node };
+  });
+  return { text: found.map((part) => part.data).join("").slice(dropped), parts };
 }
 
 /**
@@ -336,6 +357,7 @@ function lineTextBefore(node: Text, root: Element): string {
  */
 function redactWorkContentText(text: string, parent: HTMLElement, root: Element): string {
   if (!/\S/.test(text)) return text;
+  // Preformatted text: a line is one statement, so a value runs to its end.
   const preformatted = parent.closest("pre") !== null;
   let result = redactReplaySecrets(text);
   let candidates = 0;
@@ -344,8 +366,12 @@ function redactWorkContentText(text: string, parent: HTMLElement, root: Element)
     candidates += 1;
     // Many identical siblings: stop reading context and mask the text instead.
     if (candidates > MAX_CONTEXT_CANDIDATES) return maskCharacters(text);
-    const before = lineTextBefore(child as Text, root);
-    if (before) result = mergeMasks(text, result, redactReplaySecrets(text, { before, preformatted }));
+    const line = lineBefore(child as Text, root);
+    if (!line.text) continue;
+    // Elsewhere a value runs on only inside the element it starts in.
+    const continues = (offset: number) => preformatted
+      || (line.parts.find((part) => offset < part.end)?.node.parentNode?.contains(child) ?? false);
+    result = mergeMasks(text, result, redactReplaySecrets(text, { before: line.text, continues }));
   }
   return result;
 }

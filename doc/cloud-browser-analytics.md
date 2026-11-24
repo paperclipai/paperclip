@@ -300,11 +300,14 @@ always masked.
     channels are found by `config.provider`, because a removed channel's
     endpoint is archived (and leaves the endpoint list) while its connection
     row stays with a custom name.
-  - Only an owner, an admin or an instance admin gets an answer. The
-    connection list hides another person's draft connection from every other
-    member, and a Google or Slack connection returns to draft when its sign-in
-    expires, so an empty list proves nothing for those members and their
-    replays keep work content masked.
+  - The connection list must be complete. `GET
+    /api/companies/:companyId/tools/connections` leaves some rows out of a
+    board reader's list: another person's draft connection (a Google or Slack
+    connection returns to draft when its sign-in expires) and a connector
+    whose plugin is unavailable. The response reports how many as
+    `hiddenCount`. A hidden row can be Google or Slack, so the check counts
+    only a list with `hiddenCount: 0`. An older server sends no count, which
+    also keeps work content masked.
   - Loading, a failed latest fetch (even with an older answer cached), a list
     that waits on a refresh, no company and replay off all keep work content
     masked. The check keeps its own query keys (`replayWorkContentQueryKeys`)
@@ -332,8 +335,11 @@ always masked.
     flags (`--password value`), auth header credentials, URL passwords and
     long mixed-case random tokens. rrweb records one text node at a time, so
     the function also reads the text before the node on its line: a bold
-    label, a value in inline code and a value split across syntax-highlight
-    spans are masked. It is a best effort. It does not catch a secret with no
+    label, a value in inline code, a value with bold or italic text inside it
+    and a value split across syntax-highlight spans are masked. A value runs
+    to its closing quote or the end of its line inside the element it starts
+    in, so the sentence after an inline `KEY=value` still shows. It is a best
+    effort. Labels are matched in English. It does not catch a secret with no
     label and no known format (a short password in a sentence, a lowercase
     hex key), a value on a different line from its label, or a value in a
     table cell under a header.

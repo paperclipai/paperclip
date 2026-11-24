@@ -5,14 +5,13 @@
 // agents copy connected-account content into tasks and artifacts, and our
 // privacy policy and the Google API Limited Use rules say no person may read
 // that content in a replay. Every unknown state (analytics off, no company,
-// a query loading, failing or waiting on a refresh, a viewer the server may
-// hide connections from) keeps it masked, and a new connection or chat channel
-// masks it again until the check reruns.
+// a query loading, failing or waiting on a refresh, a connection list the
+// server filtered) keeps it masked, and a new connection or chat channel masks
+// it again until the check reruns.
 
 import { useLayoutEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { connectionSourceSlug, isAppAggregator, type ToolConnection } from "@paperclipai/shared";
-import { accessApi, type CurrentBoardAccess } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { chatEndpointsApi, type ChatEndpoint } from "@/api/chatEndpoints";
 import { toolsApi } from "@/api/tools";
@@ -77,38 +76,28 @@ export function connectionCarriesConnectedAccountData(
 }
 
 /**
- * True when work content may show in replays: both lists loaded, and no tool
- * connection or chat endpoint (any status) is Google, Slack or an aggregator.
+ * True when work content may show in replays: both lists loaded, the
+ * connection list is complete, and no tool connection or chat endpoint (any
+ * status) is Google, Slack, an aggregator or a router app.
+ *
+ * The server leaves some connections out of a reader's list: another person's
+ * draft (a Google or Slack connection returns to draft when its sign-in
+ * expires) and a connector whose plugin is unavailable. It reports how many
+ * as `hiddenCount`. A hidden row can be Google or Slack, so only a list with
+ * `hiddenCount: 0` counts. An older server sends no count, which also masks.
  */
 export function companyAllowsReplayWorkContent(
-  connections: ReadonlyArray<Parameters<typeof connectionCarriesConnectedAccountData>[0]> | undefined,
+  connectionList: {
+    connections: ReadonlyArray<Parameters<typeof connectionCarriesConnectedAccountData>[0]>;
+    hiddenCount?: number;
+  } | undefined,
   chatEndpoints: ReadonlyArray<Pick<ChatEndpoint, "provider">> | undefined,
 ): boolean {
-  if (!connections || !chatEndpoints) return false;
-  if (connections.some(connectionCarriesConnectedAccountData)) return false;
+  if (!connectionList || !chatEndpoints) return false;
+  if (connectionList.hiddenCount !== 0) return false;
+  if (connectionList.connections.some(connectionCarriesConnectedAccountData)) return false;
   if (chatEndpoints.some((endpoint) => endpoint.provider === "slack")) return false;
   return true;
-}
-
-/**
- * True when the server shows this viewer every connection of the company.
- * The connection list hides another person's draft connection from anyone who
- * is not a connection manager, and a Google or Slack connection returns to
- * draft when its sign-in expires. Only an owner, an admin or an instance admin
- * is certain to see the whole list, so only their answer counts. (A member
- * with a custom permission to manage connections also sees it, but the board
- * cannot tell, so that member's replays stay masked.)
- */
-export function viewerSeesEveryConnection(
-  companyId: string,
-  boardAccess: Pick<CurrentBoardAccess, "isInstanceAdmin" | "memberships" | "source"> | undefined,
-): boolean {
-  if (!boardAccess) return false;
-  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
-  const membership = boardAccess.memberships?.find(
-    (item) => item.companyId === companyId && item.status === "active",
-  );
-  return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
 }
 
 function setReplayWorkContent(visible: boolean) {
@@ -195,11 +184,6 @@ export function ReplayWorkContentVisibility() {
   });
   const replayEnabled = session?.browserAnalytics?.replayEnabled === true;
   const companyId = replayEnabled ? selectedCompanyId : null;
-  const boardAccess = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    enabled: !!companyId,
-  });
   const connections = useQuery({
     ...SOURCE_LIST_OPTIONS,
     queryKey: replayWorkContentQueryKeys.connections(companyId ?? ""),
@@ -213,15 +197,12 @@ export function ReplayWorkContentVisibility() {
     enabled: !!companyId,
   });
   // Only a confirmed answer counts: while loading, after a reset, while a
-  // refresh is pending, when the latest fetch failed (even with older data
-  // cached) and for a viewer who may not see every connection, work content
-  // stays masked.
+  // refresh is pending and when the latest fetch failed (even with older data
+  // cached), work content stays masked.
   const visible = !!companyId
-    && boardAccess.status === "success"
-    && viewerSeesEveryConnection(companyId, boardAccess.data)
     && isCurrentAnswer(connections)
     && isCurrentAnswer(chatEndpoints)
-    && companyAllowsReplayWorkContent(connections.data?.connections, chatEndpoints.data);
+    && companyAllowsReplayWorkContent(connections.data, chatEndpoints.data);
 
   // The company whose work content this recording already shows.
   const snapshotCompanyId = useRef<string | null>(null);
