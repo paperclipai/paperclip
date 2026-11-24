@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { inArray } from "drizzle-orm";
 import type { RequestConfirmationToolActionPayload } from "@paperclipai/shared";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   activityLog,
   agents,
   companies,
@@ -161,7 +162,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
   beforeAll(async () => {
     if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-merged-pr-confirmations-");
     db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -177,10 +178,13 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
     await tempDb?.cleanup();
   });
 
-  it("accepts only all-merged cards, wakes the assignee, and audits the system actor", async () => {
+  it("continues to later confirmations after forbidden review verdicts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
+    const unrelatedIssueId = randomUUID();
+    const humanOnlyIssueId = randomUUID();
+    const notCreatorIssueId = randomUUID();
     const agentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -215,6 +219,37 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       priority: "medium",
       assigneeAgentId: agentId,
     });
+    await db.insert(issues).values({
+      id: unrelatedIssueId,
+      companyId,
+      goalId,
+      title: "Do not auto-accept deployment work",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issues).values([
+      {
+        id: humanOnlyIssueId,
+        companyId,
+        goalId,
+        title: "Keep human-only verdicts protected",
+        status: "in_review",
+        reviewPolicy: "human_only",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: notCreatorIssueId,
+        companyId,
+        goalId,
+        title: "Keep requester verdicts protected",
+        status: "in_review",
+        reviewPolicy: "not_creator",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
 
     const interactionIds = {
       merged: randomUUID(),
@@ -223,6 +258,8 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       zeroRefs: randomUUID(),
       toolAction: randomUUID(),
       extraAction: randomUUID(),
+      humanOnlyVerdict: randomUUID(),
+      notCreatorVerdict: randomUUID(),
     };
     const common = {
       companyId,
@@ -237,8 +274,10 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       {
         ...common,
         id: interactionIds.merged,
+        createdByAgentId: agentId,
         title: "Merge https://github.com/paperclipai/paperclip/pull/39?",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:03.000Z"),
       },
       {
         ...common,
@@ -247,6 +286,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         requestedResolverPolicy: "anyone",
         effectiveResolverPolicy: "anyone",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:04.000Z"),
       },
       {
         ...common,
@@ -281,6 +321,85 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         },
       },
     ]);
+    const unrelatedInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      ...common,
+      id: unrelatedInteractionId,
+      issueId: unrelatedIssueId,
+      createdByAgentId: agentId,
+      title: "Deploy after the linked PR merges?",
+      payload: {
+        version: 1,
+        prompt: "Deploy to production after paperclipai/paperclip#39 merges?",
+      },
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        ...common,
+        id: interactionIds.humanOnlyVerdict,
+        issueId: humanOnlyIssueId,
+        createdByAgentId: agentId,
+        title: "Merge paperclipai/paperclip#39?",
+        payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+      },
+      {
+        ...common,
+        id: interactionIds.notCreatorVerdict,
+        issueId: notCreatorIssueId,
+        createdByAgentId: agentId,
+        title: "Merge paperclipai/paperclip#39?",
+        payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:02.000Z"),
+      },
+    ]);
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          status: "in_review",
+          reviewInteractionId: interactionIds.merged,
+          _previous: { status: "in_progress" },
+        },
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: unrelatedIssueId,
+        details: {
+          status: "in_review",
+          reviewInteractionId: unrelatedInteractionId,
+          _previous: { status: "in_progress" },
+        },
+      },
+      ...[
+        { issueId: humanOnlyIssueId, interactionId: interactionIds.humanOnlyVerdict },
+        { issueId: notCreatorIssueId, interactionId: interactionIds.notCreatorVerdict },
+      ].map(({ issueId: reviewIssueId, interactionId }) => ({
+        companyId,
+        actorType: "agent" as const,
+        actorId: agentId,
+        agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: reviewIssueId,
+        details: {
+          status: "in_review",
+          reviewInteractionId: interactionId,
+          _previous: { status: "in_progress" },
+        },
+      })),
+    ]);
 
     const wakeup = vi.fn(async () => ({ id: "wake-1" }));
     const resolvePullRequestState = vi.fn(async (_resolvedCompanyId: string, reference: { number: number }) =>
@@ -291,14 +410,25 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       resolvePullRequestState,
     });
 
+    await expect(service.acceptInteraction({
+      id: unrelatedIssueId,
+      companyId,
+      projectId: null,
+      goalId,
+      status: "in_review",
+    }, unrelatedInteractionId, {}, {
+      systemId: "system:pr-merged",
+      resolutionDetails: { source: "merged_pull_request_sweep" },
+    })).rejects.toMatchObject({ status: 409 });
+
     await expect(service.sweepMergedPullRequestConfirmations([{
       companyId,
       owner: "paperclipai",
       repo: "paperclip",
       number: 39,
     }])).resolves.toEqual({
-      checked: 3,
-      candidates: 3,
+      checked: 5,
+      candidates: 5,
       accepted: 2,
       woken: 2,
     });
@@ -306,7 +436,10 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
     const stored = await db
       .select({ id: issueThreadInteractions.id, status: issueThreadInteractions.status })
       .from(issueThreadInteractions)
-      .where(inArray(issueThreadInteractions.id, Object.values(interactionIds)));
+      .where(inArray(issueThreadInteractions.id, [
+        ...Object.values(interactionIds),
+        unrelatedInteractionId,
+      ]));
     expect(new Map(stored.map((row) => [row.id, row.status]))).toEqual(new Map([
       [interactionIds.merged, "accepted"],
       [interactionIds.boardOrAgents, "accepted"],
@@ -314,7 +447,11 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       [interactionIds.zeroRefs, "pending"],
       [interactionIds.toolAction, "pending"],
       [interactionIds.extraAction, "pending"],
+      [interactionIds.humanOnlyVerdict, "pending"],
+      [interactionIds.notCreatorVerdict, "pending"],
+      [unrelatedInteractionId, "pending"],
     ]));
+    expect(wakeup).toHaveBeenCalledTimes(2);
     expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
       requestedByActorType: "system",
       requestedByActorId: "system:pr-merged",
