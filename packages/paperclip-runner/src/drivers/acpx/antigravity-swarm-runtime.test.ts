@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
-import { openAntigravitySwarmRuntime } from "./antigravity-swarm-runtime.js";
+import { openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 
@@ -132,8 +132,7 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(clientMessages()).toEqual([]);
   });
 
-  it("refuses to resume a saved swarm session and extra tool servers it would have to drop", async () => {
-    await expect(openAntigravitySwarmRuntime(setup("success", { restoringSession: true }).options)).rejects.toThrow(/fresh swarm/);
+  it("refuses extra tool servers it would have to drop", async () => {
     const extra = setup("success");
     (extra.options as unknown as { mcpServers: unknown[] }).mcpServers.push({ name: "github", command: "/bin/x", args: [], env: {}, runnerOwned: false });
     await expect(openAntigravitySwarmRuntime(extra.options)).rejects.toThrow(/other tool servers/);
@@ -158,9 +157,19 @@ describe("Antigravity CLI swarm runtime", () => {
     await runtime.close({ reason: "done" });
   });
 
-  it("stops the swarm when a visible edit targets a file outside the task folder", async () => {
-    const run = await runTurn("outside-edit");
-    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE" } });
+  it.each(["outside-edit", "dotdot-edit", "symlink-edit", "shell-escape"])("stops the swarm on a visible change outside the task folder: %s", async scenario => {
+    const run = await runTurn(scenario);
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE", message: expect.stringMatching(/outside the task folder/) } });
+  });
+
+  it("allows reading outside the task folder when the change lands inside it", async () => {
+    const run = await runTurn("shell-read");
+    expect(run.result).toMatchObject({ status: "completed" });
+  });
+
+  it("treats a saved conversation as one a swarm cannot reopen, so the server starts a fresh one", async () => {
+    await expect(openAntigravitySwarmRuntime(setup("success", { restoringSession: true }).options))
+      .rejects.toMatchObject({ code: "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" });
   });
 
   it("keeps a stable record identity while the CLI session id is per run", async () => {
@@ -199,6 +208,39 @@ describe("Antigravity CLI swarm runtime", () => {
     const worker = Number(readFileSync(run.workerPidFile, "utf8"));
     await new Promise(resolve => setTimeout(resolve, 200));
     expect(alive(worker)).toBe(false);
+  });
+
+  const trackPid = (options: AcpxRuntimePortOpenOptions) => {
+    const tracked = { pid: 0 };
+    const spawnChild = options.command.spawn;
+    (options.command as { spawn: typeof spawnChild }).spawn = (...args) => { const child = spawnChild(...args); tracked.pid = child.pid!; return child; };
+    return tracked;
+  };
+
+  it.each<AntigravitySwarmStage>(["spawned", "initialized", "session", "mode", "model"])("a Stop at %s ends admission, sends no prompt and stops the CLI", async stage => {
+    const { options, clientMessages } = setup("success");
+    const tracked = trackPid(options);
+    const stop = new AbortController();
+    await expect(openAntigravitySwarmRuntime({ ...options, signal: stop.signal } as AcpxRuntimePortOpenOptions,
+      { onStage: current => { if (current === stage) stop.abort(new Error("Stop")); } })).rejects.toThrow();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(clientMessages().some(message => message.method === "session/prompt")).toBe(false);
+    expect(alive(tracked.pid)).toBe(false);
+  });
+
+  it.each<[AntigravitySwarmStage, number]>([["snapshot", 0], ["helpers", 1]])("a Stop at %s starts no further billable prompt and stops the CLI", async (stage, prompts) => {
+    const { options, clientMessages } = setup("live-helpers");
+    const tracked = trackPid(options);
+    let cancel: () => Promise<void> = async () => {};
+    const runtime = await openAntigravitySwarmRuntime(options, { helperWaitTimeoutMs: 5_000, cancelGraceMs: 500,
+      onStage: async current => { if (current === stage) await cancel(); } });
+    const turn = runtime.startTurn({ text: "go", requestId: "r:1" });
+    cancel = () => turn.cancel();
+    for await (const _ of turn.events) { /* drain */ }
+    expect(await turn.result).toMatchObject({ status: "cancelled" });
+    await runtime.close({ reason: "Stop" });
+    expect(clientMessages().filter(message => message.method === "session/prompt")).toHaveLength(prompts);
+    expect(alive(tracked.pid)).toBe(false);
   });
 
   it("runs at most one swarm per run", async () => {

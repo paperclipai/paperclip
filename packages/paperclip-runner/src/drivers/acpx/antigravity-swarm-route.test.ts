@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
-import { antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { createAcpxModeBinding, resolveAcpxProviderMode } from "./provider-mode.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -47,6 +47,13 @@ describe("Antigravity swarm route selection", () => {
     const tools = ["paperclip_finish_task", "paperclip_block_task", "paperclip_create_task", "paperclip_create_issue", "paperclip_hire_agent",
       "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"].map(name => ({ name }));
     expect(antigravitySwarmTools(tools).map(tool => tool.name)).toEqual(["paperclip_finish_task", "paperclip_block_task", "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"]);
+  });
+
+  it("lets the server open a fresh conversation when a saved one belongs to the other route", () => {
+    expect(antigravityRouteChangeRefusal("antigravity", "swarm", undefined)).toMatchObject({ code: "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" });
+    expect(antigravityRouteChangeRefusal("antigravity", undefined, "swarm")).toMatchObject({ code: "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" });
+    expect(antigravityRouteChangeRefusal("antigravity", undefined, undefined)).toBeNull();
+    expect(antigravityRouteChangeRefusal("cursor", "plan", undefined)).toBeNull();
   });
 
   it("routes a swarm turn to the CLI runtime instead of ACPX", async () => {

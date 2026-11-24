@@ -1,5 +1,6 @@
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
 import { resolveAntigravityCliLaunch, type AntigravityCliLaunchOptions } from "./antigravity-cli-installation.js";
 import { ANTIGRAVITY_CLI_STABLE_ENDPOINT, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError } from "./antigravity-swarm-guard.js";
@@ -79,4 +80,16 @@ const DELEGATION_TOOL = /^paperclip_(?:create_(?:task|issue|subtask|agent)|hire|
 /** The bridge catalog for a swarm turn: the run's tools without delegation. */
 export function antigravitySwarmTools<T extends Readonly<Record<string, unknown>>>(tools: readonly T[]): T[] {
   return tools.filter(tool => !(typeof tool.name === "string" && DELEGATION_TOOL.test(tool.name)));
+}
+
+/**
+ * A saved conversation from the other Antigravity route (swarm on the CLI, or
+ * an ordinary turn on the registry server) cannot be reopened by this one. The
+ * typed refusal makes the server start a fresh conversation, so the task keeps
+ * accepting messages after a swarm and a later /swarm starts cleanly.
+ */
+export function antigravityRouteChangeRefusal(agent: string, savedMode: string | undefined, requestedMode: string | undefined): AntigravitySavedStateIncompatibleError | null {
+  if (agent !== "antigravity") return null;
+  if (isAntigravitySwarmRoute(agent, savedMode) === isAntigravitySwarmRoute(agent, requestedMode)) return null;
+  return new AntigravitySavedStateIncompatibleError("the saved conversation belongs to a different Antigravity route");
 }
