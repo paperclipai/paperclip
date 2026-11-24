@@ -4,6 +4,7 @@ import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
+import { DocumentMarkdownActions } from "@/components/DocumentMarkdownActions";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -79,7 +80,7 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
           approve from. */}
       {planDocument ? (
         <section data-testid="issue-plan-document" className="space-y-2">
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
             {`Revision ${planDocument.latestRevisionNumber ?? 1} · updated ${new Date(planDocument.updatedAt).toLocaleString([], {
               month: "short",
               day: "numeric",
@@ -92,6 +93,7 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
               panelOpen={annotationPanelOpen}
               onToggle={() => setAnnotationPanelOpen((open) => !open)}
             />
+            <DocumentMarkdownActions key={planDocument.latestRevisionId} document={planDocument} />
           </div>
           <IssueDocumentAnnotations
             issueId={issue.id}

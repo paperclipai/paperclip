@@ -18,6 +18,7 @@ import { useDurableAutosave } from "../hooks/useDurableAutosave";
 import { describeError } from "../api/errors";
 import { loadStructuredDraft, saveStructuredDraft } from "../lib/composer-draft";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { downloadDocumentFile } from "../lib/download-document-file";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "../lib/document-annotation-hash";
 import type { CompanyUserProfile } from "../lib/company-members";
@@ -206,18 +207,6 @@ function clearStoredNewDocumentDraft(scope: string | null, saved?: DraftState) {
   // A save may finish after more text was typed or after the pane unmounted.
   if (saved && stored && (stored.key !== saved.key || stored.title !== saved.title || stored.body !== saved.body)) return;
   try { localStorage.removeItem(newDocumentDraftStorageKey(scope)); } catch { /* Storage may be unavailable. */ }
-}
-
-function downloadDocumentFile(key: string, body: string) {
-  const blob = new Blob([body], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `${key}.md`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 function getRevisionActor(
