@@ -19,6 +19,8 @@ import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
+import { isPendingNativeRecovery } from "./workspace-deferral.js";
+
 type Row = Record<string, any>;
 type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
   "ask-question"
@@ -61,12 +63,12 @@ export function startedTaskRuns(state: Pick<TaskState, "taskRuns">) {
 
 /** The task is done after exactly `count` started runs, with nothing active or pending. */
 export function agentTaskSettled(state: TaskState, count: number) {
-  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(run => !active(run))
+  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(run => run.status === "succeeded" || run.status === "cancelled")
     && state.interactions.every(row => row.status !== "pending");
 }
 
 /** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
-export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = []) {
+export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = [], deadlineAt?: number) {
   const agent = context.agent!;
   if (state.currentIssue.id !== issueId || state.currentIssue.companyId !== context.company.id
     || state.currentIssue.assigneeAgentId !== agent.id || state.taskRuns.length > maxRuns) throw new JourneyError("failed", "agent_task_binding_mismatch");
@@ -78,6 +80,9 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
     if (retiredBeforeProviderStart(run)) continue;
     if (!active(run) && (run.runtimeMode !== "native" || run.contextSnapshot?.paperclipEnvironment?.id !== context.environmentId
       || provider?.kind !== agent.provider || provider?.model !== agent.model)) throw new JourneyError("failed", "agent_run_binding_mismatch");
+    // A projected exact-session retry is still work in progress. Keep observing
+    // the same run under the original campaign deadline and run limit.
+    if (deadlineAt !== undefined && isPendingNativeRecovery(run, deadlineAt)) continue;
     if (!["queued", "running", "succeeded"].includes(run.status) && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");
   }
 }
@@ -124,7 +129,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const taskRuns = await Promise.all(summaries.map(summary => context.api.get<TaskState["taskRuns"][number]>(`/api/heartbeat-runs/${summary.runId}`)));
     const state = { currentIssue, taskRuns, comments, interactions, attachments };
     await retain(`${issue.id}-latest.json`, state);
-    validateAgentTaskState(context, issue.id, state, maxRuns, cancelled);
+    validateAgentTaskState(context, issue.id, state, maxRuns, cancelled, options.deadlineAt);
     return state;
   };
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>

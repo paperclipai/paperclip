@@ -448,7 +448,6 @@ describe("Cloud canonical onboarding first task", () => {
     ["noninteger attempt", (run: Row) => { run.execution.attempt = 1.5; }],
     ["unexpected ceiling", (run: Row) => { run.execution.maxAttempts = 4; }],
     ["different successor", (run: Row) => { run.execution.successorRunId = "other-run"; }],
-    ["missing successor state", (run: Row) => { delete run.execution.successorRunId; }],
   ] as const)("keeps a failed native run fatal with %s", async (_label, change) => {
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);
