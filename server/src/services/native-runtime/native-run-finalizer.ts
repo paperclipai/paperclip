@@ -1227,10 +1227,7 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.turnTerminalState === "completed" &&
         (ordinaryTaskReply || blockedTaskReply);
       const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
-      // Only a blocked reply prefers the final message over a saved run comment.
-      // Any other recovered reply reuses a comment the live path already saved
-      // (including a deleted one), so recovery never posts it a second time.
-      const externalChatReply = blockedTaskReply &&
+      const externalChatBlockedReply = blockedTaskReply &&
         isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
       if (taskReplyEligible && replyAuthorization &&
           (blockedTaskReply || externalChatTaskReply || replyAuthorization === "internal_agent_write")) {
@@ -1267,6 +1264,12 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(issueComments.issueId, input.issueId),
             eq(issueComments.createdByRunId, run.id),
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
+        const existingComment = findHeartbeatRunCompletionComment(comments, run.resultJson);
+        // An external-chat task's final answer takes precedence over an earlier
+        // run comment such as a progress note. A saved copy of that same answer,
+        // including a deleted one, is reused so recovery never posts it again.
+        const externalChatReply = externalChatBlockedReply || (externalChatTaskReply && Boolean(finalAgentMessage) &&
+          existingComment?.body.trim() !== finalAgentMessage?.text.trim());
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
           nativeConversationFinalResponse: conversation,
@@ -1275,7 +1278,7 @@ async function recoverCommittedNativeChatResponseInScope(
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
-          existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
+          existingComment,
           finalAgentMessage,
           preferFinalResponseOverExistingComment: externalChatReply,
         });

@@ -756,6 +756,19 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(run.resultJson).toMatchObject({ presentationDecision: { commentAction: "reuse", commentId: saved.id } });
     expect(await nativeResponsePresentationWork(db).load(f.input)).toEqual([]);
   });
+  it.each([false, true])("posts an external-chat task's final answer after an earlier progress comment (deleted=%s)", async deleted => {
+    const f = await fixture(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:github" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [progress] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: "Looking into the review comment now.",
+      ...(deleted ? { deletedAt: new Date("2020-01-01T00:03:00Z") } : {}) }).returning();
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    const saved = await comments(f.runId);
+    expect(saved).toHaveLength(2);
+    expect(saved).toEqual(expect.arrayContaining([progress, expect.objectContaining({ body: f.reply, deletedAt: null })]));
+  });
   it("recovers a deferred review reply once without resolving the review or rerunning work", async () => {
     const f = await fixture(false, { disposition: "needs_review" });
     const before = await issue(f.issueId);
