@@ -730,8 +730,12 @@ describe("assigned MCP runner tools", () => {
     const f = fixture([descriptor("recall")]);
     const assigned = await createAssignedMcpTools(f);
     const call = { tool: assigned.definitions()[0]!.name as string, arguments: {} };
-    f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, "validation failed\nreason: missing field", "tool_error"));
-    await expect(assigned.execute(call)).rejects.toMatchObject({ message: "assigned_tool_error: The connected tool reported an error." });
+    for (const prose of ["validation failed\nreason: missing field", "reason: missing field", "error: invalid input", "code: invalid"]) {
+      f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, prose, "tool_error"));
+      await expect(assigned.execute(call)).rejects.toMatchObject({ message: "assigned_tool_error: The connected tool reported an error." });
+    }
+    f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, 'error: invalid_grant\n{"code":"invalid_grant"}', "tool_error"));
+    await expect(assigned.execute(call)).rejects.toMatchObject({ message: "invalid_grant: The connected tool reported an error." });
     f.executeTool.mockResolvedValueOnce({ status: "completed", result: { isError: true,
       structuredContent: { code: "quota_exceeded" }, content: [{ type: "text", text: '{"code":"upstream_thing"}' }] } });
     await expect(assigned.execute(call)).rejects.toMatchObject({ message: "quota_exceeded: The connected tool reported an error." });

@@ -495,13 +495,13 @@ export function toolResultErrorMessage(result: Record<string, unknown>, failureI
   return failureInstructions ? `${message}\n\n${failureInstructions}` : message;
 }
 
-const TOOL_ERROR_CODE = /^[a-z][a-z0-9_]{2,79}$/;
 
 export function toolResultErrorDetails(result: Record<string, unknown>): { toolCode?: string; retryable?: true } {
   const object = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const data = object(result.data);
   const sources = [object(result.structuredContent), object(data.structuredContent), data];
-  const toolCode = sources.map((source) => source.code).find((code): code is string => typeof code === "string" && TOOL_ERROR_CODE.test(code));
+  const toolCode = sources.map((source) => source.code).find((code): code is string => typeof code === "string" && code.length <= 96
+    && /^[a-z][a-z0-9_.-]*$/.test(code) && /[_.-]/.test(code) && !/[_.-]$/.test(code));
   const retryable = sources.some((source) => source.retryable === true || source.retryability === "later");
   return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
 }
