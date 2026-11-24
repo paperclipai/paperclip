@@ -1127,8 +1127,12 @@ export function aiConnectionService(db: Db) {
     agentId?: string;
     runStartedAt: Date;
     attribution: AiConnectionAttribution & { identity: string };
-    /** Act only on a login that the server can renew. Such a login is marked spent; it never requests sign-in here. */
-    renewableOnly?: boolean;
+    /**
+     * `only`: act only on a login that the server can renew. Such a login is
+     * marked spent; it never requests sign-in here. `skip`: leave such a login
+     * as it is, because nothing shows that the provider refused its token.
+     */
+    renewable?: "only" | "skip";
   }) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
@@ -1168,12 +1172,12 @@ export function aiConnectionService(db: Db) {
           // provider refusing that renewal requests sign-in. An exchanged pair
           // that still awaits its save already replaces this token: rotating the
           // secret here would discard that pair and reuse a spent refresh token.
-          if (renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id)) {
+          if (input.renewable !== "skip" && renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id)) {
             await secretService(tx).rotate(ref.secretId, { value: serializeClaudeOauth({ ...renewable, expiresAt: 0 })!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           }
           return;
         }
-        if (input.renewableOnly) return;
+        if (input.renewable === "only") return;
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })

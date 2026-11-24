@@ -13,7 +13,7 @@ import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
-import { aiBindingForAuthRecovery, isAiAuthenticationRepairable, isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
+import { aiBindingForAuthRecovery, isAiAuthenticationRepairable, isAiCredentialRejectedByProvider } from "./ai-auth-failure.js";
 import {
   detectUnconfiguredGitHubAuthFailureInEvents,
   isGitHubWorkspaceCloneAuthFailure,
@@ -1532,27 +1532,29 @@ export function connectionIntentService(db: Db) {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       if (!run || run.status !== "failed" || !isAiAuthenticationRepairable(run)) return null;
       const attribution = record(run.contextSnapshot?.aiConnection);
-      const markRejected = async (renewableOnly = false) => {
+      const claudeSubscription = attribution?.provider === "anthropic" && attribution.method === "subscription";
+      // A renewable Claude login is marked spent only on the typed report that
+      // the provider refused the token. A run that failed before it reached
+      // the provider, for example on a local configuration error or a busy
+      // credential store, says nothing about its token, and an error code can
+      // come from the text of such an error.
+      const claudeRejection = claudeSubscription && isAiCredentialRejectedByProvider(run, "anthropic");
+      const markRejected = async (renewable: "only" | "skip" | undefined) => {
         if (attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
           await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
-            runStartedAt: run.startedAt ?? run.createdAt, renewableOnly,
+            runStartedAt: run.startedAt ?? run.createdAt, renewable,
             attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
         }
       };
-      // A Claude subscription token that the provider rejected is recorded
-      // before the checks that decide on a repair card. A run with no task, no
-      // responsible user, a later run on its task, or an agent that has since
-      // changed its connection gets no card, but the next run must not receive
-      // the same token. Only a failure that the provider reported counts: a
-      // run that failed before it reached the provider, for example on a busy
-      // credential store, says nothing about its token. The mark applies only
-      // if the saved token is still the one this run used, and only to a
-      // login that the server can renew: it is marked spent and renewed. A
-      // login that cannot be renewed requests sign-in further down, under
-      // the same checks as before.
-      const claudeRejection = isAiAuthenticationRepairable(run, "anthropic") && !isAiConnectionConfigurationFailure(run)
-        && attribution?.provider === "anthropic" && attribution.method === "subscription";
-      if (claudeRejection) await markRejected(true);
+      // The rejected token is recorded before the checks that decide on a
+      // repair card. A run with no task, no responsible user, a later run on
+      // its task, or an agent that has since changed its connection gets no
+      // card, but the next run must not receive the same token. The mark
+      // applies only if the saved token is still the one this run used, and
+      // only to a login that the server can renew: it is marked spent and
+      // renewed. A login that cannot be renewed requests sign-in further
+      // down, under the same checks as before.
+      if (claudeRejection) await markRejected("only");
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
       if (!agent) return null;
       const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
@@ -1572,7 +1574,7 @@ export function connectionIntentService(db: Db) {
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${context.issue.id}`,
       )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
       if (latest?.id !== run.id) return null;
-      if (saved || managed) await markRejected();
+      if (saved || managed) await markRejected(claudeSubscription && !claudeRejection ? "skip" : undefined);
       return requestWithContext(context, binding.provider, { purpose: "ai" });
     },
     // Controller-only entry point. Runtime tokens still require a running run.

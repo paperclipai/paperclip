@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, inArray } from "drizzle-orm";
-import { companies, agents, companyMemberships, companySecrets, connectionGrants, heartbeatRuns, toolConnections, createDb } from "@paperclipai/db";
+import { companies, agents, companyMemberships, companySecrets, connectionGrants, heartbeatRuns, issues, toolConnections, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -324,6 +324,9 @@ describe("Claude subscription idle renewal", () => {
     expect(await status()).toBe("needs_reauthorization");
   });
 
+  const providerRejection = { errorCode: "native_session_interrupted", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
+    category: "authentication", message: "Invalid bearer token", retryability: "requires_action" } } };
+
   it("marks a rejected token spent for a failed run that has no task, so the next run does not receive it", async () => {
     const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
     const timerAgent = randomUUID();
@@ -331,7 +334,7 @@ describe("Claude subscription idle renewal", () => {
     const run = await prepareManagedAiRuntime(db, { companyId, agentId: timerAgent, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
     await run.cleanup();
     const failedRun = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: timerAgent, invocationSource: "timer", status: "failed", errorCode: "claude_auth_required",
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: timerAgent, invocationSource: "timer", status: "failed", ...providerRejection,
       startedAt: new Date(Date.now() + 1000), contextSnapshot: { aiConnection: { ...run.attribution, identity: run.identity } } });
     // No task and no responsible user: no repair card can be made.
     expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toBeNull();
@@ -343,7 +346,8 @@ describe("Claude subscription idle renewal", () => {
 
   it.each([
     ["failed before it reached the provider", { errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }, document(Date.now() + 8 * 3600_000)],
-    ["was rejected with a login that cannot be renewed", { errorCode: "claude_auth_required" }, "legacy-access-token"],
+    ["failed with an authentication code and no report from the provider", { errorCode: "claude_auth_required" }, document(Date.now() + 8 * 3600_000)],
+    ["was rejected with a login that cannot be renewed", providerRejection, "legacy-access-token"],
   ] as const)("leaves the credential alone when a run with no repair card %s", async (_case, failure, credential) => {
     const { account, owner, row, service } = await connect(credential);
     const supersededAgent = randomUUID();
@@ -360,6 +364,26 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an authentication code that a local error produced", { errorCode: "claude_auth_required" }, false],
+    ["a credential store that was busy", { errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }, false],
+    ["a token that the provider refused", providerRejection, true],
+  ] as const)("passes every check for the latest run of a task that failed on %s, and marks the token spent only for a refusal", async (_case, failure, spent) => {
+    const credential = document(Date.now() + 8 * 3600_000);
+    const { account, owner, row, service } = await connect(credential);
+    const taskAgent = randomUUID(), issueId = randomUUID(), failedRun = randomUUID();
+    await db.insert(agents).values({ id: taskAgent, companyId, name: "Task", adapterType: "claude_local", runtimeConfig: { aiConnection: binding(account) } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Open task", status: "in_progress", assigneeAgentId: taskAgent });
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId: taskAgent, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    await run.cleanup();
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: taskAgent, invocationSource: "assignment", status: "failed", ...failure, responsibleUserId: owner,
+      startedAt: new Date(Date.now() + 1000), contextSnapshot: { issueId, aiConnection: { ...run.attribution, identity: run.identity } } });
+    expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toMatchObject({ state: "ready" });
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("active");
+    if (spent) expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
+    else expect(await service.credentialRaw(row)).toBe(credential);
+  });
+
   it("marks a rejected token spent although the agent has changed its connection since the run", async () => {
     const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
     const movedAgent = randomUUID();
@@ -368,7 +392,7 @@ describe("Claude subscription idle renewal", () => {
     await run.cleanup();
     await db.update(agents).set({ runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" } } }).where(eq(agents.id, movedAgent));
     const failedRun = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: movedAgent, invocationSource: "timer", status: "failed", errorCode: "claude_auth_required",
+    await db.insert(heartbeatRuns).values({ id: failedRun, companyId, agentId: movedAgent, invocationSource: "timer", status: "failed", ...providerRejection,
       startedAt: new Date(Date.now() + 1000), contextSnapshot: { aiConnection: { ...run.attribution, identity: run.identity } } });
     expect(await connectionIntentService(db).requestForRunAuthFailure(failedRun)).toBeNull();
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.expiresAt).toBe(0);
