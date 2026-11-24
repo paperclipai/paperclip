@@ -62,6 +62,24 @@ export interface AnnotationPanelProps {
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   /** Resolve `<authorUserId>` to a display name. */
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  /** Set when author names failed to load; shows a notice with a retry action. */
+  onRetryAuthorNames?: () => void;
+}
+
+/** Notice shown above comments when author names could not be loaded. */
+export function AuthorNamesErrorNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      data-testid="document-annotation-author-names-error"
+      className="flex items-center justify-between gap-2 border-b border-border bg-destructive/10 px-3 py-1 text-(length:--text-micro) text-destructive"
+    >
+      <span>Could not load comment author names.</span>
+      <Button type="button" size="xs" variant="ghost" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
 }
 
 export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
@@ -200,6 +218,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
           {props.newCommentDisabledReason}
         </p>
       ) : null}
+      {props.onRetryAuthorNames ? <AuthorNamesErrorNotice onRetry={props.onRetryAuthorNames} /> : null}
       {mutationError ? (
         <p
           data-testid="document-annotation-error"

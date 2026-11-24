@@ -71,6 +71,33 @@ vi.mock("@/api/document-annotations", () => ({
   documentAnnotationsApi: mockAnnotationsApi,
 }));
 
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(async (): Promise<unknown[]> => []),
+}));
+const mockAccessApi = vi.hoisted(() => ({
+  listUserDirectory: vi.fn(async () => ({ users: [] as unknown[] })),
+}));
+
+vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+
+// Counts how often the user profile map is built, so the large-company test can
+// prove rerenders with unchanged query data do not rebuild it.
+const profileMapBuilds = vi.hoisted(() => ({ count: 0, limit: Number.POSITIVE_INFINITY }));
+vi.mock("@/lib/company-members", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/company-members")>("@/lib/company-members");
+  return {
+    ...actual,
+    buildCompanyUserProfileMap: (...args: Parameters<typeof actual.buildCompanyUserProfileMap>) => {
+      profileMapBuilds.count += 1;
+      if (profileMapBuilds.count > profileMapBuilds.limit) {
+        throw new Error(`user profile map rebuilt ${profileMapBuilds.count} times`);
+      }
+      return actual.buildCompanyUserProfileMap(...args);
+    },
+  };
+});
+
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
 }));
@@ -338,6 +365,10 @@ describe("IssueDocumentAnnotations", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.clearAllMocks();
+    mockAgentsApi.list.mockReset().mockResolvedValue([]);
+    mockAccessApi.listUserDirectory.mockReset().mockResolvedValue({ users: [] });
+    profileMapBuilds.count = 0;
+    profileMapBuilds.limit = Number.POSITIVE_INFINITY;
   });
 
   afterEach(async () => {
@@ -690,6 +721,232 @@ describe("IssueDocumentAnnotations", () => {
     // Each rendered comment shows an author avatar.
     const avatars = expandedThread?.querySelectorAll('[data-slot="avatar"], [data-slot="agent-avatar"]') ?? [];
     expect(avatars.length).toBe(2);
+  });
+
+  it("names comment authors from the company directory when the host passes no maps", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([
+      makeThread({
+        id: "open-1",
+        comments: [
+          {
+            id: "comment-board",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the board.",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "paperclip-id:leia",
+            createdByRunId: null,
+            createdAt: new Date("2026-04-01T00:01:00Z"),
+            updatedAt: new Date("2026-04-01T00:01:00Z"),
+          },
+          {
+            id: "comment-agent",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the agent.",
+            authorType: "agent",
+            authorAgentId: "agent-uxdesigner",
+            authorUserId: null,
+            createdByRunId: "run-1",
+            createdAt: new Date("2026-04-01T00:02:00Z"),
+            updatedAt: new Date("2026-04-01T00:02:00Z"),
+          },
+        ],
+      }),
+    ]);
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-uxdesigner", name: "UXDesigner" }]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "paperclip-id:leia",
+          status: "active",
+          user: { id: "paperclip-id:leia", name: "Leia", email: "leia@example.com", image: "https://example.com/leia.png" },
+        },
+      ],
+    });
+    const root = createRoot(container);
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={makeQueryClient()}>
+          <Harness doc={doc} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => {
+      expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull();
+    });
+    const threadCard = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
+    await act(async () => threadCard!.click());
+
+    await waitFor(() => {
+      const text = container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "";
+      expect(text).toContain("Leia");
+      expect(text).toContain("UXDesigner");
+    });
+    const text = container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "";
+    expect(text).not.toContain("papercli");
+    expect(text).not.toContain("agent-ux");
+    expect(mockAgentsApi.list).toHaveBeenCalledWith("co-1");
+    expect(mockAccessApi.listUserDirectory).toHaveBeenCalledWith("co-1");
+  });
+
+  it("shows a retry notice when author names fail to load, and names authors after retry", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([
+      makeThread({
+        id: "open-1",
+        comments: [
+          {
+            id: "comment-board",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the board.",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "paperclip-id:leia",
+            createdByRunId: null,
+            createdAt: new Date("2026-04-01T00:01:00Z"),
+            updatedAt: new Date("2026-04-01T00:01:00Z"),
+          },
+        ],
+      }),
+    ]);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAccessApi.listUserDirectory
+      .mockRejectedValueOnce(new Error("directory unavailable"))
+      .mockResolvedValue({
+        users: [
+          {
+            principalId: "paperclip-id:leia",
+            status: "active",
+            user: { id: "paperclip-id:leia", name: "Leia", email: "leia@example.com", image: null },
+          },
+        ],
+      });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={makeQueryClient()}>
+          <Harness doc={makeDoc()} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-author-names-error"]')).not.toBeNull();
+    });
+    // The comments stay visible while the notice is shown.
+    expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull();
+
+    const retry = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="document-annotation-author-names-error"] button'),
+    ).find((button) => button.textContent === "Retry");
+    expect(retry).toBeDefined();
+    await act(async () => retry!.click());
+
+    const threadCard = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
+    await act(async () => threadCard!.click());
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-author-names-error"]')).toBeNull();
+      expect(container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "").toContain("Leia");
+    });
+    expect(mockAccessApi.listUserDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it("names authors in a large company without rebuilding the maps on rerender", async () => {
+    const companySize = 500;
+    // Count passes over the agents list: building the agent map is one pass.
+    let agentListPasses = 0;
+    const agents = new Proxy(
+      Array.from({ length: companySize }, (_, index) => ({ id: `agent-${index}`, name: `Agent ${index}` })),
+      {
+        get(target, property, receiver) {
+          if (property === "map") {
+            agentListPasses += 1;
+            if (agentListPasses > 1) throw new Error(`agent map rebuilt (${agentListPasses} passes)`);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const users = Array.from({ length: companySize }, (_, index) => ({
+      principalId: `user-${index}`,
+      status: "active",
+      user: { id: `user-${index}`, name: `Person ${index}`, email: `person-${index}@example.com`, image: null },
+    }));
+    mockAgentsApi.list.mockResolvedValue(agents);
+    mockAccessApi.listUserDirectory.mockResolvedValue({ users });
+    mockAnnotationsApi.list.mockResolvedValue([
+      makeThread({
+        id: "open-1",
+        comments: [
+          {
+            id: "comment-board",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the board.",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "user-499",
+            createdByRunId: null,
+            createdAt: new Date("2026-04-01T00:01:00Z"),
+            updatedAt: new Date("2026-04-01T00:01:00Z"),
+          },
+          {
+            id: "comment-agent",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the agent.",
+            authorType: "agent",
+            authorAgentId: "agent-499",
+            authorUserId: null,
+            createdByRunId: "run-1",
+            createdAt: new Date("2026-04-01T00:02:00Z"),
+            updatedAt: new Date("2026-04-01T00:02:00Z"),
+          },
+        ],
+      }),
+    ]);
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const renderHarness = () => root.render(
+      <QueryClientProvider client={queryClient}>
+        <Harness doc={makeDoc()} initialPanelOpen />
+      </QueryClientProvider>,
+    );
+
+    await act(async () => renderHarness());
+    await waitFor(() => {
+      expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull();
+    });
+    const threadCard = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
+    await act(async () => threadCard!.click());
+    await waitFor(() => {
+      const text = container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "";
+      expect(text).toContain("Person 499");
+      expect(text).toContain("Agent 499");
+    });
+
+    // Rerender with unchanged query data: neither map may be built again.
+    const buildsAfterLoad = profileMapBuilds.count;
+    profileMapBuilds.limit = buildsAfterLoad;
+    for (let index = 0; index < 5; index += 1) {
+      await act(async () => renderHarness());
+    }
+    expect(profileMapBuilds.count).toBe(buildsAfterLoad);
+    expect(agentListPasses).toBe(1);
   });
 
   it("does not render a persistent New comment on selection hint when panel is open", async () => {
