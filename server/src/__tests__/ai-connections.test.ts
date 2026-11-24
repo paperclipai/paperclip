@@ -2717,6 +2717,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     let launched = 0;
     browserLoginMock.startLocalBrowserLogin.mockImplementation(() => (++launched === 1 ? { abort: () => {} } : { abort: () => new Promise<void>(() => {}) }) as never);
     const login = localAiLoginService(db);
+    const realSetTimeout = globalThis.setTimeout;
+    const stopDeadlinePassesAtOnce = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(handler, ms === 5_000 ? 0 : ms, ...rest)) as typeof setTimeout);
     try {
       const id = (await login.start(companyId, owner, intent)).sessionId;
       const transaction = db.transaction.bind(db);
@@ -2731,10 +2734,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(attempt).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
       expect(attempt!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
     } finally {
+      stopDeadlinePassesAtOnce.mockRestore();
       browserLoginMock.startLocalBrowserLogin.mockReset();
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
-  }, 30_000);
+  });
   it("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();
