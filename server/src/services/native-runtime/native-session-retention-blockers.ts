@@ -13,7 +13,8 @@ with input as (
     coalesce(bool_or(r.status in ('queued', 'scheduled_retry', 'running') or r.finished_at is null), false) as live,
     coalesce(bool_or((r.runner_profile_json->'nativeControllerRecovery'->>'schema' = 'paperclip.native-controller-recovery.v1'
       and r.runner_profile_json->'nativeControllerRecovery'->'checkpoint' = 'null'::jsonb) is true), false) as incomplete,
-    coalesce(bool_or(r.finished_at >= $2::timestamptz), false) as recent
+    coalesce(bool_or(r.finished_at >= $2::timestamptz), false) as recent,
+    max(r.finished_at) as last_finished_at
   from owner o
   left join heartbeat_runs r on r.company_id = o.company_id and r.agent_id = o.agent_id and r.native_session_id = o.session_id
   group by o.key, o.run_id, o.session_id, o.scope_digest, o.lease_id, o.company_id, o.agent_id, o.owner_issue_id
@@ -51,6 +52,7 @@ with input as (
   from sessions s
 )
 select i.key, a.company_id, a.agent_id, a.run_ids, a.issue_ids, a.owner_issue_id, a.lease_ids, a.closed_at, coalesce(a.resumable, false) as resumable,
+  (extract(epoch from a.last_finished_at) * 1000)::float8 as last_finished_at,
   case
     when a.key is null then 'run_missing'
     when a.live then 'live_run'
@@ -67,18 +69,20 @@ from input i left join assessed a on a.key = i.key`;
 
 export type SessionRetentionAssessment = {
   reason: string | null; companyId: string | null; agentId: string | null; runIds: string[]; issueIds: string[];
-  ownerIssueId: string | null; leaseIds: string[]; closedAt: number | null; resumable: boolean;
+  ownerIssueId: string | null; leaseIds: string[]; closedAt: number | null; lastFinishedAt: number | null; resumable: boolean;
 };
 
 export async function assessSessionRetention(db: Db, sessions: Array<{ key: string; identity: { runId: string; normalizedSessionId: string; environmentLeaseId: string | null }; scopeDigest: string | null }>,
   options: { closedBefore: Date | "infinity"; checkpoint: boolean }): Promise<Map<string, SessionRetentionAssessment>> {
   if (sessions.length === 0) return new Map();
   const rows = await db.$client.unsafe<Array<{ key: string; company_id: string | null; agent_id: string | null; run_ids: string[] | null;
-    issue_ids: string[] | null; owner_issue_id: string | null; lease_ids: string[] | null; closed_at: number | null; resumable: boolean; reason: string | null }>>(
+    issue_ids: string[] | null; owner_issue_id: string | null; lease_ids: string[] | null; closed_at: number | null;
+    last_finished_at: number | null; resumable: boolean; reason: string | null }>>(
     SESSION_RETENTION_BLOCKERS_SQL, [JSON.stringify(sessions.map(session => ({ key: session.key, run_id: session.identity.runId,
       session_id: session.identity.normalizedSessionId, scope_digest: session.scopeDigest, lease_id: session.identity.environmentLeaseId }))),
     options.closedBefore === "infinity" ? "infinity" : options.closedBefore.toISOString(), options.checkpoint]);
   return new Map(rows.map(row => [row.key, { reason: row.reason, companyId: row.company_id, agentId: row.agent_id,
     runIds: row.run_ids ?? [], issueIds: row.issue_ids ?? [], ownerIssueId: row.owner_issue_id, leaseIds: row.lease_ids ?? [],
-    closedAt: row.closed_at === null ? null : Number(row.closed_at), resumable: row.resumable }]));
+    closedAt: row.closed_at === null ? null : Number(row.closed_at),
+    lastFinishedAt: row.last_finished_at === null ? null : Number(row.last_finished_at), resumable: row.resumable }]));
 }

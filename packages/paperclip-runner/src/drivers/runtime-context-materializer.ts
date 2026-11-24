@@ -363,6 +363,13 @@ async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: s
       // snapshot would turn ephemeral credentials into durable session state.
       "[features]",
       "shell_snapshot = false",
+      // Every Paperclip thread already disables plugins and apps. Disabling
+      // them for the app-server too stops its startup sync from downloading
+      // the remote plugin catalog and plugin bundles (~120 MB) into each
+      // session home, where no thread could use them.
+      "plugins = false",
+      "remote_plugin = false",
+      "apps = false",
       "",
     ].join("\n"), { mode: 0o600, flag: "wx" });
     await rename(temporaryConfig, configPath);
