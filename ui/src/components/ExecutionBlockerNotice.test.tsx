@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes } from "react";
-import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
+import { ExecutionBlockerNotice, showsFailedAttempt } from "./ExecutionBlockerNotice";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => <a href={to} {...props}>{children}</a>,
@@ -242,5 +242,22 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("img, button")).toBeNull();
     await render({ ...failed, providerFailure, state: "resolved" });
     expect(container.textContent).toBe("");
+  });
+  it("right-aligns Retry inside the failed attempt's card", async () => {
+    await render();
+    const button = container.querySelector('[data-testid="task-execution-retry"]')!;
+    const card = button.parentElement!;
+    expect(card.lastElementChild).toBe(button);
+    expect(card.className).toContain("justify-between");
+    expect(button.previousElementSibling?.className).toContain("flex-1");
+  });
+  it("reports a failed or retrying attempt so a waiting monitor stops offering Check now", () => {
+    expect(showsFailedAttempt({ presentation: failed })).toBe(true);
+    expect(showsFailedAttempt({ presentation: { ...failed, state: "retry_scheduled", nextRetryAt: "2026-10-20T00:00:30Z" } })).toBe(true);
+    expect(showsFailedAttempt({ presentation: null, takingLonger: true })).toBe(true);
+    expect(showsFailedAttempt({ presentation: null, error: new Error("nope") })).toBe(true);
+    expect(showsFailedAttempt({ presentation: failed, optimistic: true })).toBe(false);
+    expect(showsFailedAttempt({ presentation: { ...failed, state: "working" } })).toBe(false);
+    expect(showsFailedAttempt({ presentation: null })).toBe(false);
   });
 });

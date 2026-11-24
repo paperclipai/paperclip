@@ -35,7 +35,22 @@ const blockerAction: Record<string, string> = {
   done: "Saving its files",
 };
 
-/** One ordinary interruption surface. Technical records remain in diagnostics. */
+/**
+ * Whether the notice is showing a failed or retrying attempt. Retry is then the
+ * recovery action, so a waiting monitor's "Check now" would only repeat it.
+ */
+export function showsFailedAttempt({ presentation, optimistic, takingLonger, error }: {
+  presentation: TaskInterruptionPresentation | null | undefined;
+  optimistic?: boolean;
+  takingLonger?: boolean;
+  error?: Error | null;
+}): boolean {
+  if (optimistic) return false;
+  if (takingLonger || error) return true;
+  return presentation?.state === "failed" || presentation?.state === "retry_scheduled";
+}
+
+/** One ordinary interruption surface, shown with the composer. Technical records remain in diagnostics. */
 export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, companyId, agentName, projectName, blockers }: {
   presentation: TaskInterruptionPresentation | null | undefined;
   companyId?: string;

@@ -406,6 +406,7 @@ vi.mock("../components/IssueChatThread", () => ({
       onSelect: (runId: string) => Promise<void> | void;
     }[];
     composerPause?: TaskComposerPause | null;
+    composerAccessory?: ReactNode;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -429,6 +430,8 @@ vi.mock("../components/IssueChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {/* Rendered as the real thread does, above the composer. */}
+        <div data-testid="composer-accessory">{props.composerAccessory}</div>
         {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
@@ -460,6 +463,7 @@ vi.mock("../components/TaskChatThread", () => ({
       onSelect: (runId: string) => Promise<void> | void;
     }[];
     composerPause?: TaskComposerPause | null;
+    composerAccessory?: ReactNode;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -501,6 +505,8 @@ vi.mock("../components/TaskChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {/* Rendered as the real thread does, above the composer. */}
+        <div data-testid="composer-accessory">{props.composerAccessory}</div>
         {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
@@ -4072,6 +4078,8 @@ describe("IssueDetail", () => {
     mockIssuesApi.retryTask.mockResolvedValue({ requestId: "legacy-retry", accepted: true, stale: false, presentation: interruption });
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry")).toBe(true));
+    // Retry sits with the composer, not pinned at the top of the thread.
+    expect(container.querySelector('[data-testid="composer-accessory"] [data-testid="task-execution-retry"]')).not.toBeNull();
     expect([...container.querySelectorAll("button")].some(button => button.textContent === "Recover saved files")).toBe(false);
     const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
     await act(async () => retry.click());
