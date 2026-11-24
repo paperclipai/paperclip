@@ -38,7 +38,7 @@ export function createVoiceRuntime(options: CreateVoiceRuntimeOptions): ChatEndp
     initialize: async () => { assertActive(); }, shutdown: async () => { retired = true; },
     thread, channel: (id) => thread(id).channel, getProviderAdapter: () => adapter,
     getUser: async () => null, openDirectMessage: unsupported, abortTurn: async () => { assertActive(); },
-    handleWebhook: unsupported, streamTelegramDraft: unsupported, postSlackFilePublication: unsupported,
+    handleWebhook: unsupported, streamTelegramDraft: unsupported, postSlackFilePublication: unsupported, withTeamsFeedbackLoop: unsupported,
     resolveSlackFileUploadReceipt: unsupported, recordMicrosoftTeamsRoute: unsupported,
     sendTeamsFileConsentCard: unsupported, sendTeamsUploadedFileCard: unsupported, ensureDiscordRootThread: unsupported,
     parseTelegramCommandMessage: () => null, parseMicrosoftTeamsMessage: () => null,

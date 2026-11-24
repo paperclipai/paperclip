@@ -104,6 +104,7 @@ export { hydrateOutboundAttachment } from "./chat-channels/outbound-attachments.
 
 import { createInboundAttachments } from "./chat-channels/inbound-attachments.js";
 import { createInboundReactions } from "./chat-channels/reactions.js";
+import { createTeamsFeedbackVotes } from "./chat-channels/microsoft-teams/feedback.js";
 
 import { createReceiptReactions } from "./chat-channels/receipt-reactions.js";
 import { createDiscordRootThreads } from "./chat-channels/discord/root-threads.js";
@@ -901,6 +902,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     attachmentOmissionDetail, runtimeContextForRecord, endpointRecord, stageProviderEffect, scheduleProviderEffect,
   });
   const { handleReaction, processPendingReactionDeliveries } = createInboundReactions(db, { lockCurrentPrincipalAuthorization, runtimeCallbackRecord, runtimeCallbackEndpoint, ensurePrincipal, durableExternalThreadIdentity, recordCurrentMicrosoftTeamsRoute, lifecycleRuntimeFence, deliveryReady, redactError, nonDirectDestinationAllowed, reactionLinkPreflightBarrier: () => options.reactionLinkPreflightBarrier?.() ?? Promise.resolve(), reactionReplayEndpointLockBarrier: () => options.reactionReplayEndpointLockBarrier?.() ?? Promise.resolve(), reactionReplayConversationLockBarrier: () => options.reactionReplayConversationLockBarrier?.() ?? Promise.resolve() });
+  const { handleTeamsFeedback } = createTeamsFeedbackVotes(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization });
   const { stageReceiptReaction, addReceiptReaction, processReceiptReaction, processPendingReceiptReactions } = createReceiptReactions(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT, receiptReactionTransportBarrier: () => options.receiptReactionTransportBarrier?.() ?? Promise.resolve() });
   const { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt } = createDiscordRootThreads(db, { ensureDiscordGatewayRuntimeIsCurrent, withCredentialMutationLease, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, processMessage, redactError, scheduleConversationDrain, lifecycleRuntimeFence, runtimeFor, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS, discordRootThreadTransportBarrier: () => options.discordRootThreadTransportBarrier?.() ?? Promise.resolve() });
   const { handleDiscordGatewayEvent } = createDiscordGatewayEvents(db, { ensureDiscordGatewayRuntimeIsCurrent, discordGatewayRuntimeIsCurrent, runtimeCallbackRecord, runtimeCallbackEndpoint, applyProviderLifecycleEffect, runtimeGeneration, discordGatewayEventBarrier: (event) => options.discordGatewayEventBarrier?.(event) ?? Promise.resolve() });
@@ -1100,6 +1102,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               onTeamsFileConsent:
                 record.endpoint.provider === "microsoft-teams"
                   ? (event) => handleTeamsFileConsent(event, context)
+                  : undefined,
+              onTeamsFeedback:
+                record.endpoint.provider === "microsoft-teams"
+                  ? (event) => handleTeamsFeedback(event, context)
                   : undefined,
               onTelegramGenerationStopped:
                 record.endpoint.provider === "telegram"
