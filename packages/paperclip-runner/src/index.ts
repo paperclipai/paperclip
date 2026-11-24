@@ -101,7 +101,6 @@ export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
-  isSettledReleasedRunnerCut,
   revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,

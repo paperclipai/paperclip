@@ -61,7 +61,7 @@ uses real app APIs and a deterministic process agent to verify first-chat discov
 unread state across reloads, source navigation and follow-up context. It does not
 qualify live PR retrieval or a model's editorial choices.
 
-Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. (Mocked `IssueDetail` UI tests for canonical first/existing-chat IDs and settings-before-comment ordering were removed; verify those page-level flows manually.) These tests mock the API and do not prove provider execution with the chosen model.
+Automated: [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. (Mocked `ComposerRunSettingsPicker` and `IssueDetail` UI tests for model/effort selection, canonical first/existing-chat IDs, and settings-before-comment ordering were removed; verify those UI flows manually.) These tests mock the API and do not prove provider execution with the chosen model.
 
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,

@@ -242,10 +242,10 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
 uses production agent creation, persistent keys, run JWTs, native tool bindings,
 human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
-setup, ownership, attribution, scope, trust, work modes and revocation. The
-[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
-cover pending choices, consent precedence and failed grant loading with API mocks.
-These are separate from live provider setup and model success.
+setup, ownership, attribution, scope, trust, work modes and revocation. (Mocked
+`GoogleWorkspaceServices` UI service-picker tests were removed; verify pending
+choices and consent-picker UI manually.) These are separate from live provider
+setup and model success.
 
 Manual: Have the agent perform authorized setup, then open its saved handoff as
 the addressed person. Reload before completing the required human step; verify

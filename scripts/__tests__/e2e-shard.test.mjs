@@ -9,6 +9,7 @@ import test from "node:test";
 import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
 import {
   DEFAULT_PARALLEL_WORKERS,
+  EFFECTIVE_PARALLEL_SPEEDUP,
   IGNORED_SPECS,
   SERIAL_SPECS,
   isSerialE2eSpec,
@@ -152,10 +153,12 @@ test("the serial spec list matches playwright.config.ts SERIAL_SPECS and never m
   }
 });
 
-test("playwright.config.ts supports skipping the UI build when PAPERCLIP_E2E_SKIP_UI_BUILD=1", () => {
+test("playwright.config.ts supports skipping the UI build when PAPERCLIP_E2E_SKIP_UI_BUILD=1 and uses unminified inline builds", () => {
   const config = readFileSync(playwrightConfig, "utf8");
   assert.match(config, /PAPERCLIP_E2E_SKIP_UI_BUILD/);
   assert.match(config, /ui-dist.*index\.html/);
+  assert.match(config, /--minify false/);
+  assert.match(config, /availableParallelism/);
 });
 
 test("the duration manifest only names specs that still exist", () => {
@@ -172,11 +175,11 @@ test("the weighted partition keeps the shards close to balanced", () => {
   const specs = listE2eSpecs();
   const fallbackWeight = defaultSuiteWeight(durations);
   const shards = partitionE2eShards(specs, SHARD_COUNT, durations, {
-    parallelWorkers: DEFAULT_PARALLEL_WORKERS,
+    parallelWorkers: EFFECTIVE_PARALLEL_SPEEDUP,
   });
   const wallWeights = shards.map((shard) => {
     const serialSum = shard.files.reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0);
-    return shard.mode === "parallel" ? serialSum / DEFAULT_PARALLEL_WORKERS : serialSum;
+    return shard.mode === "parallel" ? serialSum / EFFECTIVE_PARALLEL_SPEEDUP : serialSum;
   });
 
   const heaviest = Math.max(...wallWeights);
