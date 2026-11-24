@@ -67,31 +67,76 @@ function maskCharacters(text: string): string {
   return text.replace(/\S/g, "*");
 }
 
-/**
- * Field names that hold a secret, as in `API_KEY=...` or `"password": "..."`.
- * Quantifiers are bounded: rrweb runs this on every recorded text node, so a
- * long file must not backtrack.
- */
-const SECRET_NAME = String.raw`(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,40}(?:api[-_]?key|access[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|secret|passw(?:or)?d|passwd|pwd|credentials?|private[-_]?key|client[-_]?secret|session[-_]?id|cookie|connection[-_]?string|dsn|jwt|bearer)[A-Za-z0-9_.-]{0,40}`;
+/** Words in a field name that say it holds a secret (`API_KEY`, `dbPassword`). */
+const SECRET_NAME_WORD = /api[-_]?key|access[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|secret|passw(?:or)?d|passwd|pwd|credentials?|private[-_]?key|client[-_]?secret|session[-_]?id|cookie|connection[-_]?string|dsn|jwt|bearer/i;
 
 /**
- * `name: value` / `name=value` / `"name": "value"`: the whole value is masked.
- * A quoted value runs to its closing quote (escaped quotes included) or the
- * end of the line, so `password="correct horse battery staple"` and a JSON
- * value with spaces mask in full while the next JSON field shows. An unquoted
- * value runs to the end of the line, as in YAML.
+ * A field name and its assignment operator: `NAME=`, `name: `, `"name": `,
+ * `name := `, `name => `. It starts only at the start of a word and the name
+ * is one character class, so it stays linear on long input.
  */
-const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`(${SECRET_NAME}["']?[ \t]{0,8}(?::=|=>|[:=])[ \t]{0,8})` +
-    String.raw`(?:(["'\x60])((?:\\.|[^\\\r\n]){0,2048}?)(?:\2|(?=[\r\n]|$))|([^\r\n]{1,2048}))`,
-  "gi",
-);
+const ASSIGNMENT_START = /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)["']?[ \t]*(?::=|=>|[:=])[ \t]*/g;
+
+const QUOTES = new Set(['"', "'", "`"]);
+
+function isLineBreak(char: string | undefined): boolean {
+  return char === "\n" || char === "\r";
+}
+
+/**
+ * The value that starts at `index`, as the range to mask and the index after
+ * it. A quoted value runs to its closing quote (escaped quotes included) or
+ * the end of the line; an unquoted value runs to the end of the line, as in
+ * YAML. There is no length limit, so a long secret leaves no readable tail.
+ */
+function secretValueRange(text: string, index: number): { from: number; to: number; end: number } {
+  const quote = text[index];
+  if (quote !== undefined && QUOTES.has(quote)) {
+    let cursor = index + 1;
+    while (cursor < text.length && !isLineBreak(text[cursor])) {
+      if (text[cursor] === "\\") {
+        cursor += 2;
+        continue;
+      }
+      if (text[cursor] === quote) return { from: index + 1, to: cursor, end: cursor + 1 };
+      cursor += 1;
+    }
+    const to = Math.min(cursor, text.length);
+    return { from: index + 1, to, end: to };
+  }
+  let cursor = index;
+  while (cursor < text.length && !isLineBreak(text[cursor])) cursor += 1;
+  return { from: index, to: cursor, end: cursor };
+}
+
+/**
+ * Masks the whole value of every `name: value` / `name=value` /
+ * `"name": "value"` assignment whose name says secret, so
+ * `password="correct horse battery staple"` masks in full while the next JSON
+ * field and a preceding `user=bob` still show.
+ */
+function redactSecretAssignments(text: string): string {
+  const pattern = new RegExp(ASSIGNMENT_START.source, "g");
+  let result = "";
+  let copied = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (!SECRET_NAME_WORD.test(match[1] ?? "")) continue;
+    const range = secretValueRange(text, match.index + match[0].length);
+    if (range.to > range.from) {
+      result += text.slice(copied, range.from) + maskCharacters(text.slice(range.from, range.to));
+      copied = range.to;
+    }
+    pattern.lastIndex = Math.max(range.end, pattern.lastIndex);
+  }
+  return copied === 0 ? text : result + text.slice(copied);
+}
 
 /** `Authorization: Bearer x`, `Basic x`, `Token x`: the credential is masked. */
 const AUTH_SCHEME = /(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{8,})/g;
 
 /** Credentials inside a URL (`scheme://user:password@host`). */
-const URL_USERINFO = /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:]{1,256}:[^\s/@]{1,256})(@)/gi;
+const URL_USERINFO = /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:]+:[^\s/@]+)(@)/gi;
 
 /** Well-known credential formats, masked wherever they appear. */
 const KNOWN_TOKEN = new RegExp(
@@ -129,16 +174,7 @@ function looksRandom(token: string): boolean {
  * renders as secrets.
  */
 export function redactReplaySecrets(text: string): string {
-  return text
-    .replace(KNOWN_TOKEN, maskCharacters)
-    .replace(
-      SECRET_ASSIGNMENT,
-      (match: string, name: string, quote: string | undefined, quoted: string | undefined, bare: string | undefined) => {
-        if (bare !== undefined) return `${name}${maskCharacters(bare)}`;
-        const closed = match.length > name.length + 1 + (quoted?.length ?? 0);
-        return `${name}${quote}${maskCharacters(quoted ?? "")}${closed ? quote : ""}`;
-      },
-    )
+  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters))
     .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
     .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
     .replace(RANDOM_TOKEN, (token) => (looksRandom(token) ? maskCharacters(token) : token));

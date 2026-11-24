@@ -357,6 +357,21 @@ describe("session replay text masking", () => {
     expect(redactReplaySecrets("password=\"correct horse\nnext line")).toBe("password=\"******* *****\nnext line");
   });
 
+  it("masks a secret value longer than any length limit in full", () => {
+    const hex = "0123456789abcdef".repeat(400);
+    expect(redactReplaySecrets(`COOKIE=${hex}`)).toBe(`COOKIE=${stars(hex)}`);
+    expect(redactReplaySecrets(`"cookie": "${hex}", "title": "Q3"`)).toBe(`"cookie": "${stars(hex)}", "title": "Q3"`);
+  });
+
+  it("masks secrets behind long names, after other assignments, and long URL passwords", () => {
+    const longName = `${"SERVICE_".repeat(12)}PASSWORD`;
+    expect(redactReplaySecrets(`${longName}=hunter2`)).toBe(`${longName}=*******`);
+    expect(redactReplaySecrets("user=bob password=hunter2")).toBe("user=bob password=*******");
+    const longPassword = "p".repeat(400);
+    expect(redactReplaySecrets(`postgres://admin:${longPassword}@db:5432/app`))
+      .toBe(`postgres://${stars(`admin:${longPassword}`)}@db:5432/app`);
+  });
+
   it("redacts a large text node quickly", () => {
     // rrweb calls this for every recorded text node, so it must stay linear.
     const inputs = [
@@ -365,6 +380,8 @@ describe("session replay text masking", () => {
       "password_".repeat(20_000) + "=x",
       "https://" + "a:".repeat(50_000),
       ("const value = computeTotal(lineItems); // TODO token budget\n").repeat(3_000),
+      "password=\"" + "\\a".repeat(100_000),
+      "secret: " + "x".repeat(200_000),
     ];
     const started = performance.now();
     for (const input of inputs) redactReplaySecrets(input);
