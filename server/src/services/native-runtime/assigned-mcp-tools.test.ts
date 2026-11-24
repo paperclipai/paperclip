@@ -700,6 +700,8 @@ describe("assigned MCP runner tools", () => {
     ["rate_limited: slow down", "rate_limited", 422],
     ['Allowance used.\n\n{"error":{"code":"usage_limit_reached","retryability":"later"}}', "usage_limit_reached", 429],
     ["Something went wrong", "assigned_tool_error", 422],
+    ['{"code":"validation_error","retryable":false}', "validation_error", 422],
+    ["This operation is not retryable (code: validation_error)", "validation_error", 422],
   ])("reports a tool's own error with its stable code instead of a server failure: %s", async (detail, code, status) => {
     const f = fixture([descriptor("recall")]);
     f.executeTool.mockRejectedValue(new ToolGatewayHttpError(502, detail, "tool_error"));
@@ -710,15 +712,17 @@ describe("assigned MCP runner tools", () => {
   });
 
   it.each([
-    [{ isError: true, content: [{ type: "text", text: '{"code":"validation_error","message":"Bad property"}' }] }, "validation_error"],
-    [{ isError: true, content: [{ type: "text", text: "rate_limited: slow down" }] }, "rate_limited"],
-    [{ isError: true, content: [], structuredContent: { code: "quota_exceeded" } }, "quota_exceeded"],
-  ])("reads the code from a returned error result's content: %#", async (result, code) => {
+    [{ isError: true, content: [{ type: "text", text: '{"code":"validation_error","message":"Bad property"}' }] }, "validation_error", 422],
+    [{ isError: true, content: [{ type: "text", text: "rate_limited: slow down" }] }, "rate_limited", 422],
+    [{ isError: true, content: [], structuredContent: { code: "quota_exceeded" } }, "quota_exceeded", 422],
+    [{ isError: true, content: [], structuredContent: { code: "quota_exceeded", retryability: "later" } }, "quota_exceeded", 429],
+    [{ isError: true, data: { content: [{ type: "text", text: "rate_limited: slow down" }], structuredContent: { retryable: true } } }, "rate_limited", 429],
+  ])("reads the code from a returned error result's content: %#", async (result, code, status) => {
     const f = fixture([descriptor("recall")]);
     f.executeTool.mockResolvedValue({ status: "completed", result });
     const assigned = await createAssignedMcpTools(f);
     await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toMatchObject({
-      reasonCode: "tool_error", message: `${code}: The connected tool reported an error.`,
+      reasonCode: "tool_error", status, message: `${code}: The connected tool reported an error.`,
     });
   });
 
