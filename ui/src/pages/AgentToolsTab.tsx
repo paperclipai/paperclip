@@ -333,6 +333,18 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * prompt can narrow the list but never expand it, and the side panel explains
  * which access profiles and rules shape the final list.
  */
+export function AllowedToolsEmptyState({ profilesHref }: { profilesHref: string }) {
+  return (
+    <p className="px-3 py-6 text-sm text-muted-foreground">
+      No tools are allowed for this agent.{" "}
+      <Link to={profilesHref} className="font-medium text-primary hover:underline">
+        Bind a tool profile
+      </Link>
+      {" "}to grant access.
+    </p>
+  );
+}
+
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
   const queryClient = useQueryClient();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
@@ -617,9 +629,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
               </span>
             </div>
             {allowedTools.length === 0 ? (
-              <p className="px-3 py-6 text-sm text-muted-foreground">
-                No tools are allowed for this agent. Bind a tool profile to grant access.
-              </p>
+              <AllowedToolsEmptyState profilesHref={profilesHref} />
             ) : (
               <table className="w-full text-sm">
                 <thead>
