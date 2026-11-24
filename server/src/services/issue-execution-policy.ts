@@ -419,6 +419,26 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+/**
+ * A pending execution review whose participant is a human is a live manual
+ * review path. It stays live even if a checkout has temporarily returned the
+ * issue to `in_progress`/an agent assignee, because only the recorded human
+ * participant can advance the stage. Recovery classifiers must not treat that
+ * state as stranded work.
+ */
+export function isPendingHumanReviewHold(
+  state: IssueExecutionState | null | undefined,
+): boolean {
+  if (state?.status !== PENDING_STATUS) return false;
+  if (state.currentStageType !== "review") return false;
+  const participant = state.currentParticipant;
+  return Boolean(
+    participant?.type === "user"
+      && typeof participant.userId === "string"
+      && participant.userId.trim().length > 0,
+  );
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };
