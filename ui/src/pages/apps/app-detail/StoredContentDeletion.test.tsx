@@ -45,13 +45,15 @@ describe("stored content deletion", () => {
       .toBe("Paperclip will delete what it saved from 1 app view that used Docs.");
     expect(storedContentSummary({ ...stored, stored: { toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 } }, "Docs"))
       .toBe("Paperclip found no saved data from Docs's tool calls. You can still delete to check again.");
-    expect(storedContentStatus({ ...stored, deletion: { id: "d", status: "pending", requestedAt: "", completedAt: null, retrying: true, counts } }))
+    expect(storedContentStatus({ ...stored, deletion: { id: "d", status: "pending", reason: "requested", requestedAt: "", completedAt: null, retrying: true, counts } }))
       .toBe("Deleting was interrupted. Paperclip keeps trying until it finishes.");
+    expect(storedContentStatus({ ...stored, deletion: { id: "d", status: "pending", reason: "access_revoked", requestedAt: "", completedAt: null, retrying: false, counts } }))
+      .toBe("Access to this app ended, so Paperclip is deleting this data automatically. It waits for runs that are still working and finishes within a day.");
   });
 
   it("confirms with counts, warns about running work, and starts the deletion", async () => {
     api.getStoredContent.mockResolvedValue(stored);
-    const pendingDeletion = { id: "d", status: "pending" as const, requestedAt: new Date().toISOString(), completedAt: null, retrying: false, counts };
+    const pendingDeletion = { id: "d", status: "pending" as const, reason: "requested" as const, requestedAt: new Date().toISOString(), completedAt: null, retrying: false, counts };
     api.deleteStoredContent.mockResolvedValue({ deletion: pendingDeletion });
     api.getStoredContentDeletion.mockResolvedValue({ deletion: pendingDeletion });
     container = document.createElement("div");
