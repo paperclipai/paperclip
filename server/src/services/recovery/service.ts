@@ -27,6 +27,7 @@ import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
 import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
+import { ensureNativePlanReviewCard } from "../native-runtime/native-plan-review-card.js";
 import { hasCommittedNativeConversationTurnWait, hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
@@ -5096,6 +5097,28 @@ export function recoveryService(
         continue;
       }
 
+      // A Plan-mode task whose run settled before the server opened plan
+      // review cards on settle (or whose card opening was interrupted) gets
+      // its card here; the card is then its next action.
+      if (
+        issue.workMode === "planning" &&
+        issue.status === "in_progress" &&
+        latestRun?.status === "succeeded" &&
+        latestRun.agentId === agentId &&
+        // An accepted native plan waits for the user's next message; its
+        // answered plan question is the review. Never ask for it again.
+        parseObject(latestRun.resultJson).finalizationReasonCode !== "native_plan_accepted_waiting_for_continuation" &&
+        !(await hasCommittedNativePlanWait(db, {
+          companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+        })) &&
+        (await ensureNativePlanReviewCard(db, {
+          companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+        })).kind === "created"
+      ) {
+        result.skipped += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
       if (
         await hasActiveExecutionPath(
           issue.companyId,

@@ -17,7 +17,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linkExcludedPlugins } from "./link-plugin-dev-sdk.mjs";
@@ -26,6 +26,14 @@ import { PROJECTS } from "./typecheck-test-projects.mjs";
 
 export const DEFAULT_CONCURRENCY = 3;
 export const PROVIDER_WORKSPACE = "scripts/typecheck-sandbox-providers";
+
+export function defaultConcurrency({ cpus = availableParallelism(), totalMemoryBytes = totalmem() } = {}) {
+  const memGiB = totalMemoryBytes / 1024 ** 3;
+  if (cpus <= 2 || memGiB < 12) return 1;
+  if (cpus <= 4) return 2;
+  if (memGiB < 24) return Math.min(3, cpus);
+  return Math.min(4, cpus);
+}
 
 export const SANDBOX_PROVIDERS = [
   "packages/plugins/sandbox-providers/boxd",
@@ -124,7 +132,11 @@ export function selectTestPrograms(changedFiles, programs = PROGRAMS) {
       "scripts/typecheck-sandbox-providers/",
       "scripts/link-plugin-dev-sdk.mjs",
     ]);
-  const runnerChanged = hasPrefix(changedFiles, ["packages/paperclip-runner/", "packages/paperclip-eval-kernel/"]);
+  const runnerChanged = hasPrefix(changedFiles, [
+    "packages/paperclip-runner/",
+    "packages/paperclip-eval-kernel/",
+    "packages/adapter-utils/",
+  ]);
   const cloudflareChanged = hasPrefix(changedFiles, ["packages/plugins/sandbox-providers/cloudflare/"]);
 
   const selected = programs.filter((program) => {
@@ -342,7 +354,7 @@ export async function checkCoverageAsync({
   programs = PROGRAMS,
   includeProviders = true,
   onlyFiles = null,
-  concurrency = Math.min(4, availableParallelism()),
+  concurrency = Math.max(1, Math.min(6, availableParallelism())),
   workspaceConfigs = listWorkspaceConfigs,
   trackedFiles = listTrackedFiles,
   listFilesAsync = listProgramFilesAsync,
@@ -606,7 +618,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let noCoverage = false;
   let forceCoverage = false;
   let coverageOnly = false;
-  let concurrency = Math.max(1, Math.min(DEFAULT_CONCURRENCY, availableParallelism()));
+  let concurrency = defaultConcurrency();
   let checkers;
   const checkFiles = [];
   const programs = [];

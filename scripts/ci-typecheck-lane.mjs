@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { availableParallelism, setPriority } from "node:os";
+import { availableParallelism, setPriority, totalmem } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listLayers } from "../server/scripts/typecheck-layers.mjs";
@@ -13,9 +13,71 @@ export const SERIAL_BUILD_GAPS = ["@paperclipai/paperclip-runner"];
 export const BACKGROUND_PRIORITY = 10;
 export const DEFAULT_MAX_CONCURRENCY = 3;
 export const DEFAULT_TEST_PROGRAMS_CONCURRENCY = 2;
+export const PREPARE_RUNNER_VENDOR = "prepare runner vendor";
+export const BUILD_SERVER_EMIT_ONLY = "build server without type checks";
 const SERVER_DECLARATIONS = "server declarations";
 export const CLI_GUIDANCE_SAFETY = "CLI guidance safety";
 const lowMemory = { [LOW_MEMORY_VARIABLE]: "1" };
+
+/**
+ * Computes CPU- and RAM-aware concurrency and TypeScript 7 checker/GOMAXPROCS settings.
+ * Keeps peak memory safely under 16 GiB on 4-core (m8i.xlarge) and 8-core (c8i.2xlarge)
+ * runners while scaling up cleanly on 8+ core / >= 24 GiB machines.
+ */
+export function computeResourceProfile({ cpus = availableParallelism(), totalMemoryBytes = totalmem() } = {}) {
+  const safeCpus = Math.max(1, Number.isFinite(cpus) ? Math.floor(cpus) : 4);
+  const totalMemGiB = totalMemoryBytes / 1024 ** 3;
+  if (safeCpus <= 2 || totalMemGiB < 12) {
+    return {
+      laneConcurrency: Math.min(2, safeCpus),
+      serverDeclCheckers: 1,
+      serverLayerCheckers: 1,
+      testProjectCheckers: 1,
+      uiGomaxprocs: 1,
+      testProgramsConcurrency: 1,
+      testProgramsCheckers: 1,
+    };
+  }
+  if (safeCpus <= 4) {
+    return {
+      laneConcurrency: 3,
+      serverDeclCheckers: 2,
+      serverLayerCheckers: 1,
+      testProjectCheckers: 1,
+      uiGomaxprocs: 2,
+      testProgramsConcurrency: 2,
+      testProgramsCheckers: 1,
+    };
+  }
+  if (totalMemGiB < 24) {
+    // 8-core / 16 GiB (e.g. c8i.2xlarge): run all 4 server test layers in 1 wave at 1 checker each (~10 GiB),
+    // give server declarations 3 checkers (~6.5 GiB) and UI GOMAXPROCS=4 (~4.4 GiB).
+    return {
+      laneConcurrency: Math.min(4, safeCpus),
+      serverDeclCheckers: 3,
+      serverLayerCheckers: 1,
+      testProjectCheckers: 1,
+      uiGomaxprocs: 4,
+      testProgramsConcurrency: 3,
+      testProgramsCheckers: 1,
+    };
+  }
+  // 6-8+ core / >= 24 GiB (e.g. m8i.2xlarge or local dev): maximize parallelism across declarations, layers, and UI.
+  return {
+    laneConcurrency: Math.min(6, safeCpus),
+    serverDeclCheckers: Math.min(4, Math.max(3, Math.floor(safeCpus / 2))),
+    serverLayerCheckers: 2,
+    testProjectCheckers: 2,
+    uiGomaxprocs: 4,
+    testProgramsConcurrency: 4,
+    testProgramsCheckers: 2,
+  };
+}
+
+export const DEFAULT_RESOURCE_PROFILE = computeResourceProfile({
+  cpus: 4,
+  totalMemoryBytes: 16 * 1024 ** 3,
+});
 
 const GLOBAL_TYPECHECK_INPUTS = new Set([
   "package.json",
@@ -89,7 +151,9 @@ export function selectBuildGapPackages(buildGapPackages, changedFiles) {
         "packages/shared/",
         "packages/adapter-utils/",
         "packages/adapters/",
+        "packages/paperclip-runner/",
         "packages/plugins/sdk/",
+        "announcements/examples/animated/",
         "maps/",
       ]);
     }
@@ -208,7 +272,8 @@ export function planLane({
   testLayers,
   projects = PROJECTS,
   changedFiles = null,
-  testProgramsConcurrency = DEFAULT_TEST_PROGRAMS_CONCURRENCY,
+  resources = DEFAULT_RESOURCE_PROFILE,
+  testProgramsConcurrency = resources.testProgramsConcurrency ?? DEFAULT_TEST_PROGRAMS_CONCURRENCY,
 }) {
   const isPrMode = Array.isArray(changedFiles);
   const selectedBuildGaps = selectBuildGapPackages(buildGapPackages, changedFiles);
@@ -217,13 +282,14 @@ export function planLane({
   const runReleaseRegistry = shouldRunReleaseRegistryTests(changedFiles);
   const programSelection = selectTestPrograms(changedFiles);
 
-  const typecheckPackage = (name, background) => ({
+  const typecheckPackage = (name, background, needs) => ({
     name: `typecheck ${name}`,
     command: "pnpm",
     args: ["--filter", name, "typecheck"],
-    // UI typecheck runs ~7x faster without --singleThreaded while staying at ~4.4 GiB with GOMAXPROCS=2.
-    env: name === "@paperclipai/ui" ? { GOMAXPROCS: "2" } : lowMemory,
+    // UI typecheck runs ~7-10x faster without --singleThreaded while staying at ~4.4 GiB with bounded GOMAXPROCS.
+    env: name === "@paperclipai/ui" ? { GOMAXPROCS: String(resources.uiGomaxprocs) } : lowMemory,
     background,
+    ...(needs ? { needs } : {}),
   });
 
   const prepare = [{ name: "link workspace packages", command: "pnpm", args: ["run", "preflight:workspace-links"] }];
@@ -231,25 +297,9 @@ export function planLane({
   if (runServer || selectedBuildGaps.length > 0 || programSelection.programs.length > 0) {
     prepare.push({
       name: "build plugin SDK",
-      command: "pnpm",
-      args: ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],
+      command: "node",
+      args: ["scripts/ensure-plugin-build-deps.mjs"],
     });
-  }
-
-  if (runServer) {
-    prepare.push(
-      {
-        name: "build server without type checks",
-        command: "pnpm",
-        args: ["--filter", "@paperclipai/server", "build"],
-        env: { [EMIT_ONLY_VARIABLE]: "1" },
-      },
-      {
-        name: "check server runtime assets",
-        command: "node",
-        args: ["scripts/run-typecheck-build-gaps.mjs", "--runtime-assets-only"],
-      },
-    );
   }
 
   if (programSelection.includeProviders || programSelection.includeRunnerEval) {
@@ -271,15 +321,31 @@ export function planLane({
     },
   );
 
+  const needsRunnerVendor = [PREPARE_RUNNER_VENDOR];
   const needsDeclarations = [SERVER_DECLARATIONS];
   const tasks = [];
 
   if (runServer) {
-    tasks.push({
-      name: SERVER_DECLARATIONS,
-      command: "node",
-      args: ["server/scripts/typecheck-layers.mjs", "--declarations-only", "--checkers", "2"],
-    });
+    // Ensure packages/paperclip-runner/dist is current once in parallel with UI / non-runner checks,
+    // then fan out server declarations and emit-only server build without racing on runner dist.
+    tasks.push(
+      {
+        name: PREPARE_RUNNER_VENDOR,
+        command: "pnpm",
+        args: ["--filter", "@paperclipai/server", "run", "prepare:runner-vendor"],
+      },
+      {
+        name: SERVER_DECLARATIONS,
+        command: "node",
+        args: [
+          "server/scripts/typecheck-layers.mjs",
+          "--declarations-only",
+          "--checkers",
+          String(resources.serverDeclCheckers),
+        ],
+        needs: needsRunnerVendor,
+      },
+    );
   }
 
   if (runReleaseRegistry) {
@@ -291,7 +357,7 @@ export function planLane({
       "scripts/typecheck-test-programs.mjs",
       "--skip-prepare",
       "--checkers",
-      "1",
+      String(resources.testProgramsCheckers),
       "--concurrency",
       String(testProgramsConcurrency),
     ];
@@ -315,6 +381,7 @@ export function planLane({
       command: "node",
       args: programArgs,
       background: true,
+      ...(runServer && programSelection.includeRunnerEval ? { needs: needsRunnerVendor } : {}),
     });
   }
 
@@ -323,20 +390,53 @@ export function planLane({
       ...testLayers.map((layer) => ({
         name: `server layer ${layer}`,
         command: "node",
-        args: ["server/scripts/typecheck-layers.mjs", "--layer", layer, "--checkers", "1"],
+        args: [
+          "server/scripts/typecheck-layers.mjs",
+          "--layer",
+          layer,
+          "--checkers",
+          String(resources.serverLayerCheckers),
+        ],
         needs: needsDeclarations,
       })),
       ...selectedProjects.map((project) => ({
         name: `test project ${project}`,
         command: "node",
-        args: ["scripts/typecheck-test-projects.mjs", "--checkers", "1", "--reuse-declarations", project],
+        args: [
+          "scripts/typecheck-test-projects.mjs",
+          "--checkers",
+          String(resources.testProjectCheckers),
+          "--reuse-declarations",
+          project,
+        ],
         needs: needsDeclarations,
       })),
+      {
+        name: BUILD_SERVER_EMIT_ONLY,
+        command: "pnpm",
+        args: ["--filter", "@paperclipai/server", "build"],
+        env: {
+          [EMIT_ONLY_VARIABLE]: "1",
+          PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT: "1",
+        },
+        needs: needsRunnerVendor,
+        background: true,
+      },
+      {
+        name: "check server runtime assets",
+        command: "node",
+        args: ["scripts/run-typecheck-build-gaps.mjs", "--runtime-assets-only"],
+        needs: [BUILD_SERVER_EMIT_ONLY],
+      },
     );
   }
 
   tasks.push(
-    ...selectedBuildGaps.filter((name) => !SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, true)),
+    ...selectedBuildGaps
+      .filter((name) => !SERIAL_BUILD_GAPS.includes(name))
+      .map((name) =>
+        typecheckPackage(name, true, runServer && name === "paperclipai" ? needsRunnerVendor : undefined),
+      ),
   );
 
   return { prepare, tasks };
@@ -524,7 +624,8 @@ function listBuildGapPackages(root) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  let concurrency = Math.max(1, Math.min(DEFAULT_MAX_CONCURRENCY, availableParallelism()));
+  const resources = computeResourceProfile();
+  let concurrency = resources.laneConcurrency;
   let base;
   let full = false;
   let valid = true;
@@ -559,10 +660,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         scope.mode === "pr"
           ? `PR (${scope.changedFiles.length} changed files via ${scope.reason})`
           : `full (${scope.reason})`;
-      const lanePlan = planLane({ buildGapPackages, testLayers, changedFiles: scope.changedFiles });
+      const lanePlan = planLane({ buildGapPackages, testLayers, changedFiles: scope.changedFiles, resources });
       console.log(
-        `typecheck lane: ${concurrency} at a time; mode: ${scopeDetail}; ` +
-          `prepare: ${lanePlan.prepare.length}; tasks: ${lanePlan.tasks.length}; ` +
+        `typecheck lane: ${concurrency} at a time (${availableParallelism()} vCPU, ${(totalmem() / 1024 ** 3).toFixed(1)} GiB; ` +
+          `decl=${resources.serverDeclCheckers}, layers=${resources.serverLayerCheckers}, ui=${resources.uiGomaxprocs}); ` +
+          `mode: ${scopeDetail}; prepare: ${lanePlan.prepare.length}; tasks: ${lanePlan.tasks.length}; ` +
           `build gaps: ${buildGapPackages.join(", ")}`,
       );
       process.exitCode = await runLane({ ...lanePlan, concurrency, cwd: root });
