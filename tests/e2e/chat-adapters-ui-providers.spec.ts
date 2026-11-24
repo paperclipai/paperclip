@@ -1,6 +1,7 @@
 import { oauthCallbackInterstitialHtml } from "../../server/src/lib/oauth-browser-return";
 import { createServer } from "node:http";
 import { expect, test, type Page } from "@playwright/test";
+import { CONNECTORS_ANNOUNCEMENT, serveConnectorsAnnouncement } from "./helpers/announcement-visit";
 
 import {
   expectSetupRail,
@@ -310,13 +311,19 @@ test.describe("native chat adapter UI", () => {
     const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
     const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, automaticSlack: true });
     mock.setSlackUncertain();
+    await serveConnectorsAnnouncement(page);
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
     await expect(page.getByRole("alert")).toContainText("Slack may have created the app");
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button", { name: /Choose agent/ }).click();
     await page.locator("summary:visible").filter({ hasText: "Advanced" }).click();
     await expect(page.getByLabel("Slack app name", { exact: true })).toHaveAttribute("readonly", "");
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    const announcement = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await expect(announcement.getByRole("heading", { name: CONNECTORS_ANNOUNCEMENT.title })).toBeVisible();
+    await expect(announcement.getByRole("link", { name: "Explore connectors" })).toBeVisible();
+    await expect(announcement.getByRole("button", { name: "Dismiss announcement" })).toBeVisible();
+    await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 5_000 });
+    await expect(announcement).toBeVisible();
     await page.locator("summary:visible").filter({ hasText: "Advanced" }).click();
     await expect(page.getByLabel("App configuration access token", { exact: true })).toHaveCount(0);
     const save = await page.getByRole("button", { name: "Save & exit", exact: true }).boundingBox();

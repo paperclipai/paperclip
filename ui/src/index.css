@@ -3670,7 +3670,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-sidebar-max-height: 50dvh;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
   --announcement-max-height: calc(100dvh - var(--spacing) * 6);
-  --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
+  --announcement-mobile-max-height: min(40dvh, calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3));
 }
 
 .announcement-well {
