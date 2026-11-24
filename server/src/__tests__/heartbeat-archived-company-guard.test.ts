@@ -366,7 +366,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     const heartbeat = heartbeatService(db);
     const promoted = await heartbeat.promoteDueScheduledRetries(now);
 
-    expect(promoted).toEqual({ promoted: 0, runIds: [] });
+    expect(promoted).toEqual({ promoted: 0, runIds: [], degraded: false });
     const run = await db
       .select({
         status: heartbeatRuns.status,
