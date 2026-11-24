@@ -499,6 +499,33 @@ jobs:
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
+      # Exact-key master cache for prebuilt Runner dist (read-only restore;
+      # prepare-runner-vendor.mjs self-validates the SHA-256 input digest and
+      # every output size, rebuilding on any mismatch).
+      - name: Restore prebuilt Runner dist (read only)
+        id: runner_dist
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/dist
+            packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+            packages/paperclip-eval-kernel/dist
+          key: runner-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'patches/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/plugins/sdk/src/**', 'packages/paperclip-runner/package.json', 'packages/paperclip-runner/tsconfig*.json', 'packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/cursor-*.json', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/scripts/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/spec/**', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'packages/paperclip-eval-kernel/package.json', 'packages/paperclip-eval-kernel/tsconfig*.json', 'packages/paperclip-eval-kernel/src/**') }}
+
+      # Prefix-keyed master cache for TS 7 incremental .tsbuildinfo + dts outputs
+      # (read-only restore). TypeScript 7 hashes file contents so changed PR files
+      # always re-check cleanly while unchanged layers finish 10-18x faster.
+      - name: Restore incremental typecheck cache (read only)
+        id: typecheck_incremental
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            server/node_modules/.cache/paperclip-typecheck
+            ui/node_modules/.cache/paperclip-ui.tsbuildinfo
+          key: typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-
+
       - name: Typecheck, CLI guidance safety and release registry tests
         if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}
         run: node scripts/ci-typecheck-lane.mjs
@@ -1308,12 +1335,9 @@ jobs:
       # parallel, so server build only needs JS emit (`PAPERCLIP_TSC_EMIT_ONLY=1`).
       # Full-CI / release builds emit full declarations and re-check types.
       - name: Build
-        run: |
-          if [ "${PAPERCLIP_CI_FULL:-}" = "1" ]; then
-            pnpm build
-          else
-            PAPERCLIP_TSC_EMIT_ONLY=1 pnpm build
-          fi
+        env:
+          PAPERCLIP_TSC_EMIT_ONLY: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '' || '1' }}
+        run: pnpm build
 
       # Always verify the production runtime bundle builds cleanly (~4s).
       # Full embedded-Postgres boot smoke (~53s) runs on full-ci / release

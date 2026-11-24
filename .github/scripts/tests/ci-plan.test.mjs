@@ -100,8 +100,7 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.ok(!build.includes("node scripts/verify-grok-npm-install.mjs"), "PR Build must not run the 4-min public npm install verifier");
   assert.ok(!build.includes("warm-public-install-npm-cache.mjs"), "PR Build must not warm the unused public npm install cache");
   assert.ok(build.includes("pnpm --filter @paperclipai/server build:runtime"), "PR Build still verifies production runtime bundle");
-  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY=1 pnpm build/, "ordinary PR Build should use emit-only server compile while Typecheck checks types in parallel");
-  assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+pnpm build/);
+  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY: \$\{\{ \(contains\(github\.event\.pull_request\.labels\.\*\.name, 'full-ci'\) \|\| vars\.CI_INCREMENTAL_MODE == 'full'\) && '' \|\| '1' \}\}\n\s+run: pnpm build/, "ordinary PR Build should use emit-only server compile while Typecheck checks types in parallel");
   assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+scripts\/server-boot-smoke\.sh/);
   const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
   assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);
@@ -126,6 +125,19 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.equal(prKey, releaseKey, "E2E UI dist reader and writer keys must match exactly");
   assert.doesNotMatch(e2e.split("Restore prebuilt UI assets")[1].split("Run e2e tests")[0], /restore-keys:/);
   assert.match(e2e, /PAPERCLIP_E2E_SKIP_UI_BUILD: \$\{\{ steps\.e2e_ui_dist\.outputs\.cache-hit == 'true' && '1' \|\| '' \}\}/);
+
+  // Exact reader/writer key parity for prebuilt Runner dist and incremental typecheck caches.
+  const prRunnerDistKey = typecheck.match(/key: (runner-dist-v1-.+)/)?.[1];
+  const releaseRunnerDistKey = releaseBuild.match(/key: (runner-dist-v1-.+)/)?.[1];
+  assert.ok(prRunnerDistKey && releaseRunnerDistKey, "both pr-trusted.yml and release-verify.yml must define runner-dist-v1 cache key");
+  assert.equal(prRunnerDistKey, releaseRunnerDistKey, "runner-dist-v1 reader and writer keys must match exactly");
+  assert.doesNotMatch(typecheck.split("Restore prebuilt Runner dist")[1].split("Restore incremental typecheck")[0], /restore-keys:/);
+
+  const prIncPrefix = typecheck.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.event\.pull_request\.base\.sha \}\}/)?.[1];
+  const releaseIncPrefix = releaseBuild.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.sha \}\}/)?.[1];
+  assert.ok(prIncPrefix && releaseIncPrefix, "both pr-trusted.yml and release-verify.yml must define typecheck-incremental-v1 prefix");
+  assert.equal(prIncPrefix, releaseIncPrefix, "typecheck-incremental-v1 reader and writer prefixes must match exactly");
+  assert.doesNotMatch(workflow, /actions\/cache\/save@/, "pr-trusted.yml must never save caches");
 });
 
 test("source inspected across package boundaries selects its consumers", () => {
