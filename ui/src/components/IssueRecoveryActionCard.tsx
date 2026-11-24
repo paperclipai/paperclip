@@ -7,7 +7,7 @@ import type { Issue } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
@@ -89,6 +89,7 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  resolvePending?: boolean;
   /**
    * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
    * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
@@ -135,6 +136,11 @@ export interface IssueRecoveryActionCardProps {
    * diagnosis, and action footer.
    */
   variant?: "full" | "compact";
+  /**
+   * Content for the left of the action footer, such as an Inbox card's task link. When set,
+   * the footer follows the decision-card layout: this content at the left, actions at the far right.
+   */
+  footerLeading?: ReactNode;
   className?: string;
 }
 
@@ -997,6 +1003,7 @@ export function IssueRecoveryActionCard({
   scheduledRetry = null,
   forcedState,
   onResolve,
+  resolvePending = false,
   onReissueIsolated,
   reissuePending = false,
   onReconcileForward,
@@ -1007,6 +1014,7 @@ export function IssueRecoveryActionCard({
   reconcilePending = false,
   canFalsePositive = false,
   variant = "full",
+  footerLeading,
   className,
 }: IssueRecoveryActionCardProps) {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
@@ -1127,6 +1135,14 @@ export function IssueRecoveryActionCard({
     showReconcileForward ||
     showBreakGlass ||
     showRepairAction;
+
+  const resolveNote = showResolveActions ? (
+    <span className="block text-(length:--text-micro) text-muted-foreground">
+      {cardState === "observe_only"
+        ? "Recovery is observing without interrupting the live run."
+        : "The card stays open until an explicit decision is recorded."}
+    </span>
+  ) : null;
 
   if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
@@ -1348,7 +1364,8 @@ export function IssueRecoveryActionCard({
       )}
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
-        <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+        <div data-decision-footer={footerLeading ? "" : undefined} className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+          {footerLeading ? <div className="mr-auto min-w-0 flex-1 basis-48 space-y-1">{footerLeading}{resolveNote}</div> : null}
           {showResolveActions ? (
             <Popover>
               <PopoverTrigger asChild>
@@ -1358,6 +1375,7 @@ export function IssueRecoveryActionCard({
                   variant="default"
                   data-testid="recovery-action-resolve-trigger"
                   aria-label="Resolve recovery"
+                  disabled={resolvePending}
                 >
                   Resolve…
                 </Button>
@@ -1375,7 +1393,8 @@ export function IssueRecoveryActionCard({
                     <button
                       key={option.outcome}
                       type="button"
-                      onClick={() => onResolve?.(option.outcome)}
+                      disabled={resolvePending}
+                      onClick={() => { if (!resolvePending) onResolve?.(option.outcome); }}
                       className={cn(
                         "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
                         "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
@@ -1498,17 +1517,7 @@ export function IssueRecoveryActionCard({
               onConfirm={(reason) => onBreakGlassOverride?.(reason)}
             />
           ) : null}
-          {showResolveActions ? (
-            cardState === "observe_only" ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                Recovery is observing without interrupting the live run.
-              </span>
-            ) : (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                The card stays open until an explicit decision is recorded.
-              </span>
-            )
-          ) : null}
+          {footerLeading ? null : resolveNote}
         </div>
       ) : null}
     </section>

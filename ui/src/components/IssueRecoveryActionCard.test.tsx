@@ -238,6 +238,20 @@ describe("IssueRecoveryActionCard", () => {
     },
   );
 
+  it("puts an Inbox task link and the resolve action in one footer, link left and action right", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "active_run_watchdog", ownerType: "board", ownerAgentId: null, wakePolicy: null })}
+        onResolve={vi.fn()}
+        footerLeading={<a href="/PAP/issues/PAP-1" data-task-link>PAP-1</a>}
+      />,
+    );
+    const footers = node.querySelectorAll("[data-decision-footer]");
+    expect(footers).toHaveLength(1);
+    const items = [...footers[0]!.querySelectorAll("[data-task-link], [data-testid='recovery-action-resolve-trigger']")];
+    expect(items.map(item => item.hasAttribute("data-task-link") ? "link" : "resolve")).toEqual(["link", "resolve"]);
+  });
+
   it("retains the existing authorized controls for a board-owned watchdog", () => {
     const onResolve = vi.fn();
     const node = render(
@@ -261,6 +275,20 @@ describe("IssueRecoveryActionCard", () => {
       ) ?? null,
     );
     expect(onResolve).toHaveBeenCalledExactlyOnceWith("todo");
+  });
+
+  it("disables recovery choices already open in the portal while resolution is pending", () => {
+    const action = buildAction({ kind: "active_run_watchdog", ownerType: "board", ownerAgentId: null, wakePolicy: null });
+    const onResolve = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={action} onResolve={onResolve} />);
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    const choice = () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.includes("Try again"));
+    expect(choice()).toBeTruthy();
+    expect(node.contains(choice()!)).toBe(false);
+    act(() => root?.render(<IssueRecoveryActionCard action={action} onResolve={onResolve} resolvePending />));
+    expect(choice()?.disabled).toBe(true);
+    click(choice() ?? null);
+    expect(onResolve).not.toHaveBeenCalled();
   });
 
   it("explains issue_graph_liveness in plain language", () => {

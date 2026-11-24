@@ -3151,3 +3151,5 @@ export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
 export { parseLeadingUserCommand, type LeadingUserCommand } from "./leading-user-command.js";
+
+export { isActionableAttention, supportsAttentionRecoveryResolution } from "./types/attention.js";
