@@ -4289,7 +4289,7 @@ describe("wake continuation comment ownership", () => {
       commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
       fallbackFetchNeeded: false,
       executionContinuation: { ...continuation(messages), originCommentIds: ["comment-0"], completedActions },
-    });
+    }, { boundContinuationForRunnerTurn: true });
     // The runner journals one turn command in about 510 KiB.
     expect(Buffer.byteLength(prompt)).toBeLessThan(250_000);
     expect(prompt).toContain("comment-0");

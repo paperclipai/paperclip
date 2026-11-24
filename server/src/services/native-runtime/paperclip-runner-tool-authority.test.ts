@@ -686,6 +686,31 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("pages the complete saved continuation of the run's own task in the full view", async () => {
+    const [saved] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const messages = Array.from({ length: 120 }, (_, index) => ({ id: `m-${index}`, body: `Message ${index} ${"x".repeat(4_000)}` }));
+    const continuation = { version: 1, companyId, issueId, messages };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...(saved?.contextSnapshot ?? {}), executionContinuation: continuation } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const bounded = await authority.execute({ tool: "get_task_context", callId: "bounded-context", arguments: {} });
+      expect(JSON.stringify(bounded)).not.toContain("executionContinuation");
+      const first = await authority.execute({ tool: "get_task_context", callId: "full-continuation", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
+      let text = first.jsonText;
+      let offset = first.nextOffset;
+      while (offset !== null) {
+        const page = await authority.execute({ tool: "get_task_context", callId: `full-continuation-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        text += page.jsonText;
+        offset = page.nextOffset;
+      }
+      expect(JSON.parse(text).executionContinuation).toEqual(continuation);
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: saved?.contextSnapshot ?? {} }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("advertises context paging to reviewers without adding task or API access", () => {
     const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
       nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });

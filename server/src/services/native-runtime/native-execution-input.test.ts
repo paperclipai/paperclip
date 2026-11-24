@@ -596,6 +596,44 @@ describe("follow-up context size", () => {
     expect(JSON.stringify(contract)).not.toContain(answerText);
     expect(resumed.length + JSON.stringify(contract).length).toBeLessThan(fresh.length);
   });
+
+  it("bounds a long continuation to fit one runner turn and names the complete read", () => {
+    const issueId = "20000000-0000-4000-8000-000000000002";
+    const messages = Array.from({ length: 140 }, (_, index) => ({
+      id: `m-${index}`, body: `Message ${index} ${"x".repeat(1_200)}`, authorType: "user", authorId: "board",
+      createdAt: "2026-09-17T00:00:00Z", updatedAt: "2026-09-17T00:00:00Z", deleted: false, sourceTrust: null,
+    }));
+    const completedActions = Array.from({ length: 160 }, (_, index) => ({
+      runId: "previous-run", receiptId: `r-${index}`, operationId: "write_document", result: { body: "y".repeat(2_000) },
+    }));
+    const continuation: ExecutionContinuationEnvelope = {
+      version: 1, companyId: "10000000-0000-4000-8000-000000000001", issueId, objective: "Continue",
+      trigger: { reason: "issue_blockers_resolved", interactionId: null, sourceRunId: null },
+      originCommentIds: ["m-0"], messages, completedActions,
+      interactionOutcomes: [], completedWork: null, unresolvedInteractionIds: [],
+      coverage: { kind: "full_task_history", throughCommentId: "m-139", summaryThroughCommentId: null },
+    };
+    expect(Buffer.byteLength(JSON.stringify(continuation))).toBeGreaterThan(510 * 1024);
+    const input = buildNativeExecutionInput({
+      companyId: "10000000-0000-4000-8000-000000000001",
+      runId: "50000000-0000-4000-8000-000000000005",
+      agentId: "30000000-0000-4000-8000-000000000003",
+      issue: { id: issueId, identifier: "QA-1", title: "Long task", description: null, workMode: "standard" },
+      taskPrompt: "Continue the long task.",
+      wakePayload: { reason: "issue_blockers_resolved", issue: { id: issueId }, executionContinuation: continuation },
+      workspace: { id: "40000000-0000-4000-8000-000000000004", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "codex", resumedSession: false, model: "gpt-5.6-sol",
+      completionContract: {
+        id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Continue the long task", criteria: [{ id: "objective", requirement: "Continue" }] },
+      },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(Buffer.byteLength(input.task.prompt)).toBeLessThan(250_000);
+    expect(input.task.prompt).toContain("m-0");
+    expect(input.task.prompt).toContain("m-139");
+    expect(input.task.prompt).toContain("get_task_context with view=full");
+  });
 });
 
 

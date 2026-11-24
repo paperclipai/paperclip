@@ -3,6 +3,8 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import {
   boundExecutionContinuationForPrompt,
   CONTINUATION_PROMPT_ACTIONS_MAX_BYTES,
+  CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES,
+  CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES,
   CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS,
   CONTINUATION_PROMPT_MESSAGES_MAX_BYTES,
 } from "./execution-continuation-bounds.js";
@@ -45,18 +47,28 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(bounded.coverage.omitted?.oldestIncludedMessageId).toBe("m-0");
   });
 
+  it("keeps a long message whole while the messages fit, and returns history-free input unchanged", () => {
+    const long = "x".repeat(CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS * 2);
+    const fits = envelope({ messages: [message("m-1", long)] });
+    expect(boundExecutionContinuationForPrompt(fits)).toBe(fits);
+    const compact = { ...envelope({}), messages: undefined } as unknown as ExecutionContinuationEnvelope;
+    expect(boundExecutionContinuationForPrompt(compact)).toBe(compact);
+  });
+
   it("clips the middle of a very long message but keeps the objective source exact", () => {
     const long = `start ${"x".repeat(CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS * 2)} latest direction`;
+    const filler = Array.from({ length: 4 }, (_, index) => message(`f-${index}`, long));
     const bounded = boundExecutionContinuationForPrompt(envelope({
-      messages: [message("m-1", long), message("m-2", long)],
+      messages: [...filler, message("m-1", long), message("m-2", long)],
       objectiveSource: { kind: "comment", id: "m-2", revision: null },
     }));
-    const [clipped, objective] = bounded.messages;
+    const clipped = bounded.messages.find((entry) => entry.id === "m-1");
+    const objective = bounded.messages.find((entry) => entry.id === "m-2");
     expect(clipped?.bodyTruncated).toBe(true);
     expect(clipped?.body.startsWith("start ")).toBe(true);
     expect(clipped?.body.endsWith("latest direction")).toBe(true);
     expect(objective?.body).toBe(long);
-    expect(bounded.coverage.omitted?.clippedMessages).toBe(1);
+    expect(bounded.coverage.omitted?.clippedMessages).toBe(bounded.messages.length - 1);
   });
 
   it("keeps the newest action results and leaves older actions as completed references", () => {
@@ -72,5 +84,31 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(omitted.completedActions + actions.length).toBe(300);
     expect(omitted.completedActionResults).toBe(actions.filter((action) =>
       JSON.stringify(action.result) === JSON.stringify({ resultOmitted: true })).length);
+  });
+
+  it("keeps many large required messages inside the message budget", () => {
+    // Three-byte characters: a 20,000-character body is about 60 KB.
+    const messages = Array.from({ length: 12 }, (_, index) => message(`o-${index}`, "💊".repeat(10_000)));
+    const bounded = boundExecutionContinuationForPrompt(envelope({
+      messages, originCommentIds: messages.map((entry) => entry.id),
+      objectiveSource: { kind: "comment", id: "o-11", revision: null },
+    }));
+    expect(bytes(bounded.messages)).toBeLessThanOrEqual(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES);
+    expect(bounded.messages.map((entry) => entry.id)).toContain("o-11");
+    expect(bounded.coverage.omitted!.messages + bounded.messages.length).toBe(12);
+  });
+
+  it("bounds large interaction outcomes and human answers with references to the complete record", () => {
+    const answer = (id: string) => ({ id, kind: "ask_user_questions", status: "answered", resolvedByUserId: "user-1",
+      resolvedAt: "2026-11-24T00:00:00.000Z", result: { answers: [{ otherText: "a".repeat(100_000) }] } });
+    const humanResponses = ["i-0", "i-1", "i-2"].map(answer);
+    const interactionOutcomes = humanResponses.map(({ id, kind, status, result }) => ({ id, kind, status, result }));
+    const bounded = boundExecutionContinuationForPrompt(envelope({ humanResponses, interactionOutcomes }));
+    expect(bytes(bounded.interactionOutcomes)).toBeLessThanOrEqual(CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES);
+    expect(bytes(bounded.humanResponses)).toBeLessThanOrEqual(CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES);
+    expect(bounded.interactionOutcomes.every((outcome) => JSON.stringify(outcome.result).includes("seeHumanResponse"))).toBe(true);
+    expect(bounded.humanResponses?.map((response) => response.id)).toEqual(["i-0", "i-1", "i-2"]);
+    expect(bounded.coverage.omitted?.interactionOutcomes).toBe(3);
+    expect(bounded.coverage.omitted?.humanResponses).toBe(3);
   });
 });

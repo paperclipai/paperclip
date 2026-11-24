@@ -219,6 +219,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     resumedSession: false,
     includeCommunicationGuidance: false,
     nativeWakeReaderAvailable: true,
+    boundContinuationForRunnerTurn: true,
   });
   const externalChatTurn =
     isPaperclipExternalChatContractTurn(wakePayload) ||

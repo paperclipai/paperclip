@@ -89,6 +89,10 @@ export interface ExecutionContinuationEnvelope {
       oldestIncludedMessageId: string | null;
       completedActions: number;
       completedActionResults: number;
+      /** Interaction outcomes shown only as references or left out. */
+      interactionOutcomes?: number;
+      /** Older human answers shown without their result. */
+      humanResponses?: number;
     };
   };
 }

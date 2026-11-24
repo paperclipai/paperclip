@@ -1073,7 +1073,7 @@ export class PaperclipRunnerToolAuthority {
           } : {}),
           // The wake prompt bounds this history to fit one turn. The paged full
           // view returns the complete envelope this run was started with.
-          ...(input.view === "full" ? runExecutionContinuation(context.run.contextSnapshot, this.binding.issueId) : {}),
+          ...(input.view === "full" ? runExecutionContinuation(await this.#runExecutionContinuationSnapshot(), this.binding.issueId) : {}),
         };
         return input.view === "full" ? nativeTaskContextPage(taskContext, input) : fitNativeTaskContext(taskContext);
       }
@@ -1888,6 +1888,19 @@ export class PaperclipRunnerToolAuthority {
       runId: this.binding.runId, source: "agent_jwt", onBehalfOfUserId: run.responsibleUserId,
       keyScope: nativeRunKeyScope({ ...this.binding, contextSnapshot: run.contextSnapshot }),
       ...(this.binding.museRuntime ? { authorizingUserId: this.binding.externalAuthorizingUserId } : {}) };
+  }
+
+  /** #boundContext strips the continuation from its snapshot; the paged full view reads it here. */
+  async #runExecutionContinuationSnapshot() {
+    const [row] = await this.db.select({
+      executionContinuation: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionContinuation'`,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, this.binding.runId),
+      eq(heartbeatRuns.companyId, this.binding.companyId),
+      eq(heartbeatRuns.agentId, this.binding.agentId),
+      eq(heartbeatRuns.nativeIssueId, this.binding.issueId),
+    )).limit(1);
+    return { executionContinuation: row?.executionContinuation ?? null };
   }
 
   async #boundContext(options: { includeChatWake?: boolean; tool?: string } = {}) {
