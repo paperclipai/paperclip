@@ -3450,7 +3450,7 @@ describe("native external-chat response wait", () => {
         { timeout: 10_000 }).toEqual({ active: 0, next: null });
       expect(await comments()).toHaveLength(0);
       if (change === "assignment") {
-        await expect(issueService(db).update(fixture.issueId, { assigneeAgentId: fixture.agentId }))
+        await expect(issueService(db).update(fixture.issueId, { assigneeAgentId: randomUUID() }))
           .rejects.toThrow("Agent assignment cannot change while this task is bound to an external channel");
         expect(await comments()).toHaveLength(0);
       } else {

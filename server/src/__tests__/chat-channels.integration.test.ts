@@ -33461,6 +33461,114 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  it("keeps the bound agent assigned when it releases a chat-bound task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-RELEASE",
+      id: "slack:C-RELEASE:4100.1",
+      name: "release-keeps-assignee",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4100.1",
+        text: "@maya look into this",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    const [before] = await readIssuesById(conversation.issueId);
+    expect(before.assigneeAgentId).toBe(fixture.assignedAgentId);
+
+    const released = await issueService(db).release(
+      conversation.issueId,
+      fixture.assignedAgentId,
+      before.checkoutRunId ?? null,
+    );
+    expect(released).toMatchObject({
+      assigneeAgentId: fixture.assignedAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(released?.status).not.toBe("in_progress");
+    const [after] = await readIssuesById(conversation.issueId);
+    expect(after.assigneeAgentId).toBe(fixture.assignedAgentId);
+  });
+
+  it("lets an unassigned chat-bound task take back only its bound agent", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-RESTORE",
+      id: "slack:C-RESTORE:4200.1",
+      name: "restore-bound-agent",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4200.1",
+        text: "@maya pick this up",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, conversation.issueId));
+
+    await expect(
+      issueService(db).update(conversation.issueId, {
+        assigneeAgentId: fixture.replacementAgentId,
+        actorUserId: "owner-user",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "chat_binding_agent_locked",
+        conversationId: conversation.id,
+      },
+    });
+    const [stillUnassigned] = await readIssuesById(conversation.issueId);
+    expect(stillUnassigned.assigneeAgentId).toBeNull();
+
+    await issueService(db).update(conversation.issueId, {
+      assigneeAgentId: fixture.assignedAgentId,
+      actorUserId: "owner-user",
+    });
+    const [restored] = await readIssuesById(conversation.issueId);
+    expect(restored.assigneeAgentId).toBe(fixture.assignedAgentId);
+
+    await expect(
+      issueService(db).update(conversation.issueId, {
+        assigneeAgentId: fixture.replacementAgentId,
+        actorUserId: "owner-user",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_binding_agent_locked" },
+    });
+  });
+
   it("keeps external-continuation lifecycle comments internal and publishes only the selected final", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
