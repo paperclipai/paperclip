@@ -143,8 +143,9 @@ run schedules `ai_connection_pool_wait` without spending the failure retry
 budget. A wait on a pinned account stays scoped to that account. The UI shows
 **Pool exhausted** only after the router verifies that all eligible pool members
 are unavailable. Older retries without that scope show a general pool wait.
-While an eligible task waits, the dispatcher also rechecks backups ahead of the
-original retry time. It switches the pin only after verifying that the previous
+The retry uses the earliest verified cooldown deadline across the eligible
+accounts. Account and pool changes wake parked retries through the existing
+dispatcher. Paperclip switches the pin only after verifying that the previous
 turn and workspace have settled.
 
 Operators choose **Connectors → AI connection pool → Add connection pool**,

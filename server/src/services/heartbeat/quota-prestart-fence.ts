@@ -163,7 +163,7 @@ async function historicalClaudeTurnSettled(tx: Db, run: Run): Promise<boolean> {
  * selection to that issue's only eligible successor in this transaction. */
 export async function switchHistoricalQuotaPin(tx: Db, input: {
   source: Run; issueId: string; executionRunId: string; userId: string | null;
-}): Promise<HistoricalQuotaHandoff | null> {
+}): Promise<HistoricalQuotaHandoff | { retryAt: Date } | null> {
   const { source, issueId, executionRunId, userId } = input;
   if (!isPoolPreDispatchCancellation(source) || hasStopRequest(source) || source.issueId !== issueId ||
       !userId || source.responsibleUserId !== userId || hasRequiredWorkspaceRecovery(source.resultJson)) return null;
@@ -273,6 +273,7 @@ export async function switchHistoricalQuotaPin(tx: Db, input: {
     attemptedMemberIds: [pin.member.id], requireSourceQuotaCooldown: true, environmentId,
     sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(issue.assigneeAdapterOverrides).adapterConfig) },
   });
+  if (transitioned.kind === "cooldown") return { retryAt: transitioned.retryAt };
   return transitioned.kind === "selected" ? {
     selection: transitioned.selection, sourceRunId: source.id, predecessorRunId: predecessor.id,
   } : null;
@@ -336,7 +337,7 @@ export async function reselectHistoricalQuotaWaitSuccessor(db: Db, candidate: Ru
       return context;
     }
     const handoff = await switchHistoricalQuotaPin(tx as unknown as Db, { source, issueId, executionRunId: run.id, userId });
-    if (!handoff) return null;
+    if (!handoff || !("selection" in handoff)) return null;
     context.scheduledRetryAt = now.toISOString();
     applyHistoricalQuotaHandoff(context, handoff);
     await tx.update(heartbeatRuns).set({ contextSnapshot: context, sessionIdBefore: null,

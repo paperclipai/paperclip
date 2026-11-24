@@ -106,7 +106,7 @@ describe("legacy quota prestart retry", () => {
     const schedule = () => retries.scheduleBoundedRetryForRun(source!, updatedAgent!, postStart
       ? { maxAttempts: 5, delayMs: 3_600_000 }
       : { retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: 5, delayMs: 3_600_000 });
-    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router, retries,
+    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
   it.each([429, 403])("continues a typed Claude quota failure without an account-wide cooldown when usage returns %s", async status => {
@@ -621,18 +621,43 @@ describe("legacy quota prestart retry", () => {
       expect(pin.selection.memberId).toBe(f.members[outcome === "succeeded" ? 1 : 0].id);
     }, 30_000);
 
-  it.each(["queued", "scheduled_retry"] as const)("reconsiders an already persisted %s quota wait", async status => {
-    const f = await historicalWait();
+  async function recordBackupCooldown(f: Awaited<ReturnType<typeof historicalWait>>, retryAt: Date) {
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.members[1].binding.grantId));
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, grant.credentialSecretRefs[0].secretId));
-    await f.router.recordQuotaCooldown(f.companyId, f.members[1].binding.connectionId,
-      `secret:${secret.id}:${secret.aiSessionEpoch}`, new Date(Date.now() + 3_600_000));
+    const identity = `secret:${secret.id}:${secret.aiSessionEpoch}`;
+    await f.router.recordQuotaCooldown(f.companyId, f.members[1].binding.connectionId, identity, retryAt);
+    return identity;
+  }
+
+  it("schedules a settled historical quota wait at the earlier backup reset", async () => {
+    const f = await historicalWait();
+    const backupReset = new Date(Date.now() + 5 * 60_000);
+    await recordBackupCooldown(f, backupReset);
+
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [waiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(waiting.scheduledRetryAt).toEqual(backupReset);
+    expect(waiting.contextSnapshot).toMatchObject({ scheduledRetryAt: backupReset.toISOString(), poolWaitScope: "pool" });
+    expect(waiting.contextSnapshot?.forceFreshSession).toBeUndefined();
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin.member.id).toBe(f.members[0].id);
+  }, 30_000);
+
+  it.each(["queued", "scheduled_retry"] as const)("reconsiders an already persisted %s quota wait", async status => {
+    const f = await historicalWait();
+    const backupIdentity = await recordBackupCooldown(f, new Date(Date.now() + 3_600_000));
     expect((await f.schedule()).outcome).toBe("scheduled");
     const [waiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
     expect(waiting.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
     await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, f.companyId),
-      eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${secret.id}:${secret.aiSessionEpoch}`)));
-    const [candidate] = await db.update(heartbeatRuns).set({ status, sessionIdBefore: f.predecessor.sessionIdAfter })
+      eq(aiConnectionQuotaCooldowns.credentialIdentity, backupIdentity)));
+    if (status === "scheduled_retry") {
+      await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: f.companyId, poolId: f.pool.id }));
+      const [reopened] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.id));
+      expect(reopened.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 1000);
+      expect(reopened.contextSnapshot?.poolWaitScope).toBeUndefined();
+    }
+    const [candidate] = await db.update(heartbeatRuns).set({ status: "queued", sessionIdBefore: f.predecessor.sessionIdAfter })
       .where(eq(heartbeatRuns.id, waiting.id)).returning();
     const handoff = { aiRouterSelection: { memberId: f.members[1].id }, forceFreshSession: true, previousRunId: f.predecessor.id };
     if (status === "queued") {
@@ -644,9 +669,7 @@ describe("legacy quota prestart retry", () => {
       ]);
       expect(claims).toMatchObject([{ context: handoff }, { context: handoff }]);
     } else {
-      await f.retries.promoteDueScheduledRetries();
-      const [rechecked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.id));
-      expect(rechecked.contextSnapshot).toMatchObject(handoff);
+      expect(await preparePoolAdapterClaim(db, candidate, f.agent, f.userId)).toMatchObject({ context: handoff });
     }
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.id));
     expect(successor.sessionIdBefore).toBeNull();
