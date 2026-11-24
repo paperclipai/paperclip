@@ -18,7 +18,7 @@ import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
-import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
+import { archiveSettledFailedNativeController, NativeControllerArchiveSourceUnsettled } from "./native-controller-archive-source.js";
 import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
 import { isVolumeFreeControllerStateOwnerEntry, volumeFreeControllerStateOwned } from "./volume-free-controller-state.js";
 
@@ -402,6 +402,7 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
     native_controller_migration_artifact_unavailable: "artifact_unavailable",
     native_controller_archive_source_unsettled: "archive_source_unsettled",
   };
+  if (error instanceof NativeControllerArchiveSourceUnsettled && /^[a-z_]{1,40}$/.test(error.state)) return `archive_source_unsettled:${error.state}`;
   if (reasons[error.message]) return reasons[error.message];
   if (error.message.startsWith("runner_remote_provider_artifact_incompatible:")) return "artifact_incompatible";
   if (error instanceof SyntaxError) return "invalid_source_json";
@@ -468,7 +469,7 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
       throw error;
     });
-    if (source.status === "failed" && ["owner_not_released", "artifact_unproven", "checkpoint_binding", "source_unproven", "artifact_binding"].includes(outcome)) {
+    if (source.status === "failed" && ["owner_not_released", "artifact_unproven", "checkpoint_binding", "source_unproven", "artifact_binding"].includes(outcome.split(":")[0]!)) {
       const storage = input.storage ?? durableNativeHarnessStorage();
       if (storage) outcome = await archiveSettledFailedNativeController(db, { selected, source, storage, signal: input.signal }).catch(error => {
         input.signal.throwIfAborted();
@@ -478,7 +479,11 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
         throw error;
       });
     }
+    const [named, detail] = outcome.split(":");
+    outcome = named!;
+    const state = detail ?? (outcome === "artifact_unproven" ? `${source.status}_run` : undefined);
     input.onOutcome?.(outcome);
+    if (state) input.onOutcome?.(`${outcome}:${state}`);
     if (outcome === "archived_failed") counts.archivedFailed++;
     else if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
     else if (outcome === "source_already_absent") counts.sourceAlreadyAbsent++;

@@ -28,7 +28,7 @@ export function TaskListToolbar({ view, onViewChange, viewOptions = views, viewC
     <div data-canonical-toolbar="tasks" className="design-page-toolbar" role="toolbar" aria-label="Task list controls">
       {viewControl ?? <DropdownMenu>
         <DropdownMenuTrigger asChild><Button variant="outline" className="design-toolbar-button design-view-trigger" aria-label={`Task view: ${viewOptions.find(option => option.value === view)!.label}`}>{viewOptions.find(option => option.value === view)!.label}<ChevronDown aria-hidden /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="task-list-options" aria-label="Task views">
+        <DropdownMenuContent collisionPadding={8} align="start" className="task-list-options" aria-label="Task views">
           <DropdownMenuLabel asChild><FlyoutHeader className="task-list-options-heading">Views</FlyoutHeader></DropdownMenuLabel>
           <DropdownMenuRadioGroup asChild value={view} onValueChange={value => onViewChange(value as TaskListView)}><FlyoutOptions className="task-list-options-items">
             {viewOptions.map(option => <DropdownMenuRadioItem className="task-list-options-item" key={option.value} value={option.value}>{option.label}</DropdownMenuRadioItem>)}

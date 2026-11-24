@@ -68,8 +68,8 @@ export function checkMigrationOrder(baseMigrationFiles, prMigrationFiles) {
 
 /**
  * Judges whether the migrations a PR adds can be applied while the previous
- * release is still running. `unknown` without an in-file override fails;
- * `requires_staging` only produces a notice.
+ * release is still running. `unknown` or `requires_staging` without an
+ * in-file override fails.
  */
 export async function checkMigrationCompatibility(migrations, { priorMigrationSql, executorSource } = {}) {
   // Type-stripped by Node: the policy job runs before dependencies are installed.

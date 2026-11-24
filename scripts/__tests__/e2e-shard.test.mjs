@@ -7,7 +7,15 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
-import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
+import {
+  DEFAULT_PARALLEL_WORKERS,
+  IGNORED_SPECS,
+  SERIAL_SPECS,
+  isSerialE2eSpec,
+  listE2eSpecs,
+  partitionE2eShards,
+  selectE2eShard,
+} from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
@@ -124,6 +132,32 @@ test("the ignored spec list matches playwright.config.ts testIgnore", () => {
   assert.deepEqual([...configured].sort(), [...IGNORED_SPECS].sort());
 });
 
+test("the serial spec list matches playwright.config.ts SERIAL_SPECS and never mixes with parallel specs", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  const match = config.match(/export const SERIAL_SPECS = \[([\s\S]*?)\];/);
+  assert.ok(match, "expected a SERIAL_SPECS array in playwright.config.ts");
+  const configured = [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+  assert.deepEqual([...configured].sort(), [...SERIAL_SPECS].sort());
+
+  const specs = listE2eSpecs();
+  const durations = loadShardDurations(durationsManifest);
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations);
+  assert.equal(shards.length, SHARD_COUNT);
+  for (const shard of shards) {
+    const serialCount = shard.files.filter(isSerialE2eSpec).length;
+    assert.ok(
+      serialCount === 0 || serialCount === shard.files.length,
+      `shard must not mix serial and parallel specs: ${shard.files.join(", ")}`,
+    );
+  }
+});
+
+test("playwright.config.ts supports skipping the UI build when PAPERCLIP_E2E_SKIP_UI_BUILD=1", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  assert.match(config, /PAPERCLIP_E2E_SKIP_UI_BUILD/);
+  assert.match(config, /ui-dist.*index\.html/);
+});
+
 test("the duration manifest only names specs that still exist", () => {
   const durations = loadShardDurations(durationsManifest);
   assert.ok(Object.keys(durations).length > 0, "expected a populated duration manifest");
@@ -136,25 +170,25 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
-  // New specs use the scheduler's median estimate until measured durations exist.
   const fallbackWeight = defaultSuiteWeight(durations);
-  const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
-  );
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations, {
+    parallelWorkers: DEFAULT_PARALLEL_WORKERS,
+  });
+  const wallWeights = shards.map((shard) => {
+    const serialSum = shard.files.reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0);
+    return shard.mode === "parallel" ? serialSum / DEFAULT_PARALLEL_WORKERS : serialSum;
+  });
 
-  const heaviest = Math.max(...weights);
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  // Round-robin/count-based sharding would strand the ~168s smoke-lab spec on
-  // one runner alongside other specs. Assert the weighted split stays within
-  // 15% of an even cut so a future spec-time regression surfaces here instead
-  // of on the PR critical path. A single indivisible spec (smoke-lab) can
-  // legitimately exceed the even cut on its own, so the bound is floored at
-  // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
-  const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
+  const heaviest = Math.max(...wallWeights);
+  const totalWall = wallWeights.reduce((sum, weight) => sum + weight, 0);
+  const largestSerialSpec = Math.max(
+    0,
+    ...specs.filter(isSerialE2eSpec).map((file) => durations[file] ?? fallbackWeight),
+  );
+  const bound = Math.max((totalWall / SHARD_COUNT) * 1.15, largestSerialSpec);
   assert.ok(
     heaviest <= bound,
-    `heaviest shard ${heaviest}ms exceeds the balance bound (${bound}ms)`,
+    `heaviest shard ${Math.round(heaviest)}ms exceeds the balance bound (${Math.round(bound)}ms)`,
   );
 });
 

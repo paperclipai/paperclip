@@ -10,6 +10,15 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("keeps a typed billing quota out of continuation and provider-quota retry loops", () => {
+    const run = { errorCode: "provider_quota", error: "Provider quota exceeded", resultJson: {
+      errorFamily: "provider_quota", retryNotBefore: new Date(Date.now() + 60_000).toISOString(),
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "Check your plan and billing details.", retryability: "requires_action" },
+    } };
+    expect(classifyAdapterFailureForRecovery(run)).toBeNull();
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("does not retry a permanently refused agent interaction delivery", () => {
     expect(classifyContinuationFailure({ errorCode: "agent_interaction_delivery_denied", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });

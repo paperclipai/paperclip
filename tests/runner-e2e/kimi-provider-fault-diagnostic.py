@@ -1,7 +1,7 @@
 import base64,hashlib,importlib.util,json,os,re,sys
 from pathlib import Path
 sys.dont_write_bytecode=True
-EXPECTED_SOURCE_SHA256='585494ff2f10125c98c4102df5b6b6dba643de6c92266186711695b1e993efe6'
+EXPECTED_SOURCE_SHA256='c6af3f9b66b02ec52e08f6be1113d3590358fca03154f800e394d62c9386e9ee'
 
 def run(fault,config,allow_signal):
  state={'schema':'paperclip.kimi11.remote-fault-diagnostic.v1','qualification':False,'stage':'inspect','status':'FAIL','failingGuard':None,'errno':None,'signalAttempted':False,'signalDispatched':False,'receipt':None,'externalModelCalls':0}

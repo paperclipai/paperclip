@@ -104,6 +104,6 @@ test("Cloud source proof keeps source-only gating on protected verification capa
     assert.match(body, /^ +SOURCE_SHA: \$\{\{ github.sha \}\}$/m);
     assert.equal(body.match(/^    needs: (.+)$/m)?.[1] ?? null, needs, `${name} prerequisites`);
   }
-  assert.match(bodies.get("source_verified"), /^        run: node --test scripts\/cloud-source-verification.test.mjs$/m);
+  assert.match(bodies.get("source_verified"), /^        run: node --test scripts\/cloud-source-verification.test.mjs scripts\/github-actions-rate-limit.test.mjs scripts\/docker-image-metadata.test.mjs$/m);
   assert.match(bodies.get("source_verified"), /echo "Cloud source verified v1: \$SOURCE_SHA"/);
 });
