@@ -7,10 +7,10 @@
     "antigravity": {
       "agentProfileVersion": 1,
       "agentServerPackage": "native:antigravity-acp",
-      "agentServerVersion": "1.4.3",
+      "agentServerVersion": "1.5.2",
       "agentRuntimePackage": "native:antigravity-localharness",
-      "agentRuntimeVersion": "1.4.3",
-      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "agentRuntimeVersion": "1.5.2",
+      "commandDigest": "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
       "requiresProviderPolicy": true,
       "qualificationStatus": "pending"
     },

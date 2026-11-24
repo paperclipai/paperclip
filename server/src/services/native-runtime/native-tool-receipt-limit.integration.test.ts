@@ -8,6 +8,10 @@ import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/
 
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
 const receiptLimitRead = vi.hoisted(() => ({ after: null as null | (() => Promise<unknown>) }));
+const sentry = vi.hoisted(() => ({ captureRunFailure: vi.fn((_event: { runId: string }) => true) }));
+vi.mock("../../sentry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sentry.js")>()), captureRunFailure: sentry.captureRunFailure,
+}));
 vi.mock("./native-tool-receipt-limit.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("./native-tool-receipt-limit.js")>();
   return { ...original, readPersistedNativeToolReceiptLimitStop: async (...args: Parameters<typeof original.readPersistedNativeToolReceiptLimitStop>) => {
@@ -33,24 +37,30 @@ import { createReleaseIssueExecution } from "../../modules/wake-queue/applicatio
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
 import { materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
+import { waitForPendingRunFailureReports } from "../run-failure-report.js";
 
 describe("native turn stopped at its tool receipt limit", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(), agentId = randomUUID();
   beforeAll(async () => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
     temporary = await startEmbeddedPostgresTestDatabase("native-tool-receipt-limit-");
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Receipt limit regression", issuePrefix: "RCL" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Receipt worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "test-model" } });
   });
-  afterAll(async () => { await temporary?.cleanup(); });
+  afterAll(async () => { vi.unstubAllEnvs(); await temporary?.cleanup(); });
+  async function sentryReports(runId: string) {
+    await waitForPendingRunFailureReports();
+    return sentry.captureRunFailure.mock.calls.filter(([event]) => event.runId === runId);
+  }
 
   let finalTurnId: string | null = null;
   async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string, beforeFinalize?: () => Promise<unknown>,
     diagnosticTurnId?: string) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
+    const [run] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(), runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
@@ -115,6 +125,7 @@ describe("native turn stopped at its tool receipt limit", () => {
       contextSnapshot: { issueId, forceFreshSession: true, livenessContinuationSourceRunId: runId,
         livenessContinuationReason: NATIVE_TOOL_RECEIPT_LIMIT_CODE, livenessContinuationInstruction: NATIVE_TOOL_RECEIPT_LIMIT_HINT } });
     expect(retry!.contextSnapshot).not.toHaveProperty("wakeCommentId");
+    expect(await sentryReports(runId)).toHaveLength(0);
     expect(retry!.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS);
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     expect(decision).toMatchObject({ reasonCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE });
@@ -170,6 +181,7 @@ describe("native turn stopped at its tool receipt limit", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });
+    expect(await sentryReports(runId)).toEqual([[expect.objectContaining({ runStatus: "cancelled" })]]);
   });
 
   it("refuses to create the continuation under the run lock once a person's Stop is saved", async () => {

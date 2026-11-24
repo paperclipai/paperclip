@@ -4,7 +4,7 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat("en-US", { numeric: "a
 const relativeUnits = [
   [86_400_000, "day"], [3_600_000, "hour"], [60_000, "minute"], [1000, "second"],
 ] as const;
-const resetTimestampPattern = /\b(resets?|starts) at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\b/g;
+const resetTimestampPattern = /\b(resets?|starts|recheck(?: availability| the (?:agent's )?provider usage limit)?) (?:at|after) (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\b/g;
 
 export function providerLimitMessageResetAt(message: string): number | null {
   if (!message.includes("provider usage limit")) return null;

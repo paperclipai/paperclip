@@ -12,7 +12,7 @@ export function partitionSelection(inventory, selected, maxShards, durations = {
   return selected.length ? partitionGeneralServerSuites(selected, count, durations).map((shard) => shard.files) : [];
 }
 
-export function refineTestPlan({ plan, head, owners, graphs, durations = {} }) {
+export function refineTestPlan({ plan, head, owners, graphs, durations = {}, excludedSuites = new Set() }) {
   const result = structuredClone(plan);
   const manifest = { version: 1, head, lanes: {} };
   const stats = [];
@@ -38,7 +38,7 @@ export function refineTestPlan({ plan, head, owners, graphs, durations = {} }) {
           assert.ok(inventory.has(file), `Runner/Vitest inventory disagreement: ${file}`);
           assert.ok(!projectByFile.has(file), `Ambiguous owner: ${file}`);
           projectByFile.set(file, project);
-          if (affected.has(file)) selected.push(file);
+          if (affected.has(file) && !excludedSuites.has(file)) selected.push(file);
         }
       }
       const partitions = partitionSelection([...projectByFile.keys()], selected, original.length, durations[group]);

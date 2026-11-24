@@ -1,6 +1,7 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
+import { effectiveReconciliationHoldPredicate } from "./pre-dispatch-execution-evidence.js";
 import { legacyShutdownBeforeDispatchCondition } from "./legacy-shutdown-before-dispatch.js";
 import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
@@ -10,7 +11,7 @@ import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { heldRetryOffersRetry, heldTaskRetryRefusals } from "./task-retry-eligibility.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
-import { EXECUTION_RECONCILIATION_CAUSES, readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
+import { readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -142,11 +143,7 @@ export function executionBlockerPredicate() {
         and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
         and coalesce(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
     ))`,
-    or(unreconciledNativeExportPredicate(), and(
-      inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-      or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
-    )),
+    or(unreconciledNativeExportPredicate(), effectiveReconciliationHoldPredicate()),
   );
 }
 
@@ -339,6 +336,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   lockedIssue?: Pick<typeof issues.$inferSelect, keyof typeof blockerIssueFields>;
   /** The native run being dispatched; its own scheduled resume does not block it. */
   resumingNativeRunId?: string | null;
+  recoveryHoldOnly?: boolean;
 }): Promise<ExecutionBlocker | null> {
   const lockedIssue = options?.lockedIssue;
   const conversation = lockedIssue?.id === issueId && lockedIssue.companyId === companyId
@@ -370,7 +368,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
       eq(issueComments.id, conversation.conversationBoundaryCommentId),
     )).limit(1) : [];
 
-  const ownership = await getExecutionOwnershipBlocker(db, companyId, issueId);
+  const ownership = options?.recoveryHoldOnly ? null : await getExecutionOwnershipBlocker(db, companyId, issueId);
   if (ownership) return ownership;
   const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),

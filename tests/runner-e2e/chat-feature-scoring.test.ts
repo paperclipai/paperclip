@@ -109,7 +109,7 @@ describe("chat feature saved-state oracle", () => {
 
 describe("chat feature selection", () => {
   it("preserves the historical OpenCode aliases beside the two shipped subscription cells", () => {
-    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id !== "runner-opencode-deepseek-1017" && ["create-backlog", "delegate-announcement"].includes(cell.task.id));
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id !== "runner-opencode-deepseek-1017" && !cell.profile.explicitOnly && ["create-backlog", "delegate-announcement"].includes(cell.task.id));
     expect(cells).toHaveLength(4);
     const historical = cells.filter(cell => cell.profile.id === "runner-opencode");
     expect(historical.map(cell => cell.profile.model)).toEqual([CHAT_OPENCODE_MODEL, CHAT_OPENCODE_MODEL]);

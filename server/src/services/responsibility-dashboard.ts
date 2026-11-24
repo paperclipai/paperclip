@@ -38,7 +38,6 @@ import {
 type IssueRow = typeof issues.$inferSelect;
 type AreaRow = typeof responsibilityAreas.$inferSelect;
 
-const LIVE = ["proposed", "active"] as const;
 const NO_AREA = "No area";
 
 function isClosed(status: string) {
@@ -77,14 +76,15 @@ export function responsibilityDashboardService(db: Db) {
     if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
-  /** Empty: no active responsibility and none proposed. One query. */
   async function isEmpty(companyId: string, ownerUserId: string) {
-    const [row] = await db.select({ id: responsibilities.id }).from(responsibilities).where(and(
-      eq(responsibilities.companyId, companyId),
-      eq(responsibilities.ownerUserId, ownerUserId),
-      inArray(responsibilities.status, [...LIVE]),
-    )).limit(1);
-    return !row;
+    const [state] = await db.execute<{ empty: boolean }>(sql`select not exists (
+        select 1 from ${responsibilityAreas} where ${responsibilityAreas.companyId} = ${companyId}
+          and ${responsibilityAreas.ownerUserId} = ${ownerUserId} and ${responsibilityAreas.status} <> 'archived'
+      ) and not exists (
+        select 1 from ${responsibilities} where ${responsibilities.companyId} = ${companyId}
+          and ${responsibilities.ownerUserId} = ${ownerUserId} and ${responsibilities.status} in ('active', 'proposed')
+      ) as empty`);
+    return state.empty;
   }
 
   async function latestConversation(companyId: string, ownerUserId: string): Promise<IssueRow | null> {
@@ -123,7 +123,7 @@ export function responsibilityDashboardService(db: Db) {
 
   /**
    * Check a change set against the person's dashboard as it is and resolve
-   * the words the card shows. Three queries.
+   * the words the card shows. Two queries.
    */
   async function buildPayload(
     companyId: string,
@@ -132,7 +132,7 @@ export function responsibilityDashboardService(db: Db) {
     data: CreateDashboardChangeSet,
   ): Promise<ProposeDashboardChangesPayload> {
     const namedAreaIds = [...new Set(data.changes.flatMap((change) => ("areaId" in change && change.areaId ? [change.areaId] : [])))];
-    const [own, areaRows, others] = await Promise.all([
+    const [own, areaRows] = await Promise.all([
       db.select({
         id: responsibilities.id,
         title: responsibilities.title,
@@ -144,23 +144,15 @@ export function responsibilityDashboardService(db: Db) {
         eq(responsibilities.status, "active"),
       )),
       db.select().from(responsibilityAreas).where(and(
-        eq(responsibilityAreas.companyId, companyId),
+        eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId),
         namedAreaIds.length > 0
           ? or(ne(responsibilityAreas.status, "archived"), inArray(responsibilityAreas.id, namedAreaIds))
           : ne(responsibilityAreas.status, "archived"),
       )),
-      db.select({ areaId: responsibilities.areaId, count: sql<number>`count(distinct ${responsibilities.ownerUserId})::int` })
-        .from(responsibilities).where(and(
-          eq(responsibilities.companyId, companyId),
-          ne(responsibilities.ownerUserId, ownerUserId),
-          inArray(responsibilities.status, [...LIVE]),
-          sql`${responsibilities.areaId} is not null`,
-        )).groupBy(responsibilities.areaId),
     ]);
     const ownById = new Map(own.map((row) => [row.id, row]));
     const areasById = new Map(areaRows.map((row) => [row.id, row]));
     const liveByTitle = new Map(areaRows.filter((row) => row.status !== "archived").map((row) => [lower(row.title), row]));
-    const sharedWith = new Map(others.map((row) => [row.areaId!, row.count]));
     const refs = new Map<string, { index: number; name: string }>();
     const problems: string[] = [];
     const problem = (index: number, message: string) => problems.push(`changes[${index}]: ${message}`);
@@ -239,16 +231,12 @@ export function responsibilityDashboardService(db: Db) {
             groupName: area.title,
             name: change.name.trim(),
             fromName: area.title,
-            sharedWith: sharedWith.get(area.id) ?? 0,
+            sharedWith: 0,
           };
         }
         case "remove_area": {
           const area = usableArea(index, change.areaId);
           if (!area) return base;
-          const shared = sharedWith.get(area.id) ?? 0;
-          if (shared > 0) {
-            problem(index, `"${area.title}" holds responsibilities of ${shared === 1 ? "another person" : `${shared} other people`}, so it stays; move or remove this person's responsibilities in it instead`);
-          }
           return {
             ...base,
             groupAreaId: area.id,
@@ -338,12 +326,12 @@ export function responsibilityDashboardService(db: Db) {
     const stale = (message: string) => conflict(`${message}. Ask for the proposal again.`, { code: "responsibility_dashboard_changes_stale" });
     const loadArea = async (areaId: string) => {
       const [row] = await tx.select().from(responsibilityAreas)
-        .where(and(eq(responsibilityAreas.id, areaId), eq(responsibilityAreas.companyId, companyId))).for("update");
+        .where(and(eq(responsibilityAreas.id, areaId), eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId))).for("update");
       return row ?? null;
     };
     const liveAreaNamed = async (title: string, except?: string) => {
       const [row] = await tx.select().from(responsibilityAreas).where(and(
-        eq(responsibilityAreas.companyId, companyId),
+        eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId),
         sql`lower(${responsibilityAreas.title}) = lower(${title})`,
         ne(responsibilityAreas.status, "archived"),
         except ? ne(responsibilityAreas.id, except) : undefined,
@@ -378,7 +366,7 @@ export function responsibilityDashboardService(db: Db) {
         refToArea.set(change.groupRef!, existing.id);
         continue;
       }
-      const [created] = await tx.insert(responsibilityAreas).values({ companyId, title: change.name!, status: "active", source: "manual" }).returning();
+      const [created] = await tx.insert(responsibilityAreas).values({ companyId, ownerUserId, title: change.name!, status: "active", source: "manual" }).returning();
       refToArea.set(change.groupRef!, created!.id);
       createdAreaIds.push(created!.id);
       events.push({ action: "responsibility_area.created", entityType: "responsibility_area", entityId: created!.id, details: { title: created!.title, status: "active", source: "manual", ...source } });
@@ -435,13 +423,6 @@ export function responsibilityDashboardService(db: Db) {
     for (const change of byOp("remove_area")) {
       const area = await loadArea(change.groupAreaId!);
       if (!area || area.status === "archived") continue;
-      const [others] = await tx.select({ id: responsibilities.id }).from(responsibilities).where(and(
-        eq(responsibilities.companyId, companyId),
-        eq(responsibilities.areaId, area.id),
-        ne(responsibilities.ownerUserId, ownerUserId),
-        inArray(responsibilities.status, [...LIVE]),
-      )).limit(1);
-      if (others) throw stale(`Someone else now has responsibilities in "${area.title}", so it stays`);
       const remaining = await tx.select({ id: responsibilities.id }).from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.areaId, area.id),
@@ -449,7 +430,7 @@ export function responsibilityDashboardService(db: Db) {
         eq(responsibilities.status, "active"),
       ));
       for (const row of remaining) await letGo(row.id);
-      events.push(...await versions.archiveIfEmpty(tx, companyId, [area.id], source));
+      events.push(...await versions.archiveIfEmpty(tx, companyId, ownerUserId, [area.id], source));
     }
     return { events, createdAreaIds };
   }
@@ -543,6 +524,8 @@ export function responsibilityDashboardService(db: Db) {
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+        visibility: "private",
+        responsibleUserId: ownerUserId,
         originKind: RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
         originId: ownerUserId,
         originFingerprint: input.mode,

@@ -10,7 +10,7 @@ use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
     GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
-use crate::local_runner::LocalRunnerError;
+use crate::local_runner::{CommandRejection, LocalRunnerError};
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
 };
@@ -828,14 +828,19 @@ impl AcpxSidecarTransport {
                         && error.code == "SESSION_RESUME_REQUIRED";
                     let tool_call_retired = command == GeneratedAcpxSidecarCommand::ToolResolve
                         && error.code == "ACPX_TOOL_CALL_STALE";
+                    let classification = response_error_classification(&error);
                     return Ok(Some(CommandOutcome::Rejected { tool_call_retired, error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
-                            response_error_classification(&error),
+                            classification,
                         ),
-                    ).with_provider_failure(provider_failure), resume_required }));
+                    ).with_provider_failure(provider_failure)
+                    .with_command_rejection(Some(CommandRejection {
+                        command: command.as_str(),
+                        classification,
+                    })), resume_required }));
                 }
             }
         }
@@ -1278,6 +1283,12 @@ fn typed_provider_classification(error: &ResponseError) -> Option<&'static str> 
     })
 }
 
+/// The sidecar refused to reload an Antigravity conversation in a new process:
+/// its native admission receipt is missing or mismatched, or the managed
+/// reload was refused. Retrying the same reload cannot succeed.
+pub(crate) const ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE: &str =
+    "antigravity_saved_state_incompatible";
+
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
         "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
@@ -1347,6 +1358,7 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX_MODEL_STATUS_UNAVAILABLE" => return "model_status_unavailable",
         "ACPX_MODEL_SELECTION_UNAVAILABLE" => return "model_selection_unavailable",
         "ACPX_EFFECTIVE_MODEL_MISMATCH" => return "effective_model_mismatch",
+        "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" => return ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE,
         _ => {}
     }
     match error.message.as_str() {

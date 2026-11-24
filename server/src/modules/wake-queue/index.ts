@@ -15,6 +15,7 @@ import { createQueuedCommentSteeringAdapter, lockBoardQueuedComments, readBoardQ
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
 import { createWakeRecoveryAdmission } from "./application/recovery-admission.js";
+import type { ActivityPublication } from "../../services/activity-log.js";
 import { admitIssueWake, createIssueWakePreflight, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
 import {
@@ -92,7 +93,8 @@ type LockedIssueAdmission = {
   lockedIssue: IssueAdmissionRow | null;
   lockIssue: () => Promise<IssueAdmissionRow | null>;
   prepareRecovery: ReturnType<typeof createWakeRecoveryAdmission<
-    IssueWakeContinuationInput, IssueWakeContinuationResult, ReturnType<typeof createAdmitWakeBehindIssueExecution>, ReturnType<typeof createFreshIssueRunAdmission<HeartbeatRun>>
+    IssueWakeContinuationInput, IssueWakeContinuationResult, ReturnType<typeof createAdmitWakeBehindIssueExecution>,
+    ReturnType<typeof createFreshIssueRunAdmission<HeartbeatRun>>, ActivityPublication
   >>;
 };
 
@@ -121,7 +123,7 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
       evaluateHeartbeatPolicy: (tx: IssueAdmissionDbTransaction, admission: LockedIssueAdmission) => Promise<IssueWakeAdmissionOutcome<HeartbeatRun>>,
       effects: IssueWakeAdmissionEffects<HeartbeatRun>,
     ) {
-      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { lockedIssue, lockIssue, recovery, reader, writer, fresh }) => {
+      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { lockedIssue, lockIssue, recovery, deferBlockedWake, reader, writer, fresh }) => {
         const admitBusy = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: deps.wakeAdmissionHelpers });
         const admitFresh = createFreshIssueRunAdmission(fresh);
         return evaluateHeartbeatPolicy(tx, {
@@ -137,7 +139,7 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
               throw new Error("wake-queue: admission does not match the locked issue");
             }
             return admitFresh(input);
-          }),
+          }, deferBlockedWake),
         });
       }), effects);
     },
