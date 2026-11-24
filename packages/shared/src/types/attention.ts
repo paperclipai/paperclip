@@ -278,7 +278,7 @@ export interface AttentionAudience {
  * cards (PAP-749 plan §3): open cards they archived or snoozed, read from
  * their `inbox_dismissals`, whatever the card's audience.
  */
-export type AttentionFeedView = "mine" | "unassigned" | "company" | "archived" | "all";
+export type AttentionFeedView = "waiting" | "mine" | "unassigned" | "company" | "archived" | "all";
 
 /**
  * The views the Decisions pages switch between (PAP-749 plan §1, Rule 3; §3):
@@ -561,7 +561,29 @@ export function attentionCardType(item: Pick<AttentionItem, "sourceKind" | "subj
   }
 }
 
+export interface AttentionProviderLimit {
+  episode: string;
+  resetAt: string | null;
+  state: "scheduled" | "retry_requested" | "needs_retry";
+  runId: string;
+  agentId: string;
+  agentName: string;
+}
+
+export interface AttentionRunHistoryEntry {
+  runId: string;
+  agentId: string;
+  agentName: string;
+  taskId: string;
+  taskTitle: string;
+  identifier: string | null;
+  recordedAt: string;
+  reason: string;
+  outcome: string;
+}
+
 export interface AttentionItem {
+  providerLimit?: AttentionProviderLimit;
   id: string;
   companyId: string;
   sourceKind: AttentionSourceKind;
@@ -650,6 +672,9 @@ export interface AttentionItem {
 }
 
 export interface AttentionFeed {
+  /** Personal automatic retries and snoozed obligations. */
+  waitingCount?: number;
+  nextSnoozeAt?: string | null;
   companyId: string;
   generatedAt: string;
   totalCount: number;

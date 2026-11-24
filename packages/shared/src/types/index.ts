@@ -64,6 +64,8 @@ export type {
   AttentionTaskIndex,
   AttentionFeedView,
   AttentionItem,
+  AttentionProviderLimit,
+  AttentionRunHistoryEntry,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,

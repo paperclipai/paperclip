@@ -534,7 +534,16 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
+Inbox opens to **Needs you** with **Assigned to you** selected. Its badge counts
+personal actions. **Waiting** shows scheduled provider retries and personal
+snoozes. A provider limit with a known account and reset appears once per
+recipient, with the affected tasks, agents and run logs inside. Exhausted retries
+return to Needs you when someone must act. Resumed or closed tasks leave the
+group. **History** includes decision receipts and failed or
+provider-held runs on accessible tasks. **Archive for me** is visible on open
+cards and has Undo. Archiving a provider episode covers later failures in the same
+window until the required action changes. Personal archive leaves approvals pending.
+The assignee filter can show all accessible
 assignees, a particular person, ownerless requests, or company alerts. Cards for
 someone else prepend that person's name to the action label; your own cards omit
 your name. Routing validates who may reassign a request and whether its recipient

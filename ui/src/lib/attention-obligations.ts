@@ -30,7 +30,9 @@ export function foldAttentionObligations(items: readonly AttentionItem[]): Folde
   const evidenceByLeadId = new Map<string, AttentionItem[]>();
   for (const item of items) {
     if (isAttentionObligationEvidence(item) && ids.has(item.obligationLeadId!)) {
-      evidenceByLeadId.set(item.obligationLeadId!, [...(evidenceByLeadId.get(item.obligationLeadId!) ?? []), item]);
+      const evidence = evidenceByLeadId.get(item.obligationLeadId!);
+      if (evidence) evidence.push(item);
+      else evidenceByLeadId.set(item.obligationLeadId!, [item]);
     } else {
       cards.push(item);
     }
