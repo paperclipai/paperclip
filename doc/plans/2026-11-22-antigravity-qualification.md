@@ -339,8 +339,12 @@ What exists:
   permission prompt except Paperclip's own tools, and shows what changed in the
   task folder. It does not settle on the first `end_turn` while helpers may run.
 - **Not confined by Paperclip.** Helper tool calls never reach the client, and
-  Paperclip's local process sandbox does not wrap Runner harnesses, so helper
-  shell commands are confined only by the CLI (workspace plus temp directories).
+  Paperclip's local process sandbox (`adapter-utils/local-process-sandbox.ts`,
+  used only by the classic Claude and Codex local adapters) does not wrap Runner
+  harnesses on macOS or Linux. Helper shell commands can therefore write outside
+  the task folder wherever the CLI's own sandbox allows (workspace plus temp
+  directories). The outside-path check is a detector for the coordinator's
+  visible calls, not a boundary. The feature stays off by default.
 - **Credentials.** On macOS the CLI uses its own Google sign-in from the login
   keychain (the real HOME), not Paperclip's stored Google connection. CLI state
   lives in a private `--gemini-dir`. Terms: a legal read of the consumer terms'

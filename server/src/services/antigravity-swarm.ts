@@ -109,7 +109,7 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
     details: {
       commentId,
-      summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode, which keeps file changes in the task folder; helper shell commands are not visible to Paperclip and Paperclip does not sandbox them on this computer. Usage is one total for the coordinator and its helpers.",
+      summary: "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
     },
   });
   return true;
