@@ -421,9 +421,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const environment = (await environmentService(db).getById(baseEnvironment.id))!;
     const worker = createFreshPluginLeaseWorker(pluginId);
     let leases = 0;
+    let releaseProbe!: () => void;
+    const probeHeld = new Promise<void>(resolve => { releaseProbe = resolve; });
+    let probeStarted!: () => void;
+    const probeRunning = new Promise<void>(resolve => { probeStarted = resolve; });
     vi.mocked(worker.call).mockImplementation(async (_id, method, params: any) => {
       if (method === "environmentAcquireLease") {
         leases += 1;
+        if (params.resolveSnapshotIdentity) { probeStarted(); await probeHeld; }
         return { providerLeaseId: `lease-${leases}`, metadata: { provider: "daytona", snapshot: params.config.snapshot, remoteCwd: "/workspace",
           ...(params.resolveSnapshotIdentity ? { snapshotIdentity: { provider: "daytona", requestedRef: config.snapshot, id: snapshotId,
             name: config.snapshot, organizationId: "provider-account", createdAt: "2026-11-24T21:00:00.000Z" } } : {}) } };
@@ -433,10 +438,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       throw new Error(`Unexpected ${method}`);
     });
     vi.mocked(worker.getWorker).mockReturnValue({ supportedMethods: ["environmentExecute", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] } as never);
-    // Routes build separate runtimes; concurrent runs through two of them share one probe.
-    const [acquired, second] = await Promise.all([environmentRuntimeService(db, { pluginWorkerManager: worker }),
-      environmentRuntimeService(db, { pluginWorkerManager: worker })].map((runtime, index) => runtime.acquireRunLease({ companyId, environment,
-      issueId: null, heartbeatRunId: index === 0 ? runId : null, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" })));
+    // Routes build separate runtimes. A run that arrives through another runtime
+    // while the probe is still running joins that probe instead of starting one.
+    const acquire = (heartbeatRunId: string | null) => environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({
+      companyId, environment, issueId: null, heartbeatRunId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" });
+    const first = acquire(runId);
+    await probeRunning;
+    const pendingSecond = acquire(null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(leases).toBe(1);
+    releaseProbe();
+    const [acquired, second] = await Promise.all([first, pendingSecond]);
     expect(acquired.lease.metadata?.snapshot).toBe(snapshotId);
     expect(second.lease.metadata?.snapshot).toBe(snapshotId);
     expect(vi.mocked(worker.call).mock.calls.filter(([, method, params]: any[]) => method === "environmentAcquireLease" && params.resolveSnapshotIdentity)).toHaveLength(1);
@@ -459,12 +471,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       if (method === "environmentAcquireLease") throw new Error("upstream rejected token sk-live-secret-value");
       throw new Error(`Unexpected ${method}`);
     });
-    const failure = await environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({ companyId, environment,
-      issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" }).catch((error: Error) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain("sandbox_snapshot_qualification_required");
-    expect((failure as Error).message).toContain("The check sandbox could not start.");
-    expect((failure as Error).message).not.toContain("sk-live-secret-value");
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: worker });
+    // Two runs one after the other: the failed check answers both, so only one probe sandbox boots.
+    for (const heartbeatRunId of [runId, null]) {
+      const failure = await runtime.acquireRunLease({ companyId, environment,
+        issueId: null, heartbeatRunId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" }).catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("sandbox_snapshot_qualification_required");
+      expect((failure as Error).message).toContain("The check sandbox could not start.");
+      expect((failure as Error).message).not.toContain("sk-live-secret-value");
+    }
+    expect(vi.mocked(worker.call).mock.calls.filter(([, method]) => method === "environmentAcquireLease")).toHaveLength(1);
   });
 
   it("forwards the run's warm idle window to the provider worker without changing lease identity", async () => {
