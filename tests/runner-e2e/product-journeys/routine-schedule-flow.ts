@@ -13,7 +13,7 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 
 type Row = Record<string, any>;
 const journeyId = "routine-scheduled-run" as const;
-type RoutineUiStep = "open_composer" | "fill_form" | "select_responsible" | "select_project" | "fill_instructions" | "submit" | "enable_trigger" | "pause_trigger" | "open_history" | "reopen_result";
+type RoutineUiStep = "open_composer" | "fill_form" | "submit" | "enable_trigger" | "pause_trigger" | "open_history" | "reopen_result";
 export async function routineUiStep<T>(step: RoutineUiStep, action: () => Promise<T>): Promise<T> {
   try { return await action(); }
   catch (error) {
@@ -186,7 +186,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       check("routine-result-attributed", Object.values(matches).every(Boolean));
       if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
       await routineUiStep("open_history", async () => {
-        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/history`, { waitUntil: "domcontentloaded" });
+        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}`, { waitUntil: "domcontentloaded" });
         await page.reload();
         await expect(page.getByRole("link", { name: state.currentIssue.identifier, exact: false }).first()).toBeVisible();
       });

@@ -32,11 +32,11 @@ describe("routine trigger cleanup failure reporting", () => {
 
 describe("routine UI failure evidence", () => {
   it("retains a closed step code without browser messages or form values", async () => {
-    const error = await routineUiStep("select_project", async () => {
+    const error = await routineUiStep("fill_form", async () => {
       throw new Error("Timeout at https://private.example/?token=secret with form value private-project");
     }).catch(value => value);
     expect(error).toBeInstanceOf(JourneyError);
-    expect(error).toMatchObject({ outcome: "failed", code: "routine_select_project_failed", message: "routine_select_project_failed" });
+    expect(error).toMatchObject({ outcome: "failed", code: "routine_fill_form_failed", message: "routine_fill_form_failed" });
     expect(JSON.stringify(error)).not.toMatch(/private|token|secret/);
   });
   it("keeps a semantic journey failure instead of replacing its evidence code", async () => {

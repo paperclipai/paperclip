@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "@playwright/test";
@@ -10,6 +11,8 @@ import { fillRoutineCreateForm, enableRoutineScheduleTrigger, setRoutineSchedule
 // Only unrelated display/editor boundaries are replaced. No app, provider or QA
 // credential is needed. The full journey retains independent API readback/grades.
 const root = fileURLToPath(new URL("../../../", import.meta.url));
+const uiRoot = path.join(root, "ui");
+const uiRequire = createRequire(path.join(uiRoot, "package.json"));
 const stubs = {
   "@/components/AgentAvatar": "export const AgentAvatar = () => null;",
   "@/components/Identity": "export const deriveInitials = name => name.slice(0, 2);",
@@ -28,11 +31,11 @@ const stubs = {
 };
 const compiled = await build({
   absWorkingDir: root,
-  stdin: { resolveDir: root, loader: "tsx", contents: `
+  stdin: { resolveDir: uiRoot, loader: "tsx", contents: `
     import React, { useState } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { RoutineEditDialog, EMPTY_ROUTINE_FORM_DRAFT } from './ui/src/components/routine-page/RoutineEditDialog';
-    import { RoutinePage } from './ui/src/components/routine-page/RoutinePage';
+    import { RoutineEditDialog, EMPTY_ROUTINE_FORM_DRAFT } from './src/components/routine-page/RoutineEditDialog';
+    import { RoutinePage } from './src/components/routine-page/RoutinePage';
     const agent = { id: 'owned-agent', name: 'Owned QA agent' };
     const project = { id: 'owned-project', name: 'Owned QA project' };
     function Form() { return <RoutineEditDialog mode="create" open initial={EMPTY_ROUTINE_FORM_DRAFT}
@@ -54,13 +57,15 @@ const compiled = await build({
   bundle: true, write: false, format: "iife", jsx: "automatic",
   plugins: [{ name: "unrelated-ui-boundaries", setup(builder) {
     builder.onResolve({ filter: /.*/ }, args => {
+      // React is owned by ui, not by the repository root in an isolated pnpm install.
+      if (/^react(?:-dom)?(?:\/|$)/.test(args.path)) return { path: uiRequire.resolve(args.path) };
       if (stubs[args.path]) return { path: args.path, namespace: "fixture" };
       if (args.path.startsWith("@/")) {
         const base = path.join(root, "ui/src", args.path.slice(2));
         return { path: [base, base+".ts", base+".tsx"].find(existsSync) ?? base };
       }
     });
-    builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: stubs[args.path], loader: "tsx", resolveDir: root }));
+    builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: stubs[args.path], loader: "tsx", resolveDir: uiRoot }));
   } }],
 });
 const browser = await chromium.launch({ headless: true,

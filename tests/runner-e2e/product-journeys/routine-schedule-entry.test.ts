@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { resolveRoutineAddress } from "../../../ui/src/components/routine-page/routine-routes.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
 
 // Browser rendering is covered by the real Routines component tests. This entry
@@ -34,6 +35,7 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
   const revision = { id: "revision", documentId: document.id, body, createdByAgentId: agent.id,
     createdByRunId: fault === "revision-run" ? "foreign-run" : run.id };
   const reads: string[] = [];
+  const visited: string[] = [];
   let instructions = "", pastes = 0, triggerCreated = false, responseResolver: ((value: unknown) => void) | undefined;
   const routine = () => ({ id: "routine", companyId: "company", title: `Journey QA scheduled routine ${campaignId}`,
     projectId: fault === "creation-project" ? "foreign-project" : project.id, assigneeAgentId: agent.id,
@@ -80,13 +82,20 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
     if (route === "/api/issues/task/documents/scheduled-summary/revisions/revision") return revision;
     throw new Error(`Unexpected fixture read ${route}`);
   } };
-  const page = { getByRole: (_role: string, options: { name?: string } = {}) => locator(options.name), getByPlaceholder: () => locator(),
-    async goto(url: string) { if (url.endsWith("/routines/routine/history")) throw new Error("Stop the positive control before the real pause window"); },
+  const page = { getByRole: (role: string, options: { name?: string } = {}) => {
+      if (role === "link" && options.name === task.identifier) {
+        // Stop at the task-link assertion, independently of the address chosen.
+        // The test below checks that address using the production route resolver.
+        throw new Error("Stop the positive control before the real pause window");
+      }
+      return locator(options.name);
+    }, getByPlaceholder: () => locator(),
+    async goto(url: string) { visited.push(url); }, async reload() {},
     waitForResponse: () => new Promise(resolve => { responseResolver = resolve; }) };
   const context = { api, page, company: { id: "company", issuePrefix: "QA" }, user: { id: "user" }, agent, environmentId: "environment" } as unknown as JourneyContext;
   const directory = await mkdtemp(path.join(os.tmpdir(), "routine-attribution-")); directories.push(directory);
   const evidence = { checks: [] } as unknown as JourneyEvidence;
-  return { expectedBody, body, instructions: () => instructions, pastes: () => pastes, evidence, trigger, directory, reads,
+  return { expectedBody, body, instructions: () => instructions, pastes: () => pastes, evidence, trigger, directory, reads, visited,
     run: () => runScheduledRoutine(context, { async own() {} } as unknown as TargetSession, campaignId, evidence,
       { directory, deadlineAt: Date.now() + 10_000 }) };
 }
@@ -129,6 +138,10 @@ it("keeps the real journey attribution failure when final trigger disabling also
 it("sends the unchanged exact two-line body as a delimited instruction and accepts valid attribution", async () => {
   const f = await fixture();
   await expect(f.run()).rejects.toMatchObject({ code: "routine_open_history_failed" });
+  const historyUrl = new URL(f.visited.at(-1)!);
+  const section = historyUrl.pathname.split("/")[4];
+  expect(resolveRoutineAddress({ routineId: "routine", section }).view).toBe("routine");
+  expect(historyUrl.pathname).toBe("/QA/routines/routine");
   const block = f.instructions().match(/```text\n([\s\S]*?)\n```/);
   expect(block?.[1]).toBe(f.expectedBody);
   expect(f.instructions()).toContain("including the final period");
