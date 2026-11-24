@@ -41,7 +41,7 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
     description: fault === "creation-description" ? instructions.replaceAll("`", "\\`") : instructions,
     concurrencyPolicy: "always_enqueue", triggers: triggerCreated ? [trigger] : [] });
   const locator = (name = ""): any => ({ first() { return this; }, getByRole: (_role: string, options: { name?: string } = {}) => locator(options.name),
-    getByPlaceholder: () => locator(), locator: () => ({
+    getByPlaceholder: () => locator(), focus: async () => {}, locator: () => ({
       fill: async (value: string) => { instructions = value; }, focus: async () => {},
       // The real MDX browser discriminator covers serialization. Keep this unit
       // editor boundary separate from the production API reads and grade.
@@ -50,9 +50,13 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
         pastes += 1; instructions = text;
       },
     }),
-    fill: async () => {}, click: async () => {
-      if (name === "Enable trigger") { trigger.enabled = true; responseResolver?.({ status: () => 200, json: async () => ({ ...trigger }) }); }
-      if (name === "Pause trigger") trigger.enabled = false;
+    fill: async (value: string) => { if (name === "Instructions") instructions = value; },
+    evaluate: async (_action: unknown, text?: string) => {
+      if (text === undefined) return false;
+      pastes += 1; instructions = text;
+    }, click: async () => {
+      if (name === "Resume") { trigger.enabled = true; responseResolver?.({ status: () => 200, json: async () => ({ ...trigger }) }); }
+      if (name === "Pause") { trigger.enabled = false; responseResolver?.({ status: () => 200 }); }
       if (name === "Create routine") responseResolver?.({ status: () => 201, json: async () => routine() });
     } });
   const api = { origin: "https://qa.example.test", async post(route: string) {
@@ -77,7 +81,7 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
     throw new Error(`Unexpected fixture read ${route}`);
   } };
   const page = { getByRole: (_role: string, options: { name?: string } = {}) => locator(options.name), getByPlaceholder: () => locator(),
-    async goto(url: string) { if (url.endsWith("/routines/routine/runs")) throw new Error("Stop the positive control before the real pause window"); },
+    async goto(url: string) { if (url.endsWith("/routines/routine/history")) throw new Error("Stop the positive control before the real pause window"); },
     waitForResponse: () => new Promise(resolve => { responseResolver = resolve; }) };
   const context = { api, page, company: { id: "company", issuePrefix: "QA" }, user: { id: "user" }, agent, environmentId: "environment" } as unknown as JourneyContext;
   const directory = await mkdtemp(path.join(os.tmpdir(), "routine-attribution-")); directories.push(directory);
