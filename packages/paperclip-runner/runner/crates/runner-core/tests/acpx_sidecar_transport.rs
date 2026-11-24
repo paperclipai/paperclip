@@ -349,20 +349,35 @@ fn session_open_rejection_keeps_the_sidecar_code_and_reason_outside_the_error_te
             )
         );
     }
-    // A provider cause has its own channel: the sidecar message is not copied.
+    // A provider cause has its own channel: its message is not copied.
     let cause = json!({ "schema": "paperclip.provider-failure.v1", "provider": "antigravity", "phase": "startup",
         "category": "unknown", "message": "Swarm is not available.", "providerCode": "ANTIGRAVITY_SWARM_UNAVAILABLE",
         "retryability": "unknown" });
     let error = sidecar
         .request(
             GeneratedAcpxSidecarCommand::SessionOpen,
-            json!({ "errorCode": "ANTIGRAVITY_SWARM_UNAVAILABLE", "providerFailure": cause }),
+            json!({ "errorCode": "ANTIGRAVITY_SWARM_UNAVAILABLE", "providerFailure": cause,
+                "errorMessage": "Swarm is not available." }),
+        )
+        .unwrap_err();
+    assert_eq!(error.provider_failure(), Some(cause.clone()));
+    assert_eq!(
+        error.sidecar_rejection(),
+        Some(json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE" }))
+    );
+    // Operator detail beside the cause (what the provider offered) is kept for diagnostics.
+    let error = sidecar
+        .request(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            json!({ "errorCode": "ANTIGRAVITY_SWARM_UNAVAILABLE", "providerFailure": cause,
+                "errorMessage": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" }),
         )
         .unwrap_err();
     assert_eq!(error.provider_failure(), Some(cause));
     assert_eq!(
         error.sidecar_rejection(),
-        Some(json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE" }))
+        Some(json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE",
+            "message": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" }))
     );
     sidecar.shutdown().unwrap();
     // A code outside the closed identifier shape fails the frame contract and is never echoed.

@@ -87,6 +87,18 @@ describe("Antigravity CLI swarm runtime", () => {
     await expect(openAntigravitySwarmRuntime(options, { readbackTimeoutMs: 200 })).rejects.toThrow(message);
   });
 
+  it("refuses a model the CLI does not offer before changing any setting, in plain words, with the offered list for diagnostics", async () => {
+    const { options, clientMessages } = setup("success", {
+      profile: { agent: "antigravity", reportedModelId: "gemini-4-neon-low", qualificationModel: "gemini-4-neon-low" } as AcpxRuntimePortOpenOptions["profile"],
+    });
+    const refusal = await openAntigravitySwarmRuntime(options).then(() => null, (error: unknown) => error);
+    expect(refusal).toMatchObject({ code: "ANTIGRAVITY_SWARM_UNAVAILABLE",
+      message: "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent and send /swarm again.",
+      providerFailure: { category: "model_unavailable" } });
+    expect((refusal as { diagnostic: string }).diagnostic).toContain("gemini-4-argon-medium, gemini-4-argon-low");
+    expect(clientMessages().map(message => message.method)).not.toEqual(expect.arrayContaining(["session/set_mode"]));
+  });
+
   it("runs a native swarm whose files land in the task folder, in plain steps, with coordinator-reported usage", async () => {
     const run = await runTurn("success");
     expect(run.result).toMatchObject({ status: "completed" });
@@ -95,6 +107,7 @@ describe("Antigravity CLI swarm runtime", () => {
       "Started helper writer-a: Write a.txt containing exactly 'A' in the current workspace directory",
       "Checked on the helpers", "Files changed in the task folder: a.txt, b.txt",
     ]));
+    expect(run.titles).toContainEqual(expect.stringMatching(/^Swarm started in the task folder with Gemini 3\.8 Flash \(Low\) \(Antigravity CLI 1\.5\.15\)\. /));
     expect(run.titles.some(title => /approved automatically/.test(title))).toBe(true);
     expect(run.text).not.toContain("/swarm board");
     expect(run.clientMessages().find(message => message.method === "session/prompt").params.prompt[0].text).toMatch(/^\/swarm /);

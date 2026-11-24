@@ -408,7 +408,7 @@ export async function openAntigravitySwarmRuntime(
     let transcript = "";
     let stop: AntigravitySwarmError | null = null;
     const halt = (error: AntigravitySwarmError) => { stop ??= error; connection.notify("session/cancel", { sessionId }); wake?.(); };
-    events.push(line("setup", `Swarm started in the task folder with ${receipt.model}. Helper changes inside the task folder are approved automatically; anything else is blocked.`));
+    events.push(line("setup", `Swarm started in the task folder with ${receipt.modelName} (Antigravity CLI ${receipt.agentVersion}). Helper changes inside the task folder are approved automatically; anything else is blocked.`));
 
     updateListener = params => {
       try { guard.observe(params); } catch (error) {

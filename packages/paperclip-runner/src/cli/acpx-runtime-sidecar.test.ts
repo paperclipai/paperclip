@@ -2166,7 +2166,8 @@ describe("qualified ACPX runtime sidecar", () => {
         open(sidecar, 2, "swarm");
         const refused = await sidecar.next(frame => frame.id === 2);
         expect(refused).toMatchObject({ ok: false, error: { code: "ANTIGRAVITY_SWARM_UNAVAILABLE", retryable: false,
-          providerFailure: { providerCode: "ANTIGRAVITY_SWARM_UNAVAILABLE", message: expect.stringMatching(/Gemini API key/) } } });
+          providerFailure: { provider: "antigravity", message: expect.stringMatching(/Gemini API key/) } } });
+        expect(refused.error.providerFailure).not.toHaveProperty("providerCode");
         expect(JSON.stringify(refused)).not.toContain("only for Cursor");
 
         // Only the registered provider modes pass the parser; the refusal names its contract.

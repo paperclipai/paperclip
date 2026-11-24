@@ -296,7 +296,9 @@ async function receiveLine(line: string): Promise<void> {
         acpxSidecarErrorCode(normalized),
         "acpx_sidecar_command_failed",
       ),
-      message: safeMessage(normalized),
+      // Operator detail beside a typed provider cause (the Runner keeps it for diagnostics).
+      message: typeof normalizedRecord.diagnostic === "string" && normalizedRecord.diagnostic
+        ? safeText(normalizedRecord.diagnostic) : safeMessage(normalized),
       retryable: normalizedRecord.retryable === true,
       ...(request.command === "session.open" && initializedAgent
         ? { providerFailure: providerFailureFromError(error) ?? acpxProviderFailure(error, initializedAgent, "startup", process.env) ?? undefined } : {}),

@@ -1293,10 +1293,11 @@ pub(crate) const ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE: &str =
 
 const SIDECAR_REJECTION_MESSAGE_CHARS: usize = 512;
 
-/// The sidecar's own code and, when it sent no typed provider cause, its
-/// (sidecar-redacted) message, for operators reading the failed command. The
-/// rejection text itself stays closed; a provider cause travels only in
-/// `providerFailure`, so its message is never copied here.
+/// The sidecar's own code and its (sidecar-redacted) message, for operators
+/// reading the failed command. The rejection text itself stays closed; a
+/// provider cause travels only in `providerFailure`, so its message is never
+/// copied here. A sidecar message that differs from that cause is operator
+/// detail (for example the models a provider offered) and is kept.
 fn sidecar_rejection_detail(command: &str, error: &ResponseError) -> Value {
     let code = if !error.code.is_empty()
         && error.code.len() <= 96
@@ -1310,7 +1311,9 @@ fn sidecar_rejection_detail(command: &str, error: &ResponseError) -> Value {
         "invalid_code"
     };
     let mut detail = json!({ "command": command, "code": code });
-    if validated_provider_failure(error.provider_failure.clone()).is_none() {
+    let cause_message = validated_provider_failure(error.provider_failure.clone())
+        .and_then(|cause| cause.get("message").and_then(Value::as_str).map(str::to_owned));
+    if cause_message.as_deref() != Some(error.message.as_str()) {
         let message: String = crate::durable::redact_sensitive_text_values(&error.message)
             .chars()
             .filter(|character| {
