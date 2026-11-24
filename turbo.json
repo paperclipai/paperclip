@@ -237,11 +237,10 @@
     },
     "//#ci:canary": {
       "inputs": [
-        "scripts/**",
-        "cli/esbuild.config.mjs",
-        "server/scripts/**",
-        "packages/paperclip-runner/scripts/**",
-        "packages/paperclip-runner/release-runner-targets.json"
+        "scripts/release*",
+        "scripts/build-npm.sh",
+        "scripts/stage-bundled-packages.mjs",
+        "scripts/pack-staged-packages.mjs"
       ],
       "outputs": [],
       "cache": false

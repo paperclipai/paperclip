@@ -51,8 +51,10 @@ export function planTasks({ config, lanes, paths, mode = "enabled", forceReason 
     if (!Array.isArray(entries) || !entries.length) throw new Error("Empty CI lane");
     for (const entry of entries) taskInputs(entry.task);
   }
+  const explicitForce = Boolean(forceReason) || mode === "full";
   const changed = [...new Set(paths)];
-  if (!changed.length || changed.some((file) => !validPath(file))) forceReason ??= "Missing or invalid diff";
+  const invalidDiff = !changed.length || changed.some((file) => !validPath(file));
+  if (invalidDiff) forceReason ??= "Missing or invalid diff";
   const matches = (file, globs) => globs.some((glob) => matchesGlob(file, glob));
   const sourceChanges = productInputs(changed);
   const globalChanges = sourceChanges.filter((file) => matches(file, config.globalDependencies));
@@ -61,9 +63,17 @@ export function planTasks({ config, lanes, paths, mode = "enabled", forceReason 
     && !matches(file, config.globalDependencies) && ![...inputs.values()].some((globs) => matches(file, globs)));
   if (unknown.length) forceReason ??= `Unclassified path: ${unknown[0]}`;
   if (mode === "full") forceReason ??= "Full CI requested";
-  const reasons = Object.fromEntries([...inputs].map(([task, globs]) => [task,
-    forceReason ? [forceReason] : [...new Set([...globalChanges, ...sourceChanges.filter((file) => matches(file, globs))])],
-  ]));
+  // Post-merge release.yml / release-verify.yml already verify canary publishing on every master push.
+  // On PRs, only run `ci:canary` for explicit release-packaging edits, explicit full-CI requests
+  // (`full-ci` label / `CI_INCREMENTAL_MODE=full`), or uncertain/unclassified diffs — not on ordinary
+  // global inputs like `package.json`, `pnpm-lock.yaml`, `README.md`, or non-release scripts.
+  const canaryForced = explicitForce || invalidDiff || unknown.length > 0;
+  const reasons = Object.fromEntries([...inputs].map(([task, globs]) => {
+    if (task === "ci:canary") {
+      return [task, canaryForced ? [forceReason] : sourceChanges.filter((file) => matches(file, globs))];
+    }
+    return [task, forceReason ? [forceReason] : [...new Set([...globalChanges, ...sourceChanges.filter((file) => matches(file, globs))])]];
+  }));
   // This uncached lane owns the repository-wide CLI guidance check.
   if (reasons["ci:typecheck"]) reasons["ci:typecheck"].push(...changed.filter((file) => documentationInput(file) === "guidance"));
   const jobs = Object.fromEntries(Object.entries(lanes).map(([job, entries]) => {
