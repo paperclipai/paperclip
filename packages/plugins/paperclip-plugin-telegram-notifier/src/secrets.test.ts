@@ -5,8 +5,10 @@ import { outboundQueueSettings } from "./outbound-queue.js";
 import {
   BOT_TOKEN_SECRET_REQUIRED_MESSAGE,
   BOT_TOKEN_UNRESOLVED_MESSAGE,
+  redactBotToken,
 } from "./telegram-client.js";
-import { pair, REF_A, setup, TOKEN_A } from "./test-helpers.js";
+import { pair, REF_A, setup, state, TOKEN_A } from "./test-helpers.js";
+import type { TelegramUpdate } from "./types.js";
 import { applyConfigPatch, botTokenSecretPatch, withoutLiteralToken } from "./ui/index.js";
 import plugin from "./worker.js";
 
@@ -16,6 +18,12 @@ afterEach(() => {
   vi.useRealTimers();
   Object.assign(outboundQueueSettings, DEFAULT_QUEUE_SETTINGS);
 });
+
+const rateLimited = () => {
+  const err = new Error("Rate limit exceeded for secret resolution");
+  err.name = "RateLimitExceededError";
+  return err;
+};
 
 describe("bot token as a secret reference", () => {
   // Fake literal token in the shape a real one has; it must never be used,
@@ -88,11 +96,6 @@ describe("outbound queue and secret resolution", () => {
       { runId: "run-1", agentId: "agent-1", error: reason },
       { companyId: "company-a", entityId: "run-1", entityType: "heartbeat_run" },
     );
-  const rateLimited = () => {
-    const err = new Error("Rate limit exceeded for secret resolution");
-    err.name = "RateLimitExceededError";
-    return err;
-  };
   const sends = (calls: Array<{ method: string }>) =>
     calls.filter((c) => c.method === "sendMessage");
   // Lets queued handlers reach the queue while timers are faked.
@@ -210,5 +213,122 @@ describe("long polling and secret resolution", () => {
     expect(polls.length).toBeGreaterThan(0);
     // One resolution to group the company by bot, one per getUpdates call.
     expect(secretResolves.length - before).toBe(1 + polls.length);
+  });
+
+  const help = (updateId: number, chatId: number): TelegramUpdate => ({
+    update_id: updateId,
+    message: { message_id: updateId, chat: { id: chatId, type: "private" }, date: 0, text: "/help" },
+  });
+
+  /** Two companies on one bot; like Telegram, the fake re-sends every update the offset has not confirmed. */
+  async function twoCompaniesOnOneBot() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const ctx = await setup({ "company-a": { botToken: REF_A }, "company-c": { botToken: REF_A } });
+    await pair(ctx.harness, "company-a", "100");
+    await pair(ctx.harness, "company-c", "300");
+    const inbox = [help(7, 100), help(8, 300)];
+    const offsets: unknown[] = [];
+    const fetch = ctx.harness.ctx.http.fetch;
+    ctx.harness.ctx.http.fetch = async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/getUpdates")) {
+        const { offset } = JSON.parse(String(init?.body));
+        offsets.push(offset);
+        ctx.pendingUpdates.set("111111", inbox.filter((u) => offset === undefined || u.update_id >= offset));
+      }
+      return fetch(url, init);
+    };
+    const repliesTo = (chatId: string) =>
+      ctx.calls.filter((c) => c.method === "sendMessage" && c.body.chat_id === chatId).length;
+    const cursor = () => state(ctx.harness).bots?.["111111"]?.lastUpdateId;
+    return { ...ctx, offsets, repliesTo, cursor };
+  }
+
+  it("keeps a rate-limited update unconfirmed and handles it once on the next poll", async () => {
+    const { harness, offsets, repliesTo, cursor } = await twoCompaniesOnOneBot();
+    let limited = false;
+    harness.ctx.secrets.resolve = async (_ref, opts) => {
+      // company-c's secret is rate-limited while the first batch is handled.
+      if (opts?.companyId === "company-c" && offsets.length === 1 && !limited) {
+        limited = true;
+        throw rateLimited();
+      }
+      return TOKEN_A;
+    };
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+    expect(limited).toBe(true);
+    expect(repliesTo("100")).toBe(1);
+    expect(repliesTo("300")).toBe(0);
+    expect(cursor()).toBe(7);
+    expect(harness.logs.some((l) => l.message.includes("update kept for the next poll"))).toBe(true);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+    await harness.runJob(JOB_KEYS.pollUpdates);
+    expect(offsets).toEqual([undefined, 8, 9]);
+    expect(repliesTo("100")).toBe(1);
+    expect(repliesTo("300")).toBe(1);
+    expect(cursor()).toBe(8);
+  });
+
+  it("confirms an update whose secret is gone instead of retrying it", async () => {
+    const { harness, offsets, repliesTo, cursor } = await twoCompaniesOnOneBot();
+    harness.ctx.secrets.resolve = async (_ref, opts) => {
+      if (opts?.companyId === "company-c" && offsets.length > 0) throw new Error("Secret not found");
+      return TOKEN_A;
+    };
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    expect(repliesTo("100")).toBe(1);
+    expect(repliesTo("300")).toBe(0);
+    expect(cursor()).toBe(8);
+  });
+});
+
+describe("bot token redaction", () => {
+  // Fake token with a space, so a strict URL check rejects the Bot API URL.
+  const SPACED = "123456:TEST TOKEN";
+  const leaks = (value: unknown) => /TEST( |%20)TOKEN/.test(JSON.stringify(value));
+
+  it("keeps the token out of logs, state and errors when a host fetch error quotes the URL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+    harness.ctx.secrets.resolve = async () => SPACED;
+    // Same message format as the host's fetch guard (`validateAndResolveFetchUrl`).
+    harness.ctx.http.fetch = async (url: string) => {
+      // Ends the poll loop after one getUpdates attempt.
+      if (url.endsWith("/getUpdates")) vi.setSystemTime(Date.now() + 120_000);
+      if (/\s/.test(url)) throw new Error(`Invalid URL: ${url}`);
+      throw new Error(`unexpected url ${url}`);
+    };
+
+    await harness.emit(
+      "agent.run.failed",
+      { runId: "run-1", agentId: "agent-1", error: "boom" },
+      { companyId: "company-a", entityId: "run-1", entityType: "heartbeat_run" },
+    );
+    await harness.runJob(JOB_KEYS.pollUpdates);
+    const actionError = await harness
+      .performAction("testBotConnection", {}, { companyId: "company-a" })
+      .then(() => undefined, (err: unknown) => (err instanceof Error ? err.message : String(err)));
+
+    const logged = harness.logs.filter((l) => JSON.stringify(l).includes("Invalid URL"));
+    expect(logged.map((l) => l.message)).toEqual(
+      expect.arrayContaining([
+        "telegram-notifier: notification failed",
+        "telegram-notifier: getMe failed",
+        "telegram-notifier: getUpdates failed",
+      ]),
+    );
+    expect(JSON.stringify(logged)).toContain("/bot<redacted>/");
+    expect(leaks(harness.logs)).toBe(false);
+    expect(leaks(state(harness))).toBe(false);
+    expect(actionError).toContain("Invalid URL");
+    expect(leaks(actionError)).toBe(false);
+    // Without the token at hand, the Bot API URL segment is still masked.
+    expect(redactBotToken("Invalid URL: https://api.telegram.org/bot123456:TEST-TOKEN/getMe")).toBe(
+      "Invalid URL: https://api.telegram.org/bot<redacted>/getMe",
+    );
   });
 });

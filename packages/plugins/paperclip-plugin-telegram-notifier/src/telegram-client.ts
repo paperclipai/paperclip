@@ -68,15 +68,25 @@ export async function createTelegramClient(
   const base = `${TELEGRAM_API_BASE}/bot${token}`;
 
   async function call<T>(method: string, body?: unknown): Promise<T> {
-    const res = await ctx.http.fetch(`${base}/${method}`, {
-      method: "POST",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const envelope = (await res.json()) as TelegramApiResponse<T>;
+    let res: Response;
+    let envelope: TelegramApiResponse<T>;
+    try {
+      res = await ctx.http.fetch(`${base}/${method}`, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      envelope = (await res.json()) as TelegramApiResponse<T>;
+    } catch (err) {
+      // A host fetch error can quote the request URL, and the URL holds the token.
+      throw new Error(`Telegram API ${method} request failed: ${errorText(err, token)}`);
+    }
     if (!envelope.ok || envelope.result === undefined) {
       throw new Error(
-        `Telegram API ${method} failed: ${envelope.description ?? `HTTP ${res.status}`}`,
+        redactBotToken(
+          `Telegram API ${method} failed: ${envelope.description ?? `HTTP ${res.status}`}`,
+          token,
+        ),
       );
     }
     return envelope.result;
@@ -261,6 +271,32 @@ function escapeMdV2Lite(input: string): string {
 export function botIdFromToken(token: string): string {
   const match = token.trim().match(/^(\d+):/);
   return match ? match[1]! : "unknown";
+}
+
+const REDACTED = "<redacted>";
+
+/**
+ * Mask the bot token in text that is logged, stored, returned or sent: the
+ * exact token when the caller holds it (raw and URI-encoded), and the
+ * `/bot<token>` segment of any Bot API URL.
+ */
+export function redactBotToken(text: string, token?: string): string {
+  let out = text;
+  if (token) {
+    const forms = [token];
+    try {
+      forms.push(encodeURI(token));
+    } catch {
+      // A lone surrogate cannot be URI-encoded; the raw form is still masked.
+    }
+    for (const form of forms) out = out.split(form).join(REDACTED);
+  }
+  return out.replace(/\/bot[^/\s]+/g, `/bot${REDACTED}`);
+}
+
+/** `err`'s message with the bot token masked; use it wherever an error becomes text. */
+export function errorText(err: unknown, token?: string): string {
+  return redactBotToken(err instanceof Error ? err.message : String(err), token);
 }
 
 const LITERAL_TOKEN_PATTERN = /\d+:[A-Za-z0-9_-]{30,}/;

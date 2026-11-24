@@ -18,7 +18,7 @@
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { isRateLimitError } from "./telegram-client.js";
+import { errorText, isRateLimitError } from "./telegram-client.js";
 import type { PluginConfig } from "./types.js";
 
 export const outboundQueueSettings = {
@@ -112,7 +112,7 @@ export function createOutboundQueue(options: {
       } catch (err) {
         options.logger.warn("telegram-notifier: notification failed", {
           companyId,
-          err: err instanceof Error ? err.message : String(err),
+          err: errorText(err),
         });
       } finally {
         item.settle();

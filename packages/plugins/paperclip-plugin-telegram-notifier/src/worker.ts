@@ -104,6 +104,7 @@ import {
   botIdFromToken,
   botTokenConfigError,
   createTelegramClient,
+  errorText,
   isRateLimitError,
   isSecretRefBinding,
   resolveToken,
@@ -248,7 +249,7 @@ async function sendIssueCreatedConfirmation(
     });
   } catch (err) {
     ctx.logger.warn("telegram-notifier: send issue-created failed", {
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return undefined;
   }
@@ -296,7 +297,7 @@ async function callPaperclipApi(
       ok: false,
       status: 0,
       data: null,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorText(err),
     };
   }
 }
@@ -381,7 +382,7 @@ async function sendConfirmationToCompanyChat(
     return result;
   } catch (err) {
     ctx.logger.warn("telegram-notifier: send confirmation failed", {
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return undefined;
   }
@@ -576,7 +577,7 @@ async function onCommentCreated(
     } catch (err) {
       ctx.logger.warn("telegram-notifier: comment hydrate failed", {
         commentId,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
     }
   }
@@ -649,7 +650,7 @@ async function onCommentCreated(
     });
   } catch (err) {
     ctx.logger.warn("telegram-notifier: comment notification send failed", {
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return;
   }
@@ -761,14 +762,14 @@ async function ensureBotBootstrap(
     }
     await client.setMyCommands().catch((err) => {
       ctx.logger.warn("telegram-notifier: setMyCommands failed", {
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
     });
     await patchBotState(ctx, client.botId, { username: me.username });
     return me.username;
   } catch (err) {
     ctx.logger.warn("telegram-notifier: getMe failed", {
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return undefined;
   }
@@ -823,7 +824,7 @@ async function deliverPairingCode(
     } catch (err) {
       // Usually the sender has no private chat with the bot yet.
       ctx.logger.info("telegram-notifier: pairing code not sent privately", {
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
     }
   }
@@ -1181,7 +1182,7 @@ function telegramUserLabel(
 }
 
 function escapeMdText(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorText(err);
   // Reuse the same MarkdownV2 escape rules used by format.ts.
   return message.replace(/[_*\[\]()~`>#+=|{}.!\\-]/g, (m) => `\\${m}`);
 }
@@ -1280,7 +1281,7 @@ async function handleConfirmationDeclineReply(
       });
     } catch (err) {
       ctx.logger.warn("telegram-notifier: edit decline closeout failed", {
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
     }
   }
@@ -1369,7 +1370,7 @@ export async function postTelegramReplyComment(
       // for it before writing a second copy under the agent.
       ctx.logger.warn("telegram-notifier: human-attributed comment failed", {
         companyId: context.companyId,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
       const saved = await ctx.issues
         .listComments(context.issueId, context.companyId)
@@ -1569,7 +1570,7 @@ async function handleCallbackQuery(
           showAlert: true,
         });
         ctx.logger.warn("telegram-notifier: reassign failed", {
-          err: err instanceof Error ? err.message : String(err),
+          err: errorText(err),
         });
       }
       return;
@@ -1681,7 +1682,7 @@ async function handleCallbackQuery(
         });
       } catch (err) {
         ctx.logger.warn("telegram-notifier: edit approve closeout failed", {
-          err: err instanceof Error ? err.message : String(err),
+          err: errorText(err),
         });
       }
       await client.answerCallbackQuery({
@@ -1733,7 +1734,7 @@ async function handleCallbackQuery(
   } catch (err) {
     ctx.logger.warn("telegram-notifier: callback handler failed", {
       data,
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     await client
       .answerCallbackQuery({
@@ -1787,7 +1788,7 @@ export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> 
     } catch (err) {
       ctx.logger.debug("telegram-notifier: no readable config for company", {
         companyId,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
       continue;
     }
@@ -1854,6 +1855,11 @@ async function loadConfigWithBackoff(
  * with the group's first company's config. `batch` holds the configs
  * resolved for the update batch being handled, so each company's secret is
  * resolved at most once per batch; the caller drops it after the batch.
+ *
+ * A rate-limited resolution that outlasts the poll deadline is thrown: the
+ * update is not handled yet and must stay unconfirmed. Any other failure
+ * (secret deleted, disabled, or another bot) returns `undefined`, and the
+ * update is skipped for good.
  */
 export async function resolveUpdateConfig(
   ctx: PluginContext,
@@ -1876,9 +1882,10 @@ export async function resolveUpdateConfig(
       return config;
     }
   } catch (err) {
+    if (isRateLimitError(err)) throw err;
     ctx.logger.debug("telegram-notifier: no readable config for company", {
       companyId,
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
   }
   return undefined;
@@ -1897,9 +1904,10 @@ async function runPollUpdates(
 }
 
 /**
- * One getUpdates call as one operation: resolve the group's secret, check
- * it still names this bot, long-poll, and drop the token on return. Returns
- * null when the secret is gone (deleted, disabled, or no longer this bot).
+ * One poll as one operation: resolve the group's secret, check it still
+ * names this bot, and long-poll. The returned config is used for the batch
+ * the call returned and dropped with it. Returns null when the secret is
+ * gone (deleted, disabled, or no longer this bot).
  */
 async function fetchUpdates(
   ctx: PluginContext,
@@ -1907,7 +1915,7 @@ async function fetchUpdates(
   offset: number | undefined,
   timeoutSec: number,
   deadline: number,
-): Promise<TelegramUpdate[] | null> {
+): Promise<{ updates: TelegramUpdate[]; config: PluginConfig } | null> {
   let config: PluginConfig;
   try {
     config = await loadConfigWithBackoff(ctx, group.companyIds[0]!, deadline);
@@ -1917,20 +1925,29 @@ async function fetchUpdates(
   }
   if (!config.botToken || botIdFromToken(config.botToken) !== group.botId) return null;
   const client = await createTelegramClient(ctx, config.botToken);
-  return client.getUpdates(offset, timeoutSec);
+  return { updates: await client.getUpdates(offset, timeoutSec), config };
 }
 
-/** Handle one update batch; configs resolved for it are dropped on return. */
+/**
+ * Handle one update batch in update_id order; configs resolved for it are
+ * dropped on return. Returns the id of the last update that is done
+ * (handled, failed in its handler, or skipped), so the caller confirms
+ * nothing past it. Handling stops at the first update whose config is
+ * rate-limited: that update and the ones after it stay unconfirmed, and
+ * Telegram sends them again on the next poll.
+ */
 async function handleUpdateBatch(
   ctx: PluginContext,
   group: BotGroup,
   updates: TelegramUpdate[],
+  batch: Map<string, PluginConfig>,
   deadline: number,
-): Promise<void> {
-  const batch = new Map<string, PluginConfig>();
-  for (const update of updates) {
+): Promise<{ doneThrough?: number; blocked: boolean }> {
+  let doneThrough: number | undefined;
+  for (const update of [...updates].sort((a, b) => a.update_id - b.update_id)) {
+    let config: PluginConfig | undefined;
     try {
-      const config = await resolveUpdateConfig(
+      config = await resolveUpdateConfig(
         ctx,
         await readPairing(ctx),
         update,
@@ -1938,19 +1955,36 @@ async function handleUpdateBatch(
         batch,
         deadline,
       );
-      if (!config) continue;
-      if (update.message) {
-        await handleMessage(ctx, config, update.message);
-      } else if (update.callback_query) {
-        await handleCallbackQuery(ctx, config, update.callback_query);
-      }
     } catch (err) {
+      if (isRateLimitError(err)) {
+        ctx.logger.warn("telegram-notifier: secret resolution rate-limited, update kept for the next poll", {
+          botId: group.botId,
+          updateId: update.update_id,
+        });
+        return { doneThrough, blocked: true };
+      }
       ctx.logger.warn("telegram-notifier: update handler failed", {
         updateId: update.update_id,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
     }
+    if (config) {
+      try {
+        if (update.message) {
+          await handleMessage(ctx, config, update.message);
+        } else if (update.callback_query) {
+          await handleCallbackQuery(ctx, config, update.callback_query);
+        }
+      } catch (err) {
+        ctx.logger.warn("telegram-notifier: update handler failed", {
+          updateId: update.update_id,
+          err: errorText(err),
+        });
+      }
+    }
+    doneThrough = update.update_id;
   }
+  return { doneThrough, blocked: false };
 }
 
 async function pollBot(
@@ -1983,12 +2017,12 @@ async function pollBot(
     const lastUpdateId = getBotState(state, group.botId).lastUpdateId;
     const offset = lastUpdateId !== undefined ? lastUpdateId + 1 : undefined;
 
-    let updates: TelegramUpdate[] | null;
+    let polled: Awaited<ReturnType<typeof fetchUpdates>>;
     try {
       // End the last long poll before the deadline so cycles never overlap.
       const remainingSec = Math.floor((deadline - Date.now()) / 1000) - 1;
       if (remainingSec < 1) break;
-      updates = await fetchUpdates(
+      polled = await fetchUpdates(
         ctx,
         group,
         offset,
@@ -1999,14 +2033,14 @@ async function pollBot(
     } catch (err) {
       ctx.logger.warn("telegram-notifier: getUpdates failed", {
         botId: group.botId,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorText(err),
       });
       // Back off on rate limits and transport errors so we don't busy-loop.
       await sleep(Math.min(backoff, Math.max(0, deadline - Date.now())));
       backoff = nextBackoff(backoff);
       continue;
     }
-    if (updates === null) {
+    if (polled === null) {
       // A deleted or disabled secret ends this cycle: nothing polls with it.
       ctx.logger.warn("telegram-notifier: bot token secret unavailable, polling stopped", {
         botId: group.botId,
@@ -2014,14 +2048,23 @@ async function pollBot(
       break;
     }
 
-    await handleUpdateBatch(ctx, group, updates, deadline);
-    let newest = lastUpdateId ?? -1;
-    for (const update of updates) {
-      if (update.update_id > newest) newest = update.update_id;
+    // The primary company's config was resolved for this poll; reuse it for
+    // the batch instead of resolving the same secret again.
+    const { doneThrough, blocked } = await handleUpdateBatch(
+      ctx,
+      group,
+      polled.updates,
+      new Map([[primaryCompanyId, polled.config]]),
+      deadline,
+    );
+    // The next getUpdates offset confirms everything up to the saved id, so
+    // the cursor never moves past an update that was not handled.
+    if (doneThrough !== undefined && doneThrough !== lastUpdateId) {
+      await patchBotState(ctx, group.botId, { lastUpdateId: doneThrough });
     }
-    if (newest >= 0 && newest !== lastUpdateId) {
-      await patchBotState(ctx, group.botId, { lastUpdateId: newest });
-    }
+    // Rate-limited: the secret budget is spent. The next poll job retries
+    // from the first unhandled update.
+    if (blocked) break;
   }
 }
 
@@ -2135,7 +2178,7 @@ async function sendDigestForCompany(
   } catch (err) {
     ctx.logger.warn("telegram-notifier: digest issue.list failed", {
       companyId,
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return { sent: false, reason: "Failed to read issues." };
   }
@@ -2177,11 +2220,11 @@ async function sendDigestForCompany(
   } catch (err) {
     ctx.logger.warn("telegram-notifier: digest send failed", {
       companyId,
-      err: err instanceof Error ? err.message : String(err),
+      err: errorText(err),
     });
     return {
       sent: false,
-      reason: err instanceof Error ? err.message : String(err),
+      reason: errorText(err),
     };
   }
 }
@@ -2256,7 +2299,7 @@ const plugin = definePlugin({
         } catch (err) {
           ctx.logger.warn("telegram-notifier: handler failed", {
             eventType: event.eventType,
-            err: err instanceof Error ? err.message : String(err),
+            err: errorText(err),
           });
         }
       };
@@ -2402,7 +2445,7 @@ const plugin = definePlugin({
             },
           };
         } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) };
+          return { error: errorText(err) };
         }
       },
     );
@@ -2428,7 +2471,7 @@ const plugin = definePlugin({
             data: { paired: true, ...paired },
           };
         } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) };
+          return { error: errorText(err) };
         }
       },
     );
@@ -2473,7 +2516,7 @@ const plugin = definePlugin({
           };
         } catch (err) {
           return {
-            content: `Not sent: ${err instanceof Error ? err.message : String(err)}`,
+            content: `Not sent: ${errorText(err)}`,
             data: { sent: false, companyId },
           };
         }
@@ -2600,7 +2643,7 @@ const plugin = definePlugin({
       } catch (err) {
         ctx.logger.warn("telegram-notifier: agents.list failed", {
           companyId,
-          err: err instanceof Error ? err.message : String(err),
+          err: errorText(err),
         });
         return { items: [] };
       }
@@ -2642,7 +2685,7 @@ const plugin = definePlugin({
       } catch (err) {
         ctx.logger.warn("telegram-notifier: resolveApprover failed", {
           companyId,
-          err: err instanceof Error ? err.message : String(err),
+          err: errorText(err),
         });
         return null;
       }
@@ -3025,7 +3068,7 @@ const plugin = definePlugin({
           data: { botUsername: me.username, botId: me.id },
         };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errorText(err);
         throw new Error(`Telegram getMe failed: ${msg}`);
       }
     });
