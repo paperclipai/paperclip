@@ -503,6 +503,28 @@ require('node:module').syncBuiltinESMExports();`);
       } else expect(after!.metadata).toEqual(newLease.metadata);
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
       vi.mocked(second.runner!.execute).mockRestore();
+      if (reused) {
+        // The bounded retry is a new run on a new sandbox. The full sandbox
+        // stays as it was, and the retry restores the saved files.
+        await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, nextRun));
+        const [ended] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease));
+        await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success", metadata: { ...ended!.metadata,
+          remoteExecutionTermination: remoteTerminationReceipt(ended as EnvironmentLease, { providerLeaseId: ended!.providerLeaseId, state: "stopped" }) } })
+          .where(eq(environmentLeases.id, nextLease));
+        const retryRun = randomUUID(), retryLease = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: retryRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+        const [fresh] = await db.insert(environmentLeases).values({ id: retryLease, companyId: ids.company, environmentId: ids.environment,
+          heartbeatRunId: retryRun, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${retryLease}`,
+          leasePolicy: "reuse_by_environment", status: "active" }).returning();
+        const retryWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: retryRun,
+          agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+        const newSandbox = await target("sandbox-C");
+        const retried = await prepareRemoteWorkspace({ db, storage, workspace: retryWorkspace, runId: retryRun, lease: fresh as EnvironmentLease, target: newSandbox });
+        expect(retried.remoteRoot.startsWith(newSandbox.remoteCwd)).toBe(true);
+        expect(await fs.readFile(path.join(retried.remoteRoot, "report.md"), "utf8")).toBe("useful saved result\n");
+        expect(await fs.readFile(path.join(retried.remoteRoot, "binary.bin"))).toEqual(Buffer.from([0, 1, 255]));
+        return;
+      }
     }
     if (mode === "restore lock busy") {
       const lockDirectory = path.join(path.dirname(expectedRemoteRoot), ".paperclip-runtime", "workspace-restore-locks");
