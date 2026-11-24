@@ -32,7 +32,7 @@ The deletion covers everything listed under "What is deleted" for that connectio
 
 ## Technical details from Google
 
-Paperclip keeps technical details it gets from Google, such as error messages and the descriptions of Google's tools, for at most 30 days. After that it deletes them on its own. When access to Google ends, it deletes them at once. The record that a call happened stays.
+Paperclip keeps technical details it gets from Google, such as error messages and the descriptions of Google's tools, for at most 30 days. After that it deletes them on its own. When you remove a Google connection, it deletes them at once. The record that a call happened stays.
 
 Paperclip does not use content from Google to train or test AI models. Feedback you share with Paperclip and decision training examples leave out runs that read from Google.
 
