@@ -396,6 +396,56 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Instance-wide sweep of orphaned run scratch directories (both the per-run
+ * temp root and the legacy OS temp root). Run states and process group ids
+ * are resolved from the database so removals stay gated on real liveness and
+ * retained credential homes. Shared by `reapOrphanedRuns` and the periodic
+ * run-scratch sweep worker: the per-run executor cleanup only covers runs
+ * that reach their finally block, so crashed or restarted runs are reclaimed
+ * here.
+ */
+export async function sweepOrphanedRunScratchDirectories(db: Db): Promise<{ truncated: boolean; pending: number }> {
+  const sweepProcessGroupIds = new Map<string, number | null>();
+  try {
+    const swept = await sweepOrphanedRunScratch({
+      resolveRunStates: async (runIds) => {
+        // Markers are untrusted: only well-formed UUIDs reach the query.
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const validIds = runIds.filter((id) => uuid.test(id));
+        // A run absent from this database may belong to another instance sharing the temp root.
+        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
+        sweepProcessGroupIds.clear();
+        for (const id of runIds) sweepProcessGroupIds.set(id, null);
+        if (validIds.length === 0) return states;
+        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, processGroupId: heartbeatRuns.processGroupId })
+          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
+        for (const row of rows) {
+          states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
+          sweepProcessGroupIds.set(row.id, row.processGroupId ?? null);
+        }
+        return states;
+      },
+      // A terminal run's directories are removed only after its process group
+      // (detached descendants included) has actually exited.
+      isRunProcessGroupAlive: (runId) => {
+        const processGroupId = sweepProcessGroupIds.get(runId);
+        return processGroupId != null ? isProcessGroupAlive(processGroupId) : undefined;
+      },
+    });
+    if (swept.removed.length > 0) {
+      logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");
+    }
+    return { truncated: swept.truncated, pending: swept.pending };
+  } catch (error) {
+    logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
+    // A failed scan proves nothing about the roots it never read: report it
+    // as truncated so the sweep worker schedules a bounded follow-up instead
+    // of treating the unknown state as settled and idling.
+    return { truncated: true, pending: 0 };
+  }
+}
+
 /** Restart recovery shares the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryDependencies) {
   const runsHandedOffByThisController = new Set<string>();
@@ -3086,24 +3136,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
     });
 
-    await sweepOrphanedRunScratch({
-      resolveRunStates: async (runIds) => {
-        // Markers are untrusted: only well-formed UUIDs reach the query.
-        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const validIds = runIds.filter((id) => uuid.test(id));
-        // A run absent from this database may belong to another instance sharing the temp root.
-        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
-        if (validIds.length === 0) return states;
-        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
-        for (const row of rows) states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
-        return states;
-      },
-    }).then((swept) => {
-      if (swept.removed.length > 0) logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");
-    }).catch(error => {
-      logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
-    });
+    // Run process group ids resolved alongside the states, so removals stay
+    // gated on real liveness instead of the terminal status alone.
+    await sweepOrphanedRunScratchDirectories(db);
 
     // Complete persisted native results before generic orphan recovery. The
     // reconciler reads the durable workspace barrier and persisted runtime

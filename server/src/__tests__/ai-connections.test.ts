@@ -6,6 +6,8 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
+import * as runScratch from "../services/run-scratch.js";
+import { acquireAiCredentialTeardownHold } from "../services/retained-ai-credential-cleanup.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -338,6 +340,117 @@ describe("managed AI connections", () => {
           else expect(runtime.config.env).not.toHaveProperty(key);
         }
       } finally { await runtime.cleanup(); }
+    }
+  });
+
+  it("creates the managed AI home inside the per-run scratch directory", async () => {
+    const owner = "scratch-home-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-home-"));
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      try {
+        expect(runtime.home).toEqual(expect.any(String));
+        expect(runtime.home!.startsWith(runScratchDir + path.sep)).toBe(true);
+        expect(path.basename(runtime.home!).startsWith("paperclip-ai-")).toBe(true);
+        expect(runtime.homeRemoved()).toBe(false);
+        expect(runtime.config.env.HOME).toBe(runtime.home);
+      } finally { await runtime.cleanup(); }
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans portable probe homes and preparation failures without releasing another owner's hold", async () => {
+    const owner = "portable-home-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-portable-home-"));
+    const originalRemove = runScratch.removeRunTempTree;
+    const removal = vi.spyOn(runScratch, "removeRunTempTree").mockImplementation((dir, opts) =>
+      originalRemove(dir, { ...opts, walkerOps: () => runScratch.createDefaultRunScratchWalkerOps("paths") }));
+    const config = { ...input, responsibleUserId: owner, managedHomeParent: root, config: {} };
+    try {
+      let probed: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+      await withManagedAiProbe(db, config, async runtime => { probed = runtime; });
+      expect(probed!.homeRemoved()).toBe(true);
+      expect(await fs.readdir(root)).toEqual([]);
+
+      const runtime = await prepareManagedAiRuntime(db, config);
+      const release = acquireAiCredentialTeardownHold(runtime.home!);
+      try {
+        await runtime.cleanup();
+        expect(runtime.homeRemoved()).toBe(false);
+        await expect(access(path.join(runtime.home!, "provider"))).resolves.toBeUndefined();
+      } finally { release(); }
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(true);
+      expect(await fs.readdir(root)).toEqual([]);
+
+      // Env projection enumerates the object after home creation and its hold.
+      // Fail there without mocking a named native fs export.
+      const brokenEnv = new Proxy({}, { ownKeys() { throw new Error("fixture preparation failure"); } });
+      await expect(prepareManagedAiRuntime(db, { ...config, config: { env: brokenEnv } }))
+        .rejects.toThrow("fixture preparation failure");
+      expect(await fs.readdir(root)).toEqual([]);
+    } finally { removal.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("defers managed AI home removal while the run process group is alive", async () => {
+    const owner = "scratch-home-gate-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-gate-"));
+    let processGroupAlive = true;
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      runtime.setHomeRemovalGate(() => !processGroupAlive);
+      const home = runtime.home!;
+      try {
+        await runtime.cleanup();
+        // The write-back completed but detached descendants may still hold the
+        // home: removal is deferred, not failed.
+        expect(runtime.homeRemoved()).toBe(false);
+        await expect(access(home)).resolves.toBeUndefined();
+      } finally {
+        processGroupAlive = false;
+        await runtime.cleanup();
+      }
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(home)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the managed AI home when the removal gate cannot verify liveness, then completes after verification", async () => {
+    const owner = "scratch-home-gate-error-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-gate-err-"));
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      const home = runtime.home!;
+      // A gate rejection means the run's liveness could not be verified — for
+      // example a failed run read: it must never authorize the removal.
+      runtime.setHomeRemovalGate(() => Promise.reject(new Error("run read failed")));
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(false);
+      await expect(access(home)).resolves.toBeUndefined();
+      // Once verification succeeds and the process group has exited, the
+      // retried cleanup completes the removal.
+      runtime.setHomeRemovalGate(() => true);
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(home)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
     }
   });
 
