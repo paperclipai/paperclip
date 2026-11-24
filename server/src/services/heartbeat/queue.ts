@@ -1,3 +1,4 @@
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee, isOrdinaryIssueCommentWake } from "../issue-comment-wakeup.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
@@ -1014,6 +1015,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
   }
 
+  async function ordinaryCommentWakeAllowed(tx: Db, input: {
+    companyId: string; issueId: string; agentId: string; assigneeAgentId: string | null;
+    status: string; context: Record<string, unknown>; reason: string | null | undefined;
+  }) {
+    if (!isOrdinaryIssueCommentWake(input.reason, input.context)) return true;
+    if (input.reason === "issue_comment_mentioned") return false; // Native upstream mentions remain annotations.
+    if (input.status === "blocked" || input.assigneeAgentId !== input.agentId) return false;
+    // Explicitly authorized resume is a separate route operation. Reblocking
+    // still wins at the issue lock, and all normal execution guards still run.
+    if (input.context.resumeIntent === true || input.reason === "issue_reopened_via_comment") return true;
+    const ids = [...new Set([...queuedCommentIdsFromRunContext(input.context), ...extractWakeCommentIds(input.context),
+      readNonEmptyString(input.context.sourceCommentId), readNonEmptyString(input.context.commentId),
+      readNonEmptyString(input.context.wakeCommentId)].filter((id): id is string => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))];
+    if (ids.length === 0) return false;
+    const comments = await tx.select({ body: issueComments.body,metadata:issueComments.metadata,companyId:issueComments.companyId,issueId:issueComments.issueId,authorAgentId:issueComments.authorAgentId,authorUserId:issueComments.authorUserId }).from(issueComments).where(and(
+      eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, ids), isNull(issueComments.deletedAt),
+    ));
+    return comments.some(comment => canNotifyIssueCommentAssignee(comment.body, input.agentId, input.status, hasActionableCommentIntent(comment,input.agentId)));
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -1033,6 +1055,102 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A system continuation queued while its task was open has nothing left to
     // do once another run finished or cancelled the task before this one
     // started. A person's message on a done task is not one of these reasons.
+    let context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    // Filter untrusted/ineligible comment input before native identity selection.
+    // Claim rechecks again under the same issue/wake/run lock order. Neither
+    // check can grant a start: all ordinary admission and owner/Stop gates follow.
+    async function recheckCommentContribution(tx: Db, owner: {assigneeAgentId:string|null;status:string}|undefined) {
+      if (!issueId) return true;
+        // Follow the native queue-edit order: issue, wake, run. Use the locked
+        // context so a concurrently attached comment is neither lost nor trusted
+        // from an old in-memory dispatch snapshot.
+        if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))).for("update");
+        const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).for("update");
+        if (!current) return false;
+        let currentContext = parseObject(current.contextSnapshot);
+        let ordinary = isOrdinaryIssueCommentWake(currentContext.wakeReason as string | undefined, currentContext);
+        let recoveredIndependentOrigin = false;
+        if (ordinary) {
+          // A pre-upgrade merge may have overwritten an independent cause with
+          // a comment reason. Restore only an admitted, same-run native origin;
+          // caller context or a claimed independent flag cannot mint that proof.
+          const receipts = await tx.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId,run.companyId),eq(agentWakeupRequests.agentId,run.agentId),
+            eq(agentWakeupRequests.runId,run.id),inArray(agentWakeupRequests.status,["queued","coalesced"])))
+            .orderBy(desc(agentWakeupRequests.requestedAt));
+          for (const receipt of receipts) {
+            const origin=parseObject(parseObject(receipt.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+            const reason=readNonEmptyString(receipt.reason);
+            if (!reason || origin.issueId!==issueId || origin.wakeReason!==reason ||
+                isOrdinaryIssueCommentWake(reason,origin)) continue;
+            const commentIds=extractWakeCommentIds(currentContext);
+            const independentIds=new Set(extractWakeCommentIds(origin));
+            currentContext={...currentContext,...origin,wakeCommentIds:commentIds,
+              ordinaryIssueCommentIds:commentIds.filter(id=>!independentIds.has(id)),
+              ...(commentIds.length?{commentId:commentIds[commentIds.length-1],wakeCommentId:commentIds[commentIds.length-1]}:{})};
+            ordinary=false;
+            recoveredIndependentOrigin=true;
+            break;
+          }
+        }
+        if (!ordinary && (!Array.isArray(currentContext.ordinaryIssueCommentIds) ||
+            (currentContext.ordinaryIssueCommentIds.length===0 && !recoveredIndependentOrigin))) return true;
+        if (ordinary || Array.isArray(currentContext.ordinaryIssueCommentIds)) {
+          const marked = new Set<string>(ordinary
+            ? [...extractWakeCommentIds(currentContext), ...queuedCommentIdsFromRunContext(currentContext),
+                currentContext.commentId, currentContext.wakeCommentId, currentContext.sourceCommentId].filter((id): id is string => typeof id === "string")
+            : (currentContext.ordinaryIssueCommentIds as unknown[]).filter((id): id is string => typeof id === "string"));
+          const allowed = new Set<string>();
+          for (const id of marked) {
+            if (owner && await ordinaryCommentWakeAllowed(tx, { companyId:run.companyId,issueId,agentId:run.agentId,
+                assigneeAgentId:owner.assigneeAgentId,status:owner.status, reason:ordinary ? currentContext.wakeReason as string | undefined : "issue_commented",
+                context:{wakeReason:ordinary ? currentContext.wakeReason : "issue_commented",commentId:id,
+                  ...(ordinary && currentContext.resumeIntent===true ? {resumeIntent:true}: {})} })) allowed.add(id);
+          }
+          const retained = extractWakeCommentIds(currentContext).filter(id => !marked.has(id) || allowed.has(id));
+          for (const key of ["sourceCommentId", "commentId", "wakeCommentId"]) {
+            const id = readNonEmptyString(currentContext[key]);
+            if (id && marked.has(id) && !allowed.has(id)) delete currentContext[key];
+          }
+          currentContext.wakeCommentIds = retained;
+          currentContext.ordinaryIssueCommentIds = [...allowed];
+          // Rebuild from retained ids; never forward a stale embedded comment.
+          delete currentContext.paperclipWake;
+          await tx.update(heartbeatRuns).set({contextSnapshot:currentContext}).where(eq(heartbeatRuns.id,run.id));
+          Object.assign(context,currentContext);
+          for (const key of ["sourceCommentId", "commentId", "wakeCommentId", "paperclipWake"])
+            if (!(key in currentContext)) delete context[key];
+          run = {...run,contextSnapshot:currentContext};
+        }
+        if (ordinary && (!owner || !await ordinaryCommentWakeAllowed(tx, { companyId: run.companyId, issueId,
+            agentId: run.agentId, assigneeAgentId: owner.assigneeAgentId, status: owner.status,
+            context: currentContext, reason: currentContext.wakeReason as string | undefined }))) {
+          const now = new Date();
+          // Retire before dispatch, never active work or the durable comment.
+          await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: now,
+            errorCode: "issue_comment_no_longer_eligible", error: "Comment retained without starting work" })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
+          if (run.wakeupRequestId) await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: now,
+            error: "Comment retained without starting work" }).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.status, "queued")));
+          await tx.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          return false;
+        }
+      return true;
+    }
+    if (issueId && (isOrdinaryIssueCommentWake(context.wakeReason as string | undefined,context) ||
+        (Array.isArray(context.ordinaryIssueCommentIds) && context.ordinaryIssueCommentIds.length>0))) {
+      const eligible = await db.transaction(async tx => {
+        const [owner] = await tx.select({assigneeAgentId:issues.assigneeAgentId,status:issues.status}).from(issues)
+          .where(and(eq(issues.id,issueId),eq(issues.companyId,run.companyId))).for("update");
+        return recheckCommentContribution(tx as unknown as Db,owner);
+      });
+      if (!eligible) return null;
+    }
     const runContext = parseObject(run.contextSnapshot);
     const systemContinuationReason = readNonEmptyString(runContext.wakeReason);
     const continuedIssueId = readNonEmptyString(runContext.issueId);
@@ -1176,7 +1294,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     if (!run.startedAt && !await canStartNewExternalBotWork(agent)) return null;
 
-    const context = parseObject(run.contextSnapshot);
+    context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
       run.agentId,
@@ -1247,7 +1365,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
     if (issueId && activeRunExecutions.size > 0) {
       // Native finalization publishes success before workspace synchronization,
       // provider suspension, and lease release finish. A queued comment must
@@ -1414,6 +1531,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     async function lockIssueExecutionClaim(tx: Db) {
       const [owner] = issueId ? await tx.select({
         assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
         statusVersion: issues.statusVersion,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
@@ -1429,6 +1547,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ...(predecessorRunId ? { predecessorRunId } : {}) }, "claimQueuedRun: queued run declined at the issue execution claim");
         return { ownsIssue, blocked: true };
       };
+      if (!await recheckCommentContribution(tx,owner)) return declined("issue_comment_no_longer_eligible");
       if (handoff && (handoff.wakeupRequestId !== run.wakeupRequestId || handoff.state === "awaiting_release"))
         return declined("case_handoff_pending");
       if (caseHandoffReceipt) {
@@ -3790,6 +3909,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+            return { kind: "skipped" as const };
+          }
+
+          if (!await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,
+            issueId: issue.id, agentId: agent.id, assigneeAgentId: issue.assigneeAgentId,
+            status: issue.status, context: enrichedContextSnapshot, reason })) {
             return { kind: "skipped" as const };
           }
 

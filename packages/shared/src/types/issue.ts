@@ -1269,6 +1269,9 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  /** Server-stamped input intent; never an authorization grant. */
+  commentWake?: { version: 1; kind: "actionable"; companyId: string; issueId: string;
+    actorType: "agent" | "user"; actorId: string; recipientAgentId: string; request: string };
   chatMessage?: {
     sourceTaskId: string;
     sourceTaskIdentifier: string;

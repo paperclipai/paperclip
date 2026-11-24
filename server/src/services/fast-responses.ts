@@ -1,3 +1,4 @@
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee } from "./issue-comment-wakeup.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { randomUUID } from "node:crypto";
@@ -250,7 +251,7 @@ export async function fastResponseSourceCurrent(tx: Db, request: Request) {
     !issue ||
     issue.hiddenAt ||
     (request.agentId && issue.assigneeAgentId !== request.agentId) ||
-    ["done", "cancelled"].includes(issue.status) ||
+    ["blocked", "done", "cancelled"].includes(issue.status) ||
     (request.sessionGeneration !== null &&
       issue.conversationSessionGeneration !== request.sessionGeneration)
   )
@@ -280,6 +281,9 @@ export async function fastResponseSourceCurrent(tx: Db, request: Request) {
     (!source || source.updatedAt.getTime() > request.acceptedAt.getTime() + 10)
   )
     return false;
+  if (request.sourceKey.startsWith("comment:") &&
+      (!source || source.issueId !== issue.id ||
+       !canNotifyIssueCommentAssignee(source.body, issue.assigneeAgentId, issue.status,hasActionableCommentIntent(source,issue.assigneeAgentId)))) return false;
   const [answer] = await tx
     .select({ id: issueComments.id })
     .from(issueComments)
