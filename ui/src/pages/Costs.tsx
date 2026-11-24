@@ -4,6 +4,7 @@ import { SubscriptionCostCard, SubscriptionTokenUsage } from "../components/Subs
 import { subscriptionsApi } from "../api/subscriptions";
 import { useSearchParams } from "@/lib/router";
 import { CostEstimateLabel } from "../components/CostEstimateLabel";
+import { ApiEquivalentAmount, API_EQUIVALENT_TOOLTIP } from "../components/ApiEquivalentAmount";
 import { CostAmount } from "../components/CostAmount";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { CostDataQualityNotice } from "../components/CostDataQualityNotice";
@@ -663,7 +664,7 @@ export function Costs({
               Finance headline totals are USD only. Other currencies are listed separately; no exchange-rate conversion is applied.
             </p>
           )}
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <MetricTile
               label="API spend"
               value={subscriptions ? subscriptions.api.unpricedEventCount === subscriptions.api.eventCount && subscriptions.api.eventCount > 0 ? "—" : formatCents(Number(subscriptions.api.costCents)) : "—"}
@@ -700,6 +701,15 @@ export function Costs({
                 </>
               ) : "Financial data unavailable"}
               icon={ReceiptText}
+            />
+            <MetricTile
+              label="API-equivalent"
+              value={spendData?.summary.apiEquivalent ? formatCents(spendData.summary.apiEquivalent.cents) : "—"}
+              subtitle={spendData?.summary.apiEquivalent ? <span title={API_EQUIVALENT_TOOLTIP}>
+                Estimated cost of all usage at API prices{spendData.summary.apiEquivalent.unpricedTokens > 0
+                  ? ` · ${formatTokens(spendData.summary.apiEquivalent.unpricedTokens)} tokens not priced` : ""}
+              </span> : "Cost data is loading"}
+              icon={DollarSign}
             />
             <MetricTile
               label="Finance events"
@@ -807,6 +817,11 @@ export function Costs({
                                       {row.subscriptionRunCount > 0
                                         ? `${row.subscriptionRunCount} sub`
                                         : "0 sub"}
+                                    </div>
+                                  ) : null}
+                                  {row.apiEquivalent && row.apiEquivalent.cents + row.apiEquivalent.unpricedTokens > 0 ? (
+                                    <div className="text-xs text-muted-foreground">
+                                      {"at API prices: "}<ApiEquivalentAmount value={row.apiEquivalent} />
                                     </div>
                                   ) : null}
                                 </div>

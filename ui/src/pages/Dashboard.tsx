@@ -18,6 +18,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
+import { API_EQUIVALENT_TOOLTIP } from "../components/ApiEquivalentAmount";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -449,6 +450,11 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
+                  {data.costs.monthApiEquivalentCents ? (
+                    <span className="block" title={API_EQUIVALENT_TOOLTIP}>
+                      ≈ {formatCents(data.costs.monthApiEquivalentCents)} at API prices
+                    </span>
+                  ) : null}
                 </span>
               }
             />
