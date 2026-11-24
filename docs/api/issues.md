@@ -441,7 +441,7 @@ DELETE /api/attachments/{attachmentId}
 ## Agent Chats
 
 A chat is a task-backed conversation between one board user and one agent. These
-endpoints require a signed-in board user and the Agent Chat experimental setting.
+endpoints require a signed-in board user.
 `{agentRef}` is the agent ID or URL key; an ambiguous reference returns `409`,
 an unknown one `404`. Every chat is an issue, so messages use the comment
 endpoints above, with a `clientRequestId` for safe retries.
