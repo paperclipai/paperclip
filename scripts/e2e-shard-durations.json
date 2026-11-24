@@ -1,13 +1,20 @@
 {
-  "$comment": "Refreshed from successful Phase 2 PR #22729 CI run 45440355579 (sha 6ca7a27481) with exact per-test split totals for agent-chat-projects, chat-adapters-ui-providers, and chat-adapters-ui-messaging. scripts/e2e-shard.mjs uses these weights only to place specs on shards; they never change which specs run.",
+  "$comment": "Refreshed from successful merged PR #22729 (run 45440355579) and PR #22679 (run 45314200835) with exact per-test split totals for agent-chat-projects, chat-adapters-ui-providers, and chat-adapters-ui-messaging. scripts/e2e-shard.mjs uses these weights only to place specs on shards; they never change which specs run.",
   "unit": "ms",
   "sources": [
     {
       "pull": 22729,
       "run": 45440355579,
       "attempt": 1,
-      "sha": "6ca7a27481",
+      "sha": "6ca7a27481e1af45c60069a563632f2b00a008a7",
       "url": "https://github.com/paperclipai/paperclip/actions/runs/45440355579"
+    },
+    {
+      "pull": 22679,
+      "run": 45314200835,
+      "attempt": 3,
+      "sha": "d930b4a9b30bc2d9e9a80f5ae93ca95a659bc52c",
+      "url": "https://github.com/paperclipai/paperclip/actions/runs/45314200835"
     }
   ],
   "coverage": {
