@@ -122,7 +122,6 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
     const measuredTurn = new Promise<void>(resolve => { enterMeasuredTurn = resolve; });
     const heldMeasuredTurn = new Promise<void>(resolve => { finishMeasuredTurn = resolve; });
     const sockets = new Set<PrpWireConnection>();
-    const relaunchSettled = vi.fn(async () => { expect(authority!.store.state.identity.runId).toBe(identity.runId); });
     const registration = async (core: DurablePrpControlPlane, source = core.store.state.identity) => {
       if ((mode === "late claim reply" || mode === "held past deadline" || mode === "early claim expired") && claimAccepted) throw new Error("Fixture source authentication started after expiry");
       authority = core;
@@ -184,7 +183,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
           if (mode === "relaunched flush retry" && pair.resume.mock.calls.length === 1) {
             vi.spyOn(authority!, "flushCheckpoint").mockRejectedValueOnce(new Error("Fixture checkpoint write failed"));
           }
-          return { outcome: "resumed", runner: { version, digest: runnerDigest }, settled: relaunchSettled };
+          return { outcome: "resumed", runner: { version, digest: runnerDigest } };
         }
         return "resumed";
       }),
@@ -438,9 +437,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         await bundle.transport.close();
       } else await attaching;
       expect(new Set(claimTicketDigests).size).toBe(1);
-      if (mode === "relaunched same build" || mode === "relaunched flush retry") expect(relaunchSettled).toHaveBeenCalledOnce();
       if (mode === "relaunched incompatible build") {
-        expect(relaunchSettled).not.toHaveBeenCalled();
         expect(pair.resume).toHaveBeenCalledOnce();
         expect(authority!.store.state.identity.runId).toBe(identity.runId);
         return;

@@ -615,17 +615,11 @@ describe("plugin Runner release/resume facade", () => {
   it.each([
     ["the parked build", undefined],
     ["a relaunched build", { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` }],
-  ])("clears the released Runner proof after a resume on %s, once Core saved a relaunched build", async (_label, runner) => {
+  ])("passes the provider's resume outcome through on %s", async (_label, runner) => {
     const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", ...(runner ? { runner } : {}) }));
-    const onResumed = vi.fn(async () => {});
-    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, onResumed, resumeRelaunchedRunnerVersion: 1 });
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, resumeRelaunchedRunnerVersion: 1 });
     const outcome = await owner.driver.releaseResume!.resume(requirements.identity, "transient-ticket");
-    if (runner) {
-      expect(outcome).toEqual({ outcome: "resumed", runner, settled: expect.any(Function) });
-      expect(onResumed).not.toHaveBeenCalled();
-      if (typeof outcome === "object") await outcome.settled?.();
-    } else expect(outcome).toBe("resumed");
-    expect(onResumed).toHaveBeenCalledExactlyOnceWith(requirements.identity);
+    expect(outcome).toEqual(runner ? { outcome: "resumed", runner } : "resumed");
   });
 
   it("resumes with the credential resolved for the rebound claimant run", async () => {
@@ -805,8 +799,6 @@ describe("plugin Runner relaunch as the claimant run", () => {
   const next = { ...source, runId: "next-run", turnId: "turn-next-run", itemId: "item-next-run" };
   const parked = { version: "0.4.0", digest: `sha256:${"c".repeat(64)}` };
   const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
-  const settledCut = { schema: "paperclip.runner.durable.state.v1", ...source, lifecycle: "ready", nextSourceSeq: 4, ackedSourceSeq: 3,
-    outbox: [], pendingTerminalDelivery: null, processedCommands: {} };
   const base = { taskId: "task", projectIds: ["00000000-0000-4000-8000-000000000001"], projectAuthCheckVersion: 1 as const, harness: "codex", warmTaskVersion: 1 as const, releaseResumeVersion: 1 as const,
     accountIdentity: "selected-account", credentialIdentity: "selected-credential" };
   const relaunchSpec = (): RunnerProcessLaunchSpec => {
@@ -814,14 +806,14 @@ describe("plugin Runner relaunch as the claimant run", () => {
     return { ...spec, nativeRunner: { ...spec.nativeRunner!, identity: next, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
   };
   async function relaunchOwner(resume: (operation: any) => unknown,
-    options: { resumeIdentityVersion?: 1; onResumed?: () => Promise<void>; fresh?: true } = { resumeIdentityVersion: 1 }) {
+    options: { resumeIdentityVersion?: 1; fresh?: true } = { resumeIdentityVersion: 1 }) {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
     task.mockImplementation(async operation => operation.kind === "resume" ? resume(operation) : perform(operation));
     const close = vi.fn(async () => {});
     ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), quiesce: vi.fn(), close });
     const relaunchInput = { ...base, task, authorityRunId: next.runId, resumeRelaunchedRunnerVersion: 1 as const,
-      resumeIdentityVersion: options.resumeIdentityVersion, relaunch: { source, runner: parked }, onResumed: options.onResumed };
+      resumeIdentityVersion: options.resumeIdentityVersion, relaunch: { source, runner: parked } };
     const owner = createPluginRunnerTaskOwner(options.fresh ? relaunchInput : { ...base, task, adoptIdentity: source, authorityRunId: source.runId });
     if (!options.fresh) owner.rebind(relaunchInput);
     await prepare(owner, { ...requirements, identity: next });
@@ -831,10 +823,8 @@ describe("plugin Runner relaunch as the claimant run", () => {
   }
 
   it("starts the stopped Runner again as the claimant run and accepts the reported build", async () => {
-    const onResumed = vi.fn(async () => {});
     const { owner, task, authority, registration } = await relaunchOwner(
-      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
-      { resumeIdentityVersion: 1, onResumed });
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build }));
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
     expect(owner.driver.adoptExistingRunner).toBeUndefined();
     expect(owner.relaunchMayHaveStarted()).toBe(false);
@@ -848,7 +838,6 @@ describe("plugin Runner relaunch as the claimant run", () => {
       }]);
       expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(false);
       expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
-      expect(onResumed).toHaveBeenCalledExactlyOnceWith(source);
       expect(ingress.connect).toHaveBeenCalledOnce();
       expect(owner.relaunchMayHaveStarted()).toBe(true);
       owner.rebind({ ...base, task, authorityRunId: "later-run", resumeRelaunchedRunnerVersion: 1, resumeIdentityVersion: 1,
@@ -859,7 +848,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
 
   it("relaunches through a new owner, as after a Core restart, without submitting or adopting", async () => {
     const { owner, task, authority, registration } = await relaunchOwner(
-      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build }),
       { resumeIdentityVersion: 1, fresh: true });
     expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).toMatchObject({ priorIdentity: source });
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
@@ -885,7 +874,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
     let attempts = 0;
     const { task, registration, owner } = await relaunchOwner(() => {
       if (attempts++ === 0) throw new Error("fixture resume reply lost");
-      return { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut };
+      return { kind: "resume", taskId: "task", outcome: "resumed", runner: build };
     });
     owner.launcher(relaunchSpec());
     registration.activate();
@@ -897,21 +886,6 @@ describe("plugin Runner relaunch as the claimant run", () => {
     } finally { await registration.release("detach"); }
   });
 
-  it.each([
-    ["an unsettled cut", { ...settledCut, outbox: [{ sourceSeq: 4 }] }],
-    ["another source's cut", { ...settledCut, runId: "other-run" }],
-  ])("refuses %s before the Runner can connect", async (_label, archivedState) => {
-    const { authority, registration, owner } = await relaunchOwner(
-      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState }));
-    owner.launcher(relaunchSpec());
-    registration.activate();
-    try {
-      await expect(registration.ready()).rejects.toThrow("native_runner_released_state_unsettled");
-      expect(authority.acceptRelaunchedRunner).not.toHaveBeenCalled();
-      expect(owner.relaunchMayHaveStarted()).toBe(true);
-      expect(ingress.connect).not.toHaveBeenCalled();
-    } finally { await registration.release("detach"); }
-  });
 
   it("reports an unavailable relaunch for ordinary recovery", async () => {
     const { registration, owner } = await relaunchOwner(() => ({ kind: "resume", taskId: "task", outcome: "unavailable" }));

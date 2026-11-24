@@ -32,6 +32,23 @@ export const PROJECTS = [
   "tests/speko-native",
 ];
 
+// Measured CI durations (seconds, run 45440355579 / 45444347449) used to schedule
+// the slowest test projects first so they never land at the end of a lane wave.
+export const PROJECT_DURATION_WEIGHTS = {
+  "tests/runner-e2e": 21.3,
+  "server/src/__tests__/helpers/maintenance": 11.0,
+  "tests/e2e": 10.8,
+  "tests/restart-chaos": 10.7,
+  "tests/lifecycle-baseline": 7.6,
+  "tests/speko-native": 5.0,
+};
+
+export function orderProjectsLpt(projects = PROJECTS) {
+  return [...projects].sort(
+    (left, right) => (PROJECT_DURATION_WEIGHTS[right] ?? 10) - (PROJECT_DURATION_WEIGHTS[left] ?? 10),
+  );
+}
+
 const GLOBAL_PROJECT_INPUTS = new Set([
   "package.json",
   "pnpm-lock.yaml",

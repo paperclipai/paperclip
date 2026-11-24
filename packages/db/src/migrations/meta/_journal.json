@@ -3524,30 +3524,37 @@
       "breakpoints": true
     },
     {
+      "idx": 505,
+      "version": "7",
+      "when": 1795544784796,
+      "tag": "0505_nice_rawhide_kid",
+      "breakpoints": true
+    },
+    {
       "idx": 511,
       "version": "7",
-      "when": 1795469468403,
+      "when": 1795544784797,
       "tag": "0511_skill_source_security_override",
       "breakpoints": true
     },
     {
       "idx": 512,
       "version": "7",
-      "when": 1795469468404,
+      "when": 1795544784798,
       "tag": "0512_skill_version_security_approval",
       "breakpoints": true
     },
     {
       "idx": 513,
       "version": "7",
-      "when": 1795469468405,
+      "when": 1795544784799,
       "tag": "0513_skill_source_security_override_summary",
       "breakpoints": true
     },
     {
       "idx": 514,
       "version": "7",
-      "when": 1795469468406,
+      "when": 1795544784800,
       "tag": "0514_skill_version_security_approval_index",
       "breakpoints": true
     }

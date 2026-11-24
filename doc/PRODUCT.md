@@ -114,13 +114,16 @@ marker. Tasks archived from the viewer’s inbox leave Recents. Canceled and
 completed tasks remain eligible. Opening a recent task moves its row to the top
 of Recents.
 
-Standard Recents also shows recent chats and projects as individual links.
+Standard Recents also shows recent chats and projects.
 Coordinator Recents lets you pin tasks, agent chats, and projects above More.
 The pin button appears on the current row or when a row is hovered or focused
 with the keyboard. Shortcuts share the saved order with pinned pages and stay
 available as Recents changes.
-Project links in Recents and pinned navigation open the project's Tasks tab.
-Both locations have a chevron that shows up to 12 recently updated project tasks.
+In **More → Projects**, each project row also lets you pin or unpin its sidebar
+shortcut without opening the project. Project star and join/leave controls appear
+only in the Classic workspace.
+In Recents and pinned navigation, clicking a project row opens or closes its
+folder to show up to 12 recently updated tasks. Each task links to its detail page.
 The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued

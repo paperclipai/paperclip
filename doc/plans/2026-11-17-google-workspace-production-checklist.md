@@ -59,8 +59,12 @@ Decisions and the details behind them are kept in the
 
 ## 2. Product and code (see the code-fix plan)
 
-- [x] Data-use disclosure shown in the picker immediately before Google consent
-      (Nov 17, [#21998](https://github.com/paperclipai/paperclip/pull/21998)).
+- [ ] Data-use disclosure in the picker immediately before Google consent.
+      Added Nov 17 ([#21998](https://github.com/paperclipai/paperclip/pull/21998)),
+      then removed on Nov 24 by owner decision. The picker now shows only the
+      service rows and a link to the privacy policy and its Limited Use
+      statement. If a Google reviewer asks for an in-product disclosure,
+      restore a short statement above the link.
 - [ ] Limited Use statement published and linked from the picker.
 - [x] Help page: how to disconnect and how to delete stored Google data
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010):

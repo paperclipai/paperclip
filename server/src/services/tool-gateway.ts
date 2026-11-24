@@ -641,7 +641,7 @@ type RemoteHttpExecutionAudit = {
     protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH" | "Google Workspace REST";
     httpMethod: "POST";
     endpoint: string;
-    mcpMethod: "tools/call";
+    mcpMethod?: "tools/call";
     requestId: string;
     upstreamToolName: string;
     dispatched: true;
@@ -8419,6 +8419,7 @@ export function createToolGatewayService(
       };
       if (workspaceTarget?.transport === "paperclip_rest") {
         execution.request.protocol = "Google Workspace REST";
+        delete execution.request.mcpMethod;
         execution.request.endpoint = googleWorkspaceRestAuditEndpoint(workspaceTarget.service);
         await assertWorkspaceGrantCurrent();
         const signal = taskSignals.run ? AbortSignal.any([controller.signal, taskSignals.run]) : controller.signal;
