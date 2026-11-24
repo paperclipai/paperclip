@@ -82,6 +82,14 @@ appending a second event. Receipts outlive transport ACK removal; because the
 provider queue is ordered and bounded, a possibly retained front event cannot
 be evicted while later events advance the journal.
 
+The ACPX executor saves its provider state once for all the sidecar outputs
+that one poll reads, not once for each output. The save comes before an event,
+a command result, or a reply to the sidecar that depends on those outputs
+leaves the executor. An output that ends a turn, calls a tool, or reports a
+lost provider turn is saved at once, as is a provider failure. If the process
+stops before the save, nothing derived from the unsaved outputs has left the
+executor, so recovery is the same as a stop before runnerd read them.
+
 Commands require a contiguous controller sequence. The runner journals a
 pending command before invoking its executor and persists its result afterward.
 An exact duplicate returns the stored result without repeating the effect. If

@@ -372,6 +372,9 @@ pub struct AcpxProviderSession {
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
+    /// Provider tool rejections held while the backend holds the outputs read
+    /// before them in memory: `(call_id, turn_id, message)`.
+    held_tool_rejections: Option<Vec<(String, String, String)>>,
 }
 
 pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
@@ -438,6 +441,7 @@ impl AcpxProviderSession {
             run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
+            held_tool_rejections: None,
             prepared_generation: None,
         })
     }
@@ -1142,21 +1146,67 @@ impl AcpxProviderSession {
             .flatten()
         {
             for (call_id, message) in retryable_rejections {
-                let response = self
-                    .transport
-                    .request_tool_resolve(json!({
-                        "callId": call_id,
-                        "turnId": turn_id,
-                        "error": {"message": message},
-                    }))
-                    .map_err(|(error, _)| self.fail_closed(error))?;
-                self.verify_resolution(&response, "tool")?;
+                if let Some(held) = self.held_tool_rejections.as_mut() {
+                    held.push((call_id, turn_id.clone(), message));
+                } else {
+                    self.reject_tool_call(&call_id, &turn_id, &message)?;
+                }
             }
         }
         if let Some(turn_id) = terminal_turn {
             self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
         }
         Ok(Some((reconciled_events, terminal_goal)))
+    }
+
+    fn reject_tool_call(
+        &mut self,
+        call_id: &str,
+        turn_id: &str,
+        message: &str,
+    ) -> Result<(), LocalRunnerError> {
+        let response = self
+            .transport
+            .request_tool_resolve(json!({
+                "callId": call_id,
+                "turnId": turn_id,
+                "error": {"message": message},
+            }))
+            .map_err(|(error, _)| self.fail_closed(error))?;
+        self.verify_resolution(&response, "tool")
+    }
+
+    /// Holds provider tool rejections from `poll_output` until
+    /// `release_tool_rejections`. The backend can then save the outputs that
+    /// it read before a rejection, before the provider sees that rejection.
+    pub(crate) fn hold_tool_rejections(&mut self) {
+        self.held_tool_rejections.get_or_insert_with(Vec::new);
+    }
+
+    pub(crate) fn has_held_tool_rejections(&self) -> bool {
+        self.held_tool_rejections
+            .as_ref()
+            .is_some_and(|held| !held.is_empty())
+    }
+
+    /// Sends the held tool rejections in their polled order. With
+    /// `keep_holding`, later rejections are held again.
+    pub(crate) fn release_tool_rejections(
+        &mut self,
+        keep_holding: bool,
+    ) -> Result<(), LocalRunnerError> {
+        let held = if keep_holding {
+            self.held_tool_rejections
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        } else {
+            self.held_tool_rejections.take().unwrap_or_default()
+        };
+        for (call_id, turn_id, message) in held {
+            self.reject_tool_call(&call_id, &turn_id, &message)?;
+        }
+        Ok(())
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
@@ -2046,6 +2096,55 @@ fn with_cleanup_error(
     }
 }
 
+#[cfg(all(test, unix))]
+impl AcpxProviderSession {
+    /// A session with `turn_id` active whose sidecar is the shell script at
+    /// `script`.
+    pub(crate) fn scripted_turn_for_test(
+        mut config: AcpxProviderSessionConfig,
+        identity: AcpxProviderSessionIdentity,
+        script: &Path,
+        turn_id: &str,
+    ) -> Self {
+        config.transport.command = PathBuf::from("/bin/sh");
+        config.transport.args = vec![script.to_string_lossy().into_owned()];
+        config.transport.verified_launch = None;
+        let transport =
+            AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent).unwrap();
+        let mut state = AcpxProviderState::new(&config.run_id).unwrap();
+        state.begin_turn(turn_id).unwrap();
+        let mut tool_bridge = ProviderToolBridge::default();
+        tool_bridge.prepare(config.tool_set.clone()).unwrap();
+        AcpxProviderSession {
+            transport,
+            state,
+            identity,
+            tool_bridge,
+            reserved_tool_bridge: reserved_terminal_tool_bridge().unwrap(),
+            turn_controls: AcpxTurnControlCapabilities::default(),
+            catalog_revision: config.catalog_revision,
+            working_directory: config.working_directory.clone(),
+            config,
+            closed: false,
+            failure: None,
+            transport_terminated: false,
+            rejected_start_resumable: false,
+            runtime_retired: false,
+            cancelled_turn_id: None,
+            completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            provider_turn_offer: None,
+            run_result_reported: None,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
+            held_tool_rejections: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2397,6 +2496,7 @@ mod mode_tests {
             run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
+            held_tool_rejections: None,
             prepared_generation: None,
         }
     }
