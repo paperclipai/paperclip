@@ -361,11 +361,18 @@ describe("portable remote workspace archives", () => {
       expect(JSON.parse(archive.subarray(start + 4, start + 4 + length).toString()).excluded).toContain("s");
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   });
-  it.skipIf(process.platform === "win32")("keeps named pipes outside the portable archive contract", async () => {
+  it.skipIf(process.platform === "win32")("records a named pipe as excluded and preserves the files beside it", async () => {
     const cwd = await source(), pipe = path.join(cwd, "pipe");
     await execute("mkfifo", [pipe]);
-    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_unsupported_entry");
+    await fs.writeFile(path.join(cwd, "saved.txt"), "uncommitted work\n");
+    const snapshot = await capture(cwd);
     expect((await fs.lstat(pipe)).isFIFO()).toBe(true);
+    const restored = await restore(snapshot);
+    expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
+    expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("uncommitted work\n");
+    const archive = await fs.readFile(snapshot.archivePath), start = Buffer.from("PCWS1\n").length;
+    const length = archive.readUInt32BE(start);
+    expect(JSON.parse(archive.subarray(start + 4, start + 4 + length).toString()).excluded).toContain("pipe");
   });
   it.skipIf(process.platform === "win32")("retains a file that replaces a socket during capture", async () => {
     const cwd = await source(), socketPath = path.join(cwd, "s"), server = net.createServer();

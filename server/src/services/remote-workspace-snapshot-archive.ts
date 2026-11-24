@@ -468,7 +468,7 @@ export async function workspaceArchive(input: {
             if (!tracked) { excludedPaths.add(next); continue; }
           }
         }
-        if (stat.isSocket()) {
+        if (stat.isSocket() || stat.isFIFO()) {
           // Runtime IPC endpoints have no portable file contents. Record the
           // exclusion without removing the endpoint or dropping adjacent work.
           excludedPaths.add(next); continue;
