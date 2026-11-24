@@ -49,8 +49,12 @@ export function registerGitHubTerminalResponseWork(
   // the request's own row changes. Such a request records this key, and a broad
   // rebuild skips it until one of them changes. A targeted load still reads it.
   const actionVersion = sql<string>`extract(epoch from ${chatActions.updatedAt})::text`;
+  const latestPublication = sql<string>`coalesce((select extract(epoch from max(p.updated_at))::text from ${chatActions} p
+    where p.company_id = ${chatActions.companyId} and p.endpoint_id = ${chatActions.endpointId}
+      and p.kind = 'github_review_publication' and p.status = 'processed'
+      and p.payload->'session'->>'issueId' = ${issues.id}::text), 'none')`;
   const waitKey = sql<string>`${GITHUB_TERMINAL_RESPONSE_DECISION_VERSION} || '|' || coalesce(${latestIssueRun.version}, 'none')
-    || '|' || ${issues.status} || '|' || ${actionVersion}`;
+    || '|' || ${issues.status} || '|' || ${actionVersion} || '|' || ${latestPublication}`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
     return db.select({
       id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,

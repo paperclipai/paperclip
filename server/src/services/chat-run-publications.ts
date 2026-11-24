@@ -106,7 +106,8 @@ export async function resolveChatRunPresentationAuthorizationReason(
 }
 
 /** The latest response the agent published on GitHub for the task after
- * `since`, in a conversation of the same pull request or issue. */
+ * `since`, in a conversation of the same pull request or issue. A processed
+ * publication's updated time is when GitHub accepted it. */
 export async function githubLatestTaskResponseUrl(
   db: Db,
   input: { companyId: string; endpointId: string; issueId: string; since: Date; baseThreadId: string },
@@ -127,8 +128,8 @@ export async function githubLatestTaskResponseUrl(
     sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
     sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
     sql`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url') like 'https://github.com/%'`,
-    sql`${chatActions.createdAt} > ${input.since.toISOString()}::timestamptz`,
-  )).orderBy(desc(chatActions.createdAt)).limit(1);
+    sql`${chatActions.updatedAt} > ${input.since.toISOString()}::timestamptz`,
+  )).orderBy(desc(chatActions.updatedAt)).limit(1);
   return latest?.url ?? null;
 }
 
