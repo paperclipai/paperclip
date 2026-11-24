@@ -20,6 +20,7 @@ export const IGNORED_SPECS = ["in-feed-native/**", "multi-user.spec.ts", "multi-
 // with `SERIAL_SPECS` in tests/e2e/playwright.config.ts —
 // `scripts/__tests__/e2e-shard.test.mjs` fails if the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects-handoff.spec.ts",
   "agent-chat-projects.spec.ts",
   "agent-chat-sessions.spec.ts",
   "agent-configuration.spec.ts",
@@ -36,11 +37,12 @@ export const SERIAL_SPECS = [
 
 // Matches the 4-vCPU CI worker count in tests/e2e/playwright.config.ts for
 // shards that contain only parallel-safe specs. Empirical wall-clock speedup
-// on 4-vCPU runners with 2 Chromium workers sharing one server + Postgres is
-// ~1.5x (measured on run 45245582904); using the empirical factor avoids
-// under-allocating shards to parallel specs.
+// on 4-vCPU runners with 2 Chromium workers sharing one server + non-durable
+// Postgres is ~1.85x (measured 1.78x-1.91x across shards 4-8 on run
+// 45440355579); using the empirical factor keeps serial and parallel shards
+// balanced across 12 shards.
 export const DEFAULT_PARALLEL_WORKERS = 2;
-export const EFFECTIVE_PARALLEL_SPEEDUP = 1.5;
+export const EFFECTIVE_PARALLEL_SPEEDUP = 1.85;
 
 export function isSerialE2eSpec(file) {
   return SERIAL_SPECS.includes(path.posix.basename(file.split(path.sep).join("/")));
