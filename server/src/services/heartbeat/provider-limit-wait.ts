@@ -6,7 +6,7 @@ import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import {
-  agentProviderLimitCooldown, runProviderLimitCredential, type ProviderLimitCredential,
+  agentHasProviderLimitEvidence, agentProviderLimitCooldown, runProviderLimitCredential, type ProviderLimitCredential,
 } from "../native-runtime/native-startup-retry.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { parseObject } from "../../adapters/utils.js";
@@ -30,6 +30,8 @@ export interface ProviderLimitWaitDependencies {
   }) => Promise<{ outcome: string }>;
   releaseIssueExecutionAndPromote: (run: HeartbeatRun) => Promise<unknown>;
   finalizeAgentStatus: (agentId: string, outcome: "cancelled") => Promise<unknown>;
+  /** How an SSH environment signs the harness in, as run admission decides it. */
+  sshAuthentication?: (agent: Agent) => Promise<"host" | "managed" | null>;
 }
 
 /** Holds new work while the agent's provider account is out of allowance. */
@@ -58,12 +60,12 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     // The limit belongs to the credential it was reported on. A run that would
     // use another account, or whose limited account was revoked, is not held.
     // Most agents have no live limit, so resolving the account waits for one.
-    const cooldown = await agentProviderLimitCooldown(db, {
-      companyId: run.companyId, agentId: run.agentId, runId: run.id, credential: { kind: "any" }, now,
-    }).then(async anyLimit => anyLimit && agentProviderLimitCooldown(db, {
+    const cooldown = await agentHasProviderLimitEvidence(db, {
       companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
-      credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId),
-    })).catch((err: unknown) => {
+    }).then(async limited => limited ? agentProviderLimitCooldown(db, {
+      companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
+      credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId, deps.sshAuthentication),
+    }) : null).catch((err: unknown) => {
       // Missing evidence must not stop work; the provider still reports its own limit.
       logger.warn({ err, runId: run.id }, "provider limit evidence unavailable before dispatch");
       return null;
@@ -135,9 +137,17 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
  * The account the agent's next run would use, chosen by the same selection a
  * run makes when it starts.
  */
-async function agentProviderLimitCredential(db: Db, agent: Agent, responsibleUserId: string | null): Promise<ProviderLimitCredential> {
+async function agentProviderLimitCredential(
+  db: Db, agent: Agent, responsibleUserId: string | null,
+  sshAuthentication?: ProviderLimitWaitDependencies["sshAuthentication"],
+): Promise<ProviderLimitCredential> {
   const saved = parseObject(agent.runtimeConfig).aiConnection;
   if (saved === undefined || saved === null) return { kind: "host" };
+  // Run admission ignores the saved account when the harness uses the host's
+  // own sign-in: an SSH host that keeps its login, or a preconfigured home.
+  const ssh = sshAuthentication ? await sshAuthentication(agent) : null;
+  if (ssh === "host" || (ssh !== "managed" && agent.adapterType === "paperclip_runner"
+    && parseObject(agent.adapterConfig).homeMode === "preconfigured")) return { kind: "host" };
   const parsed = aiRuntimeConnectionBindingSchema.safeParse(saved);
   if (!parsed.success || parsed.data.mode === "router") return { kind: "unresolved" };
   const binding = parsed.data;

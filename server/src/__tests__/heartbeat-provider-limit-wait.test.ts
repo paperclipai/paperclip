@@ -395,6 +395,28 @@ describePostgres("heartbeat provider usage limit wait", () => {
       }
     });
 
+    it("keeps holding the bound account when another account later reports a billing refusal", async () => {
+      const f = await heldFixture();
+      // Account B's newer refusal needs billing action and names no reset.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(f.accounts[1]), startedAt: new Date(Date.now() - 2 * 60_000), finishedAt: new Date(Date.now() - 60_000),
+        resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn",
+          category: "quota_exhausted", retryability: "requires_action", message: "Check your plan and billing details." } } });
+      expect((await deferDirect(f)).deferred).toBe(true);
+    });
+
+    it("checks the host's own account when the harness signs in with a preconfigured home", async () => {
+      const f = await heldFixture();
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", homeMode: "preconfigured" } })
+        .where(eq(agents.id, f.agentId));
+      // The saved account's limit does not hold a run that will use the host sign-in.
+      expect((await deferDirect(f)).deferred).toBe(false);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+        triggerDetail: "system", ...quotaOn(f.accounts[0]), contextSnapshot: {} });
+      // A limit reported on the host sign-in does.
+      expect((await deferDirect(f)).deferred).toBe(true);
+    });
+
     it("clears a limit only after a success on the same account", async () => {
       const f = await heldFixture();
       const succeededOn = (account: Account) => ({ status: "succeeded", startedAt: new Date(Date.now() - 2 * 60_000),

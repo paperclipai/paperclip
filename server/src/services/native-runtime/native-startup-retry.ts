@@ -39,9 +39,7 @@ export type ProviderLimitCredential =
   /** The managed connection grants the next run may use. */
   | { kind: "grants"; grantIds: readonly string[] }
   /** A managed connection whose account is chosen only when the run starts. */
-  | { kind: "unresolved" }
-  /** Any account: whether the agent has a live limit at all. */
-  | { kind: "any" };
+  | { kind: "unresolved" };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,10 +61,10 @@ function recordedGrantId(contextSnapshot: unknown): string | null {
  * still describes the credential the agent would use now.
  */
 function evidenceApplies(evidenceGrantId: string | null, credential: ProviderLimitCredential, activeGrantIds: ReadonlySet<string>) {
-  if (evidenceGrantId === null) return credential.kind === "host" || credential.kind === "any";
+  if (evidenceGrantId === null) return credential.kind === "host";
   if (!activeGrantIds.has(evidenceGrantId)) return false;
   if (credential.kind === "grants") return credential.grantIds.includes(evidenceGrantId);
-  return credential.kind === "unresolved" || credential.kind === "any";
+  return credential.kind === "unresolved";
 }
 
 /** Narrows the evidence read to the checked credential, so other accounts never crowd it out. */
@@ -75,6 +73,27 @@ function credentialEvidenceFilter(credential: ProviderLimitCredential) {
   if (credential.kind === "host") return [sql`${recorded} is null`];
   if (credential.kind === "grants") return [inArray(recorded, [...credential.grantIds])];
   return [];
+}
+
+/**
+ * Whether any recent run of the agent recorded a provider limit, on any
+ * account. Without one no account can be held, so callers skip resolving the
+ * account the next run would use. Never decides that a limit applies.
+ */
+export async function agentHasProviderLimitEvidence(db: Db, input: {
+  companyId: string; agentId: string; runId?: string; now: Date;
+}): Promise<boolean> {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.agentId, input.agentId),
+    gte(heartbeatRuns.startedAt, new Date(input.now.getTime() - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
+    ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
+    or(
+      inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
+      inArray(sql<string>`${heartbeatRuns.resultJson} #>> '{providerFailure,category}'`, PROVIDER_LIMIT_CATEGORIES),
+    ),
+  )).limit(1);
+  return Boolean(row);
 }
 
 export type AgentProviderLimitCooldown = {
@@ -126,8 +145,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
       ...credentialEvidenceFilter(input.credential),
       or(
-        // A check across every account reads limits only; see the loop below.
-        ...(input.credential.kind === "any" ? [] : [eq(heartbeatRuns.status, "succeeded")]),
+        eq(heartbeatRuns.status, "succeeded"),
         inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
         inArray(sql<string>`${heartbeatRuns.resultJson} #>> '{providerFailure,category}'`, PROVIDER_LIMIT_CATEGORIES),
       ),

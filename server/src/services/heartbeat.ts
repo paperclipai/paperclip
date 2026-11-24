@@ -1973,6 +1973,11 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
+    // The agent's own environment; a low-trust task environment is chosen later.
+    sshAuthentication: (agent) => resolveSshAuthenticationBeforeRouting({
+      agentDefaultEnvironmentId: agent.defaultEnvironmentId, lowTrustIssueEnvironmentId: null,
+      environmentsSvc, instanceSettings,
+    }),
   });
 
   async function executeRunAttempt(
