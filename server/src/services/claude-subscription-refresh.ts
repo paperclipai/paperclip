@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, ne, or, sql } from "drizzle-orm";
 import { companySecrets, connectionGrants, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
@@ -9,7 +10,7 @@ import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { AI_CREDENTIAL_HOLDER_KEY } from "./run-ai-credential-holder.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
-import { hasPendingClaudeExchange, pendingClaudeExchanges, type PendingClaudeExchange } from "./claude-pending-exchanges.js";
+import { claudeRenewalAfterRejection, hasPendingClaudeExchange, pendingClaudeExchanges, type PendingClaudeExchange } from "./claude-pending-exchanges.js";
 import { isTransientLockContention, retryTransientLockContention } from "./transient-lock-contention.js";
 import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
@@ -17,7 +18,7 @@ type Replacement = PendingClaudeExchange;
 // One pending obligation per grant, kept in `claude-pending-exchanges.ts`. No
 // timer or secondary credential store. A temporary vault outage must not
 // discard a single-use provider exchange.
-export { hasPendingClaudeExchange };
+export { claudeRenewalAfterRejection, hasPendingClaudeExchange };
 // An unsaved pair is the only working refresh token of its sign-in. An idle
 // shutdown must wait for its save.
 registerIdleLocalWorkProbe(() => pendingClaudeExchanges.blocksIdle() ? "present" : "none");
@@ -143,11 +144,16 @@ export async function refreshClaudeSubscription(
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });
-          return { value: refreshed, recovered: recovering };
+          // A stored end of 0 is the mark of a token that the provider refused.
+          return { value: refreshed, recovered: recovering, afterRejection: (parseStoredClaudeOauth(replacement.base) ?? stored).expiresAt === 0 };
         }));
         committed = true;
         // Only a confirmed commit or an explicit generation discard settles this obligation.
         pendingClaudeExchanges.delete(companyId, grantId);
+        if (result.afterRejection !== undefined) {
+          claudeRenewalAfterRejection.set(companyId, grantId, result.afterRejection
+            ? createHash("sha256").update(claudeAccessTokenOf(result.value!)).digest("hex").slice(0, 16) : null);
+        }
         if (result.reauth) throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Sign in again to restore this AI connection.", { connectionId: row.connection.id });
         const credential = parseStoredClaudeOauth(result.value!);
         if (result.recovered && credential && claudeRefreshDue(credential) && !recheckedRecovery) {

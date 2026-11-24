@@ -30,4 +30,18 @@ export const pendingClaudeExchanges = {
   },
 };
 
+/**
+ * By grant, the token that a renewal issued right after the provider refused
+ * the token before it. If the provider refuses this one too while it has not
+ * expired, a further renewal would not help: the login needs a new sign-in.
+ * Kept in memory; after a restart the limit takes one more renewal to apply.
+ */
+const renewedAfterRejection = new Map<string, string>();
+export const claudeRenewalAfterRejection = {
+  is: (companyId: string, grantId: string, generation: string) => renewedAfterRejection.get(key(companyId, grantId)) === generation,
+  set: (companyId: string, grantId: string, generation: string | null) => {
+    if (generation) renewedAfterRejection.set(key(companyId, grantId), generation); else renewedAfterRejection.delete(key(companyId, grantId));
+  },
+};
+
 export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pending.has(key(companyId, grantId));

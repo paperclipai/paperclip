@@ -1,5 +1,5 @@
 import { claudeAccessTokenOf, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
-import { hasPendingClaudeExchange, refreshClaudeSubscription, type ClaudeRefreshOptions } from "./claude-subscription-refresh.js";
+import { claudeRenewalAfterRejection, hasPendingClaudeExchange, refreshClaudeSubscription, type ClaudeRefreshOptions } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -1129,7 +1129,8 @@ export function aiConnectionService(db: Db) {
     attribution: AiConnectionAttribution & { identity: string };
     /**
      * `only`: act only on a login that the server can renew. Such a login is
-     * marked spent; it never requests sign-in here. `skip`: leave such a login
+     * marked spent; it requests sign-in here only when the token issued after
+     * a refused one is refused too. `skip`: leave such a login
      * as it is, because nothing shows that the provider refused its token.
      */
     renewable?: "only" | "skip";
@@ -1172,12 +1173,18 @@ export function aiConnectionService(db: Db) {
           // provider refusing that renewal requests sign-in. An exchanged pair
           // that still awaits its save already replaces this token: rotating the
           // secret here would discard that pair and reuse a spent refresh token.
-          if (input.renewable !== "skip" && renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id)) {
-            await secretService(tx).rotate(ref.secretId, { value: serializeClaudeOauth({ ...renewable, expiresAt: 0 })!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+          const markable = input.renewable !== "skip" && renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id);
+          // The limit of that rule: this token was itself issued by the renewal
+          // that followed a refused token, and the provider refuses it before
+          // its end. A further renewal would be refused in the same way, so
+          // the login requests sign-in, also for a caller that passes `only`.
+          const refusedAgain = markable && renewable.expiresAt > Date.now() && claudeRenewalAfterRejection.is(input.companyId, grant.id, generation);
+          if (!refusedAgain) {
+            if (markable) await secretService(tx).rotate(ref.secretId, { value: serializeClaudeOauth({ ...renewable, expiresAt: 0 })!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+            return;
           }
-          return;
-        }
-        if (input.renewable === "only") return;
+          claudeRenewalAfterRejection.set(input.companyId, grant.id, null);
+        } else if (input.renewable === "only") return;
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })

@@ -303,7 +303,7 @@ describe("Claude subscription idle renewal", () => {
     return id;
   };
 
-  it("renews instead of requesting sign-in when a run's access token is rejected, and requests sign-in only if renewal is refused", async () => {
+  it("renews instead of requesting sign-in when a run's access token is rejected, and requests sign-in when the renewed token is rejected too", async () => {
     // Not yet due for renewal, so nothing reaches the provider before the rejection.
     const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
     const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
@@ -317,11 +317,31 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).not.toHaveBeenCalled();
     expect(await service.credential(row)).toBe("renewed");
     expect(exchange).toHaveBeenCalledOnce();
-    // The same failure on a login the provider no longer renews does request sign-in.
-    await service.markAuthenticationFailed({ ...failed, attribution: { ...failed.attribution, identity: failed.attribution.identity.replace(/[^:]+$/, createHash("sha256").update("renewed").digest("hex").slice(0, 16)) } });
-    exchange.mockImplementation(async () => new Response("refused", { status: 400 }));
-    await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_unavailable" } });
+    // The provider refuses the token it has just issued: one more renewal would not help.
+    await service.markAuthenticationFailed({ ...failed, renewable: "only", attribution: { ...failed.attribution, identity: failed.attribution.identity.replace(/[^:]+$/, createHash("sha256").update("renewed").digest("hex").slice(0, 16)) } });
     expect(await status()).toBe("needs_reauthorization");
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it("renews again when the token issued after a rejection is rejected only after its end", async () => {
+    const { account, owner, row, service } = await connect(document(Date.now() + 6 * 3600_000));
+    let renewals = 0;
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: `renewed-${++renewals}`, refresh_token: `rotated-${renewals}`, expires_in: 28800 })));
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } });
+    const failed = { companyId, runStartedAt: new Date(Date.now() + 1000), attribution: { ...run.attribution, identity: run.identity } };
+    await run.cleanup();
+    await service.markAuthenticationFailed(failed);
+    expect(await service.credential(row)).toBe("renewed-1");
+    const later = Date.now() + 9 * 3600_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // A long run held the renewed token past its end.
+      vi.setSystemTime(later);
+      await service.markAuthenticationFailed({ ...failed, runStartedAt: new Date(later + 1000), attribution: { ...failed.attribution, identity: failed.attribution.identity.replace(/[^:]+$/, createHash("sha256").update("renewed-1").digest("hex").slice(0, 16)) } });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("active");
+      expect(await service.credential(row)).toBe("renewed-2");
+    } finally { vi.useRealTimers(); }
+    expect(exchange).toHaveBeenCalledTimes(2);
   });
 
   const providerRejection = { errorCode: "native_session_interrupted", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
