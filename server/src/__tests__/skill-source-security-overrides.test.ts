@@ -466,6 +466,29 @@ echo develop` }, second);
       .toMatchObject({ cause: 'default_branch_changed', futureUpdatesOnly: true, reviewedRef: 'main', trackingRef: 'develop' });
   });
 
+  it('withdraws future-update trust on a default branch change while the reviewed commit is unchanged', async () => {
+    const { companyId, result, service, context, audits, setFiles } = await setup(true);
+    await db.update(companySkillSources).set({ trackingRef: 'HEAD' }).where(eq(companySkillSources.id, result.source.id));
+    const onDefaultBranch = (branch: string): SkillSourceContext => ({ ...context, authorizeSecurityOverride: undefined, read: connectionId => {
+      const read = context.read(connectionId);
+      return Object.assign(async (url: string, signal?: AbortSignal) => url === '/repos/acme/skills'
+        ? { id: 42, full_name: 'acme/skills', default_branch: branch } : read(url, signal), read) as typeof read;
+    } });
+    // develop becomes the default branch while it points at the reviewed commit: the automatic
+    // check finds unchanged content, and must still stop trusting updates from another branch.
+    await service.refresh(companyId, result.source.id, onDefaultBranch('develop'), undefined, undefined, { checkCommit: true, automatic: true });
+    const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
+      .where(eq(companySkillSources.id, result.source.id));
+    expect(stored?.securityOverride).toMatchObject({ commitSha: first, reviewedRef: 'main', trustFutureUpdates: false });
+    expect(audits.find(entry => entry.action === 'company.skill_source_security_override_revoked')?.details)
+      .toMatchObject({ cause: 'default_branch_changed', futureUpdatesOnly: true, reviewedRef: 'main', trackingRef: 'develop' });
+    // main comes back with a changed flagged file; it needs a new review instead of the old approval.
+    setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': `${hook}
+echo changed` }, second);
+    const refreshed = await service.refresh(companyId, result.source.id, onDefaultBranch('main'), undefined, undefined, { checkCommit: true, automatic: true });
+    expect(refreshed.source.repositoryPackage?.files.map(file => file.path)).toEqual(['skills/one/SKILL.md']);
+  });
+
   it('refuses to trust future updates from a branch other than the one discovery reviewed', async () => {
     const { companyId, result, service, context, audits } = await setup(false);
     // Discovery reviewed commit first on main; the repository then makes develop its default branch.

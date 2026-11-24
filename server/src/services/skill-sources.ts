@@ -403,6 +403,18 @@ export function skillSourceService(db: Db) {
     context.publishCommittedActivity?.();
     return published;
   }
+  /** A source tracking HEAD that now resolves to another branch than the reviewed one keeps its approval only
+   * for the reviewed commit: trusting future updates stops until an administrator reviews again. */
+  async function withdrawTrustOffReviewedRef(tx: Tx, companyId: string, id: string,
+    saved: SkillSourceSecurityOverride | null, trackingRef: string | undefined, context: SkillSourceContext) {
+    if (!saved?.trustFutureUpdates || followsReviewedRef(saved, trackingRef)) return saved;
+    const withdrawn = { ...saved, trustFutureUpdates: false };
+    await tx.update(sources).set(overrideColumns(withdrawn)).where(scope(companyId, id));
+    await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
+      approvedCommit: withdrawn.commitSha, fileCount: withdrawn.files.length, futureUpdatesOnly: true, cause: 'default_branch_changed',
+      reviewedRef: withdrawn.reviewedRef, trackingRef });
+    return withdrawn;
+  }
   async function refresh(companyId: string, id: string, context: SkillSourceContext, selection?: SkillSourceSelectionRequest, staged?: ScannedSkillSource, options: { checkCommit?: boolean; automatic?: boolean; now?: Date; signal?: AbortSignal } = {}) {
     let source = await row(companyId, id);
     if (!source.enabled && !selection) throw conflict('This source is disconnected. Save its selection to reconnect.');
@@ -440,6 +452,9 @@ export function skillSourceService(db: Db) {
             if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
             const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
             if (!locked || locked.leaseToken !== token || locked.revision !== source.revision) throw conflict('Source refresh changed. Try again.');
+            // Unchanged content still resolves through the current branch: a default-branch change
+            // withdraws future-update trust here as well, before the content can change again.
+            await withdrawTrustOffReviewedRef(tx, companyId, id, locked.securityOverride ?? null, ref, context);
             await context.audit(tx, id, 'company.skill_source_checked', { commit: head.sha, unchangedTree: head.sha !== source.lastScanCommit });
             await tx.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: null, lastSuccessAt: new Date(), failureCount: 0, lastScanCommit: head.sha, lastScanTreeSha: treeSha ?? source.lastScanTreeSha,
               connectionId: reader.connectionId ?? source.connectionId, refreshGrantId: reader.grantId ?? source.refreshGrantId,
@@ -500,16 +515,8 @@ export function skillSourceService(db: Db) {
           await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
             approvedCommit: locked.securityOverride?.commitSha ?? null, fileCount: locked.securityOverride?.files.length ?? 0 });
         }
-        let carried = recorded || revoke ? null : locked.securityOverride ?? null;
-        if (carried?.trustFutureUpdates && !followsReviewedRef(carried, scan.trackingRef)) {
-          // A source tracking HEAD now resolves to another default branch: the scan did not apply the
-          // trust, and the saved approval keeps only its reviewed commit until an administrator reviews again.
-          carried = { ...carried, trustFutureUpdates: false };
-          await tx.update(sources).set(overrideColumns(carried)).where(scope(companyId, id));
-          await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
-            approvedCommit: carried.commitSha, fileCount: carried.files.length, futureUpdatesOnly: true, cause: 'default_branch_changed',
-            reviewedRef: carried.reviewedRef, trackingRef: scan.trackingRef });
-        }
+        const carried = recorded || revoke ? null
+          : await withdrawTrustOffReviewedRef(tx, companyId, id, locked.securityOverride ?? null, scan.trackingRef, context);
         if (!recorded && !revoke) await auditCarriedSecurityOverride(tx, id, carried, scan, selectedPaths, context);
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection), prepared,
           recorded ?? carried);
