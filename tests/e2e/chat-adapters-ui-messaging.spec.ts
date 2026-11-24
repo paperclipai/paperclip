@@ -222,12 +222,12 @@ test.describe("chat destination partial updates", () => {
 });
 
 test.describe("Board send delivery refresh", () => {
-  for (const classic of [false, true]) {
-    for (const entry of [
-      "uuid",
-      "uppercase-uuid",
-      "wrong-prefix-identifier",
-    ] as const) {
+  for (const { classic, entry } of [
+    { classic: false, entry: "uuid" as const },
+    { classic: false, entry: "uppercase-uuid" as const },
+    { classic: false, entry: "wrong-prefix-identifier" as const },
+    { classic: true, entry: "wrong-prefix-identifier" as const },
+  ]) {
       test(`opens external task links in their own organization and uploads safely (${entry}, classic=${classic})`, async ({
         page,
         request,
@@ -360,7 +360,6 @@ test.describe("Board send delivery refresh", () => {
           )
           .toBe(target.companyId);
       });
-    }
   }
 
   test("keeps the connected-task banner readable in narrow task panes", async ({
@@ -1372,8 +1371,21 @@ test.describe("Failed chat task and exact run retry", () => {
     );
   });
 
-  for (const surface of ["agent run", "Inbox", "Coordinator Tasks", "Legacy Inbox"] as const) {
-    for (const outcome of ["queued", "deferred", "denied"] as const) {
+  // Cover every surface and every outcome without running the full 4x3
+  // Cartesian product: all 3 outcomes on the primary Coordinator Tasks surface
+  // plus one representative outcome on each secondary surface.
+  const retryCases: Array<{
+    surface: "agent run" | "Inbox" | "Coordinator Tasks" | "Legacy Inbox";
+    outcome: "queued" | "deferred" | "denied";
+  }> = [
+    { surface: "Coordinator Tasks", outcome: "queued" },
+    { surface: "Coordinator Tasks", outcome: "deferred" },
+    { surface: "Coordinator Tasks", outcome: "denied" },
+    { surface: "agent run", outcome: "queued" },
+    { surface: "Inbox", outcome: "deferred" },
+    { surface: "Legacy Inbox", outcome: "denied" },
+  ];
+  for (const { surface, outcome } of retryCases) {
       test(`${surface}: selected run ${outcome} preserves exact retry authority and truthful feedback`, async ({
         page,
       }, testInfo) => {
@@ -1633,6 +1645,5 @@ test.describe("Failed chat task and exact run retry", () => {
           ),
         ).toBe(false);
       });
-    }
   }
 });

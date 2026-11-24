@@ -196,7 +196,16 @@
     },
     {
       "group": "general-workspaces-b",
-      "group_label": "workspaces-b",
+      "group_label": "workspaces-b (1/2)",
+      "shard_index": 0,
+      "shard_count": 2,
+      "task": "ci:workspaces-b"
+    },
+    {
+      "group": "general-workspaces-b",
+      "group_label": "workspaces-b (2/2)",
+      "shard_index": 1,
+      "shard_count": 2,
       "task": "ci:workspaces-b"
     },
     {

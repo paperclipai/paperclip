@@ -85,7 +85,11 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        pnpm run preflight:workspace-links
+        if [ -f scripts/ensure-workspace-package-links.mjs ]; then
+          node scripts/ensure-workspace-package-links.mjs
+        else
+          pnpm run preflight:workspace-links
+        fi
         node scripts/ensure-plugin-build-deps.mjs
 
     - name: Save installed dependencies
