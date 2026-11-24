@@ -891,6 +891,31 @@ function StandardConnectionSetupFlow({
     oauthPopupRef.current = null;
     return true;
   }, []);
+  const firstSignInDraftRef = useRef<string | null>(null);
+  const trackFirstSignInDraft = useCallback((connection: Pick<ToolConnection, "id" | "status"> | undefined) => {
+    firstSignInDraftRef.current = connection?.status === "draft" && !resumeConnectionId && !reconnectConnectionId && !connectionIntentId
+      ? connection.id
+      : null;
+  }, [connectionIntentId, reconnectConnectionId, resumeConnectionId]);
+  const [cancellingSignIn, setCancellingSignIn] = useState(false);
+  const cancelFirstSignInDraft = useCallback(async (): Promise<boolean> => {
+    const connectionId = firstSignInDraftRef.current;
+    if (!connectionId || !selectedCompanyId) return true;
+    setCancellingSignIn(true);
+    try {
+      await toolsApi.cancelFirstSignIn(connectionId);
+    } catch (error) {
+      pushToast({ title: "Couldn’t cancel sign-in", body: `${describeError(error).body} Click Cancel to try again.`, tone: "error" });
+      return false;
+    } finally {
+      setCancellingSignIn(false);
+    }
+    firstSignInDraftRef.current = null;
+    setConnectResult((current) => current?.connectionId === connectionId ? null : current);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId) });
+    return true;
+  }, [pushToast, queryClient, selectedCompanyId]);
   useEffect(() => {
     if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
       cancelOAuthLookup();
@@ -1516,6 +1541,7 @@ function StandardConnectionSetupFlow({
   });
   const mutateOAuthStart = oauthStartMutation.mutate;
   const startOAuth = useCallback((connection: ToolConnection) => {
+    trackFirstSignInDraft(connection);
     if (connection.config?.sourceTemplateKey === "google-workspace" && !workspaceSelectionRef.current) {
       setWorkspaceConnection(connection);
       setWorkspaceConsent(() => () => {
@@ -1530,7 +1556,7 @@ function StandardConnectionSetupFlow({
     reserveOAuthPopup();
     if (!connectionIntentId) setDialogOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
-  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
+  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId, trackFirstSignInDraft]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -1691,6 +1717,7 @@ function StandardConnectionSetupFlow({
         setGenericOAuthPending(!entry);
         const startUrl = result.auth.startUrl?.trim();
         if (startUrl && !connectionIntentId) {
+          trackFirstSignInDraft(result.connection);
           setDialogOAuthConnectionId(result.connectionId);
           void prepareAndOpenOAuth({ authorizationUrl: startUrl, handoff: result.auth.handoff });
         } else startOAuth(result.connection);
@@ -2471,6 +2498,7 @@ function StandardConnectionSetupFlow({
         defaults={curatedOAuthDefaults}
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={async () => {
           if (pendingOAuthLookupRef.current) return;
           directOAuthAccessConfirmedRef.current = true;
@@ -2558,9 +2586,11 @@ function StandardConnectionSetupFlow({
           setOAuthError(null);
           backToGallery();
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -2585,6 +2615,7 @@ function StandardConnectionSetupFlow({
         authorizationUrl={authorizationFallbackUrl}
         defaults={connectionDefaults}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={() => {
           setOAuthError(null);
           const connection = connectResult?.connection;
@@ -2604,9 +2635,11 @@ function StandardConnectionSetupFlow({
           setOAuthPhase("entry");
           setOAuthError(null);
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -3028,6 +3061,7 @@ export function OAuthConnectStateScreen({
   defaults,
   onRetry,
   settingsValid = true,
+  cancelling = false,
   onOpenAuthorization,
   onBack,
   onCancel,
@@ -3060,6 +3094,7 @@ export function OAuthConnectStateScreen({
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
   settingsValid?: boolean;
+  cancelling?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
   onBack: () => void;
@@ -3147,7 +3182,7 @@ export function OAuthConnectStateScreen({
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
-            <Button type="button" onClick={onRetry} disabled={!settingsValid}>
+            <Button type="button" onClick={onRetry} disabled={!settingsValid || cancelling}>
               {phase === "entry"
                 ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
                 : "Try again"}
@@ -3159,7 +3194,7 @@ export function OAuthConnectStateScreen({
             </Button>
           )}
           {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>Open sign-in in a new tab</a></Button> : null}
-          <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
+          <Button type="button" variant="ghost" onClick={onBack} disabled={cancelling}>Back</Button>
         </div>
       </div>
     </div>

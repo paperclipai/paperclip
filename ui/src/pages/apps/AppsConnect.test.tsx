@@ -33,6 +33,7 @@ const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
+const cancelFirstSignInMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const getAwsSetupMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
@@ -98,6 +99,7 @@ vi.mock("@/api/tools", () => ({
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     getAwsSetup: (connectionId: string, accessLevel?: string) => getAwsSetupMock(connectionId, accessLevel),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
+    cancelFirstSignIn: (connectionId: string) => cancelFirstSignInMock(connectionId),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
@@ -2342,6 +2344,71 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "google-workspace", connectionMethodKey: "paperclip-workspace",
       workspaceServices: { gmail: "read", drive: "write", calendar: "write" },
     }));
+  });
+
+  it("removes the unfinished connection when Google sign-in is cancelled", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
+    mockSearch.value = "source=google-workspace&stage=setup";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true },
+    }] });
+    const draft = { id: "workspace-draft", applicationId: "app-workspace", authKind: "oauth", credentialPolicy: "shared", status: "draft",
+      enabled: false, config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace" }, transportConfig: {} };
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [],
+      auth: { kind: "oauth", startUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=fixture" } });
+    cancelFirstSignInMock.mockResolvedValue({ abandoned: true, connection: { ...draft, status: "archived" } });
+    await render();
+    await act(async () => buttonByText("Continue to sign in")!.click());
+    await flushReact();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === "Continue")!.click();
+    });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Opening Google Workspace");
+    await act(async () => buttonByText("Cancel")!.click());
+    await flushReact();
+    expect(cancelFirstSignInMock).toHaveBeenCalledExactlyOnceWith("workspace-draft");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
+  });
+
+  it("stays on the sign-in page and lets Cancel retry when the cancel request fails", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
+    mockSearch.value = "source=google-workspace&stage=setup";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true },
+    }] });
+    const draft = { id: "workspace-draft", applicationId: "app-workspace", authKind: "oauth", credentialPolicy: "shared", status: "draft",
+      enabled: false, config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace" }, transportConfig: {} };
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [],
+      auth: { kind: "oauth", startUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=fixture" } });
+    let failCancel!: (error: Error) => void;
+    cancelFirstSignInMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { failCancel = reject; }))
+      .mockResolvedValueOnce({ abandoned: true, connection: { ...draft, status: "archived" } });
+    await render();
+    await act(async () => buttonByText("Continue to sign in")!.click());
+    await flushReact();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === "Continue")!.click();
+    });
+    await flushReact();
+    await act(async () => buttonByText("Cancel")!.click());
+    await flushReact();
+    expect(buttonByText("Back")?.disabled).toBe(true);
+    await act(async () => failCancel(new Error("Network unavailable")));
+    await flushReact();
+    expect(buttonByText("Back")?.disabled).toBe(false);
+    expect(mockNavigate).not.toHaveBeenCalledWith("/apps");
+    expect(container.textContent).toContain("Opening Google Workspace");
+    await act(async () => buttonByText("Cancel")!.click());
+    await flushReact();
+    expect(cancelFirstSignInMock).toHaveBeenCalledTimes(2);
+    expect(cancelFirstSignInMock).toHaveBeenLastCalledWith("workspace-draft");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("renders Google Calendar as one minimal, unboxed setup screen", async () => {

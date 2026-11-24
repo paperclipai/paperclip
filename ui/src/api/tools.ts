@@ -450,6 +450,8 @@ export const toolsApi = {
     api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary; contentDeletion?: ToolConnectionContentDeletion }>(
       `/tool-connections/${connectionId}${options.deleteStoredContent ? "?deleteStoredContent=true" : ""}`,
     ),
+  cancelFirstSignIn: (connectionId: string) =>
+    api.post<{ abandoned: boolean; connection: ToolConnection }>(`/tool-connections/${connectionId}/sign-in/cancel`, {}),
   getStoredContent: (connectionId: string) =>
     api.get<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content`),
   deleteStoredContent: (connectionId: string) =>

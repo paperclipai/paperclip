@@ -288,6 +288,19 @@ function upstreamAccountState(connection: ToolConnection, snapshot: UpstreamAppS
     : { kind: "attention", label: "Needs sign-in", message: "Sign in again to restore access." };
 }
 
+export function pendingFirstSignInOnlyApplicationIds(
+  connections: readonly Pick<ToolConnection, "applicationId" | "status" | "firstSignInPending">[],
+): Set<string> {
+  const pending = new Set<string>();
+  const listed = new Set<string>();
+  for (const connection of connections) {
+    if (connection.firstSignInPending) pending.add(connection.applicationId);
+    else if (connection.status !== "archived") listed.add(connection.applicationId);
+  }
+  for (const applicationId of listed) pending.delete(applicationId);
+  return pending;
+}
+
 function connectionRank(connection: ToolConnection): number {
   return connection.status === "draft" ? 0 : 1;
 }
@@ -620,13 +633,16 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     const activeConnections = (connectionsQuery.data?.connections ?? []).filter(
       (connection) =>
         connection.status !== "archived" &&
+        !connection.firstSignInPending &&
         connection.connectionPurpose !== "channel",
     );
+    const pendingOnlyApplicationIds = pendingFirstSignInOnlyApplicationIds(connectionsQuery.data?.connections ?? []);
     const activeApplications = (
       applicationsQuery.data?.applications ?? []
     ).filter(
       (application) =>
         application.status !== "archived" &&
+        !pendingOnlyApplicationIds.has(application.id) &&
         application.type !== "chat" &&
         application.metadata?.purpose !== "channel",
     );
