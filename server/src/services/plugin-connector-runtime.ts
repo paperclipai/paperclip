@@ -147,6 +147,25 @@ function toolDescriptor(tool: ConnectorToolDescriptor | PluginConnectorToolDef) 
   };
 }
 
+export function pluginConnectionToolDefinition(
+  connection: { config: Record<string, unknown> },
+  toolName: string,
+): { name: string; title: string | null; description: string | null; inputSchema: Record<string, unknown>; outputSchema: null; annotations: Record<string, unknown> } | null {
+  const tools = pluginConnectionMethod(connection)?.method.tools;
+  if (tools?.kind !== "static") return null;
+  const tool = tools.list.find((candidate) => candidate.name === toolName);
+  if (!tool) return null;
+  const descriptor = toolDescriptor(tool);
+  return {
+    name: descriptor.name,
+    title: "title" in descriptor && typeof descriptor.title === "string" ? descriptor.title : null,
+    description: descriptor.description ?? null,
+    inputSchema: descriptor.inputSchema && typeof descriptor.inputSchema === "object" ? descriptor.inputSchema as Record<string, unknown> : { type: "object" },
+    outputSchema: null,
+    annotations: descriptor.annotations,
+  };
+}
+
 /** The tools of one plugin connection, for its catalog. */
 export async function listPluginConnectionTools(
   db: Db,
