@@ -2553,7 +2553,10 @@ mod mode_tests {
         let open = session_open_params(&swarm, &[]);
         assert_eq!(open["candidateAdmission"], json!(admission));
         assert_eq!(open["mode"], json!("swarm"));
-        assert_eq!(initialize_params(&swarm)["candidateAdmission"], json!(admission));
+        assert_eq!(
+            initialize_params(&swarm)["candidateAdmission"],
+            json!(admission)
+        );
         for (field, value) in [
             ("run", "different-run"),
             ("session", "different-session"),
