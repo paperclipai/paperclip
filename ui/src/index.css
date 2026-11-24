@@ -5268,6 +5268,8 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 .coordinator-decision-card [data-decision-prompt] { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
 /* The Needs You toolbar fits one row: the search takes what the filters leave. */
+[data-canonical-toolbar="inbox"] { justify-content: space-between; }
+[data-canonical-toolbar="inbox"] .design-toolbar-actions { margin-inline-start: 0; }
 .coordinator-needs-you > :not([role="toolbar"]) { max-width: var(--container-4xl); margin-inline: auto; }
 .coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
