@@ -14,6 +14,7 @@ export function getEventResult(event: RestEvent): CallToolResult {
 export const getEvent = defineTool({
   definition: {
     name: "get_event",
+    title: "Read an event",
     description: "Gets one event from a calendar by event ID.",
     inputSchema: {
       type: "object",

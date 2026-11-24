@@ -36,6 +36,7 @@ export function updatePresentationResult(response: RestBatchUpdateResponse): Cal
 export const updatePresentation = defineTool({
   definition: {
     name: "update_presentation",
+    title: "Edit a presentation",
     description: [
       "Edits an existing Google Slides presentation with a list of Slides API batchUpdate requests (for example insertText, deleteText, replaceAllText, createSlide, createShape, createTable, updateTextStyle, duplicateObject or deleteObject), and returns one reply per request.",
       "Requests are applied in the order given, all or none: if any request is invalid, nothing is changed.",

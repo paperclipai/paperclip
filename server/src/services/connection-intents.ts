@@ -13,7 +13,7 @@ import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
-import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
+import { aiBindingForAuthRecovery, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -343,7 +343,7 @@ export function connectionIntentService(db: Db) {
       const [source] = await client.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.id, options.sourceRunId)));
       const taskKey = text(source?.contextSnapshot?.aiRouterTaskKey);
       const evidence = record(source?.contextSnapshot?.aiRouterSelection);
-      if (!source || !isAiAuthenticationFailure(source.errorCode) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
+      if (!source || !isAiAuthenticationRepairable(source) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
       const [pin] = await client.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.poolId, router.connectionId), eq(aiConnectionTaskPins.agentId, agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
       const binding = pin?.selection.binding;
       if (!pin || !binding || !aiBindingMatchesService(binding.provider, serviceSlug) || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
@@ -1537,6 +1537,9 @@ export function connectionIntentService(db: Db) {
       const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
       if (!binding) return null;
       const attribution = record(run.contextSnapshot?.aiConnection);
+      // The recorded account is authoritative for routed/proxy connections:
+      // a driver's provider name can identify the upstream protocol instead.
+      if (!attribution && !isAiAuthenticationRepairable(run, binding.provider)) return null;
       if (attribution && attribution.provider !== binding.provider) return null;
       if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,

@@ -314,10 +314,25 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records cleared after releasing any lease they held. */
   released: number;
-  /** The reapable records whose lease release failed. The row stays for a retry. */
+  /** The reapable records whose cleanup failed. The row stays for a retry. */
   failed: number;
+}
+
+function releaseFailureLink(error: unknown): string {
+  const name = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : "unknown error";
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? `${name} (${code})` : name;
+}
+
+function releaseFailureCause(error: unknown): string {
+  const links: string[] = [];
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 4; depth++) {
+    links.push(releaseFailureLink(current));
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return links.join(" > ");
 }
 
 /**
@@ -342,7 +357,9 @@ export async function reapSetupTokenLeases(
   let failed = 0;
   for (const record of records) {
     try {
-      await deps.leases.releaseById(record.leaseId);
+      if (record.leaseId) {
+        await deps.leases.releaseById(record.leaseId);
+      }
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
@@ -350,9 +367,9 @@ export async function reapSetupTokenLeases(
         adapterType: record.adapterType,
       });
       released += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      log(`[paperclip] Setup-token reaper: a cleanup failed; it stays retryable. Cause: ${releaseFailureCause(error)}.`);
     }
   }
   return { released, failed };

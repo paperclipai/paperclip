@@ -491,6 +491,28 @@ describe("agent routes adapter validation", () => {
     expect(mockAntigravityModels).not.toHaveBeenCalled();
   });
 
+  it("lists Antigravity models for a Gemini API key on a cloud environment, but keeps account discovery on the host", async () => {
+    const environments = await import("../services/environments.js");
+    const cloud = { id: "env-cloud", companyId: "company-1", driver: "daytona" };
+    vi.spyOn(environments, "environmentService").mockReturnValue({ getById: vi.fn(async () => cloud),
+      findManagedSandboxEnvironment: vi.fn(async () => null), listBoundCompanyIds: vi.fn(async () => []) } as never);
+    const catalog = [{ id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" }];
+    mockAntigravityModels.mockResolvedValue(catalog);
+    const app = await createApp();
+    const url = (method: string) => `/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=antigravity&environmentId=env-cloud&aiConnection=${
+      encodeURIComponent(JSON.stringify({ provider: "google", method, mode: "responsible_user" }))}`;
+    const apiKey = await requestApp(app, base => request(base).get(url("api_key")));
+    expect(apiKey.status, JSON.stringify(apiKey.body)).toBe(200);
+    expect(apiKey.body).toEqual(catalog);
+    expect(mockAntigravityModels).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      binding: { provider: "google", method: "api_key", mode: "responsible_user" } }));
+    mockAntigravityModels.mockClear();
+    const signIn = await requestApp(app, base => request(base).get(url("subscription")));
+    expect(signIn.status).toBe(422);
+    expect(signIn.body.error).toContain("requires the Paperclip host");
+    expect(mockAntigravityModels).not.toHaveBeenCalled();
+  });
+
   it.each(["create", "hire", "edit"])("refuses pending Antigravity %s before persistence", async action => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const app = await createApp();

@@ -84,17 +84,25 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 ## Adding a native Runner harness
 
-Google Antigravity's pending integration uses the official ACP server 1.4.3 with
-a pinned native admission patch. `paperclipai runtime setup antigravity` installs
-its verified assets on macOS ARM64 as the OS user running Paperclip. Setup does
-not enable global execution: qualification remains pending and admission is
-closed by default. An isolated company can use a finite trusted server-startup
-candidate authorization bound to the exact model, local platform, profile and
-native closure. The candidate's recorded setup and two-turn task reused the same
-owner's managed personal-default Google subscription on macOS ARM64 with
-`gemini-3.8-flash-low`; fresh consent and API-key live acceptance remain separate
-gates. Workspace OAuth is not runtime authentication. See the
-[contract, evidence, and remaining gates](plans/2026-10-28-antigravity-integration.md).
+Google Antigravity's pending integration uses the official ACP server 1.5.2 with
+a pinned native admission patch. The patcher rewrites the Python archive in the
+`.par_data` section of the macOS (Mach-O, re-signed ad hoc) and Linux (ELF)
+servers, and writes the helper digest from the verified closure declaration into
+a generated module, so one admission source serves every platform.
+`paperclipai runtime setup antigravity` installs its verified assets
+(`1.5.2-paperclip.2`) on macOS ARM64, Linux x64 and Linux ARM64 as the OS user
+running Paperclip; macOS Intel is inventory-only. Launches execute a sealed,
+runner-owned copy of the closure verified once per closure; a provider's
+superseded closure stores are retired once no live runner holds them. The
+patch also types a failed managed turn (overload, rate limit with retry time,
+quota, rejected key, refused model) so the server can retry or explain it.
+Authentication is a Gemini API key (`gemini-api-key`) or personal Google
+sign-in (Paperclip host only). Setup does not enable global execution:
+qualification remains pending and admission is closed by default. An isolated
+company can use a finite trusted server-startup candidate authorization bound
+to the exact model, local platform, profile and native closure. Live acceptance
+on 1.5.2 remains open. Workspace OAuth is not runtime authentication. See the
+[current plan and ledger](plans/2026-11-22-antigravity-qualification.md).
 
 To add a harness/provider to the new native Paperclip Runner, use
 [create-runner-adapter](../.agents/skills/create-runner-adapter/SKILL.md), the

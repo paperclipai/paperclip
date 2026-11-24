@@ -140,6 +140,7 @@ import { routineSuggestionRoutes } from "./routes/routine-suggestions.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
 import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "./routes/workload-identity.js";
+import { agentSetupProgressAgentRoutes, agentSetupProgressBoardRoutes } from "./routes/agent-setup-progress.js";
 import { setWorkloadIdentityConfiguredPublicOrigin } from "./services/workload-identity.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -623,6 +624,8 @@ export async function createApp(
   // Outside clouds fetch these anonymously to verify connection identity tokens.
   setWorkloadIdentityConfiguredPublicOrigin(opts.authPublicBaseUrl);
   app.use(workloadIdentityPublicRoutes(db));
+  // A person's own agent reports setup progress with the bearer token from its setup prompt.
+  app.use(agentSetupProgressAgentRoutes(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -872,6 +875,7 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(tailscaleConnectionRoutes(db));
   api.use(workloadIdentityRoutes(db));
+  api.use(agentSetupProgressBoardRoutes(db));
   api.use(routineSuggestionRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {
@@ -1451,7 +1455,7 @@ export async function createApp(
   // that must not outrun plugin availability — managed sandbox environments
   // (`applyManagedEnvironments`) run before the heartbeat resumes queued
   // runs — can sequence on it. It never rejects.
-  const bundledPluginsStartup = ensureBundledPlugins(
+  const bundledPluginManifestsReady = ensureBundledPlugins(
     bundledPluginInstalls,
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
@@ -1459,7 +1463,9 @@ export async function createApp(
     // Disabled plugins never start automatically. Added distribution permissions
     // still enter upgrade_pending so enabling them requires an operator decision.
     { reinstallUninstalled: managedAutoInstallKeys !== null, preservePackagePath: managedAutoInstallKeys !== null },
-  )
+  );
+  app.locals.bundledPluginManifestsReady = trackIdleWork(bundledPluginManifestsReady);
+  const bundledPluginsStartup = bundledPluginManifestsReady
     .then(() => loader.loadAll())
     .then((result) => {
       if (!result) return;

@@ -189,6 +189,28 @@ describe("IssueRow", () => {
     act(() => root.unmount());
   });
 
+  it("restores a task independently of its row link", () => {
+    const root = createRoot(container);
+    const restore = vi.fn();
+    act(() => root.render(
+      <TooltipProvider>
+        <IssueRow
+          issue={createIssue()}
+          presentation="task"
+          appearance="refreshed"
+          columnValues={{ lastUpdated: "Just now" }}
+          archiveAction={{ archived: true, onClick: restore }}
+        />
+      </TooltipProvider>,
+    ));
+
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Restore from archive"]')!;
+    expect(button.closest("a")).toBeNull();
+    act(() => button.click());
+    expect(restore).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
   it("starts a truncated title reveal on link focus and keeps actions independent", async () => {
     const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 16));
     const createRange = document.createRange.bind(document);

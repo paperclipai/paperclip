@@ -57,6 +57,7 @@ import type {
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
+import { safeExternalHttpUrl, safeNavigableUrl } from "./safe-url";
 
 export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
   return interaction.status === "pending"
@@ -194,9 +195,9 @@ export function getCheckboxConfirmationSelectedLabels(args: {
 
 export function normalizeRequestConfirmationTargetHref(href: string) {
   const value = href.trim();
-  if (value.startsWith("#")) return value;
-  if (value.startsWith("/")) return value.startsWith("//") ? null : value;
-  return /^https?:\/\//i.test(value) ? value : null;
+  if (value.startsWith("//")) return null;
+  if (value.startsWith("#") || value.startsWith("/")) return safeNavigableUrl(value);
+  return safeExternalHttpUrl(value);
 }
 
 export function getRequestConfirmationTargetHref({

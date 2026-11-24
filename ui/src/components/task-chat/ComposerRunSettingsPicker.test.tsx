@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { act, useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
@@ -8,6 +9,7 @@ import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import { queryKeys } from "@/lib/queryKeys";
 import type { ComposerRunSettings } from "./composer-run-settings";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -61,6 +63,20 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each(["antigravity", "copilot"])("applies the Cloud allowlist to saved %s model settings", async acpxAgent => {
+    const selectedAgent = { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "saved-model" } } as Agent;
+    const client = render(vi.fn(), vi.fn(), false, { agents: new Map([[selectedAgent.id, selectedAgent]]) });
+    await act(async () => {
+      client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(document.querySelector('[aria-label="Select model and effort"]') !== null).toBe(acpxAgent === "copilot");
+    if (acpxAgent === "copilot") {
+      await click("Select model and effort");
+      expect(document.querySelector('[aria-label="Choose exact model"]')).not.toBeNull();
+    }
+  });
+
   it.each([false, true])("allows model and effort changes with a fixed conversation agent (mobile: %s)", async (mobile) => {
     const onAssigneeChange = vi.fn();
     const onSettingsChange = vi.fn();

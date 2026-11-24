@@ -20,12 +20,21 @@ try {
     const url = new URL(server.connectionString);
     url.pathname = "/postgres";
     adminUrl = url.toString();
-    if (env.PAPERCLIP_TEST_POSTGRES_TEMPLATE !== "0") {
-      const template = `paperclip_test_template_${computeEmbeddedPostgresTemplateKey()}`;
-      const admin = createDb(adminUrl, { maxConnections: 1 });
-      try { await admin.$client.unsafe(`CREATE DATABASE "${template}" TEMPLATE "paperclip"`); }
-      finally { await admin.$client.end({ timeout: 1 }); }
-      env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = template;
+    const admin = createDb(adminUrl, { maxConnections: 1 });
+    try {
+      // Disposable test server destroyed on exit: disable durability flushes so
+      // template copies, migrations, and per-test transactions run at memory speed.
+      await admin.$client.unsafe("ALTER SYSTEM SET fsync = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET synchronous_commit = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET full_page_writes = off");
+      await admin.$client.unsafe("SELECT pg_reload_conf()");
+      if (env.PAPERCLIP_TEST_POSTGRES_TEMPLATE !== "0") {
+        const template = `paperclip_test_template_${computeEmbeddedPostgresTemplateKey()}`;
+        await admin.$client.unsafe(`CREATE DATABASE "${template}" TEMPLATE "paperclip"`);
+        env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = template;
+      }
+    } finally {
+      await admin.$client.end({ timeout: 1 });
     }
   }
   env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = adminUrl;

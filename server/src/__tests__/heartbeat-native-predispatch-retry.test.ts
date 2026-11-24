@@ -11,6 +11,7 @@ import type { NativeRunIdentity, NativeSession, NativeSessionBackend, PrpEvent }
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { describe, expect, it, vi } from "vitest";
+import { logger } from "../middleware/logger.js";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { closeIdleWarmNativeSessionsForRestart, scopedRunnerdStateRoot } from "../services/native-runtime/native-session-executor.js";
@@ -378,9 +379,12 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
     const failure: AdmissionFailure = { remaining: 1, turnNeverIssued: true, environmentId: environment!.id, provider,
       providerLeaseId: `sandbox-${provider}`, leasePolicy, failedRuns: [], sessionRoots: [] };
     const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db, { admissionFailure: failure, turnMessages }) });
+    const warn = vi.spyOn(logger, "warn");
     try {
       const { issueId, runId } = await startTask(db, heartbeat);
       expect(failure.failedRuns).toEqual([runId]);
+      expect(warn.mock.calls.filter(([, message]) => typeof message === "string" && message.includes("could not be marked workspace_failed")))
+        .toEqual([]);
       expect(turnMessages.has(runId)).toBe(false);
       expect(existsSync(failure.sessionRoots[0]!)).toBe(false);
       const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
@@ -416,6 +420,7 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
       const [settled] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(await taskInterruptionPresentation(db, settled!)).toMatchObject({ state: "resolved", canRetry: false });
     } finally {
+      warn.mockRestore();
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(

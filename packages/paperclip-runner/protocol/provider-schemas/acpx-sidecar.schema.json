@@ -95,7 +95,7 @@
       ]
     },
     "candidateAdmission": {
-      "description": "The same closed record is accepted only from trusted runner startup CLI and repeated on sidecar initialize/open. Company authority is validated by the server; the runtime additionally checks compiled pins, actual run/session identity, native host, and expiry.",
+      "description": "The same closed record is accepted only from trusted runner startup CLI and repeated on sidecar initialize/open. Company authority is validated by the server; the runtime additionally checks compiled pins (which admit only platforms with a verified closure), actual run/session identity, native host, and expiry.",
       "type": "object",
       "required": ["schema", "companyId", "agent", "model", "profileDigest", "nativeClosureDigest", "platform", "architecture", "expiresAt", "runId", "normalizedSessionId"],
       "properties": {
@@ -105,8 +105,8 @@
         "model": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
         "profileDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
         "nativeClosureDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-        "platform": { "const": "darwin" },
-        "architecture": { "const": "arm64" },
+        "platform": { "enum": ["darwin", "linux"] },
+        "architecture": { "enum": ["arm64", "x64"] },
         "expiresAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "runId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
         "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }

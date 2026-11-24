@@ -201,6 +201,14 @@ for one second. Existing references are the durable work inventory. Restarting
 reconstructs unfinished work from those references; already migrated rows are
 excluded. No new payload or job table is added.
 
+The bounded online durable-data preparation pass also drives log and trace
+pages before its final eligibility check. It shares the background worker's page
+owner and settled-native archive rules. A busy owner is deferred rather than
+starting a competing transfer. Page cursors survive a spent preparation budget.
+The pass reports its current migration results, not a previous background sweep.
+Active writers and unproven sources remain blockers. An aborted transfer keeps
+its ownership and tracked work until the transfer actually settles.
+
 Active writers, missing files, corrupt data, and storage failures leave history
 unresolved. Other pages continue. The server logs each blocked resource and a
 pass summary. Unresolved passes retry after five minutes, with backoff up to
@@ -277,8 +285,23 @@ An archive preserves historical evidence; it does not certify a complete native
 transcript. The run's status, canonical events, and original completion metadata
 remain unchanged. Archive readers do not append missing native events, and
 writers cannot reopen or modify the archive. Its source cursor remains zero.
-The normal background importer retains its strict native coverage checks.
+The canonical importer retains its strict native coverage checks. Both the
+background worker and online preparation may delegate a settled native source
+with unproven coverage to the guarded read-only archive path.
 Rollbacks after enrollment require readers that support `s3_archive`.
+
+A finalized local log can grow after its size and SHA-256 were recorded, for
+example when a later attempt of the same run appended to the file. When the
+recorded size and SHA-256 match a prefix of the current file, both the online
+and offline paths archive every current byte as a read-only `s3_archive` log,
+update the run's size and SHA-256 to the archived bytes, and record the original
+prefix proof and the archived proof in a `run.historical_log_archived` activity
+entry in the same transaction. When the recorded proof matches no prefix of the
+file, the log stays on the volume and is reported as
+`legacy_recorded_log_not_a_prefix`. The longer bytes must come from the local file;
+a longer mirror copy stays blocked as `mirror_completeness_unproven`. While the
+run still has a pending or leased attempt, the log stays blocked as
+`legacy_writer_retry_pending`, and the publication rechecks this condition.
 
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
