@@ -57,7 +57,7 @@ export function registerGitHubTerminalResponseWork(
       deliveryId: chatActions.deliveryId, conversationId: chatConversations.id, issueId: issues.id,
       agentId: chatEndpoints.assignedAgentId, issueStatus: issues.status,
       deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number,
-      mainPullResponse: sql<boolean>`${chatConversations.externalThreadId} ~ '^github:[^:]+:[1-9][0-9]*$'`, result: chatActions.result, actionVersion, waitKey,
+      threadId: chatConversations.externalThreadId, result: chatActions.result, actionVersion, waitKey,
       sourceMessageId: sql<string | null>`(select l.comment_id from ${chatMessageLinks} l
         where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
           and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound' limit 1)`,
@@ -93,8 +93,7 @@ export function registerGitHubTerminalResponseWork(
    * restart can lose the hint that its lease release sends. */
   async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | { parkable: boolean }> {
     try {
-      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId!,
-        mainPullResponse: row.mainPullResponse }, read);
+      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
       if (execution.body === undefined || execution.reply === "unsettled" ||
           (execution.paused && row.result?.pausedVersion === execution.version))
         return { parkable: !execution.presentationPending && execution.reply === "none" };

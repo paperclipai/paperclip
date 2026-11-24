@@ -3379,6 +3379,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await responses.processPending();
       // The run waits on purpose and the task is still open, so the thread waits too.
       expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      // A response on another pull request bound to the same task is not linked.
+      const [other] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+        externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:4180" }).returning();
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: other.id,
+        kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+        payload: { operation: "comment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        result: { id: "77", url: "https://github.com/paperclipai/paperclip/pull/4180#issuecomment-77" } });
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
       const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
       await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
         trigger: "mention", message: makeMessage({ id: "41802", text: "Fixed this one too", userId: "42", userName: "octocat", mentioned: true }) });

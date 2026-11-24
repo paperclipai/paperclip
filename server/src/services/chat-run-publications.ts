@@ -105,14 +105,20 @@ export async function resolveChatRunPresentationAuthorizationReason(
   return CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
 }
 
-/** The latest response the agent published on GitHub for the task after `since`. */
+/** The latest response the agent published on GitHub for the task after
+ * `since`, in a conversation of the same pull request or issue. */
 export async function githubLatestTaskResponseUrl(
   db: Db,
-  input: { companyId: string; endpointId: string; issueId: string; since: Date },
+  input: { companyId: string; endpointId: string; issueId: string; since: Date; baseThreadId: string },
 ): Promise<string | null> {
   const [latest] = await db.select({
     url: sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url')`,
-  }).from(chatActions).where(and(
+  }).from(chatActions).innerJoin(chatConversations, and(
+    eq(chatConversations.id, chatActions.conversationId), eq(chatConversations.companyId, chatActions.companyId),
+    eq(chatConversations.endpointId, chatActions.endpointId),
+    sql`(${chatConversations.externalThreadId} = ${input.baseThreadId}
+      or ${chatConversations.externalThreadId} like ${input.baseThreadId.replace(/[\\%_]/g, "\\$&") + ":rc:%"})`,
+  )).where(and(
     eq(chatActions.companyId, input.companyId),
     eq(chatActions.endpointId, input.endpointId),
     eq(chatActions.kind, "github_review_publication"),
