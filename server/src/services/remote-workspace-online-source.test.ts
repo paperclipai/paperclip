@@ -134,6 +134,28 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(await fs.lstat(path.join(targetDir, "host-only.txt")).catch(() => null)).toBeNull();
     expect(await git(home, "rev-parse", "HEAD")).toBe(head);
   });
+  it.each(["trailing", "symlink"] as const)("imports a managed directory whose alias record spells the same folder differently (%s)", async spelling => {
+    const f = await fixture(), alias = f.aliases[1].workspace, link = path.join(home, "managed-alias");
+    if (spelling === "symlink") await fs.symlink(f.cwd, link);
+    const cwd = spelling === "trailing" ? `${f.cwd}/` : link;
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, alias.id));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, reasons: [] });
+    expect((await inspectOnlineWorkspaceSource(db, await stored(f.workspaceId)))?.workspaceIds).toContain(alias.id);
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(readRemoteWorkspaceAuthority((await stored(alias.id)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
+  it.each([["enclosing", "ordinary_member_encloses_root"], ["elsewhere", "ordinary_member_locator_mismatch"]] as const)(
+    "keeps a managed directory with an %s alias locator blocked and names it", async (shape, code) => {
+      const f = await fixture(), alias = f.aliases[1].workspace, other = path.join(home, "elsewhere");
+      await fs.mkdir(other);
+      await db.update(executionWorkspaces).set(shape === "enclosing" ? { cwd: path.dirname(f.cwd), providerRef: path.dirname(f.cwd) }
+        : { cwd: f.cwd, providerRef: other }).where(eq(executionWorkspaces.id, alias.id));
+      expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+        reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]), sourceScopeUnproven: code });
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+      expect(await db.select().from(workspaceOperations)).toEqual([]);
+    });
   it.each([false, true])("does not admit a Git fragment as an ordinary migration source (objects: %s)", async objects => {
     const f = await fixture(), info = path.join(f.cwd, ".git", "info");
     await fs.mkdir(info, { recursive: true });
