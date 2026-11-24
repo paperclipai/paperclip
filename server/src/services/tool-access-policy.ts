@@ -313,6 +313,12 @@ function trustRuleIsActive(policy: typeof toolPolicies.$inferSelect, now = new D
   return true;
 }
 
+function invocationOpener(row: { actorType: string; actorId: string | null; policyExplanation: Record<string, unknown> | null }) {
+  const recorded = row.policyExplanation?.sessionOpenedByUserId;
+  if (typeof recorded === "string" && recorded) return recorded;
+  return row.actorType === "user" && row.actorId ? row.actorId : null;
+}
+
 function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string, version: 1 | 2 = 2): string {
   return `side_effect:${version === 2 ? "v2:" : ""}${sha256({
     ...(version === 2 ? { actorType: ctx.actorType, actorId: ctx.actorId, agentId: ctx.agentId } : {}),
@@ -1868,14 +1874,33 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
       : null;
     const argumentsHash = input.request.sideEffecting ? requestIdentityHash! : ctx.argumentsHash;
-    const idempotencyKey = input.request.idempotencyKey
+    const sessionOpener = input.runContext?.sessionOpenedByUserId ?? null;
+    const unscopedIdempotencyKey = input.request.idempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, requestIdentityHash!) : null);
+    const idempotencyKey = unscopedIdempotencyKey && sessionOpener
+      ? `${unscopedIdempotencyKey}:opened_by:${sha256(sessionOpener)}`
+      : unscopedIdempotencyKey;
     if (idempotencyKey) {
       const [existing] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
       if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+    }
+    const unattributedEarlierOperation = () => conflict(
+      "An earlier operation with this request cannot be attributed to the person who opened this session. Reconcile it before retrying; use a new explicit idempotency key only for an intentional new operation.",
+      { reasonCode: "legacy_tool_idempotency_unverifiable" },
+    );
+    if (sessionOpener && unscopedIdempotencyKey) {
+      const [unscoped] = await db.select().from(toolInvocations).where(and(
+        eq(toolInvocations.companyId, input.companyId),
+        eq(toolInvocations.idempotencyKey, unscopedIdempotencyKey),
+      ));
+      if (unscoped) {
+        const opener = invocationOpener(unscoped);
+        if (opener === sessionOpener) return { invocation: unscoped, replayed: true, actionRequest: null };
+        if (opener === null) throw unattributedEarlierOperation();
+      }
     }
     if (input.request.sideEffecting && input.request.idempotencyKey == null) {
       // Before complete request identities, default keys used shortened and
@@ -1891,7 +1916,11 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         inArray(toolInvocations.idempotencyKey, legacyKeys),
       )) : [];
       for (const legacy of legacyInvocations) {
-        if (legacy.actorType !== ctx.actorType || legacy.actorId !== ctx.actorId || legacy.agentId !== ctx.agentId) {
+        if (sessionOpener) {
+          const opener = invocationOpener(legacy);
+          if (opener === null) throw unattributedEarlierOperation();
+          if (opener !== sessionOpener) continue;
+        } else if (legacy.actorType !== ctx.actorType || legacy.actorId !== ctx.actorId || legacy.agentId !== ctx.agentId) {
           throw conflict("An earlier operation belongs to another actor. Reconcile it before retrying; use a new explicit idempotency key only for an intentional new operation.",
             { reasonCode: "legacy_tool_idempotency_unverifiable" });
         }

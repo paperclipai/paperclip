@@ -22,7 +22,7 @@ BOOT = '12345678-1234-1234-1234-123456789abc'
 ROOT = {'pid': 21, 'ppid': 1, 'startTicks': '100', 'bootId': BOOT}
 PARENT = {'pid': 22, 'ppid': 21, 'startTicks': '101', 'bootId': BOOT}
 TARGET = {'pid': 23, 'ppid': 22, 'startTicks': '102', 'bootId': BOOT}
-DIST = '/tmp/paperclip-acpx-native-fixture/distribution'
+LAUNCH = '/tmp/paperclip-acpx-native-fixture/launch'
 RUNTIME = '/workspace/.paperclip-runtime/paperclip-runner'
 CANCELLED = False
 
@@ -31,6 +31,9 @@ def check_cancelled():
 
 
 NAMES = [fault.NODE, fault.ENTRY, fault.EXTENSION, 'pi-entry.cjs', 'node_modules/pi-acp/dist/index.js', 'node_modules/pi-acp/dist/paperclip-runtime.js']
+FIXTURE_PIN = fault.digest(json.dumps([{'path': n, 'sha256': fault.digest(n.encode()), 'size': len(n), 'executable': n == fault.NODE} for n in sorted(NAMES)], separators=(',', ':'), ensure_ascii=False).encode())
+# The runner's sealed verified store for this exact closure.
+DIST = '/tmp/paperclip-verified-native-501/' + FIXTURE_PIN + '/distribution'
 
 
 class ClosureMetadataTests(unittest.TestCase):
@@ -97,7 +100,8 @@ class IdentityTests(unittest.TestCase):
                        'runnerdSha256': 'sha256:' + fault.digest(b'runner'), 'closureSha256': fault.digest(json.dumps(entries, separators=(',', ':'), ensure_ascii=False).encode())}
         self.table = {21: ROOT, 22: PARENT, 23: TARGET}
         self.args = {21: [RUNTIME + '/bin/paperclip-runnerd', '--run-id', 'run', '--environment-lease-id', 'workspace-id', '--lifecycle-mode', 'per_turn', '--state-dir', RUNTIME + '/sessions/' + 'a' * 64 + '/runner'],
-                     22: [DIST + '/' + fault.NODE, '--require', DIST + '/' + fault.GUARD, DIST + '/pi-entry.cjs'], 23: ['pi']}
+                     22: [DIST + '/' + fault.NODE, '--require', LAUNCH + '/' + fault.GUARD, DIST + '/pi-entry.cjs'], 23: ['pi']}
+        self.assertEqual(self.config['closureSha256'], FIXTURE_PIN)
         self.patches = [patch.object(fault, 'proc', side_effect=lambda pid, boot: self.table[pid]), patch.object(fault, 'argv', side_effect=lambda pid: self.args[pid]),
                         patch.object(fault, 'checked_runner_executable', side_effect=lambda p: self.files[p]),
                         patch.object(fault, 'checked_file', side_effect=lambda p, *a: self.files[p]), patch.object(Path, 'read_text', return_value=BOOT),
@@ -138,6 +142,17 @@ class IdentityTests(unittest.TestCase):
     def test_wrong_metadata_never_selects(self):
         for field, value in [('closureSha256', '0' * 64), ('runtimeEnvironmentLeaseId', 'foreign'), ('runnerdSha256', 'sha256:' + '0' * 64)]:
             with self.subTest(field=field), self.assertRaises(RuntimeError): fault.inspect({**self.config, field: value})
+
+    def test_wrapper_must_run_the_sealed_store_with_its_launch_guard(self):
+        for distribution in ['/tmp/paperclip-acpx-native-fixture/distribution', '/tmp/paperclip-verified-native-501/' + '0' * 64 + '/distribution']:
+            self.args[22][0], self.args[22][3] = distribution + '/' + fault.NODE, distribution + '/pi-entry.cjs'
+            with self.subTest(distribution=distribution), self.assertRaisesRegex(RuntimeError, 'snapshot_path'):
+                fault.inspect(self.config)
+        self.args[22][0], self.args[22][3] = DIST + '/' + fault.NODE, DIST + '/pi-entry.cjs'
+        for guard in [DIST + '/' + fault.GUARD, '/tmp/elsewhere/launch/' + fault.GUARD]:
+            self.args[22][2] = guard
+            with self.subTest(guard=guard), self.assertRaisesRegex(RuntimeError, 'snapshot_path'):
+                fault.inspect(self.config)
 
     def test_wrong_title_is_not_a_generic_node_selector(self):
         self.args[23] = ['node']
@@ -232,8 +247,12 @@ class PidfdTests(unittest.TestCase):
     def calibrate_real_child(self, descriptor=None, runner_link=False):
         node = shutil.which('node'); self.assertIsNotNone(node)
         base = Path(tempfile.mkdtemp(prefix='pi-fault-calibration-', dir='/tmp'))
+        # Production layout: a per-launch directory holds the module guard; the
+        # pinned closure runs from the runner's sealed store keyed by its pin.
         snapshot = Path(tempfile.mkdtemp(prefix='paperclip-acpx-native-', dir='/tmp'))
-        distribution = snapshot / 'distribution'; workspace = base / 'workspace'; workspace.mkdir()
+        launch_dir = snapshot / 'launch'; launch_dir.mkdir()
+        store = Path(tempfile.mkdtemp(prefix='paperclip-verified-native-', dir='/tmp'))
+        distribution = store / 'staged' / 'distribution'; workspace = base / 'workspace'; workspace.mkdir()
         runtime = workspace / '.paperclip-runtime/paperclip-runner'; (runtime / 'bin').mkdir(parents=True)
         pack = base / 'pack'; (pack / 'provider-assets/pi/linux-x64').mkdir(parents=True)
         root_child = None
@@ -258,17 +277,22 @@ class PidfdTests(unittest.TestCase):
             # still-empty file.
             publish = 'const publish=(f,v)=>{const fs=require("node:fs"),t=f+".tmp";fs.writeFileSync(t,JSON.stringify(v));fs.renameSync(t,f)};'
             (distribution / fault.ENTRY).write_text(publish + 'process.title="pi"; publish(' + json.dumps(str(ready)) + ',{pid:process.pid});setInterval(()=>{},1000);')
-            (distribution / 'pi-entry.cjs').write_text(publish + 'const p=require("node:child_process").spawn(process.execPath,["--require",' + json.dumps(str(distribution / fault.GUARD)) + ',' + json.dumps(str(distribution / fault.ENTRY)) + '],{stdio:"ignore"});p.on("exit",(code,signal)=>publish(' + json.dumps(str(exited)) + ',{code,signal}));process.on("SIGTERM",()=>{if(p.exitCode!==null||p.signalCode!==null)process.exit(0);p.once("exit",()=>process.exit(0));p.kill("SIGTERM")});setInterval(()=>{},1000);')
+            (launch_dir / fault.GUARD).write_text('// fixture\n')
+            # Like production pi-entry.cjs, name the sibling guard and entry by __dirname.
+            (distribution / 'pi-entry.cjs').write_text(publish + 'const path=require("node:path");const p=require("node:child_process").spawn(process.execPath,["--require",path.join(__dirname,' + json.dumps(fault.GUARD) + '),path.join(__dirname,' + json.dumps(fault.ENTRY) + ')],{stdio:"ignore"});p.on("exit",(code,signal)=>publish(' + json.dumps(str(exited)) + ',{code,signal}));process.on("SIGTERM",()=>{if(p.exitCode!==null||p.signalCode!==null)process.exit(0);p.once("exit",()=>process.exit(0));p.kill("SIGTERM")});setInterval(()=>{},1000);')
             entries = []
             for name in sorted(NAMES):
                 p = distribution / name; content = p.read_bytes(); entries.append({'path': name, 'sha256': fault.digest(content), 'size': len(content), 'executable': name == fault.NODE})
             closure = json.dumps({'entries': entries}).encode(); (pack / 'provider-assets/pi/linux-x64/native-closure.json').write_bytes(closure)
-            for directory, dirs, files in os.walk(snapshot):
-                for f in files:
-                    p = Path(directory) / f; p.chmod(0o500 if p == distribution / fault.NODE else 0o400)
-                Path(directory).chmod(0o500)
+            pin = fault.digest(json.dumps(entries, separators=(',', ':'), ensure_ascii=False).encode())
+            (store / 'staged').rename(store / pin); distribution = store / pin / 'distribution'
+            for sealed in (snapshot, store / pin):
+                for directory, dirs, files in os.walk(sealed):
+                    for f in files:
+                        p = Path(directory) / f; p.chmod(0o500 if p == distribution / fault.NODE else 0o400)
+                    Path(directory).chmod(0o500)
             node_path = shlex.quote(str(distribution / fault.NODE))
-            wrapper = '--require ' + shlex.quote(str(distribution / fault.GUARD)) + ' ' + shlex.quote(str(distribution / 'pi-entry.cjs'))
+            wrapper = '--require ' + shlex.quote(str(launch_dir / fault.GUARD)) + ' ' + shlex.quote(str(distribution / 'pi-entry.cjs'))
             launch = node_path + ' ' + wrapper + ' </dev/null >/dev/null 2>&1'
             if descriptor is not None:
                 # Production nativeBootstrap keeps its executable descriptor
@@ -336,8 +360,10 @@ class PidfdTests(unittest.TestCase):
                         self.assertTrue(select.select([fd], [], [], 3)[0], 'owned descendant must retire')
             finally:
                 for fd in owned_fds: os.close(fd)
-                for directory, dirs, files in os.walk(snapshot): os.chmod(directory, 0o700)
-                shutil.rmtree(snapshot); shutil.rmtree(base)
+                for sealed in (snapshot, store):
+                    for directory, dirs, files in os.walk(sealed): os.chmod(directory, 0o700)
+                    shutil.rmtree(sealed)
+                shutil.rmtree(base)
 
 
 if __name__ == '__main__':

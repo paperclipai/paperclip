@@ -14,6 +14,7 @@ export function downloadFileContentResult(id: string, file: RestFile, contentTyp
 export const downloadFileContent = defineTool({
   definition: {
     name: "download_file_content",
+    title: "Download a file",
     description: "Downloads a Drive file's content as base64. Google Docs, Sheets, Slides, Drawings and Apps Script files are exported: by default Docs and Slides as text/plain, Sheets as text/csv (first sheet only; pass exportMimeType application/vnd.openxmlformats-officedocument.spreadsheetml.sheet for every sheet), Drawings as image/svg+xml, Apps Script as JSON. Other files are returned as stored. The whole result has a size limit; a file too large for it is refused with an error that gives the limit, never cut short. For a readable text version of a document, use read_file_content.",
     inputSchema: {
       type: "object",

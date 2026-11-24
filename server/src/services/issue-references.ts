@@ -184,7 +184,7 @@ export function issueReferenceService(db: Db) {
       })
       .from(issues)
       .where(eq(issues.id, issueId));
-    return (lock ? query.for("update") : query)
+    return (lock ? query.for("no key update") : query)
       .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
   }
 

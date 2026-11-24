@@ -7,6 +7,7 @@ import { responsibilitiesApi } from "@/api/responsibilities";
 import { secretsApi } from "@/api/secrets";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { useQueryView } from "@/components/QueryView";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "@/lib/company-members";
@@ -34,6 +35,7 @@ export function useRoutineFormOptions(
   const enabled = Boolean(companyId) && active;
   const { enabled: responsibilitiesOn } = useResponsibilitiesEnabled();
 
+  const { userId } = useResolvedViewerId({ enabled: enabled && responsibilitiesOn });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId ?? ""),
     queryFn: () => agentsApi.list(companyId!),
@@ -51,9 +53,9 @@ export function useRoutineFormOptions(
     enabled,
   });
   const responsibilitiesQuery = useQuery({
-    queryKey: queryKeys.responsibilities.overview(companyId ?? ""),
+    queryKey: queryKeys.responsibilities.overview(companyId ?? "", { ownerUserId: userId }),
     queryFn: () => responsibilitiesApi.overview(companyId!),
-    enabled: enabled && responsibilitiesOn,
+    enabled: enabled && responsibilitiesOn && !!userId,
   });
 
   // Failed reads are reported, never shown as empty choices.

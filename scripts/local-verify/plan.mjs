@@ -13,7 +13,7 @@ function inventory(root, env, group) {
     : ["--shard-index", "0", "--shard-count", "1"];
   return JSON.parse(execFileSync(process.execPath, [path.join(root, "scripts/run-vitest-stable.mjs"), ...args,
     ...shards, "--dry-run"], {
-    cwd: root, env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+    cwd: root, env: { ...env, PAPERCLIP_CI_FULL: "1" }, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
   }));
 }
 
@@ -39,13 +39,18 @@ export async function planVerification({ root, env, diff, full = false }) {
     if (uncovered.length) throw new Error(`Changes outside resolved test graphs: ${uncovered.join(", ")}`);
     const byProject = new Map(graphs.map(graph => [graph.project, graph]));
     const manifest = { version: 1, head: diff.head, lanes: {} }, jobs = [], selectedFiles = new Set();
+    const scheduleChat = () => {
+      if (selectedFiles.has(chatSuite)) return;
+      if (byProject.get("@paperclipai/server")?.selected.includes(chatSuite)) {
+        selectedFiles.add(chatSuite);
+        for (let index = 0; index < 6; index++) jobs.push({ id: `chat-${index + 1}`, cacheable: false, args: ["--mode", "general", "--group", "general-chat",
+          "--shard-index", String(index), "--shard-count", "6", "--serial-chat"] });
+      }
+    };
+    const matrixHasChat = (lanes.general_tests ?? []).some((entry) => entry.group === "general-chat");
     for (const group of groups) {
       if (group === "general-chat") {
-        if (byProject.get("@paperclipai/server")?.selected.includes(chatSuite)) {
-          selectedFiles.add(chatSuite);
-          for (let index = 0; index < 6; index++) jobs.push({ id: `chat-${index + 1}`, cacheable: false, args: ["--mode", "general", "--group", group,
-            "--shard-index", String(index), "--shard-count", "6", "--serial-chat"] });
-        }
+        scheduleChat();
         continue;
       }
       const value = inventories.get(group);
@@ -70,6 +75,7 @@ export async function planVerification({ root, env, diff, full = false }) {
         cacheable: files === reusable, selected: true, args: ["--mode", group === "serialized" ? "serialized" : "general",
           ...(group === "serialized" ? [] : ["--group", group]), "--shard-index", String(index), "--shard-count", String(partitions.length)] });
     }
+    if (matrixHasChat) scheduleChat();
     const expected = new Set(graphs.flatMap(graph => graph.selected));
     if (expected.size !== selectedFiles.size || [...expected].some(file => !selectedFiles.has(file))) {
       throw new Error("Selected tests are not completely covered by local runner ownership");

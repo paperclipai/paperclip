@@ -13,8 +13,9 @@ test.beforeAll(async ({ request }) => {
 
 test("existing Connections lists AI providers and keeps account management compact", async ({ page, request }, testInfo) => {
   await page.goto(`/${prefix}/apps`);
-  for (const provider of ["Anthropic", "OpenAI", "OpenRouter", "Grok"]) {
-    await expect(page.getByRole("button", { name: new RegExp(`^(Add account|Connect) ${provider}$`) })).toBeVisible();
+  for (const provider of ["Anthropic (Claude)", "OpenAI", "OpenRouter", "Grok"]) {
+    const escaped = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await expect(page.getByRole("button", { name: new RegExp(`^(Add account|Connect) ${escaped}$`) })).toBeVisible();
   }
   const { connections } = await (await request.get(`/api/companies/${companyId}/ai-connections`)).json();
   const account = connections.find((entry: { ownership: string; isDefault: boolean }) => entry.ownership === "personal" && entry.isDefault);

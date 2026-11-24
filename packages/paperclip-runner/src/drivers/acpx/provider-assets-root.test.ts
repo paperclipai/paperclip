@@ -19,6 +19,17 @@ it("uses one fixed provider directory for source, compiled and bundled runner la
   expect(() => resolveRunnerProviderAssetsRoot(pathToFileURL(join(path, "workspace/arbitrary.ts")).href, "cursor")).toThrow("verified package layout");
 });
 
+it("resolves Copilot assets from the bundled metadata probe without widening other providers", async () => {
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const path = await root();
+  for (const relative of ["dist/cli/copilot-metadata-probe.js", "dist/cli/copilot-metadata-probe.cjs"]) {
+    const moduleUrl = pathToFileURL(join(path, relative)).href;
+    expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+    expect(() => resolveRunnerProviderAssetsRoot(moduleUrl, "cursor")).toThrow("verified package layout");
+  }
+});
+
 it("resolves descriptor sidecars only through the runner-bound canonical package manifest", async () => {
   const path = await root();
   await writeFile(join(path, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));

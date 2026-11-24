@@ -39,6 +39,15 @@ browser, semantic interaction, file/artifact, Stop and continuation oracles with
 scoped candidate admission and an encrypted Code credential. Registration does
 not establish a live pass, native question/plan support or usable cost accounting.
 
+The explicit-only [Google Antigravity qualification suite](../tests/runner-e2e/SUITES.md#google-antigravity-qualification)
+registers 24 Gemini API-key cells across local and Daytona, including the shared
+pending-permission Stop and provider-loss oracles. Separate
+[model-lineup suites](../tests/runner-e2e/SUITES.md#google-antigravity-model-lineups)
+check one exact-model receipt per model ID. Chat and instruction evals can run
+under Antigravity with `--profile runner-acpx-antigravity`. Registration is not a
+live pass; pending cells need a company-bound candidate grant that the harness
+stages itself.
+
 The public directory calls full-product testing **E2E tests**. Suites describe
 what is tested; deployment targets describe which app instance was tested.
 QA smoke is a named selection of existing journeys against QA, and appears in

@@ -9,7 +9,8 @@ import { ANTIGRAVITY_PATCH_VERSION, patchAntigravityRuntime } from "./patch-anti
 
 const MANIFEST_PATH = fileURLToPath(new URL("../antigravity-distributions.json", import.meta.url));
 const ADMISSION_SOURCE_PATH = fileURLToPath(new URL("./patch-antigravity-runtime.admission.py", import.meta.url));
-const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+// The Linux x64 archive is about 274 MB; its unpacked closure is about 853 MB.
+const MAX_ARCHIVE_BYTES = 384 * 1024 * 1024;
 const MAX_TREE_BYTES = 1024 * 1024 * 1024;
 export const ANTIGRAVITY_TREE_MANIFEST = ".paperclip-antigravity-closure.json";
 const RUNTIME_FILES = ["agy_acp_server.par", "localharness_external"];
@@ -255,10 +256,11 @@ export async function materializePinnedAntigravityDistribution(options = {}) {
       if (content.length !== entry.size) throw new Error("Antigravity archive entry size mismatch");
       await writeFile(join(unpacked, entry.path), content, { mode: 0o500, flag: "wx" });
     }
+    archive = undefined; // Release the download before the large server is patched.
     const vendorClosure = await antigravityDistributionClosure(unpacked);
     if (vendorClosure.sha256 !== distribution.vendorClosureSha256) throw new Error("Antigravity vendor execution closure digest mismatch");
     const patched = join(temporary, "runtime");
-    const patch = await patchAntigravityRuntime({ source: unpacked, destination: patched });
+    const patch = await patchAntigravityRuntime({ source: unpacked, destination: patched, target: `${distribution.platform}-${distribution.architecture}`, vendorEntries: distribution.vendorEntries });
     if (patch.version !== distribution.patchVersion || patch.admissionSourceSha256 !== distribution.admissionSourceSha256) throw new Error("Antigravity native admission patch identity mismatch");
     const closure = await antigravityDistributionClosure(patched);
     if (closure.sha256 !== distribution.closureSha256) throw new Error("Antigravity full execution closure digest mismatch");

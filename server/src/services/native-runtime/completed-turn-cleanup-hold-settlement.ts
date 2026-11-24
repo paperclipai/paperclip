@@ -7,7 +7,7 @@ import { issueService } from "../issues.js";
 import { logger } from "../../middleware/logger.js";
 import type { InProgressRecord, SettleOutcome } from "../recovery/ownership-registry.js";
 import type { OwnerProof } from "../owner-proof.js";
-import { OWNER_GONE_ATTESTATION_KEY } from "../recovery/owner-gone-attestation.js";
+import { humanGateEvidencePredicate } from "../recovery/human-gate-evidence.js";
 import { holdOwnsBlockedStatus } from "../recovery-hold-blocked-status.js";
 import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
@@ -66,7 +66,7 @@ function settleableHoldCondition(runId: SQL | string): SQL {
     isNull(issueRecoveryActions.ownerAgentId),
     sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'`,
     sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-    sql`not (${issueRecoveryActions.evidence} ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation'])`,
+    sql`not ${humanGateEvidencePredicate(issueRecoveryActions.evidence)}`,
     sql`(not (${issueRecoveryActions.evidence} ?| array['workspaceRestoreFailure', 'workspaceRestoreRecovery'])
       or ${completedWorkspaceRecoveryCondition(runId)})`,
   )!;

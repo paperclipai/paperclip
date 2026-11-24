@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers, issueThreadInteractions, issues, responsibilities, responsibilityAreas } from "@paperclipai/db";
 import {
@@ -24,8 +24,6 @@ const OTHER_AREA_LIMIT = 40;
 export interface DashboardGuidanceArea {
   id: string;
   title: string;
-  /** How many other people have responsibilities in it. */
-  others: number;
   /** This person's active responsibilities in it. */
   items: Array<{ id: string; sentence: string }>;
 }
@@ -40,8 +38,8 @@ export interface DashboardGuidanceInput {
   areas: DashboardGuidanceArea[];
   /** The person's active responsibilities filed under no area. */
   unfiled: Array<{ id: string; sentence: string }>;
-  /** Other live areas in the organization. */
-  otherAreas: Array<{ id: string; title: string; others: number }>;
+  /** Their other live areas. */
+  otherAreas: Array<{ id: string; title: string }>;
   /** Responsibilities proposed earlier that wait for the person. */
   proposed: string[];
   /** Newest first. */
@@ -61,7 +59,7 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
     return null;
   }
   const ownerUserId = issue.originId;
-  const [issueRow, owner, items, areaRows, others, history] = await Promise.all([
+  const [issueRow, owner, items, areaRows, history] = await Promise.all([
     db.select({ originFingerprint: issues.originFingerprint }).from(issues)
       .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
       .then((rows) => rows[0] ?? null),
@@ -80,14 +78,8 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
     )).orderBy(responsibilities.sortOrder, responsibilities.createdAt),
     db.select({ id: responsibilityAreas.id, title: responsibilityAreas.title, status: responsibilityAreas.status })
       .from(responsibilityAreas)
-      .where(eq(responsibilityAreas.companyId, issue.companyId))
+      .where(and(eq(responsibilityAreas.companyId, issue.companyId), eq(responsibilityAreas.ownerUserId, ownerUserId)))
       .orderBy(responsibilityAreas.sortOrder, sql`lower(${responsibilityAreas.title})`),
-    db.select({ areaId: responsibilities.areaId, count: sql<number>`count(distinct ${responsibilities.ownerUserId})::int` })
-      .from(responsibilities).where(and(
-        eq(responsibilities.companyId, issue.companyId),
-        ne(responsibilities.ownerUserId, ownerUserId),
-        inArray(responsibilities.status, ["active", "proposed"]),
-      )).groupBy(responsibilities.areaId),
     db.select({ status: issueThreadInteractions.status, payload: issueThreadInteractions.payload, result: issueThreadInteractions.result })
       .from(issueThreadInteractions).where(and(
         eq(issueThreadInteractions.companyId, issue.companyId),
@@ -96,7 +88,6 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
       )).orderBy(desc(issueThreadInteractions.createdAt)).limit(PROPOSAL_HISTORY),
   ]);
   if (!issueRow) return null;
-  const othersByArea = new Map(others.filter((row) => row.areaId).map((row) => [row.areaId!, row.count]));
   const active = items.filter((item) => item.status === "active");
   const mine = new Set(active.map((item) => item.areaId).filter((id): id is string => id !== null));
   const areas: DashboardGuidanceArea[] = areaRows
@@ -104,7 +95,6 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
     .map((area) => ({
       id: area.id,
       title: area.title,
-      others: othersByArea.get(area.id) ?? 0,
       items: active.filter((item) => item.areaId === area.id).map((item) => ({ id: item.id, sentence: responsibilityDashboardSentence(item) })),
     }));
   return buildDashboardConversationGuidance({
@@ -118,7 +108,7 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
     otherAreas: areaRows
       .filter((area) => area.status !== "archived" && !mine.has(area.id))
       .slice(0, OTHER_AREA_LIMIT)
-      .map((area) => ({ id: area.id, title: area.title, others: othersByArea.get(area.id) ?? 0 })),
+      .map((area) => ({ id: area.id, title: area.title })),
     proposed: items.filter((item) => item.status === "proposed").map((item) => responsibilityDashboardSentence(item)),
     proposals: history.map((entry) => {
       const payload = entry.payload as Partial<ProposeDashboardChangesPayload> | null;
@@ -137,9 +127,7 @@ export async function loadDashboardConversationGuidance(db: Db, input: {
   });
 }
 
-function shared(others: number) {
-  return others === 0 ? "" : `; ${others === 1 ? "1 other person has" : `${others} other people have`} responsibilities in it`;
-}
+
 
 const CREATE_EXAMPLE = {
   message: "Here is a first dashboard from your answers and what I found in your calendar and mail.",
@@ -169,7 +157,7 @@ export function buildDashboardConversationGuidance(input: DashboardGuidanceInput
       : "They asked you to help change the dashboard they have."} End it with one proposed set of changes they can accept with one tap. You never change the dashboard yourself: only the person can, by accepting your proposal, and they can undo it afterwards.`,
     "",
     "What a dashboard is made of (reason from this, not only from the rules):",
-    "- An area is a noun for something the person cares about: \"Fundraising\", \"Customers\", \"Hiring\". Nobody owns an area and it has no deadline; it groups what sits under it. Areas are shared across the organization, so other people may have responsibilities in the same area.",
+    "- An area is a noun for something the person cares about: \"Fundraising\", \"Customers\", \"Hiring\". An area belongs to this person and groups their responsibilities.",
     "- A responsibility is something this person owns and answers for, on an ongoing basis. Write it as one sentence saying what must be true and stay true: \"Every prospective LP hears from us at least every two weeks.\" \"Customers get a reply within one working day.\" If it can be finished, it is a task or a project, not a responsibility: \"Send the deck to two LPs\" is a task, and \"Close Fund VI\" is a project that serves a responsibility.",
     "- Each responsibility passes three tests. Ongoing: it still makes sense after the current project ships. Theirs: they answer for it, not just take part in it (attending a meeting series is not owning it; running it is). In their words: the words their answers, mail subjects and calendar titles use, not job-description words.",
     `- Keep it small. A person can hold perhaps five to seven areas in their head, and one to three responsibilities under each is plenty. A few that are right beat a full list: every line is something they will look at every day, and a list that is mostly wrong teaches them to ignore it. Each sentence is at most ${RESPONSIBILITY_DASHBOARD_SENTENCE_MAX} characters.`,
@@ -183,7 +171,7 @@ export function buildDashboardConversationGuidance(input: DashboardGuidanceInput
     lines.push("- Empty: they own no responsibilities yet.");
   }
   for (const area of input.areas) {
-    lines.push(`- Area "${area.title}" (areaId ${area.id}${shared(area.others)}):`);
+    lines.push(`- Area "${area.title}" (areaId ${area.id}):`);
     for (const item of area.items) lines.push(`  - "${item.sentence}" (responsibilityId ${item.id})`);
   }
   if (input.unfiled.length > 0) {
@@ -191,8 +179,8 @@ export function buildDashboardConversationGuidance(input: DashboardGuidanceInput
     for (const item of input.unfiled) lines.push(`  - "${item.sentence}" (responsibilityId ${item.id})`);
   }
   if (input.otherAreas.length > 0) {
-    lines.push("", "Other areas in the organization (file under one by its areaId rather than adding a near-duplicate):");
-    for (const area of input.otherAreas) lines.push(`- "${area.title}" (areaId ${area.id}${shared(area.others)})`);
+    lines.push("", "Their other areas (file under one by its areaId rather than adding a near-duplicate):");
+    for (const area of input.otherAreas) lines.push(`- "${area.title}" (areaId ${area.id})`);
   }
   if (input.proposed.length > 0) {
     lines.push("", "Proposed to them earlier and still waiting for them (do not propose these again):");
@@ -227,7 +215,7 @@ export function buildDashboardConversationGuidance(input: DashboardGuidanceInput
     "The changes, as an ordered list (each may carry a one-line reason; removals must):",
     "- { op: \"add_area\", ref, name }: ref is your own short key for the new area, used by later changes in the same list.",
     "- { op: \"rename_area\", areaId, name }: it is renamed for everyone with responsibilities in it.",
-    "- { op: \"remove_area\", areaId, reason }: archives it and lets go of this person's responsibilities still in it (move any worth keeping). Refused when other people have responsibilities in it.",
+    "- { op: \"remove_area\", areaId, reason }: archives it and lets go of this person's responsibilities still in it (move any worth keeping).",
     "- { op: \"add_responsibility\", areaId or areaRef, sentence }: one sentence of what must be true.",
     "- { op: \"reword_responsibility\", responsibilityId, sentence }",
     "- { op: \"move_responsibility\", responsibilityId, areaId or areaRef }",

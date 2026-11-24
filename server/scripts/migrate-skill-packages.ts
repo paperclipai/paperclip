@@ -38,4 +38,6 @@ try {
   const result = await action({ apply, writersStopped: process.argv.includes("--writers-stopped"),
     clearLegacy: process.argv.includes("--clear-legacy"), limit, after: value("--after"), companyId: value("--company") });
   console.log(JSON.stringify({ phase, apply, ...result }));
+  if (phase === "runtime-assets" && (result as Awaited<ReturnType<typeof migrateRuntimeSkillAssets>>).results
+    .some(row => row.status === "unsaved")) process.exitCode = 1;
 } finally { await db.$client.end({ timeout: 1 }); }
