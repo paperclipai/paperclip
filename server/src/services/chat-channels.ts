@@ -81,6 +81,7 @@ import { createChatInteractionContinuations } from "./chat-channels/interactions
 import { createGitHubInstallationLifecycle } from "./chat-channels/github/installation-lifecycle.js";
 import { githubChatReviewService } from "./chat-github-reviews.js";
 import { createGitHubAppSetup } from "./chat-channels/github/app-setup.js";
+import { createDiscordChannelRefresh } from "./chat-channels/discord/channel-refresh.js";
 import { createSlackTaskAuthorityRegistration } from "./chat-channels/slack/task-authority.js";
 import { createGitHubPublicationPolicy } from "./chat-channels/github/publication-policy.js";
 import { createTelegramAttachmentFailure } from "./chat-channels/telegram/attachment-failure.js";
@@ -3487,6 +3488,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     prepareProviderInventory, reconcileProviderResourceRows, listResources, replaceResources, update, configure, test, handleWebhook,
     get githubWizardOrigin() { return options.githubWizardOrigin; },
   });
+  const { refreshDiscordChannels, removeUnavailableDiscordChannel } = createDiscordChannelRefresh(db, {
+    endpointRecord, withCredentialMutationLease, resolveCredentials, prepareProviderInventory, reconcileProviderResourceRows, listResources,
+  });
   const { prepareInboundEnvelope } = createInboundEnvelope(db, { runtimeFor, sanitizeFilename, githubManualMessages, githubAutomaticMessages, githubIssueMessages });
   const { admitInboundMessage } = createInboundAdmission(db, { runtimeGeneration, credentialFingerprint, leasedChatProvider, renewDiscordGatewayOwnershipForMessageAdmission, ensureResource, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS });
   const { admitMessageResource } = createMessageResourceAdmission(db, { ensureResource });
@@ -3591,6 +3595,8 @@ return {
     completeGitHubRegistration: githubRegistration.complete,
     storeGitHubApp,
     refreshGitHubRepositories,
+    refreshDiscordChannels,
+    removeUnavailableDiscordChannel,
     runtime,
     list,
     get,

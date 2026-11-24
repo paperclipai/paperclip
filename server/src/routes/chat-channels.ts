@@ -411,6 +411,16 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.json(await service.refreshGitHubRepositories(endpointId(req), githubUser(req), connectionRequestContext(req)));
   });
+  router.post("/chat-endpoints/:endpointId/discord/channels/refresh", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/discord/channels/refresh"), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.refreshDiscordChannels(endpointId(req), actorUserId(req), connectionRequestContext(req)));
+  });
+  router.delete("/chat-endpoints/:endpointId/discord/channels/:resourceId", managementGuard("connections:configure", "DELETE /chat-endpoints/:endpointId/discord/channels/:resourceId"), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    const resourceId = req.params.resourceId as string;
+    if (!isUuidLike(resourceId)) throw notFound("Discord channel not found");
+    res.json(await service.removeUnavailableDiscordChannel(endpointId(req), resourceId, actorUserId(req), connectionRequestContext(req)));
+  });
   router.get("/chat-endpoints/:endpointId/github/repositories", managementGuard("connections:read", "GET /chat-endpoints/:endpointId/github/repositories"), async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     const query = gitHubRepositoryPageQuerySchema.safeParse(req.query);

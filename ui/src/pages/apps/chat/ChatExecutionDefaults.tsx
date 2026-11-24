@@ -14,10 +14,11 @@ function selectionKey(value: TaskWorkspaceSelection | null | undefined): string 
   return `source:${value.projectWorkspaceId}:${value.mode}`;
 }
 
-export function ChatExecutionDefaults({ companyId, value, resource = false, onSave }: {
+export function ChatExecutionDefaults({ companyId, value, resource = false, disabled = false, onSave }: {
   companyId: string;
   value: Defaults | null | undefined;
   resource?: boolean;
+  disabled?: boolean;
   onSave: (defaults: Defaults | null) => Promise<void>;
 }) {
   const id = useId();
@@ -55,7 +56,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const change = (next: Defaults) => { setDraft(next); setSavedFrom(null); setError(null); };
   return <form className="space-y-3" aria-labelledby={`${id}-title`} onSubmit={async (event) => {
     event.preventDefault();
-    if (pending || !dirty) return;
+    if (pending || disabled || !dirty) return;
     setPending(true); setError(null); setSavedFrom(null);
     try { await onSave(Object.keys(current).length ? current : null); setSavedFrom(valueKey); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Couldn’t save task defaults. Try again."); }
@@ -68,7 +69,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
     {(projects.isError || workspaces.isError) && <p role="alert" className="text-sm text-destructive">Couldn’t load available projects or workspaces. <button type="button" className="underline" onClick={() => { void projects.refetch(); void workspaces.refetch(); }}>Try again</button></p>}
     <div className="space-y-2">
       <label htmlFor={`${id}-project`} className="text-sm font-medium">Project</label>
-      <NativeSelect id={`${id}-project`} value={projectValue} disabled={pending || projects.isPending} onChange={(event) => {
+      <NativeSelect id={`${id}-project`} value={projectValue} disabled={pending || disabled || projects.isPending} onChange={(event) => {
         const { projectId: _previous, ...rest } = current;
         change(event.target.value === "inherit" ? rest : { ...rest, projectId: event.target.value === "none" ? null : event.target.value });
       }}>
@@ -80,7 +81,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
     </div>
     <div className="space-y-2">
       <label htmlFor={`${id}-workspace`} className="text-sm font-medium">Workspace</label>
-      <NativeSelect id={`${id}-workspace`} value={workspaceValue} disabled={pending || projects.isPending || workspaces.isPending} onChange={(event) => {
+      <NativeSelect id={`${id}-workspace`} value={workspaceValue} disabled={pending || disabled || projects.isPending || workspaces.isPending} onChange={(event) => {
         const key = event.target.value;
         const { workspace: _previous, ...rest } = current;
         if (key === "inherit") change(rest);
@@ -105,7 +106,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex items-center justify-between gap-3">
       <div>{dirty ? <Button type="button" variant="ghost" disabled={pending} onClick={() => { setDraft(null); setError(null); }}>Cancel</Button> : saved ? <span role="status" className="text-sm text-muted-foreground">Saved for new tasks.</span> : null}</div>
-      <Button type="submit" disabled={!dirty || pending}>{pending ? "Saving…" : "Save defaults"}</Button>
+      <Button type="submit" disabled={!dirty || pending || disabled}>{pending ? "Saving…" : "Save defaults"}</Button>
     </div>
   </form>;
 }
