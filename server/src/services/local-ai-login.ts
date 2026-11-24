@@ -46,7 +46,6 @@ async function removeLoginHome(id: string, provider: string | undefined) {
   }
   await rm(directory, { recursive: true, force: true });
 }
-const isBusy = (error: unknown) => (error as { details?: { code?: unknown } } | null)?.details?.code === "ai_connection_busy";
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
   const directory = loginHome(id);
@@ -335,9 +334,10 @@ export function localAiLoginService(db: Db) {
       }
       return presentAttempt(id, expiresAt, intent.provider);
     }).catch(async error => {
-      // The replacement could not finish retiring the previous attempt. Its
-      // transaction rolled back, so record the pending retirement now.
-      if (retiredAttemptId && isBusy(error)) await requestCleanup(companyId, userId, retiredAttemptId, managementContext).catch(() => undefined);
+      // The replacement could not finish retiring the previous attempt, for
+      // whatever reason. Its transaction rolled back, so record the pending
+      // retirement now.
+      if (retiredAttemptId) await requestCleanup(companyId, userId, retiredAttemptId, managementContext).catch(() => undefined);
       throw error;
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
@@ -513,10 +513,11 @@ export function localAiLoginService(db: Db) {
     if (!owned) throw notFound("Local sign-in attempt not found.");
     await retireOwnedAttempt(companyId, userId, id, managementContext);
     // The cleanup below can fail, for example while the Keychain refuses a
-    // delete or a process that a reopen launched does not stop in time. The
-    // transaction then rolls back and the attempt stays waiting.
-    // Make it due now, so the expiry worker retries the cleanup at once and
-    // not at the original expiry of the attempt.
+    // delete, the login home cannot be removed, or a process that a reopen
+    // launched does not stop in time. The transaction then rolls back and the
+    // attempt stays waiting. Whatever the error, make the attempt due now, so
+    // the expiry worker retries the cleanup at once and a reopen cannot
+    // launch it again.
     await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -537,7 +538,7 @@ export function localAiLoginService(db: Db) {
         });
       }
     }).catch(async error => {
-      if (isBusy(error)) await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
+      await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
       throw error;
     });
     deferredRetirements.delete(id);
