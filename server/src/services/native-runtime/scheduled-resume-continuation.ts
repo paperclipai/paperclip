@@ -3,8 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { heartbeatRuns } from "@paperclipai/db";
 import { readNativeLocalProcessStop, readUnidentifiedLocalRunnerStop, recordUnidentifiedLocalRunnerStop } from "../native-local-process-stop.js";
 import { NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT } from "./native-restart-recovery.js";
-
-export const SAME_RUN_RESUME_DISPOSITION = "same_run_resume";
+import { SAME_RUN_RESUME_DISPOSITION } from "./same-run-resume-disposition.js";
 
 export function sameRunResumeClaimEntry(input: {
   at: Date; controllerBootId: string; providerAttempt: number; failureDetail: Record<string, unknown> | null | undefined;
@@ -22,6 +21,7 @@ export function sameRunResumeClaimEntry(input: {
       checkpointExists: detail.checkpointExists ?? null,
       successorRunId: detail.successorRunId ?? null,
       replacementDenied: detail.replacementDenied ?? null,
+      waitingForOwner: detail.waitingForOwner ?? null,
     },
   };
 }

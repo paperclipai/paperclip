@@ -1,11 +1,12 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, open, rename, rm } from "node:fs/promises";
+import { lstat, open, readlink, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
 import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
+import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxCommandLease } from "./installation-integrity.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -67,10 +68,13 @@ async function credentialFile(home: string): Promise<string> {
   const parent = join(home, "antigravity-acp"), stat = await lstat(parent);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw new Error("Invalid Antigravity credential");
   // Darwin's O_NOFOLLOW_ANY rejects symlinks in every component, including a
-  // concurrently replaced parent. This candidate is macOS ARM64 only.
+  // concurrently replaced parent. Linux has no such open flag, so the opened
+  // descriptor's kernel path must equal the checked canonical path instead.
   const noFollow = process.platform === "darwin" ? 0x20000000 : constants.O_NOFOLLOW;
-  const file = await open(join(parent, "acp_token.json"), constants.O_RDONLY | noFollow | constants.O_NONBLOCK);
+  const path = join(parent, "acp_token.json");
+  const file = await open(path, constants.O_RDONLY | noFollow | constants.O_NONBLOCK);
   try {
+    if (process.platform === "linux" && await readlink(`/proc/self/fd/${file.fd}`) !== path) throw new Error("Invalid Antigravity credential");
     const info = await file.stat();
     if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > MAX_BYTES) throw new Error("Invalid Antigravity credential");
     const bytes = Buffer.alloc(MAX_BYTES + 1);
@@ -187,7 +191,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
             if (phase > 2 || message.jsonrpc !== "2.0" || message.id !== phase || "method" in message || "error" in message || !Object.hasOwn(message, "result")) { fail(); return; }
             if (phase === 1) {
               const initialized = record(message.result), info = record(initialized.agentInfo);
-              if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== "1.4.3"
+              if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION
                 || record(record(record(initialized.agentCapabilities)._meta).antigravity).paperclipAdmission !== 1
                 || !Array.isArray(initialized.authMethods) || !initialized.authMethods.some(method => record(method).id === "oauth-personal")) { fail(); return; }
               phase = 2; send(2);

@@ -9,39 +9,165 @@ import type { OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { NativeProviderArtifactTransferTimeoutError } from "./native-provider-artifacts.js";
+import { isPluginRpcTimeout } from "./remote-runner-recovery-probe.js";
 
 const names = ["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const;
 export const NATIVE_PROVIDER_ARTIFACT_PUBLISH_ATTEMPTS = 3;
-const sharedCaptures = new Map<string, Promise<unknown>>();
+export const NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS = 90_000;
 
-export async function shareNativeProviderArtifactCapture<T>(input: {
+type Latch = { promise: Promise<void>; resolve: () => void };
+
+function latch(): Latch {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+export type ShareNativeProviderArtifactCaptureInput<T> = {
   key: string;
   signal: AbortSignal;
   reuse: () => Promise<T | null>;
-  capture: () => Promise<T>;
-}): Promise<T> {
-  const inFlight = sharedCaptures.get(input.key);
-  if (inFlight) {
-    let stop!: () => void;
-    const stopped = new Promise<never>((_resolve, reject) => {
-      stop = () => reject(input.signal.reason);
-      input.signal.addEventListener("abort", stop, { once: true });
-      if (input.signal.aborted) stop();
-    });
+  capture: (signal: AbortSignal, hold: (work: Promise<unknown>) => void) => Promise<T>;
+  hedgeAfterMs?: number;
+};
+
+const MAX_CONCURRENT_CAPTURES = 2;
+
+class SharedArtifactCapture {
+  private readonly state = { saved: false, running: 0, lastStartedAtMs: 0 };
+  private changed = latch();
+
+  constructor(private readonly key: string) {}
+
+  get saved() {
+    return this.state.saved;
+  }
+
+  tryStart(hedgeAfterMs: number, options: { afterSavedMiss: boolean }): (() => void) | null {
+    if (this.state.running >= MAX_CONCURRENT_CAPTURES) return null;
+    if (!options.afterSavedMiss && this.state.running > 0 && this.state.lastStartedAtMs + hedgeAfterMs > Date.now()) return null;
+    this.state.running += 1;
+    this.state.lastStartedAtMs = Date.now();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.state.running -= 1;
+      this.notify();
+      if (this.state.running === 0 && sharedCaptures.get(this.key) === this) sharedCaptures.delete(this.key);
+    };
+  }
+
+  async waitForChange(hedgeAfterMs: number, stopped: Promise<never>, options: { afterSavedMiss: boolean }) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waits: Promise<unknown>[] = [this.changed.promise, stopped];
+    const hedgeInMs = this.state.lastStartedAtMs + hedgeAfterMs - Date.now();
+    if (!options.afterSavedMiss && this.state.running < MAX_CONCURRENT_CAPTURES && hedgeInMs > 0) {
+      waits.push(new Promise<void>(resolve => { timer = setTimeout(resolve, hedgeInMs); }));
+    }
     try {
-      await Promise.race([inFlight.catch(() => undefined), stopped]);
+      await Promise.race(waits);
     } finally {
-      input.signal.removeEventListener("abort", stop);
+      clearTimeout(timer);
+    }
+  }
+
+  async savedCopy() {
+    while (!this.state.saved) await this.changed.promise;
+  }
+
+  markSaved() {
+    this.state.saved = true;
+    this.notify();
+  }
+
+  private notify() {
+    const changed = this.changed;
+    this.changed = latch();
+    changed.resolve();
+  }
+}
+
+const sharedCaptures = new Map<string, SharedArtifactCapture>();
+
+function sharedCaptureFor(key: string) {
+  let shared = sharedCaptures.get(key);
+  if (!shared) {
+    shared = new SharedArtifactCapture(key);
+    sharedCaptures.set(key, shared);
+  }
+  return shared;
+}
+
+function stopWith(signal: AbortSignal) {
+  let stop!: () => void;
+  const promise = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+  });
+  promise.catch(() => undefined);
+  return { promise, dispose: () => signal.removeEventListener("abort", stop) };
+}
+
+export async function shareNativeProviderArtifactCapture<T>(input: ShareNativeProviderArtifactCaptureInput<T>): Promise<T> {
+  const hedgeAfterMs = input.hedgeAfterMs ?? NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS;
+  const stopped = stopWith(input.signal);
+  try {
+    let afterSavedMiss = false;
+    for (;;) {
+      const shared = sharedCaptureFor(input.key);
+      const release = shared.tryStart(hedgeAfterMs, { afterSavedMiss });
+      if (release) return await captureOrReuse(input, shared, release, stopped.promise);
+      if (afterSavedMiss || !shared.saved) await shared.waitForChange(hedgeAfterMs, stopped.promise, { afterSavedMiss });
+      const reused = await input.reuse();
+      if (reused) {
+        shared.markSaved();
+        return reused;
+      }
+      afterSavedMiss ||= shared.saved;
+    }
+  } finally {
+    stopped.dispose();
+  }
+}
+
+async function captureOrReuse<T>(
+  input: ShareNativeProviderArtifactCaptureInput<T>,
+  shared: SharedArtifactCapture,
+  release: () => void,
+  stopped: Promise<never>,
+): Promise<T> {
+  const superseded = new AbortController();
+  const held: Promise<unknown>[] = [];
+  const own = Promise.resolve().then(() => input.capture(AbortSignal.any([input.signal, superseded.signal]), work => held.push(work)));
+  void own.then(() => undefined, () => undefined).then(() => Promise.allSettled(held)).then(release);
+  try {
+    const first = await Promise.race([own.then(value => ({ value })), shared.savedCopy().then(() => null), stopped]);
+    if (first) {
+      shared.markSaved();
+      return first.value;
     }
     const reused = await input.reuse();
-    if (reused) return reused;
+    if (!reused) return await own;
+    superseded.abort(new Error("native_provider_artifacts_capture_superseded"));
+    return reused;
+  } catch (error) {
+    if (input.signal.aborted) throw error;
+    const reused = await input.reuse().catch(() => null);
+    if (!reused) throw error;
+    shared.markSaved();
+    return reused;
   }
-  const own = input.capture();
-  sharedCaptures.set(input.key, own);
-  try {
-    return await own;
-  } finally {
-    if (sharedCaptures.get(input.key) === own) sharedCaptures.delete(input.key);
+}
+
+export class NativeProviderArtifactExportError extends Error {
+  readonly code: "native_provider_artifacts_export_timeout" | "native_provider_artifacts_export_failed";
+  constructor(cause: unknown) {
+    const code = isPluginRpcTimeout(cause) ? "native_provider_artifacts_export_timeout" : "native_provider_artifacts_export_failed";
+    super(`${code}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "NativeProviderArtifactExportError";
+    this.code = code;
   }
 }
 
@@ -87,6 +213,7 @@ export async function captureRemoteNativeProviderArtifacts<T>(
     manifest: NativeProviderArtifactSource["manifest"];
     signal: AbortSignal;
     context?: NativeExecutionContext;
+    hold?: (work: Promise<unknown>) => void;
   },
   publish: (source: NativeProviderArtifactSource) => Promise<T>,
 ): Promise<T> {
@@ -134,7 +261,9 @@ export async function captureRemoteNativeProviderArtifacts<T>(
           input.context?.assertOpen();
           await input.runner.syncOut!([
             { operationId: `provider-artifacts-${randomUUID()}`, files },
-          ]);
+          ]).catch((error: unknown) => {
+            throw new NativeProviderArtifactExportError(error);
+          });
         } finally {
           // The export copy is scratch under the excluded runtime dir. A failed
           // removal must not replace the transfer outcome; it is logged instead.
@@ -172,6 +301,7 @@ export async function captureRemoteNativeProviderArtifacts<T>(
         }
       });
     void operation.catch(() => undefined);
+    input.hold?.(operation);
     let abort!: () => void;
     const stopped = new Promise<never>((_resolve, reject) => {
       abort = () => reject(input.signal.reason);

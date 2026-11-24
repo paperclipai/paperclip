@@ -1,5 +1,6 @@
+import { wakeInputCommentIds } from "./follow-up-delivery.js";
 import type { HostedApi } from "./hosted-api.js";
-import { isAutoNotice, type GradeRun, type GradeTaskInput } from "./release-swap-grade.js";
+import { isNoticeRepeat, type GradeRun, type GradeTaskInput } from "./release-swap-grade.js";
 
 type Json = Record<string, any>;
 export type ReadApi = Pick<HostedApi, "get">;
@@ -24,6 +25,9 @@ export interface HostedRunRow {
   finishedAt: number | null;
   lastActivityAt: number | null;
   ownerPid: null;
+  invocationSource: string | null;
+  retryOfRunId: string | null;
+  wakeCommentIds: string[];
 }
 
 export interface HostedIssueRow {
@@ -36,7 +40,7 @@ export interface HostedIssueRow {
   hidden: boolean;
 }
 
-const ms = (value: unknown): number | null => {
+export const ms = (value: unknown): number | null => {
   if (value === null || value === undefined || value === "") return null;
   const parsed = typeof value === "number" ? value : Date.parse(String(value));
   return Number.isFinite(parsed) ? parsed : null;
@@ -50,6 +54,7 @@ export function runRow(run: Json): HostedRunRow {
     errorCode: text(run.errorCode), error: run.error ? String(run.error).slice(0, 400) : null,
     createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
     lastActivityAt: activity.length ? Math.max(...activity) : null, ownerPid: null,
+    invocationSource: text(run.invocationSource), retryOfRunId: text(run.retryOfRunId), wakeCommentIds: wakeInputCommentIds(run, undefined),
   };
 }
 
@@ -163,12 +168,16 @@ export async function duplicateAgentComments(api: ReadApi, issueIds: readonly st
   const autoNoticeRepeats: Array<{ issueId: string; count: number }> = [];
   for (const id of issueIds) {
     const comments = await api.get<Json[]>(`/api/issues/${id}/comments`).catch(() => [] as Json[]);
-    const counts = new Map<string, { body: string; count: number }>();
+    const counts = new Map<string, { body: string; runIds: Array<string | null> }>();
     for (const comment of comments) if (comment.authorAgentId) {
       const key = `${comment.authorAgentId}\u0000${comment.body}`;
-      counts.set(key, { body: String(comment.body ?? ""), count: (counts.get(key)?.count ?? 0) + 1 });
+      const entry = counts.get(key) ?? { body: String(comment.body ?? ""), runIds: [] };
+      entry.runIds.push(text(comment.createdByRunId));
+      counts.set(key, entry);
     }
-    for (const { body, count } of counts.values()) if (count > 1) (isAutoNotice(body) ? autoNoticeRepeats : duplicateComments).push({ issueId: id, count });
+    for (const { body, runIds } of counts.values()) if (runIds.length > 1) {
+      (isNoticeRepeat(body, runIds) ? autoNoticeRepeats : duplicateComments).push({ issueId: id, count: runIds.length });
+    }
   }
   return { duplicateComments, autoNoticeRepeats };
 }

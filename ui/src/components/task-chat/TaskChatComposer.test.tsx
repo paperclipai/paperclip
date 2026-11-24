@@ -9,7 +9,8 @@ import {
   buildSkillMentionHref,
   instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
-import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { parsePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { planSubmission } from "./composer-commands";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2000,6 +2001,128 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+  });
+
+  describe("/plan command", () => {
+    it("matches only the user's leading /plan token", () => {
+      expect(parsePlanCommand(" /plan Add a greeting file ")).toEqual({ matched: true, request: "Add a greeting file" });
+      expect(parsePlanCommand("/plan")).toEqual({ matched: true, request: "" });
+      expect(parsePlanCommand("/plan\n\nLine one\nLine two")).toEqual({ matched: true, request: "Line one\nLine two" });
+      expect(parsePlanCommand("[/pl](</plan Add a greeting file>)")).toEqual({ matched: true, request: "Add a greeting file" });
+      // A /plan anywhere else is ordinary text, including quoted or pasted content.
+      expect(parsePlanCommand("Please /plan this first")).toEqual({ matched: false });
+      expect(parsePlanCommand("> /plan from a pasted email")).toEqual({ matched: false });
+      expect(parsePlanCommand("```\n/plan\n```")).toEqual({ matched: false });
+      expect(parsePlanCommand("\\/plan ordinary text")).toEqual({ matched: false });
+      expect(parsePlanCommand("/planning notes")).toEqual({ matched: false });
+    });
+
+    it("sends the request in Plan mode without the command", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange });
+      typeText("/plan Add a greeting file");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+      expect(onAdd).toHaveBeenCalledWith("Add a greeting file", undefined, undefined, undefined, expect.any(String));
+      expect(onWorkModeChange.mock.invocationCallOrder[0]).toBeLessThan(onAdd.mock.invocationCallOrder[0]!);
+    });
+
+    it("switches to Plan mode without sending when no request follows", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/plan");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+      expect(editable().textContent).toBe("");
+    });
+
+    it("leaves a /plan inside the message as ordinary text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange });
+      typeText("Please /plan this first");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onWorkModeChange).not.toHaveBeenCalled();
+      expect(onAdd).toHaveBeenCalledWith("Please /plan this first", undefined, undefined, undefined, expect.any(String));
+    });
+
+    it("offers Plan in the slash menu, except while editing a queued message", async () => {
+      const planOffered = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="mention-autocomplete-menu"] button[type="button"]')).some(node => node.textContent?.includes("/plan"));
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />);
+      typeText("/pl");
+      await placeCaretAtEnd();
+      expect(planOffered()).toBe(true);
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onWorkModeChange={vi.fn()}
+        queuedEdit={{ commentId: "queued", body: "" }} onSaveQueuedEdit={vi.fn()} />);
+      typeText("/pl");
+      await placeCaretAtEnd();
+      expect(planOffered()).toBe(false);
+    });
+
+    it("decides a bare /plan the same way for both submit paths", () => {
+      expect(planSubmission("/plan", false)).toEqual({ kind: "switch_mode" });
+      expect(planSubmission("/plan", true)).toEqual({ kind: "send", text: "" });
+      expect(planSubmission("/plan Ship it", false)).toEqual({ kind: "send", text: "Ship it" });
+      expect(planSubmission("Ship it /plan", true)).toEqual({ kind: "none" });
+    });
+
+    it("sends a bare /plan with an attachment as the request in Plan mode", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+      const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+      const onAttachImage = vi.fn().mockResolvedValue({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: "spec.txt" });
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange, onAttachImage });
+      typeText("/plan");
+      pasteFiles([new File(["spec"], "spec.txt", { type: "text/plain" })]);
+      await flushAsync();
+      flushSync(() => sendButton().click());
+      await flushAsync();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+      expect(onAdd).toHaveBeenCalledOnce();
+      expect(onAdd.mock.calls[0]?.[0]).not.toContain("/plan");
+      expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
+    });
+
+    it("creates a task from a bare /plan with an image only when the task may have no text", async () => {
+      const image = new File(["png"], "screen.png", { type: "image/png" });
+      const creation = { value: "/plan", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined), submitLabel: "Create",
+        onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn(), images: [{ id: "screen", name: image.name, file: image }] };
+      render(<TaskChatComposer creation={{ ...creation, canSubmitWithoutBody: true }} workMode="standard" onWorkModeChange={vi.fn()} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("", "planning", null);
+      const onWorkModeChange = vi.fn();
+      const bare = { ...creation, onSubmit: vi.fn() };
+      render(<TaskChatComposer creation={bare} workMode="standard" onWorkModeChange={onWorkModeChange} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(bare.onSubmit).not.toHaveBeenCalled();
+      expect(onWorkModeChange).toHaveBeenCalledWith("planning");
+    });
+
+    it("keeps /plan as text in a composer that has no Plan mode", async () => {
+      const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+        submitLabel: "Start", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
+      render(<TaskChatComposer creation={creation} workMode="standard" />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("/plan Add a greeting file", "standard", null);
+    });
+
+    it("creates a new task in Plan mode", async () => {
+      const creation = { value: "/plan Add a greeting file", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+        submitLabel: "Create", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
+      render(<TaskChatComposer creation={creation} workMode="standard" onWorkModeChange={vi.fn()} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).toHaveBeenCalledWith("Add a greeting file", "planning", null);
+    });
   });
 
   describe("/goal action commands", () => {

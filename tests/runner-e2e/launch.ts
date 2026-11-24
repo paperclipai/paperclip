@@ -83,6 +83,7 @@ import {
 } from "./redaction.js";
 import {
   buildMatrixJobs,
+  daytonaCandidateProviders,
   parseRunnerSelectors,
   RunnerSelectorError,
   selectorArgumentsWithEnvironment,
@@ -1237,6 +1238,7 @@ async function main() {
       JSON.stringify({
         include: jobs,
         needsDaytona: jobs.some((job) => job.needsDaytona),
+        candidateProviders: daytonaCandidateProviders(executions),
         executionIds: executions.map((execution) => execution.id),
       }),
     );

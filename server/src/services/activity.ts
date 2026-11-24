@@ -1,3 +1,4 @@
+import { dashboardActivityCondition, dashboardAuditConversationCondition } from "./responsibility-privacy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
@@ -37,6 +38,7 @@ export interface ActivityFilters {
   limit?: number;
   readCondition?: SQL<boolean>;
   caseReadCondition?: SQL<boolean>;
+  dashboardUserId?: string | null;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -418,6 +420,7 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        dashboardActivityCondition(filters.dashboardUserId), dashboardAuditConversationCondition(filters.dashboardUserId),
         filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
@@ -575,17 +578,19 @@ export function activityService(db: Db) {
               or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
                 ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            // The task's runs: linked directly, or through the task's activity.
+            // Collect the candidate ids first, each half by its own index. An
+            // OR with a per-run EXISTS walks every run of the company instead.
+            sql`${heartbeatRuns.id} in (
+              select hr.id from ${heartbeatRuns} hr
+              where hr.company_id = ${companyId} and hr.issue_id = ${issueId}
+              union
+              select al.run_id from ${activityLog} al
+              where al.company_id = ${companyId}
+                and al.entity_type = 'issue'
+                and al.entity_id = ${issueId}
+                and al.run_id is not null
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));

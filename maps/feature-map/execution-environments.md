@@ -40,7 +40,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `environment-settings`
 
-Automated: [environment UI](../../ui/src/pages/CompanyEnvironments.test.tsx), [driver configuration UI](../../ui/src/pages/CompanySettings.test.tsx), and [environment service](../../server/src/__tests__/environment-service.test.ts) cover configuration behavior.
+Automated: [environment service](../../server/src/__tests__/environment-service.test.ts) covers server configuration behavior (mocked `CompanyEnvironments` and `CompanySettings` UI tests were removed; verify settings UI via Storybook/manual checks).
 
 Manual: Save a disposable target, reload it, and run its available probe. Verify both success and missing-credential/reachability errors identify the target. Confirm unavailable providers are not offered as working run targets.
 
@@ -140,7 +140,7 @@ Capability ID: `execution-environments/configuration`.
 Scope: ui
 Storybook: Local/SSH/sandbox editors; unavailable providers, missing credentials, save pending/error and restricted operator.
 Production: Persist target configuration and enforce instance-admin/local-operator mutation boundary; target catalog is instance-scoped.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environments.ts](../../server/src/routes/environments.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-service.test.ts](../../server/src/__tests__/environment-service.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environments.ts](../../server/src/routes/environments.ts). Tests: [environment-service.test.ts](../../server/src/__tests__/environment-service.test.ts)
 
 #### `capabilities`
 
@@ -158,7 +158,7 @@ Capability ID: `execution-environments/probe`.
 Scope: ui
 Storybook: Remote Test pending, success, reachability/auth failure and platform qualification absent/invalidated notice.
 Production: Probe actual owned target; verify selected saved immutable config/image/company qualification plus lease cleanup; local API probe proves host/cwd only and has no UI Test button.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-probe.ts](../../server/src/services/environment-probe.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-probe.test.ts](../../server/src/__tests__/environment-probe.test.ts), [environment-live-ssh.test.ts](../../server/src/__tests__/environment-live-ssh.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-probe.ts](../../server/src/services/environment-probe.ts). Tests: [environment-probe.test.ts](../../server/src/__tests__/environment-probe.test.ts), [environment-live-ssh.test.ts](../../server/src/__tests__/environment-live-ssh.test.ts)
 
 #### `images`
 
@@ -167,7 +167,7 @@ Capability ID: `execution-environments/images`.
 Scope: ui
 Storybook: Custom-image setup/capture/progress, terminal connect/disconnect/failure, unsupported capability and active-image drift.
 Production: Execute owned provider setup/capture/probe/terminal transport with correct saved image identity, authority, cleanup and shutdown; terminal screenshot cannot prove operation.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-custom-images-service.test.ts](../../server/src/__tests__/environment-custom-images-service.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts). Tests: [environment-custom-images-service.test.ts](../../server/src/__tests__/environment-custom-images-service.test.ts)
 
 Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and

@@ -10,6 +10,9 @@ import { QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/pa
 import { prepareRemoteProviderPackOnTarget, resolveRemoteProviderPackSource, sha256DirectoryTree } from "./native-session-executor.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 
+const runtimePackScript = new URL("../../../../scripts/macos-runner-runtime.mjs", import.meta.url).href;
+const { createOpenCodeRuntimePack } = await import(runtimePackScript);
+
 const exec = promisify(execFile);
 const EXECUTE_LATENCY_MS = 150;
 const TRANSFER_LATENCY_MS = 300;
@@ -162,6 +165,22 @@ describe("provider pack selection harness", () => {
     await expect(runner.syncIn!([{ operationId: "escape", files: [{ kind: "directory", sourcePath: join(root, "server-pack"),
       targetPath: join(root, "workspace", "..", "outside"), mode: 0o700 }] }])).rejects.toThrow("escapes the workspace");
   });
+
+  it("uploads and verifies an OpenCode-only runtime on a fresh host", async () => {
+    const sandbox = await mkdtemp(join(root, "fresh-opencode-"));
+    const packRoot = join(sandbox, "source"), home = join(sandbox, "home"), workspace = join(sandbox, "workspace");
+    await mkdir(workspace, { recursive: true });
+    createOpenCodeRuntimePack(server.configuredRoot, packRoot);
+    const selected = resolveRemoteProviderPackSource(packRoot);
+    const { runner, usage } = simulatedSandbox(home, workspace);
+    const prepared = await prepareRemoteProviderPackOnTarget({
+      target: { kind: "remote", transport: "sandbox", remoteCwd: workspace, runner } as never,
+      runner, configuredProviderPackRoot: selected.configuredRoot, manifest: selected.manifest,
+    });
+    expect(prepared.source).toBe("uploaded");
+    expect(prepared.manifest).toEqual(selected.manifest);
+    expect(usage.bytesUploaded).toBeGreaterThan(LARGE_ARTIFACT_BYTES);
+  }, 30_000);
 
   it.each<[Scenario, "preinstalled" | "uploaded", "preinstalled" | "uploaded"]>([
     ["exact", "preinstalled", "preinstalled"],

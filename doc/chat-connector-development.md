@@ -70,6 +70,39 @@ retain their existing fingerprint. Both paths share the same authorization
 implementation and perform fresh checks on every call. The real PostgreSQL
 controls are in `server/src/__tests__/slack-tool-preparation.test.ts`.
 
+## GitHub updates during an active review
+
+Accepted GitHub messages and automatic PR updates try same-turn steering by
+default after normal wake admission. The active native run must belong to the
+same task, agent, conversation, responsible person, and source trust level.
+Messages with attachments, omitted attachments, or a fresh-session requirement keep a separate turn.
+The message carries the admitted GitHub review instructions.
+
+The durable wake stays pending until the runner acknowledges steering. An
+acknowledged message joins the active run's input and requester lineage, and
+its wake becomes coalesced. Automatic review records for the new head point to
+that run. A rejected or unavailable steer retains ordinary queued delivery.
+Late acknowledgements and retries use the native acknowledgement receipt to
+avoid sending the same update twice. Other chat providers keep their existing
+delivery behavior.
+
+Each native GitHub receipt stays separate until steering acknowledges its exact input.
+This prevents ordinary wake coalescing from merging a newer input into an
+uncertain delivery. Steering dispatch does not hold task or conversation locks while it waits for
+the provider. A saved receipt records the run, identity reservation, and exact
+comment revision before dispatch. Deferred delivery recovers an acknowledgement
+after a restart, including when it replays a batch on a closed task. Recovery
+does not consume an edit that the provider did not receive or replace a newer
+requester lineage. An uncertain reservation stays pending while its source run
+can still acknowledge it; recovery rejects it when that run stops without an
+acknowledgement.
+Retries preserve the original steering revision. An edit that was not sent
+keeps ordinary delivery. Overlapping inputs also keep their admitted wakes
+while another steering acknowledgement is pending. After the active review
+ends, unacknowledged inputs retain ordinary delivery. Legacy runs keep their
+existing conversation batching when no native steering receipt is outstanding.
+Admission rechecks that condition under the task and run locks.
+
 ## Chat activity pagination and callback diagnostics
 
 The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`

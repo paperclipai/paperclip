@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
+import { activityLog, agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
   nativeProviderArtifacts, nativeProviderArtifactReferences, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
@@ -609,11 +609,14 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect(put).not.toHaveBeenCalled();
     expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
   });
-  it("defers failed history without treating pre-copy as offline authority", async () => {
+  it("preserves settled failed history of an unselected session through the settled-source owner, never offline authority", async () => {
     const [f] = await offlineFixtures(1);
     expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
-      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_not_successful: 1 } });
-    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+      .toEqual({ inspected: 1, published: 1, current: 0, deferred: {} });
+    expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest)))[0].status).toBe("current");
+    const [preserved] = await f.db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "native_harness_backup_preserved"), eq(activityLog.runId, f.runId)));
+    expect(preserved).toMatchObject({ actorId: "native-harness-preservation", details: { scopeDigest: f.scopeDigest, originalFilesRetained: true } });
   });
   it("defers a source being replaced online while offline migration still refuses it", async () => {
     const f = await inactiveFixture();
@@ -819,7 +822,23 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     await expect(persistNativeHarnessBackup(f)).rejects.toThrow("native_harness_storage_owner_superseded");
     expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
   });
-  it.each(["foreign_preparation", "expired_preparation", "dispatching_successor", "foreign_native"])("keeps the selected backup when a released owner has a %s", async state => {
+  it("replaces the selected backup when a released owner's follow-up is still preparing on another server", async () => {
+    const f = await fixture(); await persistNativeHarnessBackup(f); await commitWarmRun(f);
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    const nextRunId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, status: "running", runtimeMode: "legacy", executionStage: "preparing",
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 120_000) });
+    await f.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    await persistNativeHarnessBackup({ ...f, owner });
+    const current = (await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")))).map(row => row.id);
+    expect(current).toHaveLength(1);
+    expect(current).not.toEqual([before.id]);
+  });
+  it.each(["expired_preparation", "dispatching_successor", "foreign_native"])("keeps the selected backup when a released owner has a %s", async state => {
     const f = await fixture(); await persistNativeHarnessBackup(f); await commitWarmRun(f);
     const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
     const nextRunId = randomUUID();

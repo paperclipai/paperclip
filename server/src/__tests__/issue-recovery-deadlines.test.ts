@@ -441,10 +441,19 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       const [row] = await state.db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog.watchdog.id));
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
-    await completed(reviewId!);
+    const review = await completed(reviewId!);
     expect(failures).toEqual([]);
+    // Ordinary assignment recovery can win the wake reason while the watchdog
+    // wake coalesces into that run. Verify its mandate and one dispatch instead.
+    expect(review.contextSnapshot).toMatchObject({
+      watchdogId: watchdog.watchdog.id,
+      taskWatchdog: {
+        watchedIssueId: source.id,
+        stopFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      },
+    });
     expect(await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${reviewId}`))).toHaveLength(1);
     await finish(reviewId!);
     await taskWatchdogService(state.db).disableForIssue(f.companyId, source.id);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); await quiet();

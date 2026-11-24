@@ -23,6 +23,7 @@ import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
+import { isAcknowledgedLegacyUserStop, runStopPresentationJson } from "./run-cancellation.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const ANOTHER_ROUTINE_TASK = "another task in this routine";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
@@ -51,7 +52,7 @@ const executionRunColumns = {
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
     'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
-  resultJson: sql<Record<string, unknown>>`jsonb_build_object(
+  resultJson: sql<Record<string, unknown>>`${runStopPresentationJson(heartbeatRuns.resultJson)} || jsonb_build_object(
     'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
     'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };
@@ -461,9 +462,9 @@ export function projectExecution(
   }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "ai_connection_pool_wait"
       && run.contextSnapshot?.wakeReason === "provider_limit_retry") {
-    const resetAt = run.scheduledRetryAt ? new Date(run.scheduledRetryAt).toISOString() : "its reported reset";
-    projection.nextAction = `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
-    return set("retry_scheduled", "Waiting for usage limit reset");
+    const recheckAt = run.scheduledRetryAt ? ` at ${new Date(run.scheduledRetryAt).toISOString()}` : " when its scheduled check is due";
+    projection.nextAction = `Paperclip will recheck the agent's provider usage limit${recheckAt} before starting work. The provider may still refuse it. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
+    return set("retry_scheduled", "Waiting for provider usage");
   }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "agent_directory_busy") {
     projection.nextAction = "Waiting for another run of this agent to finish with its files; this task continues automatically.";
@@ -537,6 +538,11 @@ export function projectExecution(
       return set("waiting_for_answer", "Waiting for a reply");
     }
     return set("completed", "Completed");
+  }
+  if (isAcknowledgedLegacyUserStop(run)) {
+    projection.cause = null;
+    projection.nextAction = "Send a new message to continue from saved work.";
+    return set("completed", "Stopped");
   }
   if (["failed", "cancelled", "timed_out", "interrupted"].includes(run.status))
     return set("failed", run.status === "cancelled" ? "Cancelled" : "Failed");

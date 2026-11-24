@@ -61,6 +61,67 @@ SSH environments display it as on; opening or upgrading an installation does
 not rewrite their saved configuration. The same option applies to direct SSH
 and Tailscale connections.
 
+## SSH on a volume-free Cloud stack
+
+Cloud SSH execution uses the same durable task workspace storage as Cloud
+sandboxes. All built-in SSH-capable harnesses use their existing adapters:
+Claude Code, Codex, Cursor, Gemini, Grok, Kimi, OpenCode, and Pi. The native
+Paperclip Runner also retains its SSH execution path. Cloud API and gateway
+adapters keep their provider-managed execution rather than selecting an SSH host.
+
+With a compatible agent-selected Paperclip AI account, ACP can run directly in
+the remote task directory and stage only private runtime assets. Claude Code,
+Codex, Gemini, and Kimi expose this ACP path. The CLI engines support the same
+remote directory. ACP requires its server command, such as `claude-agent-acp`,
+on the SSH login PATH. Selecting SSH does not change the agent's engine,
+account compatibility, or permission settings.
+
+An in-place SSH workspace exists on the SSH computer. Neither engine creates
+that workspace path on the controller. ACP keeps its local relay and state files
+in the controller's state directory and leaves remote project settings in place.
+Existing local Claude settings still contribute to the saved ACP conversation
+identity for upgrade compatibility. SSH startup can read that file when present,
+but does not create or rewrite it.
+
+The SSH account supplies the installed harness; the agent's Paperclip AI account
+supplies authentication unless the remote authentication option is enabled.
+Host authentication remains supported by the CLI engine.
+
+Saved CLI sessions retain the SSH connection identity through persistence, so a
+follow-up cannot attach to a different host. Disposable managed account-home
+paths do not reset new ACP conversations. A configuration identity change is
+reported as `acpx_session_identity_changed`; older Codex or Gemini ACP sessions
+that used the former home identity can reset once at upgrade. Task files remain
+in their durable SSH workspace. Older CLI sessions without a saved SSH identity
+remain unresumable; Core does not guess their source host.
+
+Pi keeps its JSONL conversation file under `.paperclip/pi/sessions` in the
+durable SSH task workspace. Its temporary credential home is removed after
+each turn. A follow-up uses the saved session file only when the SSH identity
+and the file's workspace header match. Existing readable session paths keep
+working; files already removed by an older release cannot be recovered.
+
+
+Each task receives a private directory below the configured SSH workspace path,
+inside `.paperclip-workspaces`. The task runs in that remote directory. Core
+keeps the workspace binding and saved file versions in its database and object
+storage. A Cloud restart reconnects to the same remote files. Restoring a saved
+workspace to another allocation uses the existing snapshot verification and
+single-writer rules. It does not restore private provider credentials from a
+task snapshot.
+
+The SSH machine needs Node.js and Git on its login PATH in addition to its agent
+harness. The workspace owner uses Node.js for preparation and verified file
+archives. SSH access alone does not qualify these dependencies or the selected
+AI account.
+
+An existing server-local workspace is not automatically imported. Cloud still
+rejects local filesystem authority and unsupported adapters. An uncertain SSH
+exit or failed save retains the remote files and the writer hold; it does not
+authorize another run to overwrite them. Paperclip does not stop or delete the
+SSH computer. This change does not add automatic reconciliation of an unknown
+remote provider process after an SSH connection is lost.
+
 The environment keeps the `ssh` driver. Machine selection stores the connector
 ID and Tailscale’s stable device ID, and runtime
 resolution looks up its current address through that connection’s private
