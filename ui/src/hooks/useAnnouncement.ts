@@ -83,6 +83,7 @@ export function useAnnouncement(options: Options) {
       let candidate: Announcement | null = null;
       const show = () => {
         if (!stillCurrent() || !settled || !loaded) return;
+        if (candidate?.id === CONNECTORS_ANNOUNCEMENT_ID && !returningUser) return;
         if (candidate && !readAnnouncementDismissals(userId!).has(candidate.id)
           && (!candidate.expiresAt || Date.parse(candidate.expiresAt) > Date.now())) {
           setState({ userId: userId!, announcement: candidate });
@@ -139,7 +140,7 @@ export function useAnnouncement(options: Options) {
       window.removeEventListener("storage", onStorage);
       dismissRef.current = () => {};
     };
-  }, [userId, enabled]);
+  }, [userId, enabled, returningUser]);
 
   const announcement = enabled && state?.userId === userId ? state.announcement : null;
   useEffect(() => {
@@ -153,9 +154,8 @@ export function useAnnouncement(options: Options) {
     check();
     return () => clearTimeout(timer);
   }, [announcement]);
-  const waitingForSecondVisit = announcement?.id === CONNECTORS_ANNOUNCEMENT_ID && !returningUser;
   return {
-    announcement: waitingForSecondVisit ? null : announcement,
+    announcement,
     dismiss: useCallback((id: string) => dismissRef.current(id), []),
   };
 }

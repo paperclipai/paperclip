@@ -116,6 +116,19 @@ describe("announcement lifecycle", () => {
     await settle();
     expect(container.textContent).toBe(connectors.id);
   });
+  it("checks for a dismissal from another browser before revealing Connectors on an idle return", async () => {
+    api.current.mockResolvedValueOnce(connectors);
+    let respond!: (value: null) => void;
+    api.current.mockReturnValueOnce(new Promise((resolve) => { respond = resolve; }));
+    await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
+    await event("pointerdown");
+    await settle();
+    expect(container.textContent).toBe("");
+    expect(api.current).toHaveBeenCalledTimes(2);
+    await act(async () => respond(null));
+    expect(container.textContent).toBe("");
+  });
   it("settles before showing and never polls during uninterrupted work", async () => {
     await render();
     expect(container.textContent).toBe("");
