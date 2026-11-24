@@ -138,6 +138,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, filesUnavailable: true });
     await expectFilesUnavailable({ ...f, cwd });
   });
+  it("keeps an archived workspace blocked while its repository at a plain local path still exists", async () => {
+    const f = await archivedGitWorkspaceWithoutFiles();
+    await db.update(executionWorkspaces).set({ repoUrl: f.repository }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+    expect(inventory).toMatchObject({ eligible: false });
+    expect(inventory).not.toHaveProperty("filesUnavailable");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("local_source_unsafe_or_missing");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    await fs.rm(f.repository, { recursive: true });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, filesUnavailable: true, reasons: [] });
+  });
   it("keeps an archived workspace blocked when it still has a saved file reference", async () => {
     const f = await archivedGitWorkspaceWithoutFiles(); await fs.rm(f.repository, { recursive: true });
     for (const metadata of [{ gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2", broken: true } },

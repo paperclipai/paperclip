@@ -138,11 +138,8 @@ async function workspaceFilesProvenGone(db: ReadDb, workspace: Workspace) {
     try {
       const isolated = recordedIsolatedRemoteSource(workspace);
       if (isolated) candidates.push(isolated);
-      if (/^file:/i.test(workspace.repoUrl)) {
-        const local = localRepositoryPath(workspace.repoUrl);
-        if (!local) return false;
-        candidates.push(local);
-      }
+      const local = localRepositoryPath(workspace.repoUrl);
+      if (local) candidates.push(local);
     } catch { return false; }
     candidates.push(...managedSourcePaths(workspace));
     const [projectWorkspace] = workspace.projectWorkspaceId ? await db.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
