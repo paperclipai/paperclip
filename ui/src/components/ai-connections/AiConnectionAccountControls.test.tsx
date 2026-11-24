@@ -63,3 +63,23 @@ it("updates the sign-in notice while the page stays open", () => {
     expect(vi.getTimerCount()).toBe(0);
   } finally { flushSync(() => root.unmount()); container.remove(); }
 });
+
+it("shows the sign-in notice for a page that was opened more than one timer limit before the warning week", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(2026, 0, 1, 12, 0));
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  flushSync(() => root.render(<AiConnectionAccountControls
+    account={{ id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",
+      name: "Claude", ownership: "personal", status: "connected", signInEndsAt: new Date(2026, 1, 12, 12, 0).toISOString() }}
+    grant={{ id: "grant", capabilities: { canRevoke: true, canEditAudience: false } } as ConnectionGrant}
+    currentUserId="user" onMakeDefault={vi.fn()} onReconnect={vi.fn()} onRevoke={vi.fn()} />));
+  try {
+    expect(container.textContent).not.toContain("This sign-in ends");
+    flushSync(() => { vi.advanceTimersByTime(25 * 24 * 3600_000); });
+    expect(container.textContent).not.toContain("This sign-in ends");
+    flushSync(() => { vi.advanceTimersByTime(10 * 24 * 3600_000 + 60_000); });
+    expect(container.textContent).toContain("This sign-in ends in 7 days.");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});

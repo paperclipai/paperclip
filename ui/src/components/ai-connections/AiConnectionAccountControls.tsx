@@ -33,14 +33,14 @@ export function AiConnectionAccountControls({
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
   const providerName = AI_PROVIDERS[account.provider].name;
-  const [now, setNow] = useState(() => Date.now());
-  const signInNotice = aiSignInNotice(account, now);
-  const noticeChangesAt = aiSignInNoticeChangesAt(account, now);
+  const [noticeTick, setNoticeTick] = useState(0);
+  const signInNotice = aiSignInNotice(account);
+  const noticeChangesAt = aiSignInNoticeChangesAt(account);
   useEffect(() => {
     if (noticeChangesAt === null) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.min(Math.max(noticeChangesAt - Date.now(), 0) + 1000, MAX_TIMER_MS));
+    const timer = setTimeout(() => setNoticeTick(tick => tick + 1), Math.min(Math.max(noticeChangesAt - Date.now(), 0) + 1000, MAX_TIMER_MS));
     return () => clearTimeout(timer);
-  }, [noticeChangesAt]);
+  }, [noticeChangesAt, noticeTick]);
   return (
     <section className="space-y-4" aria-label="AI account settings">
       {eligibleForDefault && (
