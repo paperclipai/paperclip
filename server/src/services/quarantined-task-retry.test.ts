@@ -124,7 +124,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
     return { companyId, agentId, issueId, workspaceId, ownerId, sourceId, runnerInstanceId, resultJson, root, files };
   }
 
-  it.each(["preserved", "projectless", "changed_binding", "changed_cwd", "pending_operation", "active_lease", "closed_workspace", "remote_workspace", "foreign_receipt"])(
+  it.each(["preserved", "git_worktree", "projectless", "changed_binding", "changed_cwd", "pending_operation", "active_lease", "closed_workspace", "remote_workspace", "foreign_receipt"])(
     "admits one fresh successor through canonical Retry without replaying the retained session (%s)", async mode => {
     const base = await mkdtemp(join(tmpdir(), "quarantined-retry-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -146,6 +146,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       if (mode === "changed_cwd") await db.update(executionWorkspaces).set({ cwd: join(base, "another-directory") }).where(eq(executionWorkspaces.id, f.workspaceId));
       if (mode === "closed_workspace") await db.update(executionWorkspaces).set({ status: "closed" }).where(eq(executionWorkspaces.id, f.workspaceId));
       if (mode === "remote_workspace") await db.update(executionWorkspaces).set({ providerType: "plugin" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (mode === "git_worktree") await db.update(executionWorkspaces).set({ providerType: "git_worktree" }).where(eq(executionWorkspaces.id, f.workspaceId));
       if (mode === "pending_operation") await db.insert(workspaceOperations).values({ companyId: f.companyId,
         executionWorkspaceId: f.workspaceId, heartbeatRunId: f.ownerId, issueId: f.issueId, phase: "workspace_restore", status: "running" });
       if (mode === "active_lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
@@ -159,7 +160,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       } else if (mode === "projectless") {
         expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "fresh_isolated_workspace",
           retryIntentId: receipt.requestId, sourceRunId: f.sourceId });
-      } else if (mode === "preserved") {
+      } else if (mode === "preserved" || mode === "git_worktree") {
         expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_stopped_native_workspace",
           retryIntentId: receipt.requestId, sourceRunId: f.sourceId, workspaceId: f.workspaceId, cwd: base });
       } else await expect(readFreshWorkspaceReadiness(db, successors[0])).rejects.toThrow(/Verified native continuation workspace/);
