@@ -75,6 +75,7 @@ import { claimNativeRestartRecoveries } from "../services/native-runtime/native-
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../services/native-runtime/native-active-runs.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { retireFullReusableSandbox } from "../services/full-reusable-sandbox.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_RUNTIME_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -4972,7 +4973,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it.each(["provider config", "workspace migration"])("does not resume released reusable plugin sandbox leases after %s drift", async drift => {
+  it.each(["provider config", "workspace migration", "full sandbox disk"])("does not resume released reusable plugin sandbox leases after %s drift", async drift => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -5062,6 +5063,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         fingerprint: expect.stringMatching(/^v1:sha256:[a-f0-9]{64}$/),
       }),
     });
+    if (drift === "full sandbox disk") {
+      // A restore found this reused sandbox full of an earlier run's files.
+      await db.insert(environmentLeases).values({ id: randomUUID(), companyId, environmentId: environment.id,
+        heartbeatRunId: runId, provider: first.lease.provider, providerLeaseId: first.lease.providerLeaseId,
+        leasePolicy: "reuse_by_environment", status: "expired" });
+      await expect(retireFullReusableSandbox(db, first.lease, runId)).resolves.toBe(true);
+    }
     await runtimeWithPlugin.releaseRunLeases(runId);
 
     if (drift === "workspace migration") {
@@ -5104,7 +5112,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(second.lease.providerLeaseId).toBe(`lease-${updatedEnvironment.config.image}-replacement`);
-    expect(second.lease.metadata?.reusableSandboxLease).not.toEqual(first.lease.metadata?.reusableSandboxLease);
+    // The full sandbox's scope is unchanged; it is the sandbox that left reuse.
+    if (drift !== "full sandbox disk") expect(second.lease.metadata?.reusableSandboxLease).not.toEqual(first.lease.metadata?.reusableSandboxLease);
     expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentResumeLease",
