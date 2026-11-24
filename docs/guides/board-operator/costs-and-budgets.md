@@ -37,34 +37,99 @@ PATCH /api/agents/{agentId}
 { "budgetMonthlyCents": 5000 }
 ```
 
+### Project Budget
+
+Set a project budget from **Costs -> Budgets**, the project detail page, or the budget policy API:
+
+```
+POST /api/companies/{companyId}/budgets/policies
+{
+  "scopeType": "project",
+  "scopeId": "{projectId}",
+  "amount": 25000,
+  "windowKind": "lifetime",
+  "warnPercent": 80,
+  "hardStopEnabled": true
+}
+```
+
+Project budgets created in the UI default to `lifetime` caps, while company and agent budgets use `calendar_month_utc` (monthly UTC) windows. When calling `POST /api/companies/{companyId}/budgets/policies` directly, pass `"windowKind": "lifetime"` explicitly for a lifetime project cap. You can also create or update company and agent policies through the same `/budgets/policies` endpoint.
+
 ## Budget Enforcement
 
-Paperclip enforces budgets automatically:
+Paperclip evaluates budget policies across company, agent, and project scopes:
 
 | Threshold | Action |
 |-----------|--------|
-| 80% | Soft alert — agent is warned to focus on critical tasks only |
-| 100% | Hard stop — agent is auto-paused, no more heartbeats |
+| 80% (default warning) | Soft alert. Paperclip opens a warning incident so operators and agents can prioritize critical work or adjust the cap. |
+| 100% (hard stop, on by default) | Auto-pause. Paperclip pauses the affected agent or project and blocks new runs until an operator resolves the incident. |
 
-An auto-paused agent can be resumed by increasing its budget or waiting for the next calendar month.
+An operator can resolve a hard-stop incident from **Costs -> Budgets** by choosing to raise the budget and resume work, or to keep the scope paused. Monthly company and agent budgets also reset on the first of the next UTC calendar month.
+
+> **Recorded spend and in-flight work:** Budget enforcement evaluates recorded spend as runs complete and usage receipts are logged. Runs that are already in flight when a threshold is crossed can push final recorded spend slightly past the configured cap before the stop takes effect.
 
 ## Viewing Costs
 
-### Dashboard
+### Costs Page
 
-The dashboard shows current month spend vs budget for the company and each agent.
+Open **Costs** in the dashboard to review spend over a selected date range:
+
+- **Overview** shows spend broken down **By agent** (expand any agent row to inspect per-provider and per-model totals), **By project**, and **By user** (responsible human user).
+- **Budgets** shows active incidents alongside company, agent, and project budget policies.
+- **Providers** compares spend, token usage, and subscription quota windows by provider.
 
 ### Cost Breakdown API
 
 ```
-GET /api/companies/{companyId}/costs/summary     # Company total
-GET /api/companies/{companyId}/costs/by-agent     # Per-agent breakdown
-GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
+GET /api/companies/{companyId}/costs/summary        # Company total
+GET /api/companies/{companyId}/costs/by-agent       # Per-agent breakdown
+GET /api/companies/{companyId}/costs/by-agent-model # Per-agent and model breakdown
+GET /api/companies/{companyId}/costs/by-project     # Per-project breakdown
+GET /api/companies/{companyId}/costs/by-provider    # Per-provider breakdown
+GET /api/companies/{companyId}/costs/by-user        # Per-user breakdown
 ```
+
+## Cross-team cost attribution walkthrough
+
+When multiple teams (such as Dev and QA) share agents, models, and provider accounts, tracking spend in spreadsheets breaks down quickly. Paperclip attributes every completed run automatically so each team can monitor spend, enforce its own cap, and pull chargeback totals without manual logging.
+
+### 1. Model each team or workload as a dedicated project
+
+Create one project per team or cost center (for example, `Core Engineering` for dev work and `QA Automation` for regression suites and release verification). Assign tasks to the matching project so every run inherits that project context.
+
+Pair project budgets with monthly company and agent limits:
+
+- Set a **company monthly budget** to cap total organization spend each UTC month.
+- Set **per-agent monthly budgets** to prevent any single high-volume agent from draining the shared pool.
+- Set a **project budget** on each team's project (`lifetime` cap by default, suited to a sprint, release, or quarterly allocation) so Dev and QA each have a clear spend boundary.
+
+### 2. Automatic attribution on every completed run
+
+When an agent finishes a run on a task, Paperclip records a cost event linked to that run, task, project, agent, and responsible user. Each record stores the provider, model, input and cached input tokens, output tokens, and cost in cents. Teams do not need to tag prompts manually or export provider CSVs to know which group drove a bill.
+
+### 3. Review spend and run chargebacks from the Costs page
+
+At weekly reviews or month-end close, select the reporting date range on the **Costs** page and read the built-in breakdowns:
+
+- Use **By project** on the **Overview** tab to pull direct spend totals for Dev, QA, and any other team project.
+- Use **By agent** and expand individual agents to see which **provider** and **model** accounted for the tokens.
+- Use **By user** to see which human operator initiated or directed delegated runs.
+- Use the **Providers** tab to compare spend across model providers (such as Anthropic and OpenAI).
+
+If finance pulls numbers into an internal ledger, query the matching API endpoints (`costs/by-project`, `costs/by-agent`, `costs/by-agent-model`, `costs/by-provider`, and `costs/by-user`) with the same date range parameters.
+
+### 4. Rely on 80% warnings and 100% hard-stop pauses
+
+Budget policies enforce the boundaries you set across every level:
+
+- When a team project, agent, or company reaches 80% of its cap, Paperclip opens a warning incident on **Costs -> Budgets** so leads can trim lower-priority tasks or raise the allocation early.
+- When spend reaches 100%, hard-stop enforcement auto-pauses the affected agent or project so runaway loops cannot silently burn through another team's budget.
+- Because enforcement checks recorded spend as runs finish, an in-flight run can still push final spend slightly above the cap. Leave a small buffer below hard finance ceilings when running long or parallel agent tasks.
 
 ## Best Practices
 
 - Set conservative budgets initially and increase as you see results
 - Monitor the dashboard regularly for unexpected cost spikes
 - Use per-agent budgets to limit exposure from any single agent
+- Use dedicated projects to separate spend across teams or workloads
 - Critical agents (CEO, CTO) may need higher budgets than ICs

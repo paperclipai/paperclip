@@ -36,21 +36,17 @@
 
 # Paperclip is the app people use to manage AI agents for work.
 
-Open-source orchestration for teams of AI agents.
+Paperclip is an open-source (MIT) multi-player control plane for running teams of AI agents. Run Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Hermes, and custom HTTP or process agents in one shared workspace with org charts, atomic task ownership, approval gates, and hard-stop budgets at company, agent, and project scope.
+
+Frameworks like LangGraph and CrewAI help you build an agent. Paperclip runs and governs the team of agents you already use, across software engineering and business operations. It is free to self-host as a Node.js server and React UI, with all team features included.
 
 **If OpenClaw is an _employee_, Paperclip is the _company_.**
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track work and costs from one dashboard. Choose models and harnesses per agent while keeping your team's tasks, skills, permissions, and history in one place.
-
-It looks like a task manager. Under the hood: org charts, budgets, governance, goal alignment, and agent coordination.
-
-**Manage business goals, not pull requests.**
-
-|        | Step            | Example                                                            |
-| ------ | --------------- | ------------------------------------------------------------------ |
-| **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
-| **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
-| **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
+|        | Step            | Example                                                                   |
+| ------ | --------------- | ------------------------------------------------------------------------- |
+| **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                           |
+| **02** | Hire the team   | CEO, CTO, engineers, QA, designers, and marketers on any provider.        |
+| **03** | Approve and run | Review plans. Set budgets and approval gates. Monitor from one dashboard. |
 
 <br/>
 
@@ -340,6 +336,17 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 | **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
 | **Not limited to one agent.** | Start with one agent and grow into a team with shared skills, delegation, and review.                                              |
 | **Not only for code review.** | Coding and PR review fit alongside research, operations, content, and other work.                                                  |
+
+<br/>
+
+## Compare and learn more
+
+- [What is Paperclip AI?](https://paperclip.ing/blog/what-is-paperclip-ai/): overview of how Paperclip coordinates multi-agent teams.
+- [Pricing](https://paperclip.ing/pricing/): free self-hosted MIT license with all team features included, plus Paperclip Cloud beta details.
+- [Paperclip vs LangGraph](https://paperclip.ing/vs/langgraph/): building stateful agent graphs versus running and governing an agent team.
+- [Paperclip vs CrewAI](https://paperclip.ing/vs/crewai/): code-first multi-agent crews versus a shared control plane with budgets and approvals.
+- [Paperclip vs Linear Agents](https://paperclip.ing/vs/linear-agents/): issue-tracker agent delegation versus a multi-player workspace for any agent runtime.
+- [Paperclip alternatives](https://paperclip.ing/blog/paperclip-alternatives/): side-by-side look at agent control planes, orchestrators, and frameworks.
 
 <br/>
 
