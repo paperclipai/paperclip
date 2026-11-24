@@ -4,6 +4,7 @@ import { constants, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolvePaperclipSkillReference } from "@paperclipai/adapter-utils/server-utils";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { taskDocumentKeySchema } from "../../vendor/paperclip-runner/index.js";
 import { openRunnerApiWorkspaceFile, openRunnerWorkspaceFile } from "./runner-api-files.js";
@@ -120,21 +121,10 @@ async function readFilePage(file: string, offset: number) {
     return { text: page, sha256: digest(bytes), byteSize: bytes.length, nextOffset: end < text.length ? end : null };
   } finally { await handle.close(); }
 }
-/**
- * An assigned skill by its key, its runtime name, or its short name. Tasks and a skill's own
- * frontmatter name it by the short name (the key's last part, as in `/my-skill`), so agents pass that.
- * A short name shared by two assigned skills names neither.
- */
-function assignedSkillByName<T extends { key: string; runtimeName: string }>(skills: readonly T[], name: string): T | undefined {
-  const exact = skills.find(skill => skill.key === name || skill.runtimeName === name);
-  if (exact) return exact;
-  const short = name.replace(/^\//, "");
-  const matches = skills.filter(skill => skill.key.split("/").pop() === short);
-  return matches.length === 1 ? matches[0] : undefined;
-}
 export async function readAssignedSkill(context: NativeRuntimeContextSnapshot, raw: unknown) {
   const args = RUNNER_BRIDGE_SCHEMAS.get("read_assigned_skill")!.parse(raw) as { skill: string; path: string; offset: number };
-  const skill = assignedSkillByName(context.skills, args.skill);
+  const key = resolvePaperclipSkillReference(args.skill, context.skills);
+  const skill = key ? context.skills.find(entry => entry.key === key) : undefined;
   if (!skill) throw new Error("runner_skill_not_assigned");
   const manifestText = await fs.readFile(path.join(path.dirname(path.dirname(skill.bundle.rootPath)), "manifests", `${skill.bundle.digest}.json`), "utf8");
   if (digest(manifestText) !== skill.bundle.manifestDigest) throw new Error("runner_skill_manifest_digest_mismatch");
