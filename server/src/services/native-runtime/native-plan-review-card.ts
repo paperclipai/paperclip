@@ -1,9 +1,11 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { documentRevisions, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
-import { logActivity } from "../activity-log.js";
+import { logActivity, publishActivity } from "../activity-log.js";
 import { documentService } from "../documents.js";
 import { HttpError } from "../../errors.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { isConversation } from "../../lib/conversation-wake-policy.js";
 
 /**
  * The Plan-mode review card for the current plan revision.
@@ -38,7 +40,15 @@ export function planReviewCardIdempotencyKey(revisionId: string): string {
   return `plan-review:v1:${revisionId}`;
 }
 
-async function coveringCard(db: Db, binding: Binding, revision: { id: string; createdAt: Date }) {
+async function coveringCard(db: Db, binding: Binding, revision: { id: string; createdAt: Date }, conversationMode: boolean) {
+  // A historical or deferred card cannot give the user the next action; the
+  // same rule decides the run's governance gate.
+  const active = new Set((await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, binding.companyId),
+    eq(issueThreadInteractions.issueId, binding.issueId),
+    eq(issueThreadInteractions.status, "pending"),
+    activeIssueInteractionCondition({ runId: binding.runId, conversationMode }),
+  ))).map(row => row.id));
   const cards = await db.select({
     id: issueThreadInteractions.id,
     kind: issueThreadInteractions.kind,
@@ -63,7 +73,7 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string; cr
     if (revisionId) return revisionId === revision.id;
     return card.createdAt >= revision.createdAt;
   };
-  const pending = cards.find(card => card.status === "pending" && covers(card));
+  const pending = cards.find(card => card.status === "pending" && active.has(card.id) && covers(card));
   if (pending) return { kind: "pending" as const, interactionId: pending.id };
   const answered = cards.find(card => card.kind === "request_confirmation" && card.status !== "expired" && covers(card));
   if (answered) return { kind: "reviewed" as const, revisionId: revision.id };
@@ -74,6 +84,7 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
   const [issue] = await db.select({
     workMode: issues.workMode, status: issues.status, assigneeAgentId: issues.assigneeAgentId,
     assigneeUserId: issues.assigneeUserId, hiddenAt: issues.hiddenAt,
+    conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
   }).from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).limit(1);
   if (!issue || issue.workMode !== "planning" || issue.hiddenAt || issue.assigneeUserId ||
     issue.assigneeAgentId !== binding.agentId || ["done", "cancelled"].includes(issue.status)) {
@@ -88,12 +99,15 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
     eq(documentRevisions.id, plan.latestRevisionId), eq(documentRevisions.companyId, binding.companyId),
   )).limit(1);
   if (!revision) return { kind: "no_plan" };
-  const existing = await coveringCard(db, binding, revision);
+  const conversationMode = isConversation(issue);
+  const existing = await coveringCard(db, binding, revision, conversationMode);
   if (existing) return existing;
   // Only the assigned agent's own proposal is put up for review. A revision a
   // person wrote is theirs already.
   if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" };
 
+  let inserted = false;
+  const publications: Parameters<typeof publishActivity>[0][] = [];
   let interactionId: string;
   try {
     const interaction = await issueThreadInteractionService(db).create(
@@ -125,31 +139,40 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
         },
       } as never,
       { agentId: binding.agentId, runId: binding.runId },
+      {
+        // Only the call that inserted the card records it; a concurrent or
+        // repeated settle replays the same card and logs nothing.
+        afterInsertInTransaction: async (tx, row) => {
+          inserted = true;
+          await logActivity(tx, {
+            companyId: binding.companyId,
+            actorType: "system",
+            actorId: "native-plan-review",
+            agentId: binding.agentId,
+            runId: binding.runId,
+            issueId: binding.issueId,
+            action: "issue.thread_interaction_created",
+            entityType: "issue",
+            entityId: binding.issueId,
+            details: {
+              interactionId: row.id,
+              interactionKind: "request_confirmation",
+              source: "plan_mode_settle",
+              planRevisionId: revision.id,
+              planRevisionNumber: revision.revisionNumber,
+            },
+          }, publications);
+        },
+      },
     );
     interactionId = interaction.id;
   } catch (error) {
     // A concurrent settle opened it first (same key, other run), the plan
     // moved on, or the task closed. Whatever now covers the revision wins.
     if (!(error instanceof HttpError) || ![409, 422].includes(error.status)) throw error;
-    return await coveringCard(db, binding, revision) ?? { kind: "not_applicable" };
+    return await coveringCard(db, binding, revision, conversationMode) ?? { kind: "not_applicable" };
   }
-  await logActivity(db, {
-    companyId: binding.companyId,
-    actorType: "system",
-    actorId: "native-plan-review",
-    agentId: binding.agentId,
-    runId: binding.runId,
-    issueId: binding.issueId,
-    action: "issue.thread_interaction_created",
-    entityType: "issue",
-    entityId: binding.issueId,
-    details: {
-      interactionId,
-      interactionKind: "request_confirmation",
-      source: "plan_mode_settle",
-      planRevisionId: revision.id,
-      planRevisionNumber: revision.revisionNumber,
-    },
-  });
+  for (const publication of publications) publishActivity(publication);
+  if (!inserted) return { kind: "pending", interactionId };
   return { kind: "created", interactionId, revisionId: revision.id };
 }

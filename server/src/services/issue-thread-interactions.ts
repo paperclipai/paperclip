@@ -228,6 +228,8 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
+  afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -5324,6 +5326,7 @@ export function issueThreadInteractionService(
             })
             .returning();
 
+          await options.afterInsertInTransaction?.(tx as unknown as Db, row);
           if (row.addresseeAgentId || row.addresseeUserId) {
             const [privacyIssue] = await tx.select().from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             await ensureAssignmentIssueAccessGrant(tx, { ...privacyIssue!,

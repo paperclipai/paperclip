@@ -11,6 +11,7 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  issueComments,
   issueDocuments,
   issueThreadInteractions,
   issues,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issueThreadInteractions);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -143,7 +145,8 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     await ensureNativePlanReviewCard(db, t.binding(runId));
     await ensureNativePlanReviewCard(db, t.binding(reconcileRun));
 
-    expect(outcomes.filter(outcome => outcome.kind === "created").length).toBeLessThanOrEqual(1);
+    expect(outcomes.filter(outcome => outcome.kind === "created")).toHaveLength(1);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, t.issueId))).toHaveLength(1);
     const cards = await t.cards();
     expect(cards.filter(card => card.status === "pending")).toHaveLength(1);
     expect(cards).toHaveLength(1);
@@ -240,5 +243,73 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     });
     await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toEqual({ kind: "not_applicable" });
     expect(await t.cards()).toHaveLength(0);
+  });
+  // Each way a Plan-mode run can leave the task, and the one current action
+  // the user gets: a review card for the revision, or (no plan / already
+  // answered) the arbiter's "save your plan" continuation.
+  type Scenario = { name: string; setup: (t: Awaited<ReturnType<typeof seed>>, runId: string) => Promise<void>;
+    kind: "created" | "pending" | "reviewed" | "no_plan" };
+  const question = async (t: Awaited<ReturnType<typeof seed>>, runId: string) => {
+    const [row] = await db.insert(issueThreadInteractions).values({
+      companyId: t.companyId, issueId: t.issueId, kind: "ask_user_questions", status: "pending",
+      continuationPolicy: "wake_assignee", sourceRunId: runId, createdByAgentId: t.agentId,
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Which name?", selectionMode: "single",
+        options: [{ id: "a", label: "A" }] }] },
+    }).returning();
+    return row!;
+  };
+  const scenarios: Scenario[] = [
+    { name: "no plan saved", setup: async () => {}, kind: "no_plan" },
+    { name: "plan saved, agent opened no card (first run or recovered run)", setup: async (t, runId) => { await t.writePlan(runId); }, kind: "created" },
+    { name: "plan saved, agent opened its own card", setup: async (t, runId) => {
+      await t.writePlan(runId);
+      await issueThreadInteractionService(db).create({ id: t.issueId, companyId: t.companyId }, {
+        kind: "request_confirmation", idempotencyKey: `own-${runId}`, sourceRunId: runId, continuationPolicy: "wake_assignee_on_accept",
+        payload: { version: 1, prompt: "Proceed?", acceptLabel: "Confirm", rejectLabel: "Request changes" },
+      } as never, { agentId: t.agentId, runId });
+    }, kind: "pending" },
+    { name: "plan saved, agent asked a current question", setup: async (t, runId) => {
+      await t.writePlan(runId); await question(t, runId);
+    }, kind: "pending" },
+    { name: "plan saved, an older question a later comment made historical", setup: async (t, runId) => {
+      await question(t, runId);
+      await db.insert(issueComments).values({ companyId: t.companyId, issueId: t.issueId, authorType: "user",
+        authorUserId: "local-board", body: "Use A.", createdAt: new Date(Date.now() + 1_000) });
+      await t.writePlan(runId);
+    }, kind: "created" },
+    { name: "plan saved, an older question the user dismissed", setup: async (t, runId) => {
+      const row = await question(t, runId);
+      await db.update(issueThreadInteractions).set({ dismissedAt: new Date(), dismissedByUserId: "local-board" })
+        .where(eq(issueThreadInteractions.id, row.id));
+      await t.writePlan(runId);
+    }, kind: "created" },
+    { name: "revision already answered with Request changes, no new revision", setup: async (t, runId) => {
+      await t.writePlan(runId);
+      await ensureNativePlanReviewCard(db, t.binding(runId));
+      const [card] = await t.cards();
+      await issueThreadInteractionService(db).rejectInteraction({ id: t.issueId, companyId: t.companyId }, card!.id,
+        { reason: "Rename it" } as never, { userId: "local-board" } as never);
+    }, kind: "reviewed" },
+    { name: "new revision after Request changes", setup: async (t, runId) => {
+      await t.writePlan(runId);
+      await ensureNativePlanReviewCard(db, t.binding(runId));
+      const [card] = await t.cards();
+      await issueThreadInteractionService(db).rejectInteraction({ id: t.issueId, companyId: t.companyId }, card!.id,
+        { reason: "Rename it" } as never, { userId: "local-board" } as never);
+      await t.writePlan(runId, `${PLAN}\n3. Renamed.`);
+    }, kind: "created" },
+  ];
+
+  it.each(scenarios)("$name", async ({ setup, kind }) => {
+    const t = await seed();
+    const runId = await t.newRun();
+    await setup(t, runId);
+
+    const outcome = await ensureNativePlanReviewCard(db, t.binding(runId));
+    expect(outcome.kind).toBe(kind);
+    // A repeat settle changes nothing, and at most one review card is pending.
+    await expect(ensureNativePlanReviewCard(db, t.binding(runId))).resolves.toMatchObject({
+      kind: kind === "created" ? "pending" : kind });
+    expect((await t.cards()).filter(card => card.status === "pending").length).toBeLessThanOrEqual(1);
   });
 });
