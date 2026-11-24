@@ -21,9 +21,16 @@ if (fixture) {
     );
   fs.mkdirSync(path.join(fixtureDir, "codex-home"));
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  // Setup probes must finish; only task turns stay held for Stop. Emit native
+  // progress so the journey also checks cancellation beside an interruption.
   fs.writeFileSync(
     path.join(fixtureDir, "codex"),
-    `#!/bin/sh\nexec ${quote(fixture)} --state-file ${quote(fixtureDir)}/state-$$.json --hold-turn --call-log ${quote(logPath)} "$@"\n`,
+    `#!/bin/sh
+case "$CODEX_HOME" in
+  */paperclip-native-setup-*/*) exec ${quote(fixture)} --state-file ${quote(fixtureDir)}/setup-$$.json --call-log ${quote(logPath)}.setup "$@" ;;
+  *) exec ${quote(fixture)} --state-file ${quote(fixtureDir)}/state-$$.json --hold-turn --held-output --call-log ${quote(logPath)} "$@" ;;
+esac
+`,
     { mode: 0o755 },
   );
 }

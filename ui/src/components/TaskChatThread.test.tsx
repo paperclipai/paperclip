@@ -2558,7 +2558,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain(runtimeMode === "native" ? "Run cancelled" : "Stopped");
   });
 
-  it("shows cancellation after native progress without offering a retry", () => {
+  it.each([false, true])("shows cancellation after native progress without offering a retry (interruption: %s)", (withInterruption) => {
     nativeTranscriptState.transcriptByRun.set("native-cancelled", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Work was in progress.", "progress"),
     ]);
@@ -2566,6 +2566,10 @@ describe("TaskChatThread runtime transcript selection", () => {
     renderThread({
       comments: [],
       onAdd: async () => {},
+      interruption: withInterruption ? {
+        intentId: null, responsibility: "system", state: "failed", nextRetryAt: null,
+        canRetry: false, observedRunId: "native-cancelled", userAction: null, sourceRunIds: ["native-cancelled"],
+      } : null,
       linkedRuns: [
         {
           runId: "native-cancelled",
