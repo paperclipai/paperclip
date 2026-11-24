@@ -36,8 +36,8 @@ Decisions and the details behind them are kept in the
 - [x] **Owner** (Nov 17): Dotta owns submission, security, privacy and release.
 - [x] **Engineering test instance** (Nov 17): create
       `googletester.staging.paperclip.app`.
-- [x] What we send to the reviewers (the staging tester or something else),
-      including the custom reviewer password. (Nov 23: the staging tester)
+- [x] What we send to the reviewers: the staging tester (Nov 23). Its review
+      code is created but not yet handed over.
 - [ ] Privacy policy edits approved.
 - [ ] Security lab and budget. (Nov 23: TAC Security recommended; quote and
       budget not confirmed)

@@ -190,13 +190,16 @@ Passed live on the tester, on REST against real Google (November 23):
 - The connection survived the switch from Google's MCP servers with no
   reconnect, and a token refresh worked after the broker began binding
   grants to their instance.
-- Disconnect ends access at Google (the account's linked-apps list lost the
-  entry) and reconnect works. Checked on the build before REST.
 - Choosing only Gmail read-only requests one scope; all read & write
   requests ten.
 - An unknown tool argument is refused with the accepted arguments named.
 - Cancelling a sign-in leaves one connection and nothing needing attention.
 - Review, Permissions and Activity show readable action names and no ids.
+
+Checked on the build before the REST switch only (test again on REST):
+
+- Disconnect ends access at Google (the account's linked-apps list lost the
+  entry), and reconnect works.
 
 Left in the owner's Google account by the tests: five files named
 "Paperclip QA 1123 …" and three unsent test drafts.
