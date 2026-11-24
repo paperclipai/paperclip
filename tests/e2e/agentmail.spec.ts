@@ -13,10 +13,6 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   request,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
-  const settings = await request.patch("/api/instance/settings/experimental", {
-    data: { enableChatConnectors: false },
-  });
-  expect(settings.ok()).toBeTruthy();
   const created = await request.post("/api/companies", {
     data: { name: `AgentMail browser ${Date.now()}` },
   });

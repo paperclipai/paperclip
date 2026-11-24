@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-accepted-outcome.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -102,7 +103,7 @@ export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "f
 
 
 export function pendingNativeRunProjectionCondition(db: Db) {
-  const status = sql<string>`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState'`;
+  const status = nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson);
   return exists(db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
     eq(nativeRunResults.id, nativeRunFinalizations.resultId),
     eq(nativeRunResults.runId, nativeRunFinalizations.runId),
@@ -132,7 +133,7 @@ export async function projectCommittedRun(input: {
 }) {
   if (!input.coordinator.resultId) return;
   const resultRow = await input.db
-    .select({ terminalState: sql<string>`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState'` })
+    .select({ terminalState: nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson) })
     .from(nativeRunResults)
     .where(
       and(

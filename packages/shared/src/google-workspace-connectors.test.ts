@@ -8,8 +8,22 @@ import {
   googleWorkspaceDraftRequestedScopes, GOOGLE_WORKSPACE_SERVICE_GROUPS, GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, googleWorkspaceProfileWithinSubmittedScopes,
   GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames, googleWorkspaceSelectionForScopes,
-  type GoogleWorkspaceServiceSelection,
+  googleWorkspaceToolTitle, type GoogleWorkspaceServiceSelection,
 } from "./google-workspace-connectors.js";
+
+describe("googleWorkspaceToolTitle", () => {
+  it("names a Google tool by service and action, never by its internal name", () => {
+    expect(googleWorkspaceToolTitle("gmail__get_message")).toBe("Gmail: Get message");
+    expect(googleWorkspaceToolTitle("gmail__get_message", "Read a message")).toBe("Gmail: Read a message");
+    expect(googleWorkspaceToolTitle("calendar__list_events", "Calendar: List events")).toBe("Calendar: List events");
+    expect(googleWorkspaceToolTitle("search__search_corpus")).toBe("Workspace search: Search corpus");
+  });
+
+  it("returns the given title for anything that is not an allowlisted Google tool", () => {
+    expect(googleWorkspaceToolTitle("gmail__send_message")).toBeNull();
+    expect(googleWorkspaceToolTitle("create_issue", " Create issue ")).toBe("Create issue");
+  });
+});
 
 const scope = (value: string) => `https://www.googleapis.com/auth/${value}`;
 
@@ -158,10 +172,14 @@ describe("combined Google Workspace consent", () => {
     expect(isGoogleWorkspaceToolGranted("gmail__send_message", profiles["workspace.all"].scopes)).toBe(false);
   });
 
-  it("sends every service to Google's MCP servers by default and reports the transport on each target", () => {
+  it("runs the six launch services on Paperclip's REST tools, keeps the others on Google's MCP servers, and reports the transport on each target", () => {
     expect(Object.keys(GOOGLE_WORKSPACE_TOOL_TRANSPORT).sort()).toEqual(Object.keys(GOOGLE_WORKSPACE_SERVICES).sort());
-    expect(new Set(Object.values(GOOGLE_WORKSPACE_TOOL_TRANSPORT))).toEqual(new Set(["google_mcp"]));
-    expect(googleWorkspaceToolTarget("gmail__get_message")?.transport).toBe("google_mcp");
+    expect(GOOGLE_WORKSPACE_TOOL_TRANSPORT).toEqual({
+      gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest", sheets: "paperclip_rest",
+      slides: "paperclip_rest", calendar: "paperclip_rest", chat: "google_mcp", people: "google_mcp", search: "google_mcp",
+    });
+    expect(googleWorkspaceToolTarget("gmail__get_message")?.transport).toBe("paperclip_rest");
+    expect(googleWorkspaceToolTarget("chat__list_messages")?.transport).toBe("google_mcp");
     expect(googleWorkspaceServiceToolNames("docs")).toEqual(["read_doc", "update_doc"]);
   });
 

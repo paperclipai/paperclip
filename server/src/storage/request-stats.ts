@@ -36,6 +36,22 @@ export function collectStorageRequestStats<T>(stats: StorageRequestStats, work: 
   return current.run(stats, work);
 }
 
+const progress = new AsyncLocalStorage<() => void>();
+
+/**
+ * Runs `work` calling `onProgress` each time the store answers a request,
+ * takes a multipart part, or a resend starts its wait. A caller uses it to
+ * tell a slow transfer from a stalled one when the provider sends a file
+ * source itself and no stream chunk is visible.
+ */
+export function observeStorageProgress<T>(onProgress: () => void, work: () => Promise<T>): Promise<T> {
+  return progress.run(onProgress, work);
+}
+
+function noteProgress(): void {
+  try { progress.getStore()?.(); } catch { return; }
+}
+
 function metadataOf(value: unknown): { attempts?: unknown; totalRetryDelay?: unknown } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const metadata = (value as { $metadata?: unknown }).$metadata;
@@ -47,6 +63,7 @@ const count = (value: unknown, fallback: number) =>
 
 /** Records one S3 request's outcome from its SDK response or error metadata. */
 export function recordStorageRequest(outcome: unknown, failed: boolean): void {
+  noteProgress();
   const stats = current.getStore();
   if (!stats) return;
   const metadata = metadataOf(outcome);
@@ -57,6 +74,7 @@ export function recordStorageRequest(outcome: unknown, failed: boolean): void {
 }
 
 export function recordStoragePart(): void {
+  noteProgress();
   const stats = current.getStore();
   if (stats) stats.parts += 1;
 }
@@ -69,6 +87,7 @@ export function recordStorageThrottle(): void {
 
 /** Records a wait before resending a part. */
 export function recordStorageBackoff(waitMs: number): void {
+  noteProgress();
   const stats = current.getStore();
   if (stats) stats.backoffMs += count(waitMs, 0);
 }

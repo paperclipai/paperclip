@@ -42,7 +42,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routed routine page tests](../../ui/src/pages/RoutineDetail.test.tsx) cover old-address redirects, History paging, the status switch, saving edits against the opened revision, the save-conflict state, webhook test mode and the responsibility flag gate; [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync. [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts. Running a routine through the page remains a manual check.
+Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (mocked `RoutineDetail` page tests were removed; verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 
@@ -89,7 +89,7 @@ Capability ID: `routines/run-now`.
 Scope: ui
 Storybook: Mount RoutineRunVariablesDialog through actual RoutineDetail with required/default inputs, project/workspace overrides, pending, blocked and failed submission. RunButton-only no-op examples do not supply/run inputs.
 Production: POST /routines/{id}/run must validate variables, create one attributed execution/task and obey pause/access/budget gates; inspect actual task outcome separately.
-Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/RoutineRunVariablesDialog.tsx), [RoutineDetail.tsx](../../ui/src/pages/RoutineDetail.tsx), [routines.ts](../../server/src/routes/routines.ts). Tests: [RoutineRunVariablesDialog.test.tsx](../../ui/src/components/RoutineRunVariablesDialog.test.tsx), [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts), [routines-e2e.test.ts](../../server/src/__tests__/routines-e2e.test.ts)
+Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/RoutineRunVariablesDialog.tsx), [RoutineDetail.tsx](../../ui/src/pages/RoutineDetail.tsx), [routines.ts](../../server/src/routes/routines.ts). Tests: [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts), [routines-e2e.test.ts](../../server/src/__tests__/routines-e2e.test.ts)
 
 ### Documentation scope: Routines, cases, and status cards
 

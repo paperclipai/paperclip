@@ -1,4 +1,4 @@
-// Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.
+// Generated from acpx-profiles.json, cursor-distributions.json and antigravity-distributions.json. Do not edit.
 pub(crate) const QUALIFIED_ACPX_VERSION: &str = "0.22.0";
 pub(crate) const ACPX_DRIVER_KIND: &str = "acpx_runtime";
 
@@ -25,15 +25,33 @@ pub(crate) fn kimi_native_closure(platform: &str, architecture: &str) -> Option<
     }
 }
 
+pub(crate) fn antigravity_native_closure(
+    platform: &str,
+    architecture: &str,
+) -> Option<&'static str> {
+    match (platform, architecture) {
+        ("darwin", "arm64") => {
+            Some("ab9df40a64806a8e1812234ce5331e04d1c6b5f8c7e5bdbb456cd645e58c5aad")
+        }
+        ("linux", "x64") => {
+            Some("be35d65a32667550b5474588d705e6987a813e2fa619cf5db7d82d141c3c05fb")
+        }
+        ("linux", "arm64") => {
+            Some("46c36293779283c1f933eb438a143d116421a331f614601c754f1b94d9dc171a")
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
     Some(match agent {
         "antigravity" => AcpxReleaseProfile {
             agent_server_package: "native:antigravity-acp",
-            agent_server_version: "1.4.3",
+            agent_server_version: "1.5.2",
             agent_runtime_package: Some("native:antigravity-localharness"),
-            agent_runtime_version: Some("1.4.3"),
+            agent_runtime_version: Some("1.5.2"),
             command_digest:
-                "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+                "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
             requires_provider_policy: true,
             qualification_pending: true,
         },

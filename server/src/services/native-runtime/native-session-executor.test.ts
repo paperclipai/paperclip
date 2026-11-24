@@ -7,6 +7,7 @@ import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import * as harnessStorage from "./native-harness-backup-storage.js";
 import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
+import * as nativeSshCommandRunner from "./native-ssh-command-runner.js";
 import * as ownerProof from "../owner-proof.js";
 import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import * as remoteWarmRecoveryRuntime from "./remote-warm-session-recovery.js";
@@ -148,6 +149,8 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
 
+const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+
 const usageRecorder = vi.hoisted(() => ({
   create: vi.fn<typeof import("../usage-receipts.js")["createRunUsageRecorder"]>(),
   capture: vi.fn<(receipt: AdapterUsageCheckpoint) => Promise<AdapterUsageCheckpoint>>(),
@@ -248,6 +251,14 @@ const durableRunnerState = (
   lifecycle,
 });
 
+const antigravityPack = vi.hoisted(() => ({ released: false, linuxClosure: "b".repeat(64) }));
+vi.mock("./remote-provider-pack.js", async importOriginal => {
+  const original = await importOriginal<typeof import("./remote-provider-pack.js")>();
+  // The Linux patched closure is pinned by the image agent; this fixture stands in for it.
+  return { ...original, ANTIGRAVITY_PATCHED_CLOSURE_SHA256: new Proxy({}, {
+    get: (_target, key) => key === "linux-x64" ? antigravityPack.linuxClosure : original.ANTIGRAVITY_PATCHED_CLOSURE_SHA256[key as string],
+  }) };
+});
 const state = vi.hoisted(() => ({
   localRuntimeApiUrl: vi.fn(() => "http://127.0.0.1:43219"),
   createAssignedMcpTools: vi.fn(),
@@ -331,8 +342,14 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
   const original = await importOriginal<
     typeof import("../../vendor/paperclip-runner/index.js")
   >();
+  // Antigravity's release state is stubbed per test (pending today, qualified after the flip).
+  const { qualificationStatus: _antigravityPending, ...antigravityReleased } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
+  Object.defineProperty(profiles, "antigravity", { enumerable: true,
+    get: () => antigravityPack.released ? antigravityReleased : original.QUALIFIED_ACPX_PROFILES.antigravity });
   return {
     ...original,
+    QUALIFIED_ACPX_PROFILES: profiles,
     bundledRemoteProviderPackManifestPath: vi.fn((moduleUrl?: string, target?: "linux-x64" | "linux-arm64") => state.bundledPackManifestPath ?? original.bundledRemoteProviderPackManifestPath(moduleUrl, target)),
     bundledRemoteRunnerBinary: () => state.bundledRunnerBinary ?? original.bundledRemoteRunnerBinary(),
     createNativeSessionBackend: state.createBackend,
@@ -3188,6 +3205,10 @@ describe("remote provider pack manifest", () => {
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
         expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
+        // The per-turn backup is bounded by transfer inactivity, not a fixed total time.
+        const [persisted] = vi.mocked(harnessStorage.persistNativeHarnessBackup).mock.calls[0]!;
+        expect(persisted.transferIdleTimeoutMs).toBe(harnessStorage.NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS);
+        expect(persisted.signal).toBeUndefined();
         expect(checkpointReadResets).toBe(0);
         expect(inspectionResets).toBe(0);
         return;
@@ -3706,6 +3727,62 @@ describe("remote provider pack manifest", () => {
     await writeFile(join(root, kimiPath, "runtime"), "substitute Kimi runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("candidate asset tree digest mismatch");
     await writeFile(join(root, kimiPath, "runtime"), "pinned Kimi runtime");
+    // Google Antigravity image pack contract: the patched Linux closure under
+    // candidateProviders while pending, under providers after the flip, never both.
+    const antigravityPath = "provider-assets/antigravity/linux-x64";
+    await mkdir(join(root, antigravityPath), { recursive: true });
+    await writeFile(join(root, antigravityPath, "agy_acp_server.par"), "patched Antigravity runtime");
+    const antigravity = { version: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion,
+      profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+      closureDigest: `sha256:${antigravityPack.linuxClosure}`, qualification: "pending", path: antigravityPath,
+      sha256: sha256DirectoryTree(join(root, antigravityPath)) };
+    try {
+      const inventories = payload as unknown as Record<"providers" | "candidateProviders", Record<string, unknown>>;
+      for (const released of [false, true]) {
+        antigravityPack.released = released;
+        antigravity.qualification = released ? "qualified" : "pending";
+        const [admitted, refused] = released ? ["providers", "candidateProviders"] as const : ["candidateProviders", "providers"] as const;
+        Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
+        Object.assign(inventories[admitted], { antigravity });
+        await writeKimiManifest();
+        expect(readRemoteProviderPackManifest(root).payload[admitted]?.antigravity).toEqual(antigravity);
+        expect(readBundledRemoteProviderPackManifest(manifestPath).payload[admitted]?.antigravity?.qualification)
+          .toBe(released ? "qualified" : "pending");
+        Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
+        Object.assign(inventories[refused], { antigravity: { ...antigravity, qualification: "pending" } });
+        await writeKimiManifest();
+        expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity is listed under the wrong pack inventory");
+        Object.assign(payload, { providers: { cursor, kimi, antigravity }, candidateProviders: { antigravity } });
+        await writeKimiManifest();
+        expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible");
+        for (const closureDigest of [`sha256:${distributions.platforms["darwin-arm64"].vendorClosureSha256}`,
+          `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`, digest("other-closure")]) {
+          Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
+          Object.assign(inventories[admitted], { antigravity: { ...antigravity, closureDigest } });
+          await writeKimiManifest();
+          expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity closure is not this release's patched closure");
+        }
+        Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
+        Object.assign(inventories[admitted], { antigravity: { ...antigravity, version: "0.0.1" } });
+        await writeKimiManifest();
+        expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: Antigravity profile does not match this release");
+        Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: {} });
+        Object.assign(inventories[admitted], { antigravity });
+        await writeKimiManifest();
+        await writeFile(join(root, antigravityPath, "agy_acp_server.par"), "vendor Antigravity runtime");
+        expect(() => readRemoteProviderPackManifest(root)).toThrow("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
+        await writeFile(join(root, antigravityPath, "agy_acp_server.par"), "patched Antigravity runtime");
+      }
+      // Until the Linux runtime is pinned, no Antigravity image pack verifies.
+      antigravityPack.linuxClosure = "";
+      await writeKimiManifest();
+      expect(() => readRemoteProviderPackManifest(root)).toThrow("Antigravity closure is not this release's patched closure");
+    } finally {
+      antigravityPack.released = false; antigravityPack.linuxClosure = "b".repeat(64);
+      Object.assign(payload, { providers: { cursor, kimi } });
+      Reflect.deleteProperty(payload, "candidateProviders");
+      await writeKimiManifest();
+    }
     const threeCandidates = { cursor,
       pi: { ...kimi, version: "1.0.0", qualification: "qualified", path: "provider-assets/pi/linux-x64" },
       copilot: { ...kimi, qualification: "pending", version: QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion,
@@ -3720,7 +3797,7 @@ describe("remote provider pack manifest", () => {
     Object.assign(payload, { candidateProviders: threeCandidates });
     await writeKimiManifest();
     expect(Object.keys(readRemoteProviderPackManifest(root).payload.candidateProviders!)).toHaveLength(3);
-    Object.assign(payload, { candidateProviders: { ...threeCandidates, unknown: kimi } });
+    Object.assign(payload, { candidateProviders: { ...threeCandidates, unknown: kimi, other: kimi } });
     await writeKimiManifest();
     expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate inventory");
     Object.assign(payload, { candidateProviders: { unknown: kimi } });
@@ -15979,6 +16056,16 @@ describe("native session bounded recovery", () => {
       });
     });
 
+    it.each([false, true])("stops a billing refusal on its first attempt even with a confirmed runner exit (remote: %s)", remote => {
+      const failure = Object.defineProperty(sessionOpenFailure(startupFailure({
+        category: "quota_exhausted", retryability: "requires_action", message: "Check billing and usage.",
+      })), "runnerExitConfirmed", { value: true });
+      const code = nativeSessionFailureSourceCode(failure);
+      expect(nativeRemoteStartupRejectionCode(code, failure, remote)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeSessionFailureDisposition(1, new Date(), code))
+        .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null });
+    });
+
     it("keeps bounded same-run retries for a local startup failure without a definite permanent cause", () => {
       for (const fields of [
         {},
@@ -15986,7 +16073,8 @@ describe("native session bounded recovery", () => {
         { category: "overloaded", retryability: "transient", httpStatus: 503 },
         { category: "timeout", retryability: "transient", httpStatus: 504 },
         { category: "rate_limit", httpStatus: 429 },
-        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded" },
+        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded",
+          retryAt: new Date(Date.now() + 60_000).toISOString() },
         { category: "model_unavailable", retryability: "requires_action" },
         { phase: "turn", category: "authentication", retryability: "requires_action" },
       ]) {
@@ -16052,6 +16140,36 @@ describe("native session bounded recovery", () => {
       // A deterministic rejection never retries, even with exit proof.
       const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
       expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+    });
+
+    it("waits out a remote startup rate limit or quota as a usage-limit hold, not a board Retry", () => {
+      // Staging PAPERCLIP-BACKEND-8Z: an account-wide Claude 429 refused session.open, the same-run
+      // retry met it again after the cooldown, and the repeat ended as a startup rejection.
+      const limit = (fields: Record<string, unknown>) => startupFailure({ provider: "anthropic", httpStatus: 429,
+        message: "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed",
+        ...fields });
+      const confirmed = (fields: Record<string, unknown>) =>
+        Object.defineProperty(sessionOpenFailure(limit(fields)), "runnerExitConfirmed", { value: true, enumerable: false });
+      for (const fields of [{ category: "rate_limit" }, { category: "quota_exhausted", retryability: "requires_action",
+        retryAt: new Date(Date.now() + 60_000).toISOString() }]) {
+        const first = confirmed(fields);
+        expect(nativeSessionFailureSourceCode(first)).toBe("provider_session_open_rejected");
+        // The first refusal still retries the same run after the cooldown.
+        expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected", first, true))
+          .toBe("provider_session_open_rejected");
+        // The repeat, or a refusal whose runner exit is unproven, waits for the reset.
+        const previous = nativeStartupFailureSignature(limit(fields));
+        const repeated = nativeRemoteStartupRejectionCode("provider_session_open_rejected", confirmed(fields), true, previous);
+        const unproven = nativeRemoteStartupRejectionCode("provider_session_open_rejected", sessionOpenFailure(limit(fields)), true);
+        for (const code of [repeated, unproven]) {
+          expect(code).toBe("native_provider_usage_limit");
+          const disposition = nativeSessionFailureDisposition(2, new Date(), code);
+          expect(disposition).toEqual({ phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: null });
+        }
+      }
+      // A local target keeps its bounded same-run retries.
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected",
+        sessionOpenFailure(limit({ category: "rate_limit" })), false)).toBe("provider_session_open_rejected");
     });
   });
 
@@ -22840,6 +22958,7 @@ describe("runnerd provider runtime wiring", () => {
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_unproven", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened_stop_unproven", homeMode: "isolated" },
   ])(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario ($homeMode)", async ({ outcome, scenario, homeMode }) => {
     const remoteCwd = join(isolatedStateDirectory, "remote");
@@ -23058,6 +23177,15 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unprepared_backup"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
+    if (scenario === "interrupted_bootstrap_unopened_stop_unproven") {
+      expect(recordRemoteBootstrapRestartProof(execution.binding.runId, "stop_unproven")).toBe(false);
+    }
+    const refusedRestart = {
+      interrupted_bootstrap_unopened_unproven: "same_run,provider=unopened,proof=not_recorded",
+      interrupted_bootstrap_unopened_stop_unproven: "same_run,provider=unopened,proof=stop_unproven",
+      interrupted_bootstrap_unopened_other_run: "other_run,provider=unopened,proof=held",
+      interrupted_bootstrap_unopened_active_turn: "same_run,provider=opened,proof=held",
+    }[scenario];
     if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened" || scenario === "interrupted_bootstrap_unprepared"
       || scenario === "interrupted_bootstrap_unprepared_unrecorded" || scenario === "interrupted_bootstrap_connected_checkpoint_proven") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
@@ -23121,7 +23249,9 @@ describe("runnerd provider runtime wiring", () => {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow(
         outcome === "replacement" ? "runner_harness_backup_unavailable"
           : scenario.startsWith("interrupted_bootstrap_unprepared") ? "runner_harness_state_mismatch: resumed_unavailable"
-          : "runner_harness_state_mismatch",
+          : refusedRestart
+            ? `runner_harness_state_mismatch: provider_identity_incomplete (identity_binding; bootstrap_restart=${refusedRestart})`
+            : "runner_harness_state_mismatch",
       );
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
       expect(syncIn).not.toHaveBeenCalled();
@@ -23539,6 +23669,9 @@ describe("runnerd provider runtime wiring", () => {
   ])(
     "requires a build-owned provider pack identity before launching remote %s",
     async (providerKind, provider, driverKind) => {
+      vi.spyOn(nativeSshCommandRunner, "createNativeSshCommandRunner").mockReturnValue({
+        execute: vi.fn(async () => ({ stdout: "Linux\nx86_64\n", stderr: "", exitCode: 0, timedOut: false })),
+      } as unknown as ReturnType<typeof nativeSshCommandRunner.createNativeSshCommandRunner>);
       state.bundledPackManifestPath = join(tmpdir(), randomUUID(), "provider-pack.json");
       const remoteCwd = "/home/daytona/paperclip-workspace";
       const remoteProviderExecution = {
