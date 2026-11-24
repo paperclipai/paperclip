@@ -1,5 +1,5 @@
 {
-  "id": "ad47686f-2b87-4aaf-9f95-39c19f456f2e",
+  "id": "001ed6d5-4cc4-4f05-91ec-f3031c94bc98",
   "prevId": "5d1d8cc7-e7f6-40ce-94c5-dc84dd4210b9",
   "version": "7",
   "dialect": "postgresql",
@@ -10592,6 +10592,40 @@
           "isUnique": false,
           "where": "\"chat_actions\".\"kind\" = 'github_review_check'\n      and (\"chat_actions\".\"status\" = 'received' or (\"chat_actions\".\"status\" = 'failed' and \"chat_actions\".\"result\"->>'retryable' = 'true'))",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_actions_github_task_publications_idx": {
+          "name": "chat_actions_github_task_publications_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->'session'->>'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"kind\" = 'github_review_publication' and \"chat_actions\".\"status\" = 'processed'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -43961,13 +43995,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -44397,7 +44424,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
