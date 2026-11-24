@@ -1059,6 +1059,34 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it.each([["preparing", false], ["native", false], ["native", true]] as const)(
+    "stops a %s swarm run (turn started: %s) on Interrupt and delivers the queued message as the next request",
+    async (runtime, turnStarted) => {
+      const seeded = await seedFirstTurnQueue(runtime);
+      // A trusted /swarm run: its only instruction is the recorded request, so no queued message joins it.
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...current!.contextSnapshot, antigravitySwarmCommentId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      if (turnStarted) {
+        await appendHeartbeatRunEvent(db, { companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+          eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
+      }
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      // Not shown as taken by the first turn: the swarm will never read it.
+      expect(queue.body.firstTurnCommentIds ?? []).toEqual([]);
+      const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.executionWait?.reason).not.toBe("first_turn_pending");
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(wake!.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(run!.status).toBe("cancelled");
+    },
+  );
+
   it("gives a booting run's first turn the user's message merged into an earlier automatic wake", async () => {
     const seeded = await seedFirstTurnQueue("preparing", "system");
     const client = app(seeded.companyId);

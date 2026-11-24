@@ -69,6 +69,8 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, antigravitySwarmCommentId: randomUUID() } }).where(eq(heartbeatRuns.id, f.runId));
     await queueMessage(f, "an ordinary message written while the swarm prepares");
     expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
+    // Nor does Interrupt treat it as a first turn that will take the message.
+    expect(await runAcceptsFirstTurnQueuedInput(db, await readRun(f.runId))).toBe(false);
   });
 
   it("gives a message that arrived during preparation to the first turn, without a stop", async () => {

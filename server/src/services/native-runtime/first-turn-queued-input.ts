@@ -248,8 +248,7 @@ export async function claimFirstTurnQueuedInput(
     // Only the run that holds the task takes its queue. Conversations keep
     // their own turn-boundary contract.
     // A swarm run's instruction is only its recorded request; nothing joins it.
-    const joining = !issue || issue.conversationAgentId || issue.executionRunId !== run.id
-      || record(run.contextSnapshot).antigravitySwarmCommentId !== undefined
+    const joining = !issue || issue.conversationAgentId || issue.executionRunId !== run.id || isAntigravitySwarmRun(run)
       ? [] : wakes.filter(wake => deferredWakeJoinsFirstTurn(wake, run));
     const commentIds = [...new Set(joining.flatMap(wake => queuedCommentIdsFromWakePayload(wake.payload)))];
     const taken = await readQueuedMessages(tx as unknown as Db, { ...binding, responsibleUserId: run.responsibleUserId,
@@ -274,6 +273,11 @@ export async function claimFirstTurnQueuedInput(
   });
 }
 
+/** A trusted /swarm run (services/antigravity-swarm.ts records the request on the run). */
+function isAntigravitySwarmRun(run: { contextSnapshot?: unknown }): boolean {
+  return record(run.contextSnapshot).antigravitySwarmCommentId != null;
+}
+
 /**
  * True while a running native run can still take queued input into its first
  * turn: it has not sealed that input and no provider turn was accepted. A run
@@ -290,6 +294,9 @@ export async function runAcceptsFirstTurnQueuedInput(
     record(record(run.runnerProfileJson).adapterDispatch).adapterType === "paperclip_runner";
   if (run.runtimeMode !== "native" && !preparingNative) return false;
   if (readFirstTurnQueuedInputReceipt(run)) return false;
+  // A swarm run's only instruction is its recorded request: it never takes
+  // queued input, so Interrupt must stop it and deliver the message instead.
+  if (isAntigravitySwarmRun(run)) return false;
   const [accepted] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     inArray(heartbeatRunEvents.eventType, [...PROVIDER_TURN_ACCEPTED_EVENT_TYPES]))).limit(1);
@@ -349,13 +356,15 @@ export async function firstTurnQueuedCommentIds(
     runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt, responsibleUserId: heartbeatRuns.responsibleUserId,
     dispatchAdapterType: sql<string | null>`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`,
     receipt: sql<unknown>`${heartbeatRuns.contextSnapshot}->${FIRST_TURN_QUEUED_INPUT_KEY}`,
+    swarmCommentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'antigravitySwarmCommentId'`,
     executionRunId: issues.executionRunId, conversationAgentId: issues.conversationAgentId,
   }).from(heartbeatRuns)
     .leftJoin(issues, and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId))).limit(1);
   if (!row || row.status !== "running" || row.agentId !== wake.agentId) return [];
   const run = { ...row, runnerProfileJson: { adapterDispatch: { adapterType: row.dispatchAdapterType } },
-    contextSnapshot: { [FIRST_TURN_QUEUED_INPUT_KEY]: row.receipt } };
+    contextSnapshot: { [FIRST_TURN_QUEUED_INPUT_KEY]: row.receipt,
+      ...(row.swarmCommentId == null ? {} : { antigravitySwarmCommentId: row.swarmCommentId }) } };
   const receipt = readFirstTurnQueuedInputReceipt(run);
   if (receipt) {
     const sealed = new Set(receipt.commentIds);

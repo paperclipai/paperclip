@@ -72,6 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
+import { SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
 import { parseRunnerGoalCommand, parseSwarmCommand, planSubmission, swarmRunSettingsRefusal, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
@@ -923,6 +924,10 @@ export function TaskChatComposer({
     const swarmCommand = queuedEdit ? null : parseSwarmCommand(submittedBody);
     if (swarmCommand && !swarmCommand.request) {
       setActionError("Write what the swarm should do after /swarm.");
+      return;
+    }
+    if (swarmCommand && swarmCommand.request.length > SWARM_REQUEST_MAX_CHARS) {
+      setActionError(`This swarm request is too long. Keep what follows /swarm under ${SWARM_REQUEST_MAX_CHARS.toLocaleString("en-US")} characters.`);
       return;
     }
     const swarmSettingsRefusal = swarmCommand ? swarmRunSettingsRefusal(runSettings) : null;

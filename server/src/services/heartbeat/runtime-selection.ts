@@ -849,8 +849,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               companyId: agent.companyId,
               runId: run.id,
               issue: nativeReviewRequest ? { ...issueRef, title: `Review: ${issueRef.title}`, description: nativeReviewRequest } : issueRef,
-              // A swarm's only instruction is the user's recorded request comment.
-              taskPrompt: antigravitySwarm ? antigravitySwarm.request : [
+              taskPrompt: [
                 nativeReviewRequest ?? readNonEmptyString(
                   selectPaperclipTaskMarkdown(context, {
                     resumedSession: false,
@@ -927,7 +926,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                     }
                   : null,
               ...nativeProvider,
-              ...(antigravitySwarm ? { antigravitySwarm: true } : {}),
+              // The swarm's only instruction: the verified request, in its own field (never task.prompt).
+              ...(antigravitySwarm ? { antigravitySwarmRequest: antigravitySwarm.request } : {}),
               lifecyclePolicy: effectiveLifecyclePolicy,
               interactionResponses,
               completionContract: {

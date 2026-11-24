@@ -11,6 +11,7 @@ import {
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
+import { NATIVE_MODEL_ENVELOPE_SCHEMA, NATIVE_SWARM_REQUEST_MAX_CHARS } from "../../contracts/native-execution.js";
 import { antigravitySwarmEvent } from "./antigravity-swarm-presentation.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import type { AcpxModelStatus } from "./model-verification.js";
@@ -228,23 +229,20 @@ function addUsage(total: Json | null, usage: unknown): Json | null {
   return next;
 }
 
-const TASK_ENVELOPE_SCHEMAS = new Set(["paperclip.native-model-envelope.v1", "paperclip.native-model-envelope.v2", "paperclip.native-model-envelope.v3"]);
-const MAX_SWARM_REQUEST_CHARS = 16_000;
-
 /**
- * The swarm's instruction is only the user's recorded request: the task
- * envelope's `task.prompt`, which Paperclip sets to that comment's own text
- * for a swarm run. Titles, descriptions, wake comments, continuation events
- * and anything else in the envelope never reach the auto-approved coordinator.
+ * The swarm's only instruction is the user's recorded request, which Paperclip
+ * carries in the model envelope's own `swarmRequest` field (from the execution
+ * input's `provider.swarmRequest`). It is never read back out of `task.prompt`:
+ * that field holds rendered wake comments, task context and text the Runner
+ * adds, none of which may reach the auto-approved coordinator as the request.
+ * The text is sent verbatim.
  */
 export function antigravitySwarmRequestText(turnText: string): string | null {
   let envelope: Json;
   try { envelope = record(JSON.parse(turnText)); } catch { return null; }
-  if (!TASK_ENVELOPE_SCHEMAS.has(String(envelope.schema))) return null;
-  const prompt = record(envelope.task).prompt;
-  if (typeof prompt !== "string") return null;
-  const request = prompt.trim();
-  return request && request.length <= MAX_SWARM_REQUEST_CHARS ? request : null;
+  if (envelope.schema !== NATIVE_MODEL_ENVELOPE_SCHEMA) return null;
+  const request = envelope.swarmRequest;
+  return typeof request === "string" && request.trim() && request.length <= NATIVE_SWARM_REQUEST_MAX_CHARS ? request : null;
 }
 
 function failed(code: string, message: string): AcpRuntimeTurnResult {

@@ -78,7 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -19333,7 +19333,8 @@ export function issueRoutes(
         if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
         const refusal = issue.conversationAgentId
           ? "Swarm works in task comments, not in chats."
-          : await antigravitySwarmCommentRefusal(db, issue);
+          : await antigravitySwarmCommentRefusal(db, issue)
+            ?? antigravitySwarmRequestRefusal(antigravitySwarmRequestFromComment(String(req.body.body ?? "")));
         if (refusal) {
           res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
           return;

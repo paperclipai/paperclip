@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -123,6 +123,13 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     expect(await resolve(g, { context: { issueId: g.issue.id, wakeReason: "issue_commented" } })).toBeNull();
   });
 
+  /** The wake Retry records for the user (task-retry.ts); `initiatedBy` marks an automatic retry on their behalf. */
+  const userRetry = async (f: Awaited<ReturnType<typeof seed>>, intent: Record<string, unknown> = {}) => {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: USER,
+      payload: { issueId: f.issue.id, taskRetry: { schema: "paperclip.task-retry.v1", actorId: USER, ...intent } } });
+  };
   const setStatus = (id: string, status: string) => db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, id));
   const automatic = (f: Awaited<ReturnType<typeof seed>>, runId: string, wakeReason = "issue_assigned") =>
     resolve(f, { runId, context: { issueId: f.issue.id, wakeReason } });
@@ -171,9 +178,31 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     expect(await automatic(f, stopped.id)).toMatchObject({ request: expect.any(String) });
     await setStatus(stopped.id, "cancelled");
     await expect(automatic(f, (await insertRun(f, {})).id, "issue_blocker_stalled")).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
-    // resumeTaskRetry's wake: reason task_retry, context { issueId, triggeredBy, actorId, responsibleUserId }, no marker or retry link.
+    // A wake that only names task_retry (an agent can name any reason) is not the user's Retry.
+    const retryContext = { issueId: f.issue.id, triggeredBy: "board", actorId: USER, responsibleUserId: USER, wakeReason: "task_retry" };
+    await expect(resolve(f, { runId: (await insertRun(f, {})).id, context: retryContext })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+    // Nor is a recovery run whose copied context still carries the request marker.
+    await expect(resolve(f, { runId: (await insertRun(f, {})).id })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+    // Nor an automatic retry on the user's behalf.
+    await userRetry(f, { initiatedBy: "provider_limit_reset" });
+    await expect(resolve(f, { runId: (await insertRun(f, {})).id, context: retryContext })).rejects.toMatchObject({ message: expect.stringMatching(/stopped/) });
+    // The user's own Retry (resumeTaskRetry: reason task_retry, no marker or retry link) runs it again.
+    await userRetry(f);
     const retry = await insertRun(f, {});
-    expect(await resolve(f, { runId: retry.id, context: { issueId: f.issue.id, triggeredBy: "board", actorId: USER, responsibleUserId: USER, wakeReason: "task_retry" } })).toMatchObject({ request: expect.any(String) });
+    expect(await resolve(f, { runId: retry.id, context: retryContext })).toMatchObject({ request: expect.any(String) });
+  });
+
+  it("caps automatic attempts even when a recovery copies the request marker or names a retry", async () => {
+    const f = await seed();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await insertRun(f, {});
+      expect(await resolve(f, { runId: run.id })).toMatchObject({ request: expect.any(String) });
+      await setStatus(run.id, "failed");
+    }
+    await expect(resolve(f, { runId: (await insertRun(f, {})).id })).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
+    await expect(automatic(f, (await insertRun(f, {})).id, "task_retry")).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
+    await userRetry(f);
+    expect(await automatic(f, (await insertRun(f, {})).id, "task_retry")).toMatchObject({ request: expect.any(String) });
   });
 
   it("lets a task reassigned to another kind of agent run ordinary work instead of refusing every run", async () => {
@@ -211,6 +240,25 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     ["Plan mode", { planning: true }, /Plan mode/],
   ])("refuses in plain language in %s instead of running an ordinary request", async (_name, overrides, message) => {
     await expect(resolve(await seed(), overrides)).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(message) });
+  });
+
+  it.each([
+    ["no request", "   ", /no request/],
+    ["only the command", "/swarm   ", /no request/],
+    ["a request longer than the swarm accepts", `/swarm ${"x".repeat(16_001)}`, /too long/],
+  ])("refuses a recorded /swarm with %s instead of running ordinary work", async (_name, body, message) => {
+    const f = await seed();
+    await db.update(issueComments).set({ body }).where(eq(issueComments.id, f.comment.id));
+    const run = await insertRun(f, {});
+    await expect(resolve(f, { runId: run.id })).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(message) });
+    // An automatic wake on the same task refuses too; it never runs the request as ordinary work.
+    await expect(automatic(f, (await insertRun(f, {})).id, "issue_commented")).rejects.toMatchObject({ code: "antigravity_swarm_unavailable" });
+  });
+
+  it("accepts a request of exactly the longest allowed length", async () => {
+    const f = await seed();
+    await db.update(issueComments).set({ body: "y".repeat(16_000) }).where(eq(issueComments.id, f.comment.id));
+    expect(await resolve(f, { runId: (await insertRun(f, {})).id })).toMatchObject({ request: "y".repeat(16_000) });
   });
 
   it("refuses when the flag is off", async () => {

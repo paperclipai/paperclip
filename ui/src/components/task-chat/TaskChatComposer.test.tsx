@@ -2034,6 +2034,16 @@ describe("TaskChatComposer", () => {
       expect(container.textContent).toContain("Write what the swarm should do after /swarm.");
     });
 
+    it("refuses a /swarm request longer than a swarm accepts before sending it", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText(`/swarm ${"x".repeat(16_001)}`);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("This swarm request is too long. Keep what follows /swarm under 16,000 characters.");
+    });
+
     it("resends a /swarm request with the same request id after a lost receipt and a reload", async () => {
       let rejectSend!: (error: Error) => void;
       const onAdd = vi.fn().mockReturnValueOnce(new Promise<void>((_, reject) => { rejectSend = reject; })).mockResolvedValue(undefined);

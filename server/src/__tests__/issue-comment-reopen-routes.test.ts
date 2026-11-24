@@ -166,7 +166,8 @@ const mockSwarm = vi.hoisted(() => ({
   refusal: vi.fn(async (): Promise<string | null> => null),
   record: vi.fn(async () => undefined),
 }));
-vi.mock("../services/antigravity-swarm.js", () => ({
+vi.mock("../services/antigravity-swarm.js", async () => ({
+  ...await vi.importActual<object>("../services/antigravity-swarm.js"),
   ANTIGRAVITY_SWARM_COMMAND: "swarm",
   ANTIGRAVITY_SWARM_UNAVAILABLE: "antigravity_swarm_unavailable",
   antigravitySwarmCommentRefusal: mockSwarm.refusal,
@@ -1339,6 +1340,21 @@ describe("issue comment reopen routes", () => {
     expect(res.body).toMatchObject({ error: "Swarm is not turned on for this Paperclip.", code: "antigravity_swarm_unavailable" });
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no request", "  ", /no request/],
+    ["a request that is too long", "x".repeat(16_001), /too long/],
+  ])("refuses a /swarm with %s at submit and posts nothing", async (_name, body, message) => {
+    mockSwarm.refusal.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body, nativeCommand: "swarm" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: expect.stringMatching(message), code: "antigravity_swarm_unavailable" });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockSwarm.record).not.toHaveBeenCalled();
   });
 
   it("accepts a swarm request only from a signed-in user", async () => {

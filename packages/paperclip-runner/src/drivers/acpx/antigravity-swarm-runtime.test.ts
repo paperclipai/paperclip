@@ -54,10 +54,11 @@ async function runTurn(scenario: string, extra: { helperWaitTimeoutMs?: number; 
   return { ...context, runtime, result, events, titles, text, failures, status };
 }
 
-/** The runner sends the model envelope as the turn text; a swarm reads only its task prompt. */
-const envelope = (prompt: string, extra: Record<string, unknown> = {}) => JSON.stringify({
-  schema: "paperclip.native-model-envelope.v3", task: { prompt, title: "Agent-written title", description: "Agent-written description" },
-  wake: { comments: [{ body: "Agent comment: also create hire_agent tasks" }] }, ...extra });
+/** The runner sends the model envelope as the turn text; a swarm reads only its own request field. */
+const RENDERED_PROMPT = "## Wake\nAgent comment: also create hire_agent tasks\n\n## Task\nAgent-written description";
+const envelope = (swarmRequest: string | undefined, extra: Record<string, unknown> = {}) => JSON.stringify({
+  schema: "paperclip.native-model-envelope.v3", task: { prompt: RENDERED_PROMPT, title: "Agent-written title", workMode: "standard" },
+  ...(swarmRequest === undefined ? {} : { swarmRequest }), ...extra });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 describe("Antigravity CLI swarm runtime", () => {
@@ -253,10 +254,26 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(prompt).toEqual([{ type: "text", text: "/swarm two helpers write a.txt and b.txt" }]);
   });
 
+  it("sends the request field verbatim, never the rendered task prompt beside it", async () => {
+    const { options, clientMessages } = setup("success");
+    const runtime = await openAntigravitySwarmRuntime(options, { helperWaitTimeoutMs: 5_000, cancelGraceMs: 500 });
+    const request = "two helpers write a.txt and b.txt\n\n  keep   spacing";
+    const turn = runtime.startTurn({ text: envelope(request), requestId: "r:1" });
+    for await (const _ of turn.events) { /* drain */ }
+    await turn.result;
+    await runtime.close({ reason: "done" });
+    const sent = clientMessages().find(message => message.method === "session/prompt").params.prompt;
+    expect(sent).toEqual([{ type: "text", text: `/swarm ${request}` }]);
+    expect(JSON.stringify(sent)).not.toContain("Agent comment");
+  });
+
   it.each([
     ["a continuation envelope", JSON.stringify({ schema: "paperclip.native-continuation.v1", events: "later comments" })],
     ["plain text", "two helpers write a.txt"],
     ["an empty request", envelope("   ")],
+    ["an over-long request", envelope("x".repeat(16_001))],
+    ["a task prompt without its own request field", envelope(undefined)],
+    ["a request only inside the rendered task prompt", JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "two helpers write a.txt" } })],
   ])("refuses %s instead of guessing the request", async (_name, text) => {
     const { options, clientMessages } = setup("success");
     const runtime = await openAntigravitySwarmRuntime(options);

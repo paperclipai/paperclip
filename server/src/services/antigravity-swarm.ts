@@ -1,6 +1,6 @@
-import { and, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
-import { parseLeadingUserCommand } from "@paperclipai/shared";
-import { activityLog, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
+import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PaperclipRunnerProviderProfileError } from "./native-runtime/provider-profile.js";
@@ -55,6 +55,20 @@ export function requestedAntigravitySwarmCommentId(context: unknown): string | n
 }
 
 export const ANTIGRAVITY_SWARM_REQUESTED_ACTION = "issue.antigravity_swarm_requested";
+
+/** The swarm's instruction from a recorded request comment: its text, without a leading /swarm it may still carry. */
+export function antigravitySwarmRequestFromComment(body: string): string {
+  return (parseLeadingUserCommand(body, ["swarm"])?.argument ?? body).trim();
+}
+
+/** A request the swarm cannot run: nothing to do, or longer than the swarm accepts. */
+export function antigravitySwarmRequestRefusal(request: string): string | null {
+  if (!request) return "This swarm has no request to run. Send /swarm followed by what the swarm should do.";
+  if (request.length > SWARM_REQUEST_MAX_CHARS) {
+    return `This swarm request is too long. Keep what follows /swarm under ${SWARM_REQUEST_MAX_CHARS.toLocaleString("en-US")} characters.`;
+  }
+  return null;
+}
 
 async function swarmEnabled(db: Db): Promise<boolean> {
   return (await instanceSettingsService(db).getExperimentalReadOnly()).enableAntigravitySwarm === true;
@@ -144,21 +158,29 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     .limit(1);
   if (!requested) return null;
   // The swarm's only instruction is this recorded comment's own text.
-  const request = (parseLeadingUserCommand(requested.body, ["swarm"])?.argument ?? requested.body).trim();
-  if (!request) return null;
-  // The user asked for this run: a fresh /swarm comment, or Retry. Everything
-  // else (recovery, sweeps, continuations) is automatic and bounded below.
-  const manual = marked !== null || record(input.context).wakeReason === "task_retry";
+  const request = antigravitySwarmRequestFromComment(requested.body);
   const refuse = (message: string): never => { throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, message); };
+  // A requested swarm with nothing (or too much) to run is refused, never run as ordinary work.
+  const requestRefusal = antigravitySwarmRequestRefusal(request);
+  if (requestRefusal) refuse(requestRefusal);
   return db.transaction(async (tx) => {
     // One selection at a time per task, so one request starts one swarm.
     await tx.select({ id: issues.id }).from(issues)
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
         sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
     if (attempts.some(run => run.status === "succeeded")) return null;
     if (attempts.some(run => ["queued", "running"].includes(run.status))) refuse("A swarm for this request is already running.");
+    // The user asked for this attempt: it is the request's first run (the
+    // fresh /swarm comment), or the user pressed Retry after the last attempt.
+    // Run context and wake reasons are not proof (recoveries copy context, and
+    // an agent can name any wake reason), so Retry is read from the user's own
+    // retry request. Everything else (recovery, sweeps, continuations,
+    // automatic retries) is automatic and bounded below.
+    const lastAttemptAt = attempts.reduce<Date | null>((latest, run) => !latest || run.createdAt > latest ? run.createdAt : latest, null);
+    const manual = lastAttemptAt === null || await userRetriedSince(tx as unknown as Db, {
+      companyId: input.companyId, agentId: input.agent.id, issueId: input.issueId, since: lastAttemptAt });
     if (!manual && attempts.some(run => run.status === "cancelled")) {
       refuse("The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again.");
     }
@@ -181,6 +203,19 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
     });
     return { commentId, request };
   });
+}
+
+/** A Retry the signed-in user asked for on this task and agent after `since` (automatic retries excluded). */
+async function userRetriedSince(db: Db, input: { companyId: string; agentId: string; issueId: string; since: Date }): Promise<boolean> {
+  const [retry] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    inArray(agentWakeupRequests.reason, ["task_retry", "retry_failed_run"]),
+    eq(agentWakeupRequests.requestedByActorType, "user"), isNotNull(agentWakeupRequests.requestedByActorId),
+    gt(agentWakeupRequests.requestedAt, input.since),
+    sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId') = ${input.issueId}`,
+    sql`${agentWakeupRequests.payload}->'taskRetry'->>'initiatedBy' is null`,
+  )).limit(1);
+  return Boolean(retry);
 }
 
 export interface AntigravitySwarmSelection {
