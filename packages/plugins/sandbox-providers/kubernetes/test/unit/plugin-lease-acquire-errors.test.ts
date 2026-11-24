@@ -23,6 +23,20 @@ vi.mock("../../src/kube-client.js", () => ({
   makeKubeClients: vi.fn(() => h.clients),
 }));
 
+vi.mock("../../src/adapter-defaults.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/adapter-defaults.js")>(),
+  buildAdapterEnv: vi.fn(() => ({})),
+}));
+
+type Backend = "job" | "sandbox-cr";
+type FailureStep = "Secret creation" | "pod lookup";
+
+interface Cleanup {
+  response: "accepted" | "not found" | "refused";
+  workloadGoneAfter: number;
+  podsGoneAfter: number;
+}
+
 const params = {
   driverKey: "kubernetes",
   companyId: "company-1",
@@ -48,6 +62,7 @@ function readyTenant() {
 
 async function acquire(
   settings?: Record<string, unknown>,
+  backend: Backend = "job",
 ): Promise<JsonRpcCallError> {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -62,6 +77,7 @@ async function acquire(
     });
     stdin.write(serializeMessage(createRequest("environmentAcquireLease", {
       ...params,
+      config: { ...params.config, backend },
       executionWorkspaceSettings: settings,
     }, "acquire-test")));
     const result = await response;
@@ -72,6 +88,74 @@ async function acquire(
     lines.close();
     stdin.destroy();
     stdout.destroy();
+  }
+}
+
+function absentJob() {
+  return {
+    readNamespacedJobStatus: vi.fn().mockRejectedValue(new ApiException(404, "Job absent", {}, {})),
+    listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+  };
+}
+
+function postClaimFailure(backend: Backend, step: FailureStep, cleanup: Cleanup) {
+  const tenant = readyTenant();
+  const error = new ApiException(503, `${step} refused`, {}, {});
+  const notFound = new ApiException(404, "Resource absent", {}, {});
+  const createWorkload = vi.fn().mockResolvedValue({ metadata: { uid: "workload-uid" } });
+  const createNamespacedSecret = step === "Secret creation"
+    ? vi.fn().mockRejectedValue(error)
+    : vi.fn().mockResolvedValue({});
+  let deleteRequestedAt: number | undefined;
+  const deleteWorkload = vi.fn(async () => {
+    deleteRequestedAt = Date.now();
+    if (cleanup.response === "not found") throw notFound;
+    if (cleanup.response === "refused") throw new ApiException(403, "Workload delete refused", {}, {});
+    return {};
+  });
+  const remains = (goneAfter: number) => deleteRequestedAt === undefined || Date.now() - deleteRequestedAt < goneAfter;
+  const readWorkload = vi.fn(async () => {
+    if (step === "pod lookup" && backend === "sandbox-cr" && deleteRequestedAt === undefined) throw error;
+    if (!remains(cleanup.workloadGoneAfter)) throw notFound;
+    return { status: { active: 1, phase: "Terminating" } };
+  });
+  const listNamespacedPod = vi.fn(async ({ labelSelector }: { labelSelector: string }) => {
+    if (step === "pod lookup" && backend === "job" && deleteRequestedAt === undefined) throw error;
+    const labels = { "agents.x-k8s.io/sandbox-name": labelSelector.split("=")[1] };
+    return { items: remains(cleanup.podsGoneAfter) ? [{ metadata: { name: "old-pod", labels } }] : [] };
+  });
+  const readNamespacedPod = vi.fn(async ({ name }: { name: string }) => {
+    if (!remains(cleanup.podsGoneAfter)) throw notFound;
+    return { metadata: { name } };
+  });
+  h.clients = {
+    ...tenant,
+    core: { ...tenant.core, createNamespacedSecret, listNamespacedPod, readNamespacedPod },
+    batch: {
+      createNamespacedJob: createWorkload,
+      readNamespacedJobStatus: readWorkload,
+      deleteNamespacedJob: deleteWorkload,
+    },
+    custom: {
+      getNamespacedCustomObject: vi.fn(async ({ plural }: { plural: string }) => {
+        return plural === "sandboxes" ? readWorkload() : {};
+      }),
+      createNamespacedCustomObject: createWorkload,
+      deleteNamespacedCustomObject: deleteWorkload,
+    },
+  };
+  return { error, createWorkload, createNamespacedSecret, deleteWorkload };
+}
+
+async function acquireWithCleanupClock(backend: Backend, settings?: Record<string, unknown>) {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    const start = Date.now();
+    const result = acquire(settings, backend).then((error) => ({ error, elapsed: Date.now() - start }));
+    await vi.advanceTimersByTimeAsync(3_000);
+    return await result;
+  } finally {
+    vi.useRealTimers();
   }
 }
 
@@ -108,12 +192,15 @@ describe("Kubernetes acquire refusal diagnostics", () => {
     { status: 503, deleteStatus: 404, diagnostic: { httpStatus: 503 }, deletes: 1 },
     { status: 503, deleteStatus: 403, diagnostic: null, deletes: 1 },
   ])("handles a refused workload create with HTTP $status and cleanup HTTP $deleteStatus", async ({ status, deleteStatus, diagnostic, deletes }) => {
+    const tenant = readyTenant();
+    const { readNamespacedJobStatus, listNamespacedPod } = absentJob();
     const error = new ApiException(status, "Job create refused", {}, {});
     const createNamespacedJob = vi.fn().mockRejectedValue(error);
     const deleteNamespacedJob = vi.fn().mockRejectedValue(new ApiException(deleteStatus, "Job cleanup refused", {}, {}));
     h.clients = {
-      ...readyTenant(),
-      batch: { createNamespacedJob, deleteNamespacedJob },
+      ...tenant,
+      core: { ...tenant.core, listNamespacedPod },
+      batch: { createNamespacedJob, deleteNamespacedJob, readNamespacedJobStatus },
     };
 
     const result = await acquire();
@@ -130,23 +217,80 @@ describe("Kubernetes acquire refusal diagnostics", () => {
     { workloadDeleted: false, diagnostic: null },
   ])("handles scoped policy refusal when workloadDeleted is $workloadDeleted", async ({ workloadDeleted, diagnostic }) => {
     const tenant = readyTenant();
+    const { readNamespacedJobStatus, listNamespacedPod } = absentJob();
     const createNamespacedJob = vi.fn().mockResolvedValue({ metadata: { uid: "job-uid" } });
     const deleteNamespacedJob = workloadDeleted
       ? vi.fn().mockResolvedValue({})
       : vi.fn().mockRejectedValue(new ApiException(403, "Job delete refused", {}, {}));
     h.clients = {
       ...tenant,
-      batch: { createNamespacedJob, deleteNamespacedJob },
+      core: { ...tenant.core, listNamespacedPod },
+      batch: { createNamespacedJob, deleteNamespacedJob, readNamespacedJobStatus },
       custom: {
         ...tenant.custom,
         createNamespacedCustomObject: vi.fn().mockRejectedValue(new ApiException(503, "Policy create refused", {}, {})),
       },
     };
 
-    const result = await acquire({ networkEgress: { allowCidrs: ["203.0.113.0/24"] } });
+    const { error } = await acquireWithCleanupClock("job", { networkEgress: { allowCidrs: ["203.0.113.0/24"] } });
 
     expect(createNamespacedJob).toHaveBeenCalledOnce();
     expect(deleteNamespacedJob).toHaveBeenCalledOnce();
-    expect(readEnvironmentAcquireErrorDiagnostic(result)).toEqual(diagnostic);
+    expect(readEnvironmentAcquireErrorDiagnostic(error)).toEqual(diagnostic);
+  });
+});
+
+describe.each(["job", "sandbox-cr"] as const)("%s acquire cleanup", (backend) => {
+  describe.each(["Secret creation", "pod lookup"] as const)("after %s fails", (step) => {
+    it.each([
+      { response: "accepted", diagnostic: { httpStatus: 503 } },
+      { response: "not found", diagnostic: { httpStatus: 503 } },
+      { response: "refused", diagnostic: null },
+    ] as const)("preserves the refusal when cleanup is $response", async ({ response, diagnostic }) => {
+      const fixture = postClaimFailure(backend, step, { response, workloadGoneAfter: 0, podsGoneAfter: 0 });
+
+      const { error } = await acquireWithCleanupClock(backend);
+
+      expect(fixture.createWorkload).toHaveBeenCalledOnce();
+      expect(fixture.createNamespacedSecret).toHaveBeenCalledOnce();
+      expect(fixture.deleteWorkload).toHaveBeenCalledOnce();
+      expect(error.code).toBe(fixture.error.code);
+      expect(error.message).toBe(fixture.error.message);
+      expect(readEnvironmentAcquireErrorDiagnostic(error)).toEqual(diagnostic);
+    });
+  });
+
+  it.each([
+    { response: "accepted", workloadGoneAfter: Infinity, podsGoneAfter: Infinity },
+    { response: "accepted", workloadGoneAfter: 0, podsGoneAfter: Infinity },
+    { response: "not found", workloadGoneAfter: 0, podsGoneAfter: Infinity },
+  ] as const)(
+    "withholds retry while resources remain after cleanup is $response (workload gone after $workloadGoneAfter ms)",
+    async (cleanup) => {
+      const fixture = postClaimFailure(backend, "Secret creation", cleanup);
+
+      const { error } = await acquireWithCleanupClock(backend);
+
+      expect(fixture.deleteWorkload).toHaveBeenCalledOnce();
+      expect(error.code).toBe(fixture.error.code);
+      expect(error.message).toBe(fixture.error.message);
+      expect(readEnvironmentAcquireErrorDiagnostic(error)).toBeNull();
+    },
+  );
+
+  it("reports the original status once the workload and then its pods disappear", async () => {
+    const fixture = postClaimFailure(backend, "pod lookup", {
+      response: "accepted",
+      workloadGoneAfter: 250,
+      podsGoneAfter: 750,
+    });
+
+    const { error, elapsed } = await acquireWithCleanupClock(backend);
+
+    expect(fixture.deleteWorkload).toHaveBeenCalledOnce();
+    expect(error.code).toBe(fixture.error.code);
+    expect(error.message).toBe(fixture.error.message);
+    expect(readEnvironmentAcquireErrorDiagnostic(error)).toEqual({ httpStatus: 503 });
+    expect(elapsed).toBeGreaterThanOrEqual(750);
   });
 });

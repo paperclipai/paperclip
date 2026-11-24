@@ -152,6 +152,14 @@ export async function findPodForSandbox(
     return podName;
   }
 
+  return findSandboxPodWithoutStatus(clients, namespace, name);
+}
+
+export async function findSandboxPodWithoutStatus(
+  clients: KubeClients,
+  namespace: string,
+  name: string,
+): Promise<string | null> {
   // Secondary: the agent-sandbox controller (v0.4.x) names the backing pod
   // EXACTLY after the Sandbox CR and labels it only with
   // agents.x-k8s.io/sandbox-name-hash (a hash, not the full name), so the

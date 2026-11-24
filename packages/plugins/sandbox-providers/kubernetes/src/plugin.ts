@@ -34,6 +34,7 @@ import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
+  findSandboxPodWithoutStatus,
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
@@ -116,8 +117,8 @@ async function throwAfterWorkloadRelease(error: unknown, release: () => Promise<
   if (!isKubernetesHttpError(error)) throw error;
   try {
     await release();
-  } catch (releaseError) {
-    if (!isKubernetesHttpError(releaseError) || releaseError.code !== 404) throw error;
+  } catch {
+    throw error;
   }
   throwWithAcquireHttpStatus(error);
 }
@@ -418,7 +419,33 @@ const plugin = definePlugin({
           imagePullSecrets: config.imagePullSecrets,
         });
 
-    const releaseWorkload = () => orchestrator.release(clients, namespace, jobName);
+    const releaseWorkload = async () => {
+      try {
+        await orchestrator.release(clients, namespace, jobName);
+      } catch (error) {
+        if (!isKubernetesHttpError(error) || error.code !== 404) throw error;
+      }
+
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const workloadAbsent = await orchestrator.getStatus(clients, namespace, jobName).then(
+          () => false,
+          (error: unknown) => {
+            if (!isKubernetesHttpError(error) || error.code !== 404) throw error;
+            return true;
+          },
+        );
+        if (workloadAbsent) {
+          const pod = isSandboxCrBackend
+            ? await findSandboxPodWithoutStatus(clients, namespace, jobName)
+            : await orchestrator.findPod(clients, namespace, jobName);
+          if (pod === null && Date.now() <= deadline) return;
+        }
+        const delay = Math.min(100, deadline - Date.now());
+        if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+      throw new Error(`Kubernetes workload ${namespace}/${jobName} is still present after its delete request`);
+    };
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest).catch((error: unknown) => {
       if (isKubernetesHttpError(error) && error.code >= 500) return throwAfterWorkloadRelease(error, releaseWorkload);
       throwWithAcquireHttpStatus(error);
