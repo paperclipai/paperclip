@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getEnvironmentCapabilities } from "@paperclipai/shared";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -161,6 +162,10 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
+    // Upstream #22695 gates the Connect step on browser sign-in availability,
+    // which needs a declared login capability. Mirror the real registry's
+    // login-capable adapters so the step has a sign-in mechanism to gate on.
+    login: { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const },
   }),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
@@ -230,6 +235,20 @@ describe("OnboardingWizard adapter selection", () => {
     mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    // Same login environment as the main wizard suite: without one,
+    // upstream #22695's browser-sign-in gate leaves Connect disabled and
+    // the More-harness pick cannot go live.
+    mockEnvironmentsApi.list.mockResolvedValue([{
+      id: "env-sandbox-1", name: "Sandbox", description: null, driver: "sandbox", status: "active",
+      config: { provider: "daytona" }, envVars: {}, metadata: null,
+      createdAt: new Date(0), updatedAt: new Date(0),
+    }]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities([], {
+        sandboxProviders: { daytona: { supportsLoginPty: true } },
+      }),
+    );
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "env-sandbox-1" });
   });
 
   afterEach(() => {
