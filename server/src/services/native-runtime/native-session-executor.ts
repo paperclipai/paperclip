@@ -112,6 +112,7 @@ import { readNativePlanWait } from "./native-plan-wait.js";
 import { nativeProviderLifecycle } from "./provider-lifecycle.js";
 import { NativePermissionDeclinedError, readCompletedNativePermissionDecline } from "./native-permission-decline.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { RUNNER_ACPX_PROFILE_INCOMPATIBLE, isLegacyRunnerAcpxProfileRefusal, localAcpxRunnerCompatibility } from "./native-runner-profile-compatibility.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
@@ -9009,6 +9010,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_model_rejected" ||
     sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
     sourceFailureCode === "runner_remote_provider_verification_unavailable" && !options.freshBootstrap ||
     sourceFailureCode === "native_provider_terminal_failed" ||
@@ -9238,6 +9240,7 @@ function classifyNativeSessionFailure(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | typeof RUNNER_ACPX_PROFILE_INCOMPATIBLE
   | "runner_remote_provider_verification_unavailable"
   | "provider_process_exited"
   | "provider_stdout_closed"
@@ -9534,6 +9537,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const definitelyPreSession = new Set<
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
+    RUNNER_ACPX_PROFILE_INCOMPATIBLE,
     "runner_remote_provider_artifact_incompatible",
     "provider_process_exited",
     "provider_stdout_closed",
@@ -13340,8 +13344,13 @@ async function executePaperclipNativeSessionAttempt(
         throw error;
       }
       const now = new Date();
-      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error,
-        attemptDiagnosticLeases.some(lease => lease.sandboxDiskFullObserved()));
+      const localAcpxAgent = input.runnerExecutionTarget?.kind !== "remote" && input.execution.provider.kind === "acpx"
+        ? input.execution.provider.agent : null;
+      const startupClassifiedFailureCode = localAcpxAgent && (error instanceof Error
+        && (error.message === RUNNER_ACPX_PROFILE_INCOMPATIBLE || error.message.startsWith("paperclip_runner_binary_missing:")
+          || isLegacyRunnerAcpxProfileRefusal(error)))
+        ? RUNNER_ACPX_PROFILE_INCOMPATIBLE
+        : nativeSessionFailureSourceCode(error, attemptDiagnosticLeases.some(lease => lease.sandboxDiskFullObserved()));
       // A timed-out session.open may still have opened a provider session
       // before its runner stopped. The same-run retry must not reuse it.
       const classifiedFailureCode = startupClassifiedFailureCode === "provider_session_open_timeout" &&
@@ -13752,6 +13761,8 @@ async function executePaperclipNativeSessionAttempt(
             error: message,
             resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
               || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
+              || ${JSON.stringify(sourceFailureCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE && localAcpxAgent
+                ? { runnerCompatibility: { acpxAgent: localAcpxAgent } } : {})}::jsonb
               || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}
               || ${startupProviderLimit && phase === "terminal_failure"
                 // providerFailure keeps an earlier attempt's failure; this names the limit that ended the run.
@@ -13842,7 +13853,9 @@ async function executePaperclipNativeSessionAttempt(
             } } : {}),
           },
           nextAction:
-            providerLimit
+            sourceFailureCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE
+              ? "Paperclip will continue when the local Runner supports this provider profile."
+              : providerLimit
               ? providerLimit.nextAction
               : sourceFailureCode === "native_permission_declined"
               ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
@@ -17248,6 +17261,12 @@ async function createRunnerdBackendWithinSessionClaim(
     : remoteTarget
     ? remoteOpenCodeArtifacts?.runnerBinary || remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
     : await resolvePaperclipRunnerBinaryAsync();
+  const localAcpxProvider = !remoteTarget && !input.restartRecovery && input.execution.provider.kind === "acpx"
+    ? input.execution.provider : null;
+  if (localAcpxProvider
+    && await localAcpxRunnerCompatibility(localAcpxProvider.agent, controllerRunnerBinary) === "incompatible") {
+    throw new Error(RUNNER_ACPX_PROFILE_INCOMPATIBLE);
+  }
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
     binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,

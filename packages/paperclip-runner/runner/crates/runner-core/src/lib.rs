@@ -25,6 +25,7 @@ pub mod durable;
 pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
+pub use generated_acpx_profiles::ACPX_RELEASE_PROFILE_DIGESTS;
 pub mod generated_acpx_sidecar_contract;
 mod governance_events;
 #[cfg(unix)]

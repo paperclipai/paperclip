@@ -198,6 +198,7 @@ export const isAntigravityNativeTarget = runner.isAntigravityNativeTarget;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
+export const ACPX_RELEASE_PROFILE_DIGESTS = runner.ACPX_RELEASE_PROFILE_DIGESTS;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
 export const ANTIGRAVITY_DISTRIBUTION_PINS = runner.ANTIGRAVITY_DISTRIBUTION_PINS;

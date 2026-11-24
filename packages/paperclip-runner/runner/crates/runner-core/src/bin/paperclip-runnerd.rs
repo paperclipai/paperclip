@@ -123,6 +123,8 @@ fn build_metadata() -> serde_json::Value {
         "binaryContractVersion": 2,
         "recoveryIntegrityVersion": 1,
         "acpxRecoveryIntegrityVersion": 1,
+        "acpxReleaseProfileDigests": paperclip_runner_core::ACPX_RELEASE_PROFILE_DIGESTS
+            .iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
         "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
