@@ -100,6 +100,9 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string }, 
     kind: issueThreadInteractions.kind,
     status: issueThreadInteractions.status,
     payload: issueThreadInteractions.payload,
+    createdAt: issueThreadInteractions.createdAt,
+    resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+    resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, binding.companyId),
     eq(issueThreadInteractions.issueId, binding.issueId),
@@ -125,11 +128,19 @@ async function coveringCard(db: Db, binding: Binding, revision: { id: string }, 
   const pending = cards.find(card => card.status === "pending" && covers(card) &&
     (active.has(card.id) || targetRevision(card.payload) === revision.id));
   if (pending) return { kind: "pending" as const, interactionId: pending.id };
-  // Only a decision answers a revision; a pending card never counts as reviewed.
-  const answered = cards.find(card => card.kind === "request_confirmation" &&
-    ["accepted", "rejected"].includes(card.status) && covers(card));
-  if (answered) return { kind: "reviewed" as const, revisionId: revision.id };
-  return null;
+  // How each terminal state of a card bound to this revision counts:
+  // - accepted or rejected: the user decided this revision;
+  // - cancelled by the user (withdrawn from the thread): the user declined to
+  //   review this revision. Do not reopen it; the agent is asked to revise.
+  // - cancelled by an agent or the system, expired (superseded, stale, task
+  //   closed) or failed: no one reviewed it. The revision gets a fresh card.
+  const bound = cards.filter(card => card.kind === "request_confirmation" && covers(card));
+  const decided = bound.find(card => ["accepted", "rejected"].includes(card.status) ||
+    (card.status === "cancelled" && card.resolvedByUserId && !card.resolvedByAgentId));
+  if (decided) return { kind: "reviewed" as const, revisionId: revision.id };
+  const unreviewed = bound.filter(card => card.status !== "pending")
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  return unreviewed ? { kind: "reopen" as const, afterInteractionId: unreviewed.id } : null;
 }
 
 export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Promise<NativePlanReviewCardOutcome> {
@@ -153,7 +164,12 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
   if (!revision) return { kind: "no_plan" };
   const conversationMode = isConversation(issue);
   const existing = await coveringCard(db, binding, revision, conversationMode);
-  if (existing) return existing;
+  if (existing && existing.kind !== "reopen") return existing;
+  // A card for this revision that no one reviewed keeps its key; the fresh
+  // card's key names the one it follows, so concurrent settles still agree.
+  const idempotencyKey = existing?.kind === "reopen"
+    ? `${planReviewCardIdempotencyKey(revision.id)}:after:${existing.afterInteractionId}`
+    : planReviewCardIdempotencyKey(revision.id);
   // Only the assigned agent's own proposal is put up for review. A revision a
   // person wrote is theirs already.
   if (revision.createdByAgentId !== binding.agentId) return { kind: "not_applicable" };
@@ -191,7 +207,7 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
         issueId: binding.issueId, documentId: plan.id, revisionId: revision.id, revisionNumber: revision.revisionNumber,
         sourceRunId: binding.runId, source: "plan_document",
         // One card per revision, whichever run, retry or reconcile opens it.
-        idempotencyKey: planReviewCardIdempotencyKey(revision.id),
+        idempotencyKey,
       }) as never,
       { agentId: binding.agentId, runId: binding.runId },
       {
@@ -231,7 +247,8 @@ export async function ensureNativePlanReviewCard(db: Db, binding: Binding): Prom
     // Whatever now covers the revision wins; a refused card must not fail the
     // run's settlement. Database errors still surface, so finalization retries.
     if (!(error instanceof HttpError) || error.status >= 500) throw error;
-    return await coveringCard(db, binding, revision, conversationMode) ?? { kind: "not_applicable" };
+    const current = await coveringCard(db, binding, revision, conversationMode);
+    return current && current.kind !== "reopen" ? current : { kind: "not_applicable" };
   }
   for (const publication of publications) publishActivity(publication);
   if (!inserted) return { kind: "pending", interactionId };

@@ -16,7 +16,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { ensureNativePlanReviewCard } from "../services/native-runtime/native-plan-review-card.js";
+import { ensureNativePlanReviewCard, planReviewCardIdempotencyKey } from "../services/native-runtime/native-plan-review-card.js";
 import { synchronizeCompletedProviderPlan } from "../services/native-runtime/native-session-executor.js";
 import { documentService } from "../services/documents.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -473,4 +473,53 @@ describeEmbeddedPostgres("Plan-mode review card on settle", () => {
     expect(planReviews.length).toBeLessThanOrEqual(1);
     if (kind === "created") expect(planReviews).toHaveLength(1);
   });
+  // Every state the current revision's own plan card can reach, and what the
+  // user is left with: a current card, or (they decided) the agent's bounded
+  // "revise your plan" continuation. Never a silent wait, never a second card
+  // for a plan the user already accepted.
+  type CardState = { status: string; by?: "user" | "agent" | "system"; dismissed?: boolean; laterComment?: boolean;
+    outcome: "pending" | "reviewed" | "created" };
+  const cardStates: CardState[] = [
+    { status: "pending", outcome: "pending" },
+    { status: "pending", dismissed: true, outcome: "pending" },
+    { status: "pending", laterComment: true, outcome: "pending" },
+    { status: "accepted", by: "user", outcome: "reviewed" },
+    { status: "rejected", by: "user", outcome: "reviewed" },
+    { status: "cancelled", by: "user", outcome: "reviewed" },
+    { status: "cancelled", by: "agent", outcome: "created" },
+    { status: "expired", by: "system", outcome: "created" },
+    { status: "expired", by: "agent", outcome: "created" },
+    { status: "failed", by: "system", outcome: "created" },
+  ];
+  it.each(cardStates)("current revision's card $status (by $by, dismissed $dismissed, later comment $laterComment) -> $outcome",
+    async ({ status, by, dismissed, laterComment, outcome }) => {
+      const t = await seed();
+      const runId = await t.newRun();
+      await t.writePlan(runId);
+      const plan = await documentService(db).getIssueDocumentByKey(t.issueId, "plan");
+      const resolved = status !== "pending";
+      const [card] = await db.insert(issueThreadInteractions).values({
+        companyId: t.companyId, issueId: t.issueId, kind: "request_confirmation", status: status as never,
+        continuationPolicy: "wake_assignee", sourceRunId: runId, createdByAgentId: t.agentId,
+        idempotencyKey: planReviewCardIdempotencyKey(plan!.latestRevisionId!),
+        payload: { version: 1, prompt: "Approve plan revision 1?", acceptLabel: "Approve plan", rejectLabel: "Request changes",
+          target: { type: "issue_document", issueId: t.issueId, documentId: plan!.id, key: "plan",
+            revisionId: plan!.latestRevisionId, revisionNumber: 1 } },
+        ...(resolved ? { resolvedAt: new Date(),
+          resolvedByUserId: by === "user" ? "local-board" : null,
+          resolvedByAgentId: by === "agent" ? t.agentId : null } : {}),
+        ...(dismissed ? { dismissedAt: new Date(), dismissedByUserId: "local-board" } : {}),
+      }).returning();
+      if (laterComment) await db.insert(issueComments).values({ companyId: t.companyId, issueId: t.issueId, authorType: "user",
+        authorUserId: "local-board", body: "Looking now.", createdAt: new Date(Date.now() + 1_000) });
+
+      const first = await ensureNativePlanReviewCard(db, t.binding(runId));
+      expect(first.kind).toBe(outcome);
+      const again = await ensureNativePlanReviewCard(db, t.binding(await t.newRun()));
+      expect(again.kind).toBe(outcome === "created" ? "pending" : outcome);
+      const pending = (await t.cards()).filter(row => row.status === "pending");
+      if (outcome === "reviewed") expect(pending).toHaveLength(0);
+      else expect(pending).toHaveLength(1);
+      if (outcome === "created") expect(pending[0]!.id).not.toBe(card!.id);
+    });
 });
