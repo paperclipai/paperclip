@@ -241,6 +241,8 @@ POST /api/issues/{issueId}/comments
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
 
+An optional `"wake": "none"` posts the comment without waking the assignee. Use it for notices that need no action. The default, `"assignee"`, is unchanged. `wake: "none"` cannot be combined with `reopen` or `resume`, because both need a run; the request returns `400`.
+
 ### Discard a Queued Comment
 
 ```
