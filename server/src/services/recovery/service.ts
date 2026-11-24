@@ -1,5 +1,5 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
-import { readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
+import { DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK, readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
@@ -6168,7 +6168,6 @@ export function recoveryService(
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
       failedWakeBackoffSkipped: 0,
-      failedWakeLimitSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -6177,7 +6176,7 @@ export function recoveryService(
       deferredOrFailed: 0,
       enqueueFailed: 0,
       issueIds: [] as string[],
-      failedWakeLimitIssueIds: [] as string[],
+      repeatedFailureIssueIds: [] as string[],
     };
 
     const source = opts?.source ?? "issue_graph_liveness.backstop";
@@ -6382,12 +6381,10 @@ export function recoveryService(
         });
         if (circuit.state === "backoff") {
           result.failedWakeBackoffSkipped += 1;
+          if (circuit.consecutiveFailures >= DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK) {
+            result.repeatedFailureIssueIds.push(candidate.id);
+          }
           opts?.onDeferredDeadline?.(circuit.retryAt);
-          continue;
-        }
-        if (circuit.state === "open") {
-          result.failedWakeLimitSkipped += 1;
-          result.failedWakeLimitIssueIds.push(candidate.id);
           continue;
         }
 
@@ -6464,13 +6461,13 @@ export function recoveryService(
         "issue graph liveness backstop healed resolved blocked dependency wakes",
       );
     }
-    if (result.failedWakeLimitSkipped > 0) {
+    if (result.repeatedFailureIssueIds.length > 0) {
       logger.warn(
         {
-          issueIds: result.failedWakeLimitIssueIds,
+          issueIds: result.repeatedFailureIssueIds,
           source,
         },
-        "issue graph liveness backstop stopped re-waking blocked tasks whose resolved-dependency runs keep failing",
+        "issue graph liveness backstop is backing off blocked tasks whose resolved-dependency runs keep failing",
       );
     }
 

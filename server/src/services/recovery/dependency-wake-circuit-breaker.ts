@@ -1,7 +1,6 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, max, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, heartbeatRuns } from "@paperclipai/db";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
+import { heartbeatRuns, issues, workspaceOperations } from "@paperclipai/db";
 
 /**
  * Circuit breaker for the resolved-dependency wake backstop.
@@ -10,65 +9,68 @@ import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups
  * Its idempotency key includes the task's blocked cycle, so a woken run that
  * fails and leaves the task blocked again starts a new cycle and a new key. When
  * that failure is deterministic, every sweep woke the task again: one production
- * task ran 11,000+ failed runs this way. The failed run already has its own
- * recovery (retry scheduling, permanent failure classification); the blocker
- * set has not changed, so the backstop must not keep re-delivering the same news.
+ * task ran 11,000+ failed runs this way. The failed run has its own recovery
+ * (retry scheduling, permanent failure classification); the blockers have not
+ * changed, so the backstop must not keep re-delivering the same news.
  *
- * Policy: after a backstop-visible wake for the same blocker set ends in a failed
- * run, wait before waking again (backoff), and stop after
- * DEPENDENCY_WAKE_FAILURE_LIMIT consecutive failures. A change in the blocker set
- * or any run that did not fail resets the streak.
+ * Policy: count the consecutive failed runs of this agent on this task, newest
+ * first, that finished after the latest blocker result. Each failure multiplies
+ * the wait before the next dependency wake by 5 (1m, 5m, 25m, ...), capped at
+ * DEPENDENCY_WAKE_MAX_BACKOFF_MS. The breaker never closes for good: after the
+ * wait, one wake probes again, so a fix that ships later is picked up. A run
+ * that did not fail (any wake reason) or a newer blocker result resets it.
+ * Interrupted runs (server restart, deploy) are neutral.
  */
-export const DEPENDENCY_WAKE_FAILURE_LIMIT = 3;
-export const DEPENDENCY_WAKE_FAILURE_BACKOFF_MS = [60_000, 5 * 60_000] as const;
+export const DEPENDENCY_WAKE_BASE_BACKOFF_MS = 60_000;
+export const DEPENDENCY_WAKE_BACKOFF_FACTOR = 5;
+export const DEPENDENCY_WAKE_MAX_BACKOFF_MS = 24 * 60 * 60_000;
+/** Streak at which the backstop reports the task as repeatedly failing. */
+export const DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK = 3;
+const RUN_SAMPLE_LIMIT = 12;
 
 const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
-const HISTORY_LIMIT = DEPENDENCY_WAKE_FAILURE_LIMIT * 4;
+const NEUTRAL_RUN_STATUSES = new Set(["interrupted"]);
 
-export type DependencyWakeHistoryEntry = {
-  blockerIssueIds: unknown;
-  runStatus: string | null;
-  runFinishedAt: Date | null;
+export type DependencyWakeRunSample = {
+  id: string;
+  status: string;
+  finishedAt: Date | null;
 };
 
 export type DependencyWakeCircuitDecision =
   | { state: "closed"; consecutiveFailures: number }
-  | { state: "backoff"; consecutiveFailures: number; retryAt: number }
-  | { state: "open"; consecutiveFailures: number };
+  | { state: "backoff"; consecutiveFailures: number; retryAt: number };
 
-function sortedIds(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  return [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0))].sort();
+export function dependencyWakeBackoffMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return 0;
+  const exponent = Math.min(consecutiveFailures - 1, 16);
+  return Math.min(DEPENDENCY_WAKE_BASE_BACKOFF_MS * DEPENDENCY_WAKE_BACKOFF_FACTOR ** exponent,
+    DEPENDENCY_WAKE_MAX_BACKOFF_MS);
 }
 
-function sameBlockerSet(a: string[], b: string[] | null) {
-  return b !== null && a.length === b.length && a.every((id, index) => id === b[index]);
-}
-
-/** `history` is newest first. */
-export function decideDependencyWakeCircuit(
-  history: DependencyWakeHistoryEntry[],
-  blockerIssueIds: string[],
-  now: number,
-): DependencyWakeCircuitDecision {
-  const current = sortedIds(blockerIssueIds) ?? [];
+/** `runs` are this agent's terminal runs on the task, newest finish first. */
+export function decideDependencyWakeCircuit(input: {
+  runs: DependencyWakeRunSample[];
+  latestBlockerResultAt: Date | null;
+  now: number;
+}): DependencyWakeCircuitDecision {
+  const seen = new Set<string>();
   let consecutiveFailures = 0;
   let latestFailureAt: number | null = null;
-  for (const entry of history) {
-    if (!sameBlockerSet(current, sortedIds(entry.blockerIssueIds))) break;
-    // A wake that never produced a run (skipped, coalesced away, still queued)
-    // says nothing about whether waking helps.
-    if (!entry.runStatus) continue;
-    if (!FAILED_RUN_STATUSES.has(entry.runStatus)) break;
+  for (const run of input.runs) {
+    if (seen.has(run.id)) continue;
+    seen.add(run.id);
+    if (!run.finishedAt) continue;
+    // Only attempts made with the current blocker results count.
+    if (input.latestBlockerResultAt && run.finishedAt.getTime() <= input.latestBlockerResultAt.getTime()) break;
+    if (NEUTRAL_RUN_STATUSES.has(run.status)) continue;
+    if (!FAILED_RUN_STATUSES.has(run.status)) break;
     consecutiveFailures += 1;
-    if (latestFailureAt === null && entry.runFinishedAt) latestFailureAt = entry.runFinishedAt.getTime();
+    latestFailureAt ??= run.finishedAt.getTime();
   }
-  if (consecutiveFailures >= DEPENDENCY_WAKE_FAILURE_LIMIT) return { state: "open", consecutiveFailures };
-  if (consecutiveFailures === 0) return { state: "closed", consecutiveFailures };
-  const backoffMs = DEPENDENCY_WAKE_FAILURE_BACKOFF_MS[consecutiveFailures - 1]
-    ?? DEPENDENCY_WAKE_FAILURE_BACKOFF_MS[DEPENDENCY_WAKE_FAILURE_BACKOFF_MS.length - 1];
-  const retryAt = (latestFailureAt ?? now) + backoffMs;
-  if (retryAt > now) return { state: "backoff", consecutiveFailures, retryAt };
+  if (consecutiveFailures === 0 || latestFailureAt === null) return { state: "closed", consecutiveFailures };
+  const retryAt = latestFailureAt + dependencyWakeBackoffMs(consecutiveFailures);
+  if (retryAt > input.now) return { state: "backoff", consecutiveFailures, retryAt };
   return { state: "closed", consecutiveFailures };
 }
 
@@ -76,24 +78,35 @@ export async function readDependencyWakeCircuit(
   db: Db,
   input: { companyId: string; issueId: string; agentId: string; blockerIssueIds: string[]; now?: number },
 ): Promise<DependencyWakeCircuitDecision> {
-  const history = await db
-    .select({
-      blockerIssueIds: sql<unknown>`${agentWakeupRequests.payload}->'blockerIssueIds'`,
-      runStatus: heartbeatRuns.status,
-      runFinishedAt: heartbeatRuns.finishedAt,
-    })
-    .from(agentWakeupRequests)
-    .leftJoin(heartbeatRuns, and(
-      eq(heartbeatRuns.id, agentWakeupRequests.runId),
-      eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
-    ))
+  const runs = await db
+    .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+    .from(heartbeatRuns)
     .where(and(
-      eq(agentWakeupRequests.companyId, input.companyId),
-      eq(agentWakeupRequests.agentId, input.agentId),
-      eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
-      sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      sql`${heartbeatRuns.finishedAt} is not null`,
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
     ))
-    .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id))
-    .limit(HISTORY_LIMIT);
-  return decideDependencyWakeCircuit(history, input.blockerIssueIds, input.now ?? Date.now());
+    .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id))
+    .limit(RUN_SAMPLE_LIMIT);
+  if (!runs.some((run) => FAILED_RUN_STATUSES.has(run.status))) return { state: "closed", consecutiveFailures: 0 };
+
+  let latestBlockerResultAt: Date | null = null;
+  if (input.blockerIssueIds.length > 0) {
+    const [completed] = await db.select({ at: max(issues.completedAt) }).from(issues).where(and(
+      eq(issues.companyId, input.companyId),
+      inArray(issues.id, input.blockerIssueIds),
+    ));
+    const [finalized] = await db.select({ at: max(workspaceOperations.finishedAt) }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId),
+      inArray(workspaceOperations.issueId, input.blockerIssueIds),
+      eq(workspaceOperations.phase, "workspace_finalize"),
+      eq(workspaceOperations.status, "succeeded"),
+    ));
+    for (const value of [completed?.at, finalized?.at]) {
+      const at = value == null ? null : value instanceof Date ? value : new Date(value);
+      if (at && (!latestBlockerResultAt || at > latestBlockerResultAt)) latestBlockerResultAt = at;
+    }
+  }
+  return decideDependencyWakeCircuit({ runs, latestBlockerResultAt, now: input.now ?? Date.now() });
 }

@@ -1318,12 +1318,15 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     companyId: string;
     agentId: string;
     blockedIssueId: string;
-    blockerIssueIds: string[];
+    blockerIssueId: string;
     count: number;
     lastFinishedAt: Date;
   }) {
-    // Production shape: each woken run failed and left the task blocked in a new
-    // cycle, so every wake carries a different cycle-aware idempotency key.
+    // Production shape: the blocker finished long ago, then each woken run failed
+    // and left the task blocked in a new cycle, so every wake carries a different
+    // cycle-aware idempotency key.
+    await db.update(issues).set({ status: "done", completedAt: new Date(input.lastFinishedAt.getTime() - 60 * 60_000) })
+      .where(eq(issues.id, input.blockerIssueId));
     for (let index = input.count - 1; index >= 0; index -= 1) {
       const finishedAt = new Date(input.lastFinishedAt.getTime() - index * 20_000);
       const requestedAt = new Date(finishedAt.getTime() - 15_000);
@@ -1345,8 +1348,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         reason: "issue_blockers_resolved",
         payload: {
           issueId: input.blockedIssueId,
-          resolvedBlockerIssueId: input.blockerIssueIds[0],
-          blockerIssueIds: input.blockerIssueIds,
+          resolvedBlockerIssueId: input.blockerIssueId,
+          blockerIssueIds: [input.blockerIssueId],
         },
         status: "completed",
         runId: run.id,
@@ -1354,54 +1357,69 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         finishedAt,
         idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.blockedIssueId,
-          blockerIssueIds: input.blockerIssueIds,
+          blockerIssueIds: [input.blockerIssueId],
           blockedTransitionAt: new Date(requestedAt.getTime() - 1_000),
         }),
       });
     }
+    await db.update(issues).set({ blockedTransitionAt: new Date(input.lastFinishedAt.getTime() + 1_000) })
+      .where(eq(issues.id, input.blockedIssueId));
   }
 
-  it("stops re-waking a blocked task after its resolved-dependency runs fail repeatedly", async () => {
-    const { companyId, agentId, blockedIssueId, blockerIssueId } =
-      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
-    const lastFinishedAt = new Date(Date.now() - 60 * 60_000);
-    await seedFailedDependencyWakes({
-      companyId, agentId, blockedIssueId, blockerIssueIds: [blockerIssueId], count: 3, lastFinishedAt,
-    });
-    await db.update(issues).set({ blockedTransitionAt: new Date(lastFinishedAt.getTime() + 1_000) })
-      .where(eq(issues.id, blockedIssueId));
+  async function countDependencyWakes(companyId: string) {
+    const rows = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    return rows.length;
+  }
 
-    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+  it("backs off re-waking a blocked task whose resolved-dependency runs keep failing", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 30_000) });
+    const deadlines: number[] = [];
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({
+      issueId: fixture.blockedIssueId, onDeferredDeadline: (at: number) => deadlines.push(at),
+    });
 
     expect(result.healed).toBe(0);
-    expect(result.failedWakeLimitSkipped).toBe(1);
-    const wakes = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
-      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
-    expect(wakes).toHaveLength(3);
+    expect(result.failedWakeBackoffSkipped).toBe(1);
+    expect(result.repeatedFailureIssueIds).toEqual([fixture.blockedIssueId]);
+    expect(deadlines).toHaveLength(1);
+    expect(deadlines[0]).toBeGreaterThan(Date.now() + 20 * 60_000);
+    expect(await countDependencyWakes(fixture.companyId)).toBe(3);
   });
 
-  it("backs off after a failed resolved-dependency run, then wakes again", async () => {
-    const recent = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
-    await seedFailedDependencyWakes({
-      ...recent, blockerIssueIds: [recent.blockerIssueId], count: 1, lastFinishedAt: new Date(Date.now() - 5_000),
-    });
-    await db.update(issues).set({ blockedTransitionAt: new Date() }).where(eq(issues.id, recent.blockedIssueId));
-    const deadlines: number[] = [];
-    const backedOff = await heartbeatService(db).reconcileResolvedDependencyWakes({
-      issueId: recent.blockedIssueId, onDeferredDeadline: (at: number) => deadlines.push(at),
-    });
-    expect(backedOff.healed).toBe(0);
-    expect(backedOff.failedWakeBackoffSkipped).toBe(1);
-    expect(deadlines).toHaveLength(1);
-    expect(deadlines[0]).toBeGreaterThan(Date.now());
+  it("wakes again once the failure backoff has passed", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 1, lastFinishedAt: new Date(Date.now() - 10 * 60_000) });
 
-    const elapsed = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
-    await seedFailedDependencyWakes({
-      ...elapsed, blockerIssueIds: [elapsed.blockerIssueId], count: 1, lastFinishedAt: new Date(Date.now() - 10 * 60_000),
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff after a later successful run on the task", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.blockedIssueId, status: "succeeded",
+      startedAt: new Date(Date.now() - 30_000), finishedAt: new Date(Date.now() - 20_000),
+      contextSnapshot: { issueId: fixture.blockedIssueId, wakeReason: "issue_assigned" },
     });
-    await db.update(issues).set({ blockedTransitionAt: new Date() }).where(eq(issues.id, elapsed.blockedIssueId));
-    const retried = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: elapsed.blockedIssueId });
-    expect(retried.healed).toBe(1);
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when a blocker produces a newer result", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.update(issues).set({ completedAt: new Date(Date.now() - 10_000) }).where(eq(issues.id, fixture.blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
   });
 
   it("does not re-wake an assignee agent that opened the current blocked cycle itself", async () => {

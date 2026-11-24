@@ -1,59 +1,65 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEPENDENCY_WAKE_FAILURE_BACKOFF_MS,
-  DEPENDENCY_WAKE_FAILURE_LIMIT,
+  DEPENDENCY_WAKE_MAX_BACKOFF_MS,
   decideDependencyWakeCircuit,
-  type DependencyWakeHistoryEntry,
+  dependencyWakeBackoffMs,
+  type DependencyWakeRunSample,
 } from "./dependency-wake-circuit-breaker.js";
 
 const now = Date.parse("2099-01-01T12:00:00.000Z");
-const blockers = ["b", "a"];
+let nextId = 0;
 
-function failed(minutesAgo: number, blockerIssueIds: unknown = ["a", "b"]): DependencyWakeHistoryEntry {
-  return { blockerIssueIds, runStatus: "failed", runFinishedAt: new Date(now - minutesAgo * 60_000) };
+function run(status: string, minutesAgo: number, id = `run-${nextId++}`): DependencyWakeRunSample {
+  return { id, status, finishedAt: new Date(now - minutesAgo * 60_000) };
 }
 
+function decide(runs: DependencyWakeRunSample[], latestBlockerResultAt: Date | null = null) {
+  return decideDependencyWakeCircuit({ runs, latestBlockerResultAt, now });
+}
+
+describe("dependencyWakeBackoffMs", () => {
+  it("grows by five per failure and is capped", () => {
+    expect([1, 2, 3, 4].map(dependencyWakeBackoffMs)).toEqual([60_000, 300_000, 1_500_000, 7_500_000]);
+    expect(dependencyWakeBackoffMs(50)).toBe(DEPENDENCY_WAKE_MAX_BACKOFF_MS);
+  });
+});
+
 describe("decideDependencyWakeCircuit", () => {
-  it("stays closed with no history", () => {
-    expect(decideDependencyWakeCircuit([], blockers, now)).toEqual({ state: "closed", consecutiveFailures: 0 });
+  it("stays closed with no failed runs", () => {
+    expect(decide([])).toEqual({ state: "closed", consecutiveFailures: 0 });
+    expect(decide([run("succeeded", 0)])).toEqual({ state: "closed", consecutiveFailures: 0 });
   });
 
   it("backs off after a recent failure and closes once the backoff has passed", () => {
-    expect(decideDependencyWakeCircuit([failed(0)], blockers, now)).toEqual({
-      state: "backoff",
-      consecutiveFailures: 1,
-      retryAt: now + DEPENDENCY_WAKE_FAILURE_BACKOFF_MS[0],
-    });
-    expect(decideDependencyWakeCircuit([failed(2)], blockers, now).state).toBe("closed");
-    expect(decideDependencyWakeCircuit([failed(2), failed(3)], blockers, now)).toMatchObject({
-      state: "backoff",
-      consecutiveFailures: 2,
-    });
+    expect(decide([run("failed", 0)])).toEqual({ state: "backoff", consecutiveFailures: 1, retryAt: now + 60_000 });
+    expect(decide([run("failed", 2)]).state).toBe("closed");
+    expect(decide([run("failed", 2), run("timed_out", 3)])).toMatchObject({ state: "backoff", consecutiveFailures: 2 });
   });
 
-  it("opens after the failure limit, however old the failures are", () => {
-    const history = Array.from({ length: DEPENDENCY_WAKE_FAILURE_LIMIT }, (_, index) => failed(600 + index));
-    expect(decideDependencyWakeCircuit(history, blockers, now).state).toBe("open");
+  it("probes again after the capped backoff, however long the streak", () => {
+    const streak = Array.from({ length: 12 }, (_, index) => run("failed", 24 * 60 + 1 + index));
+    expect(decide(streak)).toEqual({ state: "closed", consecutiveFailures: 12 });
   });
 
-  it("treats timed-out runs as failures and ignores wakes that never ran", () => {
-    const history: DependencyWakeHistoryEntry[] = [
-      { blockerIssueIds: ["a", "b"], runStatus: null, runFinishedAt: null },
-      { ...failed(600), runStatus: "timed_out" },
-      failed(601),
-      failed(602),
-    ];
-    expect(decideDependencyWakeCircuit(history, blockers, now).state).toBe("open");
+  it("counts a failed run once even when several wake receipts point to it", () => {
+    expect(decide([run("failed", 3, "same"), run("failed", 3, "same"), run("failed", 3, "same")]))
+      .toEqual({ state: "closed", consecutiveFailures: 1 });
   });
 
-  it("resets on a run that did not fail", () => {
-    const history = [failed(600), { blockerIssueIds: ["a", "b"], runStatus: "succeeded", runFinishedAt: null }, failed(700), failed(701)];
-    expect(decideDependencyWakeCircuit(history, blockers, now)).toEqual({ state: "closed", consecutiveFailures: 1 });
+  it("treats interrupted runs as neutral", () => {
+    expect(decide([run("interrupted", 0), run("failed", 1), run("failed", 2)]))
+      .toMatchObject({ state: "backoff", consecutiveFailures: 2 });
   });
 
-  it("resets when the blocker set changed", () => {
-    const history = [failed(600, ["a", "b", "c"]), failed(601), failed(602)];
-    expect(decideDependencyWakeCircuit(history, blockers, now)).toEqual({ state: "closed", consecutiveFailures: 0 });
-    expect(decideDependencyWakeCircuit([failed(600, "not-a-list")], blockers, now).state).toBe("closed");
+  it("resets on a run that did not fail, whatever woke it", () => {
+    expect(decide([run("failed", 0), run("succeeded", 1), run("failed", 2), run("failed", 3)]))
+      .toMatchObject({ state: "backoff", consecutiveFailures: 1 });
+    expect(decide([run("cancelled", 0), run("failed", 1)])).toEqual({ state: "closed", consecutiveFailures: 0 });
+  });
+
+  it("ignores failures from before the latest blocker result", () => {
+    const runs = [run("failed", 0), run("failed", 2), run("failed", 3)];
+    expect(decide(runs, new Date(now - 90_000))).toMatchObject({ state: "backoff", consecutiveFailures: 1 });
+    expect(decide(runs, new Date(now))).toEqual({ state: "closed", consecutiveFailures: 0 });
   });
 });
