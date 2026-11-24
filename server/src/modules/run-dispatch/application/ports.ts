@@ -17,6 +17,7 @@ export type DueRetryRun = {
 export type ListDueRetriesInput = {
   now: Date;
   cutoff: Date | null;
+  /** Rows read per retry-mechanism class, not per sweep. See `listDueRetries`. */
   limit: number;
 };
 
@@ -31,6 +32,15 @@ export type EvaluateScheduledRetryGateInput = {
 export interface ScheduledRetryReader {
   nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null>;
   evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput): Promise<GateDecision>;
+  /**
+   * Due `scheduled_retry` rows, oldest due time first.
+   *
+   * `limit` bounds each retry-mechanism class separately, so a parked cohort of
+   * one mechanism cannot fill the read and starve the others. A
+   * `provider_quota_recovery` cohort is parked exactly when the in-flight count
+   * is unreadable: those rows keep their own due time by design, so they sort
+   * to the head of every later sweep until the count is readable again.
+   */
   listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]>;
   /**
    * Per-agent count of `provider_quota_recovery` retries that are queued or
@@ -61,6 +71,15 @@ export type DeferScheduledRetryInput = {
   companyId: string;
   /** The new due time. Must be later than the row's current one. */
   scheduledRetryAt: Date;
+  /**
+   * The due time this sweep read for the row, used as a compare-and-set guard.
+   * An operator "retry now" moves the due time without leaving
+   * `scheduled_retry`, so a status-only guard lets a stale sweep push a row an
+   * operator just released back into the future, and the promotion that
+   * followed then finds nothing due. When the row's due time no longer matches
+   * this value the deferral is skipped instead of winning the race.
+   */
+  previousScheduledRetryAt: Date;
   now: Date;
 };
 

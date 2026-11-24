@@ -55,11 +55,18 @@ export function createPromoteDueScheduledRetries(deps: {
 
   return async function promoteDueScheduledRetries(input: { now?: Date; cutoff: Date | null }) {
     const now = input.now ?? clock();
-    const dueRuns = (
-      await deps.reader.listDueRetries({ now, cutoff: input.cutoff, limit: MAX_DUE_RETRIES_PER_SWEEP })
-    ).slice(0, MAX_DUE_RETRIES_PER_SWEEP);
+    // The reader applies this ceiling per retry-mechanism class, so the sweep
+    // cannot be filled by one parked cohort and still reaches the others.
+    const dueRuns = await deps.reader.listDueRetries({
+      now,
+      cutoff: input.cutoff,
+      limit: MAX_DUE_RETRIES_PER_SWEEP,
+    });
     const runIds: string[] = [];
     const postCommitEffects: PostCommitEffect[] = [];
+    let deferredApplied = 0;
+    let deferralSuperseded = 0;
+    const deferralSupersededRunIds: string[] = [];
 
     // An unreadable in-flight count is not an error to swallow into "nothing is
     // running": it is the one input the cap cannot do without, so the planner
@@ -88,12 +95,22 @@ export function createPromoteDueScheduledRetries(deps: {
       // Neither is promoted and neither is rescheduled.
       if (decision.outcome === "deferred" && !decision.outOfScope) {
         if (decision.releaseAt) {
-          await deps.deferScheduledRetry({
+          const deferred = await deps.deferScheduledRetry({
             runId: decision.runId,
             companyId: dueRun.companyId,
             scheduledRetryAt: decision.releaseAt,
+            previousScheduledRetryAt: dueRun.scheduledRetryAt,
             now,
           });
+          if (deferred.deferred) {
+            deferredApplied += 1;
+          } else {
+            // The row moved after this sweep read it: an operator released it,
+            // or another sweep deferred it further. Either way its own due time
+            // wins, so the deferral is reported rather than claimed.
+            deferralSuperseded += 1;
+            deferralSupersededRunIds.push(decision.runId);
+          }
         }
         continue;
       }
@@ -113,6 +130,9 @@ export function createPromoteDueScheduledRetries(deps: {
       runIds,
       postCommitEffects,
       releasePlan: plan,
+      deferredApplied,
+      deferralSuperseded,
+      deferralSupersededRunIds,
     };
   };
 }
