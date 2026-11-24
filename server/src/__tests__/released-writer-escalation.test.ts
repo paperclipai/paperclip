@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, executionWorkspaces,
-  heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusDecisions } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, executionWorkspaces,
+  heartbeatRuns, issueRecoveryActions, issueRelations, issues, nativeRunFinalizations, nativeRunResults, statusDecisions } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { heartbeatService } from "../services/heartbeat.js";
 import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
+import { REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA } from "../services/remote-workspace-epoch-abandonment.js";
 import { continueTasksAfterWorkspaceWriterReleased, RELEASED_WORKSPACE_WRITER_OUTCOME }
   from "../services/recovery/released-writer-escalation.js";
 import { recoveryActionSweepCondition } from "../services/recovery/blocker-stall-wakeups.js";
@@ -237,5 +239,78 @@ describePostgres("a task stranded behind its own workspace's ended writer", () =
     expect(await issue(f.task.id)).toMatchObject({ status: "blocked" });
     expect(await action(f.actionId)).toMatchObject({ status: "active" });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+  }, 60_000);
+
+  it("abandons a superseded ended writer's stale epoch and continues the stranded task", async () => {
+    const f = await seedStrandedTask();
+    const leaseId = randomUUID();
+    const location = { environmentId: randomUUID(), leaseId, providerLeaseId: randomUUID(),
+      remoteCwd: `/work/.paperclip-workspaces/${f.workspaceId}-3-${leaseId}` };
+    const [wsBefore] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const currentAuthority = readRemoteWorkspaceAuthority(wsBefore!.metadata)!;
+    await db.update(executionWorkspaces).set({ metadata: { ...wsBefore!.metadata,
+      remoteWorkspace: { ...currentAuthority, location } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const successorId = randomUUID();
+    const [writerRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.writerRunId));
+    await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation" })
+      .where(eq(heartbeatRuns.id, f.writerRunId));
+    await db.insert(heartbeatRuns).values({ id: successorId, companyId: f.companyId, agentId: f.agentId,
+      issueId: f.task.id, nativeIssueId: f.task.id, runtimeMode: "native", status: "failed",
+      errorCode: "controller_lease_lost",
+      createdAt: new Date(writerRun!.finishedAt!.getTime() + 60_000),
+      finishedAt: new Date(writerRun!.finishedAt!.getTime() + 5 * 60_000),
+      contextSnapshot: { issueId: f.task.id } });
+    await db.insert(nativeRunFinalizations).values({ runId: f.writerRunId, companyId: f.companyId,
+      issueId: f.task.id, phase: "terminal_failure", attempt: 1,
+      failureCode: "native_continuation_requires_reconciliation",
+      failureDetail: { successorRunId: successorId } });
+
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+
+    expect(await issue(f.task.id)).toMatchObject({ status: "todo", blockedTransitionAt: null, executionWorkspaceId: f.workspaceId });
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", outcome: "restored",
+      resolutionNote: RELEASED_WORKSPACE_WRITER_OUTCOME });
+    const [wsAfter] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(readRemoteWorkspaceAuthority(wsAfter!.metadata)).toMatchObject({
+      epoch: 4, writerRunId: null, dirty: false, location: null, snapshotId: currentAuthority.snapshotId,
+    });
+    expect(wsAfter!.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({
+      schema: REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA, epoch: 3, runId: f.writerRunId, location,
+    })]);
+    expect(wakesFor(f.task.id)).toHaveLength(1);
+  }, 60_000);
+
+  it("keeps a stranded task blocked when the writer holds unsaved files for a board-owned export recovery", async () => {
+    const f = await seedStrandedTask();
+    const leaseId = randomUUID();
+    const location = { environmentId: randomUUID(), leaseId, providerLeaseId: randomUUID(),
+      remoteCwd: `/work/.paperclip-workspaces/${f.workspaceId}-3-${leaseId}` };
+    const [wsBefore] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const currentAuthority = readRemoteWorkspaceAuthority(wsBefore!.metadata)!;
+    const heldMetadata = { ...wsBefore!.metadata, remoteWorkspace: { ...currentAuthority, location } };
+    await db.update(executionWorkspaces).set({ metadata: heldMetadata }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const [contract] = await db.insert(completionContracts).values({
+      companyId: f.companyId, issueId: f.task.id, revision: 1,
+      schemaVersion: "paperclip.completion-contract/v1", policyVersion: "v1", risk: "low",
+      completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+      contractJson: {}, canonicalSha256: "a".repeat(64),
+      createdByActorType: "system", createdByActorId: "test",
+    }).returning();
+    await db.update(heartbeatRuns).set({ errorCode: "native_workspace_sync_out_retry_exhausted", completionContractId: contract!.id })
+      .where(eq(heartbeatRuns.id, f.writerRunId));
+    const [res] = await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.task.id,
+      runId: f.writerRunId, completionContractId: contract!.id, serverFingerprint: `fp-${f.writerRunId}`,
+      schemaStatus: "accepted", resultJson: { terminalState: "succeeded" }, canonicalSha256: "b".repeat(64) }).returning();
+    await db.insert(nativeRunFinalizations).values({ runId: f.writerRunId, companyId: f.companyId,
+      issueId: f.task.id, phase: "terminal_failure", attempt: 3, resultId: res!.id,
+      failureCode: "native_workspace_sync_out_retry_exhausted" });
+
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+
+    expect(await issue(f.task.id)).toMatchObject({ status: "blocked" });
+    expect(await action(f.actionId)).toMatchObject({ status: "active", ownerType: "board" });
+    const [wsAfter] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(readRemoteWorkspaceAuthority(wsAfter!.metadata)).toEqual({ ...currentAuthority, location });
+    expect(wakesFor(f.task.id)).toEqual([]);
   }, 60_000);
 });
