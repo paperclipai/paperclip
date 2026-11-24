@@ -1491,6 +1491,7 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
   transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
     opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);
 }
+.properties-panel-docked:has(> .pane-resize-handle:focus) { transition-property: opacity; }
 .sidebar-shell[data-width-resetting="true"],
 .sidebar-shell[data-width-resetting="true"] > .sidebar-shell-panel { transition: width var(--motion-pane-width-reset) var(--motion-ease-pane-width-reset); }
 .design-page-aside[data-width-resetting="true"] { transition: flex-basis var(--motion-pane-width-reset) var(--motion-ease-pane-width-reset); }
