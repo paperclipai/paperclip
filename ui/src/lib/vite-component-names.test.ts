@@ -10,7 +10,15 @@ it("keeps component names through the production bundle for React error traces",
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-component-names-"));
   try {
     await mkdir(path.join(root, "public"));
-    await writeFile(path.join(root, "public/sw.js"), 'const buildId = "__PAPERCLIP_BUILD_ID__";');
+    await mkdir(path.join(root, "src"));
+    await writeFile(
+      path.join(root, "public/sw.js"),
+      await readFile(new URL("../../public/sw.js", import.meta.url)),
+    );
+    await writeFile(
+      path.join(root, "src/index.css"),
+      await readFile(new URL("../index.css", import.meta.url)),
+    );
     const entry = path.join(root, "entry.js");
     await writeFile(entry, `
       function DiagnosticComponent() { return null; }
@@ -35,6 +43,9 @@ it("keeps component names through the production bundle for React error traces",
     const scope: { componentNames?: string[] } = {};
     runInNewContext(code, scope);
     expect(scope.componentNames).toEqual(["DiagnosticComponent", "DiagnosticBoundary", "DiagnosticArrow"]);
+    const worker = await readFile(path.join(root, "dist/sw.js"), "utf8");
+    expect(worker).toContain(".paperclip-offline");
+    expect(worker).not.toMatch(/__PAPERCLIP_/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

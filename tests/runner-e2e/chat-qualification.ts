@@ -1,10 +1,10 @@
 import { expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveDefaultAgentWorkspaceDir } from "../../server/src/home-paths.js";
-import { prepareChatBrief } from "./chat-stories.js";
+import { prepareChatBrief, publishChatBrief } from "./chat-stories.js";
 import { mutableIssueSnapshot } from "./chat-hardening.js";
 import { sendChatMessage, readChatOutputDocument, type ChatFlowInput, type ChatIssue, type ChatRun } from "./chat-flow.js";
 
@@ -125,7 +125,7 @@ export async function runActiveReassignment(context: Context) {
     await input.evidence("chat-active-reassignment.json", e);
     assertActiveHandoff(e);
   } finally {
-    await writeFile(wait.gate, reference);
+    await publishChatBrief(wait.gate, reference);
     await input.evidence("chat-reassignment-final.json", { task: await api.get(`/api/issues/${task.id}`), runs: await context.allRuns() });
   }
 }
@@ -161,7 +161,7 @@ export async function runWorkerCrash(context: Context) {
     }, { timeout: 120_000 }).toBe(true);
     await input.evidence("chat-worker-settled-failure.json", failed);
     await input.capture("worker-failed", "Worker loss before a fresh user turn", "worker-failed.png");
-    await writeFile(wait.gate, reference);
+    await publishChatBrief(wait.gate, reference);
     if (failed.errorCode === "native_session_cleanup_quarantined") {
       // Preserve the red qualification result, but verify the stop is honest:
       // the UI/API must not offer an attempt which cannot pass cleanup admission.
@@ -196,7 +196,7 @@ export async function runWorkerCrash(context: Context) {
     await expect(input.page.getByTestId("task-chat-run-failed-try-again")).toHaveCount(0);
     expect(await input.api.get(`/api/companies/${input.fixtures.company.id}/issues`)).toEqual([]);
   } finally {
-    await writeFile(wait.gate, reference);
+    await publishChatBrief(wait.gate, reference);
     await input.evidence("chat-worker-final.json", { runs: await context.allRuns(), comments: await context.comments().catch(error => ({ readError: String(error) })) });
   }
 }

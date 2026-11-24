@@ -1,0 +1,242 @@
+import { createHash } from "node:crypto";
+import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
+import { connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
+import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { logger } from "../../middleware/logger.js";
+import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
+import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+
+/** Categories that report an exhausted account or request allowance. */
+const PROVIDER_LIMIT_CATEGORIES = ["rate_limit", "quota_exhausted"];
+/** Run errors that record an exhausted allowance without a typed provider failure. */
+const PROVIDER_LIMIT_ERROR_CODES = ["native_provider_usage_limit", "provider_quota"];
+/** Limit evidence older than this is ignored, and no limit holds a retry longer. */
+const NATIVE_PROVIDER_LIMIT_WINDOW_MS = 24 * 60 * 60_000;
+const LIMIT_EVIDENCE_ROWS = 20;
+
+type ProviderLimitEvidence = { resetAt: number; resetReported: boolean; category: string; sourceRunId: string | null; grantId?: string | null };
+
+function limitEvidence(failure: ProviderFailure | null, observedAt: Date, sourceRunId: string | null): ProviderLimitEvidence | null {
+  if (!failure || !PROVIDER_LIMIT_CATEGORIES.includes(failure.category)) return null;
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: failure } }, observedAt)) return null;
+  const retryAt = failure.retryAt ? Date.parse(failure.retryAt) : Number.NaN;
+  if (Number.isFinite(retryAt)) return { resetAt: retryAt, resetReported: true, category: failure.category, sourceRunId };
+  // ACP harnesses report the reset only in the provider's own wording.
+  const clockReset = parseProviderQuotaClockReset(failure.message, observedAt);
+  return clockReset
+    ? { resetAt: clockReset.getTime(), resetReported: true, category: failure.category, sourceRunId }
+    : { resetAt: observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: failure.category, sourceRunId };
+}
+
+/**
+ * The AI credential a provider limit is checked against. A limit belongs to
+ * the credential it was reported on, so evidence from another credential, or
+ * from one that was revoked or removed, does not hold work.
+ */
+export type ProviderLimitCredential =
+  /** No managed AI connection: the harness signs in with the host's own account. */
+  | { kind: "host" }
+  /** The managed connection grants the next run may use. */
+  | { kind: "grants"; grantIds: readonly string[] }
+  /** A managed connection whose account is chosen only when the run starts. */
+  | { kind: "unresolved" };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The credential a run used, from the account it recorded when it started. */
+export function runProviderLimitCredential(contextSnapshot: unknown): ProviderLimitCredential {
+  const grantId = recordedGrantId(contextSnapshot);
+  return grantId ? { kind: "grants", grantIds: [grantId] } : { kind: "host" };
+}
+
+function recordedGrantId(contextSnapshot: unknown): string | null {
+  const snapshot = contextSnapshot && typeof contextSnapshot === "object" ? contextSnapshot as Record<string, unknown> : {};
+  const connection = snapshot.aiConnection && typeof snapshot.aiConnection === "object"
+    ? snapshot.aiConnection as Record<string, unknown> : {};
+  return typeof connection.grantId === "string" && UUID_PATTERN.test(connection.grantId) ? connection.grantId : null;
+}
+
+/**
+ * Whether evidence recorded on `evidenceGrantId` (null: the host's account)
+ * still describes the credential the agent would use now.
+ */
+function evidenceApplies(evidenceGrantId: string | null, credential: ProviderLimitCredential, activeGrantIds: ReadonlySet<string>) {
+  if (evidenceGrantId === null) return credential.kind === "host";
+  if (!activeGrantIds.has(evidenceGrantId)) return false;
+  if (credential.kind === "grants") return credential.grantIds.includes(evidenceGrantId);
+  return credential.kind === "unresolved";
+}
+
+/** Narrows the evidence read to the checked credential, so other accounts never crowd it out. */
+function credentialEvidenceFilter(credential: ProviderLimitCredential) {
+  const recorded = sql`${heartbeatRuns.contextSnapshot} -> 'aiConnection' ->> 'grantId'`;
+  if (credential.kind === "host") return [sql`${recorded} is null`];
+  if (credential.kind === "grants") return [inArray(recorded, [...credential.grantIds])];
+  return [];
+}
+
+/**
+ * Whether any recent run of the agent recorded a provider limit, on any
+ * account. Without one no account can be held, so callers skip resolving the
+ * account the next run would use. Never decides that a limit applies.
+ */
+export async function agentHasProviderLimitEvidence(db: Db, input: {
+  companyId: string; agentId: string; runId?: string; now: Date;
+}): Promise<boolean> {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.agentId, input.agentId),
+    gte(heartbeatRuns.startedAt, new Date(input.now.getTime() - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
+    ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
+    or(
+      inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
+      inArray(sql<string>`${heartbeatRuns.resultJson} #>> '{providerFailure,category}'`, PROVIDER_LIMIT_CATEGORIES),
+    ),
+  )).limit(1);
+  return Boolean(row);
+}
+
+export type AgentProviderLimitCooldown = {
+  /** When the agent's provider allowance is expected to return. */
+  resetAt: Date;
+  /** False when no reset was reported and the default cooldown applies. */
+  resetReported: boolean;
+  category: string;
+  /** The run whose failure recorded the latest reset. */
+  sourceRunId: string | null;
+  /** The connection grant the limit was reported on; null for the host's own account. */
+  grantId: string | null;
+};
+
+/**
+ * The latest known provider limit for this agent's credential, from the
+ * current failure or from the agent's recent runs on that same credential. A
+ * later successful run on the credential clears older evidence. Evidence from
+ * another credential, or from a revoked or removed one, never applies.
+ */
+export async function agentProviderLimitCooldown(db: Db, input: {
+  companyId: string;
+  agentId: string;
+  /** Excluded from the evidence; the caller supplies its own failure. */
+  runId?: string;
+  failure?: ProviderFailure | null;
+  /** The credential being checked. The caller's failure was reported on it. */
+  credential: ProviderLimitCredential;
+  now: Date;
+}): Promise<AgentProviderLimitCooldown | null> {
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now)) return null;
+  const now = input.now.getTime();
+  let latest = limitEvidence(input.failure ?? null, input.now, input.runId ?? null);
+  const rows = await db
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode,
+      observedAt: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`.mapWith(heartbeatRuns.updatedAt),
+      providerFailure: sql<unknown>`${heartbeatRuns.resultJson} -> 'providerFailure'`,
+      retryNotBefore: sql<string | null>`${heartbeatRuns.resultJson} ->> 'retryNotBefore'`,
+      contextSnapshot: sql<unknown>`jsonb_build_object('aiConnection', ${heartbeatRuns.contextSnapshot} -> 'aiConnection')`,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      gte(heartbeatRuns.startedAt, new Date(now - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
+      ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
+      ...credentialEvidenceFilter(input.credential),
+      or(
+        eq(heartbeatRuns.status, "succeeded"),
+        inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
+        inArray(sql<string>`${heartbeatRuns.resultJson} #>> '{providerFailure,category}'`, PROVIDER_LIMIT_CATEGORIES),
+      ),
+    ))
+    .orderBy(desc(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`))
+    .limit(LIMIT_EVIDENCE_ROWS);
+  const recordedGrantIds = [...new Set(rows.flatMap(row => recordedGrantId(row.contextSnapshot) ?? []))];
+  const activeGrantIds = new Set(recordedGrantIds.length === 0 ? [] : (await db
+    .select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, input.companyId),
+      inArray(connectionGrants.id, recordedGrantIds),
+      eq(connectionGrants.status, "active"),
+    ))).map(row => row.id));
+  for (const row of rows) {
+    // Another credential's outcome says nothing about this one.
+    if (!evidenceApplies(recordedGrantId(row.contextSnapshot), input.credential, activeGrantIds)) continue;
+    // The provider accepted work after this point, so its allowance was restored.
+    if (row.status === "succeeded") break;
+    const failure = readProviderFailure(row.providerFailure);
+    // A newer billing refusal supersedes an older estimate or reported reset.
+    if (isProviderQuotaActionRequired({ resultJson: { providerFailure: failure } }, row.observedAt)) break;
+    let recorded = limitEvidence(failure, row.observedAt, row.id);
+    if (recorded === null && PROVIDER_LIMIT_ERROR_CODES.includes(row.errorCode ?? "")) {
+      const reset = row.retryNotBefore ? Date.parse(row.retryNotBefore) : Number.NaN;
+      recorded = Number.isFinite(reset)
+        ? { resetAt: reset, resetReported: true, category: "quota_exhausted", sourceRunId: row.id }
+        : { resetAt: row.observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: "quota_exhausted", sourceRunId: row.id };
+    }
+    if (recorded) recorded.grantId = recordedGrantId(row.contextSnapshot);
+    if (recorded && (!latest || recorded.resetAt > latest.resetAt)) latest = recorded;
+  }
+  if (!latest || latest.resetAt <= now) return null;
+  return {
+    resetAt: new Date(Math.min(latest.resetAt, now + NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
+    resetReported: latest.resetReported,
+    category: latest.category,
+    sourceRunId: latest.sourceRunId,
+    grantId: latest.grantId !== undefined ? latest.grantId
+      : input.credential.kind === "grants" && input.credential.grantIds.length === 1 ? input.credential.grantIds[0] : null,
+  };
+}
+
+/**
+ * Schedules a same-run bootstrap retry after a failure that provably came
+ * before provider work. The attempt budget stays with the coordinator; this
+ * adds exponential backoff and waits out a known provider limit.
+ */
+export async function planNativeStartupRetry(input: {
+  db: Db;
+  binding: { companyId: string; agentId: string; runId: string };
+  attempt: number;
+  retryable: boolean;
+  failure: ProviderFailure | null;
+  now: Date;
+}): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
+  if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now))
+    return { nextAttemptAt: null, providerCooldownAt: null };
+  // Limit evidence only refines the schedule. A failed read must not stop the
+  // failure from settling, so the retry falls back to plain backoff.
+  const providerCooldownAt = await input.db
+    .select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, input.binding.runId)))
+    .then(([run]) => agentProviderLimitCooldown(input.db, {
+      companyId: input.binding.companyId,
+      agentId: input.binding.agentId,
+      runId: input.binding.runId,
+      failure: input.failure,
+      // The failure was reported on the account this run started with.
+      credential: runProviderLimitCredential(run?.contextSnapshot),
+      now: input.now,
+    })).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
+    logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");
+    return null;
+  });
+  if (!input.retryable) return { nextAttemptAt: null, providerCooldownAt };
+  // Persisted with the failure, so a restart keeps the same jitter.
+  const sample = createHash("sha256").update(`${input.binding.runId}:${input.attempt}`)
+    .digest().readUInt32BE(0) / 0xffffffff;
+  const from = Math.max(input.now.getTime(), providerCooldownAt?.getTime() ?? 0);
+  return {
+    nextAttemptAt: new Date(from + infrastructureRetryDelayMs(input.attempt, sample)),
+    providerCooldownAt,
+  };
+}
+
+export function nativeStartupRetryExhaustedAction(attempts: number, providerCooldownAt: Date | null) {
+  return `Provider startup failed on ${attempts} attempts before any provider work began. Automatic retries are stopped.${
+    providerCooldownAt ? ` The provider usage limit for this agent is expected to reset at ${providerCooldownAt.toISOString()}.` : ""
+  } Check the agent's AI connection and provider usage, then retry the task.`;
+}
+
+export function nativeStartupRetryWait(providerCooldownAt: Date | null) {
+  return providerCooldownAt ? ` after the provider usage limit resets at ${providerCooldownAt.toISOString()}` : "";
+}

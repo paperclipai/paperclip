@@ -36,6 +36,7 @@ export type ChatEndpointSetupAction =
   "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
 
 export interface ChatEndpointResource {
+  executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null;
   metadata?: Record<string, unknown>;
   id: string;
   type: string;
@@ -58,6 +59,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: "linked" | "pending" | "revoked";
 }
 
@@ -101,6 +103,7 @@ export interface ChatIdentityLinkPreview {
 }
 
 export interface ChatEndpoint {
+  executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null;
   communicationInstructions?: string;
   publicationMode?: "automatic" | "explicit";
   externalExecutionPolicy?: "restricted" | "agent";
@@ -148,6 +151,7 @@ export interface ChatEndpoint {
     slackAccount?: SlackAccountState;
     slackOAuthCallbackUri?: string | null;
     webhookVerifiedAt?: string | null;
+    credentialRotationId?: string | null;
     webhookSecretConfigured?: boolean;
     callbackSurfaces?: {
       events: ChatCallbackSurfaceState;
@@ -165,6 +169,7 @@ export interface ChatCallbackSurfaceState {
 
 export interface ChatEndpointSetupSecret {
   webhookSecret: string;
+  credentialRotationId?: string;
 }
 
 type ListResponse<T> =
@@ -249,7 +254,7 @@ export const chatEndpointsApi = {
     ),
   updateResources: (
     endpointId: string,
-    resources: Array<{ id: string; enabled: boolean }>,
+    resources: Array<{ id: string; enabled?: boolean; executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null }>,
   ) =>
     api.put<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/resources`, {
       resources,

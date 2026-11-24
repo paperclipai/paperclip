@@ -259,6 +259,32 @@ assignment, delegation, and origin-thread completion use normal Paperclip
 workflows. Identify missing workflow capabilities separately rather than adding
 a connector-specific task lifecycle.
 
+## Questions and review cards through the channel
+
+A connected conversation must carry every user-question form, including requests
+shown above the Paperclip composer and questions from the runtime. Follow the
+[chat channel contract](./CONNECTOR-PLAYBOOK.md#chat-channel-connectors) for the
+complete inventory, native-response versus Paperclip-handoff decision, current
+authorization, and resolution/continuation behavior. Show the actual question
+and useful context in the channel; a title and **Respond** button alone do not
+satisfy that contract. Unsupported native controls need an explicit, usable
+handoff, not a missing request.
+
+Use the [eleven-experience inventory](./CONNECTOR-PLAYBOOK.md#question-experience-inventory)
+and [provider coverage index](./CHAT-QUESTION-COVERAGE.md) to record the best
+supported controls and justified handoffs. Grade functional correctness, good
+experience, and best feasible experience separately. Review actual unanswered,
+answering, and settled screens yourself; saved answers must remain readable
+within the conversation's authorized audience. A browser fallback does not pass
+the quality bar when a suitable native control avoids it.
+
+The optional first-message test in onboarding does not replace engineering
+qualification of these conversation loops. Follow the
+[per-format evidence standard](./CONNECTOR-PLAYBOOK.md#retain-inspectable-per-format-evidence),
+including actual link clicks, saved responses, continuation and delivery receipts,
+and retained failures. Keep real-provider evidence separate from local simulations,
+live-model runs, and deployed verification.
+
 ## Apply and verify
 
 For a requested redesign, identify the relevant principles and fix the concrete
