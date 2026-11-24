@@ -1321,7 +1321,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const deps = callbacks(db);
     deps.getAgent.mockResolvedValue(agent);
     deps.budgets.getInvocationBlock.mockResolvedValue({ scopeType: "company", scopeId: company.id,
-      scopeName: company.name, reason: "Company cannot start work because its budget hard-stop is still exceeded." });
+      scopeName: company.name, cause: "budget_exhausted", reason: "Company cannot start work because its budget hard-stop is still exceeded." });
     deps.cancelRunInternal.mockImplementation(async (runId: string) => {
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     });
@@ -1333,7 +1333,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     // check and the cancel: the re-read finds no block, so the task runs.
     const { run, deps } = await admissionBudgetBlock({ openIncident: false });
     deps.budgets.getInvocationBlock.mockResolvedValueOnce({ scopeType: "company", scopeId: run.companyId,
-      scopeName: "Budget", reason: "Company cannot start work because its budget hard-stop is still exceeded." })
+      scopeName: "Budget", cause: "budget_exhausted", reason: "Company cannot start work because its budget hard-stop is still exceeded." })
       .mockResolvedValueOnce(null);
     expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" })).toBeNull();
     expect(deps.cancelRunInternal).not.toHaveBeenCalled();
