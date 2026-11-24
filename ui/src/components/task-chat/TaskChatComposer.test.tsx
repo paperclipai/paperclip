@@ -10,7 +10,7 @@ import {
   instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 import { parsePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
-import { planSubmission } from "./composer-commands";
+import { parseSwarmCommand, planSubmission } from "./composer-commands";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2001,6 +2001,47 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+  });
+
+  describe("/swarm command", () => {
+    it("matches only the user's leading /swarm token, through the shared rule", () => {
+      expect(parseSwarmCommand(" /swarm two helpers write a.txt and b.txt ")).toEqual({ request: "two helpers write a.txt and b.txt" });
+      expect(parseSwarmCommand("[/sw](</swarm write a.txt>)")).toEqual({ request: "write a.txt" });
+      expect(parseSwarmCommand("/swarm")).toEqual({ request: "" });
+      expect(parseSwarmCommand("Please /swarm this")).toBeNull();
+      expect(parseSwarmCommand("> /swarm from a pasted email")).toBeNull();
+      expect(parseSwarmCommand("```\n/swarm\n```")).toBeNull();
+      expect(parseSwarmCommand("/swarms")).toBeNull();
+      expect(parseSwarmCommand("/Swarm do it")).toBeNull();
+    });
+
+    it("sends the request as a structured swarm request, without the command text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/swarm two helpers write a.txt and b.txt");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("two helpers write a.txt and b.txt", undefined, undefined, undefined, expect.any(String), undefined, "swarm");
+    });
+
+    it("asks for a request instead of sending a bare /swarm", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/swarm");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Write what the swarm should do after /swarm.");
+    });
+
+    it("leaves a /swarm inside the message as ordinary text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("Please /swarm this");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("Please /swarm this", undefined, undefined, undefined, expect.any(String));
+    });
   });
 
   describe("/plan command", () => {

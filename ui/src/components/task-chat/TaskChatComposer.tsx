@@ -72,7 +72,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
-import { parseRunnerGoalCommand, planSubmission, type RunnerGoalComposerCommand } from "./composer-commands";
+import { parseRunnerGoalCommand, parseSwarmCommand, planSubmission, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -115,6 +115,8 @@ interface TaskChatComposerProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    /** A native command the user started with a leading `/name`; only "swarm" exists. */
+    nativeCommand?: "swarm",
   ) => Promise<void> | void;
   /** New tasks share the editor and controls, but retain their draft until creation succeeds. */
   creation?: {
@@ -912,7 +914,17 @@ export function TaskChatComposer({
       return;
     }
     const sendMode = planCommand.kind === "send" ? "planning" : pendingMode;
-    const trimmed = planCommand.kind === "send" ? planCommand.text : submittedBody.trim();
+    // A queued edit keeps its exact text; everywhere else a leading /swarm is a request.
+    const swarmCommand = queuedEdit ? null : parseSwarmCommand(submittedBody);
+    if (swarmCommand && !swarmCommand.request) {
+      setActionError("Write what the swarm should do after /swarm.");
+      return;
+    }
+    if (swarmCommand && showAssignee && assigneeValue !== currentAssigneeValue) {
+      setActionError("Send /swarm without changing the assignee.");
+      return;
+    }
+    const trimmed = swarmCommand ? swarmCommand.request : planCommand.kind === "send" ? planCommand.text : submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
@@ -1075,6 +1087,7 @@ export function TaskChatComposer({
         ...(reassignment ? { reassignment } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+        ...(swarmCommand ? { nativeCommand: "swarm" } : {}),
       };
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
@@ -1083,7 +1096,9 @@ export function TaskChatComposer({
         changeBody(bodyRef.current);
       }
       sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
-      if (runSettings) {
+      if (swarmCommand) {
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings ?? undefined, "swarm");
+      } else if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
@@ -1178,7 +1193,8 @@ export function TaskChatComposer({
       submission.attemptId,
     ] as const;
     try {
-      if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      if (request.nativeCommand === "swarm") await onAdd(...args, request.runSettings as unknown as ComposerRunSettings | undefined, "swarm");
+      else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onAdd(...args);
     } catch (error) {
       if (!isCurrentAccount()) return "pending";

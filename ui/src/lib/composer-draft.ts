@@ -106,6 +106,8 @@ export interface ComposerSendRequest {
   attachmentIds?: string[];
   /** Composer run settings, passed back unchanged. */
   runSettings?: Record<string, unknown>;
+  /** A structured native command ("swarm"), resent unchanged so a retry stays a swarm request. */
+  nativeCommand?: "swarm";
 }
 
 export interface ComposerDraftSubmission {
