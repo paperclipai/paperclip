@@ -282,6 +282,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
         case "native_harness_backups": {
           await owners.nativeHarnessBackups(db, { storage, signal, onOutcome: outcome => {
             if (outcome === "published") add(counts, "nativeHarnessBackups");
+            else if (outcome === "source_gone_recorded") add(counts, "nativeHarnessBackupSourcesGone");
             else if (outcome !== "current") defer(`native_harness:${outcome}`);
           } });
           return null;
