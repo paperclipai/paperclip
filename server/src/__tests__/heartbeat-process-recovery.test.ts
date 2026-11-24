@@ -7824,7 +7824,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs).toHaveLength(1);
     const repair = await heartbeat.getRun(repairs[0].runId!);
     expect(repair?.contextSnapshot).toMatchObject({
-      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 2 },
+      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 5 },
       dispositionRepairInstruction: LEGACY_DISPOSITION_REPAIR_INSTRUCTION,
     });
     expect({ status: repair?.status, errorCode: repair?.errorCode, error: repair?.error })
@@ -7892,7 +7892,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs).toHaveLength(1);
     const repair = await heartbeat.getRun(repairs[0].runId!);
     expect(repair?.contextSnapshot).toMatchObject({
-      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 2 },
+      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 5 },
       dispositionRepairInstruction: LEGACY_DISPOSITION_REPAIR_INSTRUCTION,
     });
     expect(repair?.status).toBe("succeeded");
@@ -7983,7 +7983,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs).toHaveLength(1);
     const repair = await heartbeat.getRun(repairs[0].runId!);
     expect(repair?.contextSnapshot).toMatchObject({
-      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 2 },
+      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 5 },
       dispositionRepairInstruction: LEGACY_DISPOSITION_REPAIR_INSTRUCTION,
     });
     expect(repair?.status).toBe("succeeded");
@@ -8038,7 +8038,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs).toHaveLength(1);
     const repair = await heartbeat.getRun(repairs[0].runId!);
     expect(repair?.contextSnapshot).toMatchObject({
-      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 2 },
+      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 5 },
       dispositionRepairInstruction: LEGACY_DISPOSITION_REPAIR_INSTRUCTION,
     });
     expect(repair?.status).toBe("succeeded");
