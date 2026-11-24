@@ -100,7 +100,13 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.ok(!build.includes("node scripts/verify-grok-npm-install.mjs"), "PR Build must not run the 4-min public npm install verifier");
   assert.ok(!build.includes("warm-public-install-npm-cache.mjs"), "PR Build must not warm the unused public npm install cache");
   assert.ok(build.includes("pnpm --filter @paperclipai/server build:runtime"), "PR Build still verifies production runtime bundle");
+  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY=1 pnpm build/, "ordinary PR Build should use emit-only server compile while Typecheck checks types in parallel");
+  assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+pnpm build/);
   assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+scripts\/server-boot-smoke\.sh/);
+  const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
+  assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);
+  assert.equal(lanes.verify_runner_e2e_support.length, 4, "Runner support suite should be 4-way sharded");
+  assert.equal(lanes.e2e_shards.length, 12, "E2E should be 12-way sharded");
   const typecheck = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
   assert.match(typecheck, /fetch-depth: 2/);
   assert.match(typecheck, /CI_PLAN: \$\{\{ needs\.gate\.outputs\.plan \}\}/);
@@ -386,18 +392,36 @@ else process.exit(3);
 test("audited prose does not widen source selection, but guidance still runs its uncached guard", () => {
   const source = "ui/src/components/Sidebar.tsx";
   const sourcePlan = plan([source]);
-  for (const doc of ["doc/DEVELOPING.md", "doc/DATABASE.md", "doc/plans/2026-10-30-example.md"]) {
+  for (const doc of [
+    "doc/DEVELOPING.md",
+    "doc/DATABASE.md",
+    "doc/connections/GOOGLE-WORKSPACE.md",
+    "docs/guides/board-operator/importing-and-exporting.md",
+    "doc/plans/2026-10-30-example.md",
+    "doc/logs/2026-11-01-verify.md",
+  ]) {
     const mixed = plan([source, doc]);
-    assert.equal(mixed.forceReason, null);
-    assert.deepEqual(mixed.jobs, sourcePlan.jobs);
-    assert.deepEqual(mixed.documentation, [doc]);
+    assert.equal(mixed.forceReason, null, doc);
+    assert.deepEqual(mixed.jobs, sourcePlan.jobs, doc);
+    assert.deepEqual(mixed.documentation, [doc], doc);
   }
   const guidance = plan(["doc/DEVELOPING.md"]);
   assert.deepEqual([...selectedTasks(guidance)], ["ci:typecheck"]);
   assert.equal(config.tasks["//#ci:typecheck"].cache, false);
+  assert.deepEqual([...selectedTasks(plan(["doc/connections/GOOGLE-WORKSPACE.md"]))], ["ci:typecheck"]);
+  assert.equal(selected(plan(["doc/connections/GOOGLE-WORKSPACE.md"]), "canary_dry_run"), false);
+  assert.equal(selected(plan(["doc/connections/GOOGLE-WORKSPACE.md"]), "verify_paperclip_runner"), false);
   assert.deepEqual([...selectedTasks(plan(["doc/plans/2026-10-30-example.md"]))], []);
-  for (const file of ["docs/api/issues.md", "doc/unknown.md", "doc/plans/tool.sh", "skills/paperclip/SKILL.md",
-    "server/src/onboarding-assets/default/AGENTS.md", "tests/fixtures/example.md"]) {
+  assert.deepEqual([...selectedTasks(plan(["doc/logs/2026-11-01-verify.md"]))], []);
+  for (const file of [
+    "docs/api/issues.md",
+    "doc/connections/tool-method-permission-reviews.json",
+    "doc/unknown.md",
+    "doc/plans/tool.sh",
+    "skills/paperclip/SKILL.md",
+    "server/src/onboarding-assets/default/AGENTS.md",
+    "tests/fixtures/example.md",
+  ]) {
     assert.ok(selectedTasks(plan([source, file])).has("ci:server"), file);
   }
 });
