@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import { and, asc, count, desc, eq, getTableColumns, type SQL } from "drizzle-orm";
-import type { AnyPgTable, AnyPgColumn } from "drizzle-orm/pg-core";
+import { getTableConfig, type AnyPgTable, type AnyPgColumn } from "drizzle-orm/pg-core";
 import * as schema from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
@@ -145,6 +145,13 @@ export const inspectionReaders: Record<InspectionResource, Reader> = {
   threads: { table: schema.chatConversations, parent: "endpointId" },
 };
 
+/** The table's primary key columns: a stable tie-breaker for ordered pages. */
+export function primaryKeyColumns(table: AnyPgTable): AnyPgColumn[] {
+  const config = getTableConfig(table);
+  const single = config.columns.filter((column) => column.primary);
+  return single.length ? single : (config.primaryKeys[0]?.columns ?? []);
+}
+
 async function ownRow(tx: Db, table: AnyPgTable, companyId: string, id: string) {
   const columns = getTableColumns(table) as Record<string, AnyPgColumn>;
   const [row] = await tx
@@ -265,7 +272,9 @@ export async function readCustomerSuccessResource(
         if (q.order) {
           if (!all.createdAt) throw unprocessable("This resource has no creation time to order by");
           const direction = q.order === "newest" ? desc : asc;
-          orderBy = idColumn ? [direction(all.createdAt), direction(idColumn)] : [direction(all.createdAt)];
+          // Rows written together share createdAt; the full primary key keeps
+          // offset pages from repeating or skipping them.
+          orderBy = [all.createdAt, ...primaryKeyColumns(reader.table)].map((column) => direction(column));
         } else {
           orderBy = [idColumn ?? all.createdAt ?? all.companyId];
         }

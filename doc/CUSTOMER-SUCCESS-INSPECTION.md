@@ -72,8 +72,8 @@ Summary reads keep a fleet-wide refresh cheap:
 - `count` takes a catalogued `resource`, `companyId` and optional `parentId`,
   and returns `{total, byStatus}`: counts grouped by the reader's `status`
   column, or `byStatus: null` when it has none. No row content is read out.
-- `order` (`list` only) is `newest` or `oldest` by creation time, with the id as
-  tie-breaker. Without it, lists keep their original id order.
+- `order` (`list` only) is `newest` or `oldest` by creation time, with the table's
+  primary key as tie-breaker so offset pages never repeat or skip rows. Without it, lists keep their original id order.
 - `view: "summary"` (`list`/`get` on `runs` only) returns an allowlist of ids,
   status, error code, retry counters and timestamps plus a computed
   `durationMs`, and leaves out the large JSON columns (result, usage, context

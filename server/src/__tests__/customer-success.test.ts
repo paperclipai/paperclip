@@ -23,6 +23,7 @@ import {
   readCustomerSuccessResource,
   inspectionReaders,
   RUN_SUMMARY_COLUMNS,
+  primaryKeyColumns,
 } from "../services/customer-success-inspection.js";
 import {
   customerSuccessRoutes,
@@ -811,6 +812,38 @@ describe("customer-success read authority", () => {
     expect(one).toMatchObject({ id: runs[1].id, status: "failed", errorCode: "adapter_failed", durationMs: 60_000 });
     expect(one).not.toHaveProperty("resultJson");
     expect(one).not.toHaveProperty("contextSnapshot");
+  });
+  it("ordered pages cover rows that share a creation time exactly once", async () => {
+    for (const resource of INSPECTION_RESOURCES)
+      expect(primaryKeyColumns(inspectionReaders[resource].table).length, resource).toBeGreaterThan(0);
+    const [company] = await db
+      .insert(schema.companies)
+      .values({ name: "Labelled", issuePrefix: "LBL" })
+      .returning();
+    const [issue] = await db.insert(schema.issues).values({ companyId: company.id, title: "Tagged" }).returning();
+    const labels = await db
+      .insert(schema.labels)
+      .values(Array.from({ length: 5 }, (_, i) => ({ companyId: company.id, name: `label-${i}`, color: "#000000" })))
+      .returning();
+    const createdAt = new Date(Date.UTC(2026, 0, 2));
+    await db
+      .insert(schema.issueLabels)
+      .values(labels.map((label) => ({ companyId: company.id, issueId: issue.id, labelId: label.id, createdAt })));
+    for (const order of ["newest", "oldest"] as const) {
+      const seen: string[] = [];
+      for (let offset = 0; offset < labels.length; offset += 2) {
+        const page = (await readCustomerSuccessResource(db, storage, {
+          operation: "list",
+          resource: "taskLabels",
+          companyId: company.id,
+          order,
+          limit: 2,
+          offset,
+        })) as { items: Array<{ labelId: string }> };
+        seen.push(...page.items.map((row) => row.labelId));
+      }
+      expect(seen.sort()).toEqual(labels.map((label) => label.id).sort());
+    }
   });
   it("count, order and view are bounded and take the extended read path", () => {
     expect(inspectionReadPath(parseInspectionQuery({ operation: "list", resource: "runs", companyId }))).toEqual("/read");
