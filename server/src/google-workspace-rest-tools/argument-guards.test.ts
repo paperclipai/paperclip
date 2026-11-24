@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { googleWorkspaceArgumentRefusal } from "./argument-guards.js";
+import { googleCalendarSeriesRefusal, googleWorkspaceArgumentRefusal } from "./argument-guards.js";
 
 const schema = {
   type: "object",
@@ -50,5 +50,17 @@ describe("googleWorkspaceArgumentRefusal", () => {
       .toContain("each request names exactly one kind of update");
     expect(googleWorkspaceArgumentRefusal({ service: "docs", toolName: "update_doc",
       arguments: { documentId: "d1", requests: [{ insertText: { text: "Hi", location: { index: 1 } } }] }, inputSchema: {} })).toBeNull();
+  });
+});
+
+describe("googleCalendarSeriesRefusal", () => {
+  it("refuses a series, allows an occurrence or a single event, and refuses when the read shows no event", () => {
+    const read = (event: unknown, text: string | null = null) => ({ isError: false, structuredContent: event, text });
+    expect(googleCalendarSeriesRefusal(read({ id: "s1", recurrence: ["RRULE:FREQ=DAILY"] }))).toContain("whole recurring series");
+    expect(googleCalendarSeriesRefusal(read(null, JSON.stringify({ event: { id: "s1", recurrence: ["RRULE:FREQ=DAILY"] } })))).toContain("whole recurring series");
+    expect(googleCalendarSeriesRefusal(read({ id: "s1_20261124", recurrence: ["RRULE:FREQ=DAILY"], recurringEventId: "s1" }))).toBeNull();
+    expect(googleCalendarSeriesRefusal(read({ id: "e1", summary: "Lunch" }))).toBeNull();
+    expect(googleCalendarSeriesRefusal(read(null, "Event: Lunch"))).toContain("Nothing was deleted.");
+    expect(googleCalendarSeriesRefusal({ isError: true, structuredContent: { id: "e1" }, text: null })).toContain("Nothing was deleted.");
   });
 });

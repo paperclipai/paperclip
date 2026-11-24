@@ -106,6 +106,9 @@ What Paperclip still does before it sends a call to Google's MCP server:
 - Docs and Slides edits: the closed list of request kinds, including the
   refusal of kinds that read another file and of images from Drive or Docs
   links.
+- `delete_event`: reads the event first with Google's `get_event` and refuses
+  a whole recurring series. If that read does not return the event, nothing
+  is deleted.
 - Off, Ask first, approval, readable action names, audit, invocation records
   and prompt-injection screening run as on REST.
 - A confirmation question from Google (MCP elicitation) goes on the task's
@@ -114,8 +117,6 @@ What Paperclip still does before it sends a call to Google's MCP server:
 
 What only the REST tools did, and does not happen on MCP:
 
-- `delete_event` refusing a recurring series ID. REST looked the event up
-  first; an argument check cannot tell a series ID from a single event ID.
 - `requiredRevisionId` being mandatory for Docs and Slides edits.
 - A connection whose catalog was saved on REST keeps the REST definitions
   for agents until its next catalog refresh. The refresh saves Google's

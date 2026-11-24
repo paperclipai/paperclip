@@ -79,7 +79,8 @@ combined connection lists the allowlisted actions that Google's servers list
 and the grant covers, at most 36 for a full read and write grant. Before a call
 goes to Google's MCP server, the gateway applies the REST tools' argument checks
 that need no request to Google: unknown arguments, one file ID per argument,
-and the closed list of Docs and Slides edit kinds. A confirmation question
+the closed list of Docs and Slides edit kinds, and, for a Calendar delete, a
+read of the event that refuses a whole recurring series. A confirmation question
 from Google's server goes to a person on the task's question card. When a
 connection saved on `paperclip_rest` is refreshed on `google_mcp`, Google's
 definitions replace Paperclip's without holding any action for review, and Off

@@ -143,6 +143,14 @@ function fakeGoogle(options: { confirm?: Confirmation } = {}) {
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream" } });
     }
+    if (body.params.name === "get_event") {
+      const eventId = String(body.params.arguments?.eventId ?? "");
+      if (eventId === "missing") return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "Not found" }] } });
+      const event = eventId === "series1" ? { id: eventId, summary: "Standup", recurrence: ["RRULE:FREQ=WEEKLY"] }
+        : eventId.startsWith("series1_") ? { id: eventId, summary: "Standup", recurringEventId: "series1" }
+          : { id: eventId, summary: "Lunch" };
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(event) }], structuredContent: event } });
+    }
     return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: `ok from Google MCP ${body.params.name}` }] } });
   };
   return {
@@ -329,6 +337,28 @@ const support = await getEmbeddedPostgresTestSupport();
       const audit = await f.audit("call_failed");
       expect(audit).toHaveLength(1);
       expect(JSON.stringify(audit[0])).toContain("\"dispatched\":false");
+    });
+
+    it("reads the event first and refuses to delete a whole recurring series", async () => {
+      const f = await connectWorkspace();
+      await expect(f.call("calendar__delete_event", { calendarId: "primary", eventId: "series1" })).rejects.toMatchObject({
+        status: 502, reasonCode: "tool_error", message: expect.stringContaining("This ID is a whole recurring series"),
+      });
+      await expect(f.call("calendar__delete_event", { calendarId: "primary", eventId: "missing" })).rejects.toMatchObject({
+        status: 502, reasonCode: "tool_error", message: expect.stringContaining("Nothing was deleted."),
+      });
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com get_event", "calendarmcp.googleapis.com get_event"]);
+      const audit = await f.audit("call_failed");
+      expect(audit).toHaveLength(2);
+      expect(JSON.stringify(audit)).toContain("\"dispatched\":false");
+
+      await expect(f.call("calendar__delete_event", { calendarId: "primary", eventId: "series1_20261124T100000Z" })).resolves.toMatchObject({ status: "completed" });
+      await expect(f.call("calendar__delete_event", { eventId: "lunch1" })).resolves.toMatchObject({ status: "completed" });
+      expect(f.google.calls().slice(2)).toEqual(["calendarmcp.googleapis.com get_event", "calendarmcp.googleapis.com delete_event",
+        "calendarmcp.googleapis.com get_event", "calendarmcp.googleapis.com delete_event"]);
+      expect(f.google.requests.filter((request) => request.name === "get_event").map((request) => request.body.params.arguments))
+        .toEqual([{ calendarId: "primary", eventId: "series1" }, { calendarId: "primary", eventId: "missing" },
+          { calendarId: "primary", eventId: "series1_20261124T100000Z" }, { eventId: "lunch1" }]);
     });
 
     it("sends a valid edit and a public image link unchanged", async () => {

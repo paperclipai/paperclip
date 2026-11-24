@@ -61,3 +61,34 @@ export function googleWorkspaceArgumentRefusal(check: GoogleWorkspaceArgumentChe
 function refusal(toolName: string, detail: string): string {
   return `Invalid arguments for ${toolName}: ${detail} Nothing was sent to Google.`;
 }
+
+export interface GoogleCalendarEventRead {
+  isError: boolean;
+  structuredContent: unknown;
+  text: string | null;
+}
+
+const SERIES_REFUSAL = "This ID is a whole recurring series. This tool deletes single events or single occurrences only. Pass one occurrence's ID (from list_events). Nothing was deleted.";
+
+function eventFrom(read: GoogleCalendarEventRead): Record<string, unknown> | null {
+  const structured = isRecord(read.structuredContent) ? read.structuredContent : null;
+  let candidate: unknown = structured;
+  if (!structured && read.text) {
+    try {
+      candidate = JSON.parse(read.text);
+    } catch {
+      return null;
+    }
+  }
+  if (!isRecord(candidate)) return null;
+  return isRecord(candidate.event) ? candidate.event : candidate;
+}
+
+export function googleCalendarSeriesRefusal(read: GoogleCalendarEventRead): string | null {
+  const event = read.isError ? null : eventFrom(read);
+  if (!event || (event.id === undefined && event.eventId === undefined && event.start === undefined)) {
+    return "Paperclip reads an event before it deletes it, to make sure the ID is not a whole recurring series, and that read did not return the event. Check the eventId and calendarId with get_event. Nothing was deleted.";
+  }
+  const recurrence = event.recurrence;
+  return Array.isArray(recurrence) && recurrence.length > 0 && !event.recurringEventId ? SERIES_REFUSAL : null;
+}

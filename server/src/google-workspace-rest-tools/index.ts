@@ -14,4 +14,9 @@ export {
 export { createGoogleWorkspaceRestServer, type GoogleWorkspaceRestServerOptions } from "./server.js";
 export { GOOGLE_AUTH_ERROR_CODE, GoogleWorkspaceAuthError, type GoogleAuthFailure } from "./errors.js";
 export type { GoogleFetch } from "./google-http.js";
-export { googleWorkspaceArgumentRefusal, type GoogleWorkspaceArgumentCheck } from "./argument-guards.js";
+export {
+  googleCalendarSeriesRefusal,
+  googleWorkspaceArgumentRefusal,
+  type GoogleCalendarEventRead,
+  type GoogleWorkspaceArgumentCheck,
+} from "./argument-guards.js";

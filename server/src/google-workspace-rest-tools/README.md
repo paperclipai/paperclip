@@ -257,11 +257,16 @@ argument shows, with no request to Google:
   `docs/request-kinds.ts` or `slides/request-kinds.ts` (so kinds that read
   another file, and images from Drive or Docs links, are refused).
 
-The REST tools' other checks need a request to Google or describe a REST
-limit, so they do not run on MCP: `delete_event` refusing a recurring series
-ID (REST reads the event first), mandatory `requiredRevisionId`, the Sheets
-comment and data-source refusals, the result size budget, and the Drive search
-query rules.
+For Calendar `delete_event`, the gateway first calls Google's `get_event`
+(the connection's own action, with only `calendarId` and `eventId`) and passes
+the answer to `googleCalendarSeriesRefusal`. A whole recurring series is
+refused, as on REST. If the read does not return the event, nothing is
+deleted.
+
+The REST tools' other checks describe a REST limit or a stricter REST rule, so
+they do not run on MCP: mandatory `requiredRevisionId`, the Sheets comment and
+data-source refusals, the result size budget, and the Drive search query
+rules.
 
 Measured with a stubbed fetch, the adapter adds about 15 µs per call. A full
 `gmail__get_message` through `executeTool` (policy, records, screening) took a

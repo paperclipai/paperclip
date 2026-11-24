@@ -10,6 +10,7 @@ import {
 import {
   GoogleWorkspaceAuthError,
   callGoogleWorkspaceRestTool,
+  googleCalendarSeriesRefusal,
   googleWorkspaceArgumentRefusal,
   isGoogleWorkspaceRestService,
   listGoogleWorkspaceRestTools,
@@ -92,6 +93,20 @@ export function googleWorkspaceMcpArgumentRefusal(toolName: string, args: unknow
   const target = googleWorkspaceToolTarget(toolName);
   if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
   return googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: args, inputSchema });
+}
+
+export function isGoogleCalendarEventDelete(toolName: string): boolean {
+  const target = googleWorkspaceToolTarget(toolName);
+  return target?.service === "calendar" && target.leaf === "delete_event";
+}
+
+export function googleWorkspaceMcpSeriesRefusal(result: unknown): string | null {
+  const record = (result && typeof result === "object" ? result : {}) as { content?: unknown; data?: { isError?: unknown; structuredContent?: unknown } };
+  return googleCalendarSeriesRefusal({
+    isError: record.data?.isError === true,
+    structuredContent: record.data?.structuredContent ?? null,
+    text: typeof record.content === "string" ? record.content : null,
+  });
 }
 
 export async function callGoogleWorkspaceRest(

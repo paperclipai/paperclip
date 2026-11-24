@@ -33,7 +33,10 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpArgumentRefusal, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
+import {
+  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpArgumentRefusal, googleWorkspaceMcpSeriesRefusal,
+  googleWorkspaceRestAuditEndpoint, isGoogleCalendarEventDelete,
+} from "./google-workspace-rest-dispatch.js";
 import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
@@ -7518,7 +7521,7 @@ export function createToolGatewayService(
         sourceTemplateKey?.startsWith("google-") === true) &&
       /caller does not have permission/i.test(providerContent);
     const content = googleWorkspacePermissionDenied
-      ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
+      ? "Google rejected this call. Google's Workspace MCP servers accept only an OAuth client marked \"Use this client for an AI-powered agent\" in the Google Cloud console, from a project with the service's MCP API enabled. Ask the admin who set up the Google connection to check both, then reconnect and try again."
       : providerContent;
     const normalized = {
       content,
@@ -8253,6 +8256,26 @@ export function createToolGatewayService(
     }, { owner });
   }
 
+  async function googleCalendarSeriesCheck(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    connectionId: string,
+    parameters: unknown,
+    ms: number,
+    invocationId: string,
+    callerHeaders: ExecuteGatewayToolInput["callerHeaders"],
+  ): Promise<string | null> {
+    const [read] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
+      eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, connectionId),
+      eq(toolCatalogEntries.toolName, "calendar__get_event"), eq(toolCatalogEntries.status, "active"),
+    )).limit(1);
+    if (!read) return googleWorkspaceMcpSeriesRefusal(null);
+    const args = asRecord(parameters) ?? {};
+    const lookup = Object.fromEntries(["calendarId", "eventId"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+    const outcome = await executeRemoteHttpTool(session, { ...tool, catalogEntryId: read.id }, lookup, ms, invocationId, callerHeaders);
+    return googleWorkspaceMcpSeriesRefusal(outcome.result);
+  }
+
   async function executeRemoteHttpTool(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
@@ -8419,9 +8442,11 @@ export function createToolGatewayService(
       };
       if (workspaceTarget?.transport === "google_mcp") {
         const refusal = googleWorkspaceMcpArgumentRefusal(entry.toolName, parameters, entry.inputSchema);
-        if (refusal) {
+        const seriesRefusal = refusal ?? (isGoogleCalendarEventDelete(entry.toolName)
+          ? await googleCalendarSeriesCheck(session, tool, connection.id, parameters, ms, invocationId, callerHeaders) : null);
+        if (refusal || seriesRefusal) {
           execution.request.dispatched = false;
-          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
+          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal ?? seriesRefusal! }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
         }
       }
       if (workspaceTarget?.transport === "paperclip_rest") {
