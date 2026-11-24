@@ -71,6 +71,7 @@ Last updated: November 24, 2026.
 | [#22027](https://github.com/paperclipai/paperclip/pull/22027) | Six Sheets tools in the REST tool set (Sheets 6 of 6). | `c366a606b1` |
 | [#22029](https://github.com/paperclipai/paperclip/pull/22029) | Docs and Slides tools in the REST tool set (Docs 2 of 2, Slides 2 of 2). Also marks Calendar `update_event` destructive. | `f61b919701` |
 | [#22028](https://github.com/paperclipai/paperclip/pull/22028) | Eight Drive tools in the REST tool set (Drive 8 of 8). Also limits the Gmail host to its API path prefix (before, any path was accepted there) and requires a path prefix for every allowed host. | `ceaf574421` |
+| [#22815](https://github.com/paperclipai/paperclip/pull/22815) | All six services back on Google's MCP servers (Nov 24). The REST argument checks that need no request to Google run before each MCP call. A refresh that replaces saved REST definitions holds nothing for review. REST tools stay as the fallback. | Squash merge of this PR |
 
 The REST tool set covers all 36 actions. All six services ran on it from Nov 23 to Nov 24 and are back on Google's MCP servers since Nov 24; the REST tool set is the fallback.
 
