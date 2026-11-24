@@ -86,7 +86,7 @@ POST /api/companies/{companyId}/cost-events
 
 Each cost event has a billing type. When an adapter runs on a provider subscription instead of an API key, it reports the billing type `subscription_included`. Paperclip keeps the token counts and records the cost as 0 cents.
 
-Budgets count billed cents only. Subscription usage therefore never moves an agent toward its budget, and a budget does not stop an agent that runs on a subscription.
+Budgets count billed cents only. Subscription usage therefore never moves an agent toward its budget. A hard stop on a company or project budget, and the reserve per run, still apply to an agent that runs on a subscription.
 
 ## Budget Awareness
 
