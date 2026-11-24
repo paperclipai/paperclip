@@ -1213,9 +1213,9 @@ async function recoverCommittedNativeChatResponseInScope(
       // A task woken by an external chat message (for example a GitHub review
       // comment) gets the same final reply as on the live completion path,
       // which a post-result failure such as copy-back can skip.
-      const externalChatTaskReply = !conversation && isExternalChatPresentationContext(run.contextSnapshot);
-      const ordinaryTaskReply = (!conversation || currentConversation) &&
-        (externalChatTaskReply || !isExternalChatPresentationContext(run.contextSnapshot)) &&
+      const externalChatContext = isExternalChatPresentationContext(run.contextSnapshot);
+      const externalChatTaskReply = !conversation && externalChatContext;
+      const ordinaryTaskReply = (!conversation || (currentConversation && !externalChatContext)) &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
@@ -1227,7 +1227,10 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.turnTerminalState === "completed" &&
         (ordinaryTaskReply || blockedTaskReply);
       const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
-      const externalChatReply = (blockedTaskReply || externalChatTaskReply) &&
+      // Only a blocked reply prefers the final message over a saved run comment.
+      // Any other recovered reply reuses a comment the live path already saved
+      // (including a deleted one), so recovery never posts it a second time.
+      const externalChatReply = blockedTaskReply &&
         isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
       if (taskReplyEligible && replyAuthorization &&
           (blockedTaskReply || externalChatTaskReply || replyAuthorization === "internal_agent_write")) {
