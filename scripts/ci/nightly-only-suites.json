@@ -1532,12 +1532,6 @@
       "measuredMs": 18316
     },
     {
-      "path": "server/src/__tests__/interrupted-preparation-hold-settle.test.ts",
-      "category": "workspace-recovery-soak",
-      "reason": "Interrupted preparation hold settle soak (18.2s in run 45440355579)",
-      "measuredMs": 18239
-    },
-    {
       "path": "server/src/__tests__/issue-recovery-pass-reads.test.ts",
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (18.1s in run 45238253588)",
@@ -1638,12 +1632,6 @@
       "category": "recovery-idle-maintenance-soak",
       "reason": "Real-clock recovery, census, idle-quietness, retention, deadline, or background-work soak (16.4s in run 45238253588)",
       "measuredMs": 16414
-    },
-    {
-      "path": "server/src/services/chat-teams-file-transfers.test.ts",
-      "category": "channel-integration-soak",
-      "reason": "Microsoft Teams chat file-transfers integration soak (16.4s in run 45440355579)",
-      "measuredMs": 16392
     },
     {
       "path": "server/src/__tests__/execution-control-work.test.ts",
