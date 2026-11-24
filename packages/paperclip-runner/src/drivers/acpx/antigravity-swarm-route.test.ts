@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
-import { antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
+import { antigravitySwarmTools, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { createAcpxModeBinding, resolveAcpxProviderMode } from "./provider-mode.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -41,6 +41,12 @@ describe("Antigravity swarm route selection", () => {
       { agentHomeDirectory: "/private", platform: "linux" });
     expect(environment).toEqual({ HOME: "/private/home", PATH: "/usr/bin", AGY_CLI_DISABLE_AUTO_UPDATE: "1" });
     expect(antigravitySwarmLaunchEnvironment({ HOME: "/private/home" }, { agentHomeDirectory: "/private", platform: "darwin", realHome: "/Users/owner" }).HOME).toBe("/Users/owner");
+  });
+
+  it("keeps Paperclip delegation tools out of a swarm turn", () => {
+    const tools = ["paperclip_finish_task", "paperclip_block_task", "paperclip_create_task", "paperclip_create_issue", "paperclip_hire_agent",
+      "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"].map(name => ({ name }));
+    expect(antigravitySwarmTools(tools).map(tool => tool.name)).toEqual(["paperclip_finish_task", "paperclip_block_task", "paperclip_read_task", "paperclip_call_assigned_tool", "paperclip_search_assigned_tools"]);
   });
 
   it("routes a swarm turn to the CLI runtime instead of ACPX", async () => {

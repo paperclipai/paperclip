@@ -107,6 +107,8 @@ export interface BuildNativeExecutionInput {
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxSessionMode?: "agent" | "plan" | "ask";
+  /** Set only for a run the signed-in user started with a trusted /swarm (services/antigravity-swarm.ts). */
+  antigravitySwarm?: boolean;
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -148,7 +150,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
-  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
+  const mode = input.antigravitySwarm === true && input.provider === "acpx" && input.acpxAgent === "antigravity"
+    ? "swarm" : resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(input.provider, input.acpxAgent, input.piThinkingLevel);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");

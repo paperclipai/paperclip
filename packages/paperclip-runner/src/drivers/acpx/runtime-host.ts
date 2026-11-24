@@ -23,7 +23,7 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
+import { antigravitySwarmLaunchEnvironment, antigravitySwarmTools, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
 
 import type {
   AcpRuntimeOptions,
@@ -690,6 +690,7 @@ export class AcpxRuntimeHost {
             signal: options.signal,
             acquire: () => startRunnerToolBridge({
               ...options.semanticTools!,
+              ...(swarmRoute && options.semanticTools!.tools ? { tools: antigravitySwarmTools(options.semanticTools!.tools) } : {}),
               preserveToolNames: options.assignedMcpTransport === "prp",
               preloadClaudeTaskTools: options.agent === "claude",
             }),

@@ -78,6 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -19326,6 +19327,18 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // Trusted /swarm: the composer sends it as a structured field; comment text is never read as a command.
+      const swarmRequested = req.body.nativeCommand === ANTIGRAVITY_SWARM_COMMAND;
+      if (swarmRequested) {
+        if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
+        const refusal = issue.conversationAgentId
+          ? "Swarm works in task comments, not in chats."
+          : await antigravitySwarmCommentRefusal(db, issue);
+        if (refusal) {
+          res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
+          return;
+        }
+      }
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
@@ -20047,6 +20060,12 @@ export function issueRoutes(
         comment,
         currentIssue.assigneeAgentId,
       );
+      if (swarmRequested && req.actor.type === "board" && req.actor.userId) {
+        await recordAntigravitySwarmRequest(db, {
+          companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: comment.id, userId: req.actor.userId,
+        });
+      }
+      const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,
@@ -20198,6 +20217,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment.reopen",
                 wakeReason: "issue_reopened_via_comment",
                 reopenedFrom: reopenFromStatus,
@@ -20235,6 +20255,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment",
                 wakeReason: "issue_commented",
                 ...(resumeRequested === true

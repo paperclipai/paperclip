@@ -72,3 +72,11 @@ export function antigravitySwarmLaunchEnvironment(
   if ((input.platform ?? process.platform) === "darwin") environment.HOME = input.realHome ?? userInfo().homedir;
   return { ...environment, ...ANTIGRAVITY_CLI_DISTRIBUTION.environment };
 }
+
+/** Paperclip tools that create tasks, assign work or hire. A swarm is one run with one assignee. */
+const DELEGATION_TOOL = /^paperclip_(?:create_(?:task|issue|subtask|agent)|hire|delegate|assign|reassign)/;
+
+/** The bridge catalog for a swarm turn: the run's tools without delegation. */
+export function antigravitySwarmTools<T extends Readonly<Record<string, unknown>>>(tools: readonly T[]): T[] {
+  return tools.filter(tool => !(typeof tool.name === "string" && DELEGATION_TOOL.test(tool.name)));
+}

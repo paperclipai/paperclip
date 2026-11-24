@@ -409,6 +409,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAntigravitySwarm: {
+    title: "Google Antigravity swarm",
+    description:
+      "Let you start Google Antigravity's native swarm by writing /swarm at the start of a task or comment. Helpers change files only in the task folder and are approved automatically there. Local computers with a Google sign-in only.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:

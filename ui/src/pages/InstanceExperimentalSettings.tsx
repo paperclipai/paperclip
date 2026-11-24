@@ -439,6 +439,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Google Antigravity swarm"
+          description="Write /swarm at the start of a task or comment to a Google Antigravity agent to start its native swarm: a coordinator, helpers and a checker that work together in the task folder."
+          footnote="Local computers with a Google sign-in only. Helper changes inside the task folder are approved automatically; changes elsewhere are blocked."
+          checked={experimentalQuery.data?.enableAntigravitySwarm === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAntigravitySwarm: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAntigravitySwarm"
+          managed={managedKeys.enableAntigravitySwarm}
+          ariaLabel="Toggle Google Antigravity swarm experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Enable Environments"
           description="Show environment management in company settings and allow project and agent environment assignment controls."
           checked={enableEnvironments}
