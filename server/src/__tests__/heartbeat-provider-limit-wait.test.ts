@@ -387,6 +387,32 @@ describePostgres("heartbeat provider usage limit wait", () => {
       expect((await deferDirect(shared)).deferred).toBe(true);
     }, 60_000);
 
+    it("starts the waiting work on Check now once the agent already uses another account", async () => {
+      // The state saved before this fix: the task is todo, its run was held
+      // for account A, its recheck is a day away, and the agent was moved to
+      // account B without releasing the wait.
+      const f = await heldFixture();
+      const held = await wake(f);
+      expect(held.errorCode).toBe("provider_limit_wait");
+      const retry = await scheduledRetry(f.agentId);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: binding(f.accounts[1]) } }).where(eq(agents.id, f.agentId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(task).toMatchObject({ status: "todo", monitorNextCheckAt: null, executionRunId: retry!.id });
+
+      // "Check now" on this task starts its waiting retry.
+      const checked = await heartbeat.retryScheduledRetryNow({ issueId: f.issueId, actor: { actorType: "user", actorId: `limit-user-${f.companyId}` } });
+      expect(checked.outcome).toBe("promoted");
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const [started] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
+      // Account A's limit no longer holds the run. This fixture has no stored
+      // credential for account B, so the run goes on to that setup check.
+      expect(started.status).not.toBe("scheduled_retry");
+      expect(started.errorCode).not.toBe("provider_limit_wait");
+      const waits = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry!.id));
+      expect(waits.filter(run => run.scheduledRetryReason === "ai_connection_pool_wait")).toEqual([]);
+    }, 60_000);
+
     it("rechecks the wait at once when the user replies, and holds again while the account is still limited", async () => {
       const f = await heldFixture();
       await wake(f);
