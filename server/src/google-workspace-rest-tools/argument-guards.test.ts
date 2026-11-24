@@ -22,6 +22,14 @@ describe("googleWorkspaceArgumentRefusal", () => {
       .toContain("unknown argument \"extra\" in closed.");
   });
 
+  it("checks a closed object below an open one", () => {
+    const nested = { type: "object", properties: { options: { type: "object", properties: {
+      filter: { type: "object", additionalProperties: false, properties: { label: { type: "string" } } },
+    } } } };
+    expect(googleWorkspaceArgumentRefusal({ service: "gmail", toolName: "list_threads", arguments: { options: { other: 1, filter: { label: "a", color: "red" } } }, inputSchema: nested }))
+      .toBe("Invalid arguments for list_threads: unknown argument \"color\" in options.filter. Accepted in options.filter: label. Nothing was sent to Google.");
+  });
+
   it("leaves a schema that allows more arguments, or lists none, to the server", () => {
     expect(googleWorkspaceArgumentRefusal({ service: "gmail", toolName: "get_message", arguments: { any: 1 }, inputSchema: { type: "object", properties: {}, additionalProperties: true } })).toBeNull();
     expect(googleWorkspaceArgumentRefusal({ service: "gmail", toolName: "get_message", arguments: { any: 1 }, inputSchema: { type: "object" } })).toBeNull();

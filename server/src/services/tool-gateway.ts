@@ -644,7 +644,7 @@ type RemoteHttpExecutionAudit = {
     mcpMethod?: "tools/call";
     requestId: string;
     upstreamToolName: string;
-    dispatched: true;
+    dispatched: boolean;
   };
   response?: {
     httpStatus: number;
@@ -8420,6 +8420,7 @@ export function createToolGatewayService(
       if (workspaceTarget?.transport === "google_mcp") {
         const refusal = googleWorkspaceMcpArgumentRefusal(entry.toolName, parameters, entry.inputSchema);
         if (refusal) {
+          execution.request.dispatched = false;
           return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
         }
       }

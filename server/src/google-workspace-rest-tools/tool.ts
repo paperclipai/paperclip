@@ -105,9 +105,10 @@ export function unknownArgumentProblems(value: unknown, schema: unknown, path: s
   if (Array.isArray(value)) {
     return isRecord(schema.items) ? value.flatMap((item, index) => unknownArgumentProblems(item, schema.items, `${path}[${index}]`, closed)) : [];
   }
-  if (!isRecord(value) || !closed(schema, path)) return [];
-  const accepted = Object.keys(schema.properties);
-  const unknown = Object.keys(value).filter((key) => value[key] !== undefined && !Object.hasOwn(schema.properties, key));
+  if (!isRecord(value) || !isRecord(schema.properties)) return [];
+  const properties = schema.properties;
+  const accepted = Object.keys(properties);
+  const unknown = closed(schema, path) ? Object.keys(value).filter((key) => value[key] !== undefined && !Object.hasOwn(properties, key)) : [];
   const problems: string[] = [];
   if (unknown.length > 0) {
     const names = unknown.map((key) => JSON.stringify(key)).join(", ");
@@ -116,7 +117,7 @@ export function unknownArgumentProblems(value: unknown, schema: unknown, path: s
     problems.push(`unknown ${unknown.length === 1 ? "argument" : "arguments"} ${names}${where}. ${path ? `Accepted in ${path}` : "Accepted arguments"}: ${list}.`);
   }
   for (const key of accepted) {
-    if (value[key] !== undefined) problems.push(...unknownArgumentProblems(value[key], schema.properties[key], path ? `${path}.${key}` : key, closed));
+    if (value[key] !== undefined) problems.push(...unknownArgumentProblems(value[key], properties[key], path ? `${path}.${key}` : key, closed));
   }
   return problems;
 }

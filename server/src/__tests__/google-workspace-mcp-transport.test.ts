@@ -326,7 +326,9 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(f.google.calls()).toEqual([]);
       const failed = (await f.invocations()).filter((invocation) => invocation.status === "failed");
       expect(failed).toEqual([expect.objectContaining({ errorCode: "tool_error", errorMessage: expect.stringContaining("Nothing was sent to Google.") })]);
-      expect(await f.audit("call_failed")).toHaveLength(1);
+      const audit = await f.audit("call_failed");
+      expect(audit).toHaveLength(1);
+      expect(JSON.stringify(audit[0])).toContain("\"dispatched\":false");
     });
 
     it("sends a valid edit and a public image link unchanged", async () => {
