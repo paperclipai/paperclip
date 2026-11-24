@@ -39,7 +39,7 @@ describe("tool allowlist", () => {
       .map((tool) => (tool.inputSchema.properties as Record<string, { description?: string }> | undefined)?.query?.description)
       .filter((text): text is string => typeof text === "string");
     expect(queries.length).toBeGreaterThanOrEqual(3);
-    expect(queries.filter((item) => item.includes("label:"))).toHaveLength(2);
+    expect(queries.filter((item) => item.includes("label:"))).toHaveLength(3);
     for (const text of queries.filter((item) => item.includes("label:"))) {
       expect(text).toMatch(/`label:` takes a label name/);
     }

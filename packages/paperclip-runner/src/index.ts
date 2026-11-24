@@ -22,6 +22,7 @@ export * from "./contracts/types.js";
 export * from "./backends/harness-driver-backend.js";
 export * from "./drivers/dot/dot-harness-driver.js";
 export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";
+export { nativeRunAttachReservedBytes } from "./backends/runtime-context.js";
 export { createOpenCodeNativeSessionBackend } from "./backends/opencode-native-backend.js";
 export {
   createNativeSessionBackend,
@@ -87,6 +88,7 @@ export * from "./drivers/acpx/qualified-profiles.js";
 export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
+export { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunch, type AntigravityCliLaunchOptions, type AntigravityCliRuntimeErrorCode } from "./drivers/acpx/antigravity-cli-installation.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,

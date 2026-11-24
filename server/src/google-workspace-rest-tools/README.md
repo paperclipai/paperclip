@@ -95,11 +95,53 @@ so they can be deleted cleanly when that happens.
 | 403 `appNotAuthorizedToFile` (Drive) | Tool error saying `drive.file` covers only files this app created or opened, without the app's project number |
 | Any 3xx redirect | Tool error; the redirect is not followed |
 | Other 403, 404, 400, 429, 5xx, timeout, network failure | Tool error result (`isError: true`) with a short message |
+| Unknown argument (see "Unknown arguments") | Tool error result that names it and lists the accepted ones, no request sent |
 | Invalid arguments | Tool error result, no request sent |
 | Unknown tool | Throws `McpError` `InvalidParams` |
 
 Token problems are thrown, not returned, so a caller can refresh the token or
 ask the user to reconnect exactly as it does for Google's MCP servers.
+
+### Unknown arguments
+
+No tool ignores an argument. `defineTool` in `tool.ts` checks the call's
+arguments against the tool's advertised input schema before anything else,
+for all 36 tools. An argument that is not in the schema, at the top level or
+inside a structured input (for example `attendees[0]` or `writeControl`),
+fails the call before any request is sent to Google:
+
+```text
+Invalid arguments for list_threads: unknown argument "q". Accepted arguments: pageSize, pageToken, query, labelIds, includeTrash, view. Nothing was sent to Google.
+```
+
+`defineTool` also sets `additionalProperties: false` on every object in the
+advertised input schema that lists its `properties`, so agents see the rule.
+`strict-arguments.test.ts` builds its cases from the tool list, so a new tool
+is covered without a test change, and checks that the zod schema of each tool
+has the same objects, at the same paths, with the same fields, types and
+enums as its JSON schema. Every field the zod schema requires is also
+required in the JSON schema. Only `update_doc` and `update_presentation`
+require more in the JSON schema than in zod (`writeControl` and its
+`requiredRevisionId`); the tool checks those itself, to give an error that
+says to read the file first. The check follows only `properties` and `items`,
+so `defineTool` refuses to define a tool whose input schema uses anything it
+cannot follow (`anyOf`, `oneOf`, `allOf`, `$ref`, tuple `items`, an
+`additionalProperties` other than `false` beside `properties`, and similar). A new schema shape
+fails at startup and in tests; it can never let an argument through unchecked.
+
+**Pass-through inputs.** These are Google's own request objects and are sent
+to Google as given. Their contents are not checked for unknown fields here
+(each tool still checks the request kind, see "Allowed request kinds"):
+
+- `docs__update_doc` `requests[]` (`documents.batchUpdate` requests)
+- `slides__update_presentation` `requests[]` (`presentations.batchUpdate` requests)
+- `sheets__update_spreadsheet` `requests[]` (`spreadsheets.batchUpdate` requests)
+
+The recorded Google MCP references do not say what Google's servers do with
+an unknown argument, and this was not checked against Google's servers. The
+decision is to refuse: an ignored filter can read data the agent did not ask
+for (a staging test on 2026-11-23 called `list_threads` with `query` and got
+every thread).
 
 ## How it plugs in
 
@@ -294,6 +336,7 @@ in the tool's own description and schema, which agents now receive:
 | `calendar__delete_event` | a recurring series ID deletes the series | refused; pass one occurrence |
 | `gmail__create_draft` | attachments | refused, as Google's tool does today |
 | `drive__search_files` | full MCP query language and `orderBy` | terms without a Drive `q` equivalent refused; `orderBy` limited |
+| every tool | not recorded what an argument outside the schema does | refused with the argument's name (see "Unknown arguments") |
 
 Each refusal is a tool error that says what to do, and nothing is changed.
 
@@ -375,6 +418,15 @@ Each refusal is a tool error that says what to do, and nothing is changed.
   this folder. `threadsTotal` and `threadsUnread` are left out: REST returns
   them only from `labels.get`, one request per label. A label with only one
   of its two colors set is returned without `color`.
+- **Filters on list tools** (checked 2026-11-23). `list_threads` had no
+  `query`, so a call with `query` listed every thread; it now takes `query`
+  (see "Not verified against Google's servers"). `search_messages` and
+  `list_drafts` already take `query`, sent as Gmail's `q`. `list_labels` has
+  no filter: Gmail's `labels.list` has none. Calendar `list_events` filters
+  with `fullText`, and `list_calendars` has no filter in REST. Drive
+  `list_recent_files` stays without `query`, as in Google's Drive MCP tool;
+  `search_files` is the Drive tool that filters. In each case an argument the
+  tool does not have is refused, never ignored.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
@@ -435,11 +487,13 @@ Google's servers return if they ever expose tools with these names:
 - **`get_draft`**: input `draftId` (required) and `view` (`DraftView` from
   `list_drafts`); result is one `Draft`, the shape `list_drafts` and
   `create_draft` return. One `drafts.get`, plus bodies.
-- **`list_threads`**: input `pageSize`, `pageToken`, `includeTrash` and `view`
-  as in `search_threads`, plus `labelIds` (at most 20; a thread must have all
-  of them) instead of `query`; result is `search_threads`'s. Drafts are
-  excluded unless `DRAFT` is among the labels; spam and trash are included
-  when `SPAM` or `TRASH` is among them.
+- **`list_threads`**: input `pageSize`, `pageToken`, `query`, `includeTrash`
+  and `view` as in `search_threads`, plus `labelIds` (at most 20; a thread
+  must have all of them); result is `search_threads`'s. `query` is sent as
+  Gmail's `q`, with the same name and meaning as in `search_threads`, and a
+  thread must match both the query and the labels. Drafts are excluded unless
+  `DRAFT` is among the labels or the query uses `in:draft`; spam and trash are
+  included when `SPAM` or `TRASH` is among the labels or `includeTrash` is set.
 - **`search_messages`**: input as `search_threads`, with `messageFormat` from
   `get_message` instead of `view`; result is `{ messages, nextPageToken,
   resultCountEstimate }` with `get_message`'s `Message`. Unlike `get_message`,
@@ -1011,6 +1065,7 @@ made" warning.
   option). Numbers, currency, percentages and dates come back as the displayed
   text (`"$1,200.50"`, `"12%"`, `"1/5/2026"`), booleans as `"TRUE"`/`"FALSE"`,
   errors as their text (`"#DIV/0!"`), and formula cells as their result.
+  Any other argument, such as `valueRenderOption`, is refused.
   Google's answer is returned unchanged: trailing empty rows and columns are
   left out, so rows can differ in length; an empty range has no `values`
   field; in a merged area only the top-left cell holds the value. One range per

@@ -105,8 +105,13 @@ async function openAndRun(testEntry = entry) {
   await renderDialog(testEntry);
   const button = [...document.body.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Run");
   expect(button).toBeTruthy();
-  await act(() => button!.click());
-  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 260)); });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    await act(() => button!.click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(260); });
+  } finally {
+    vi.useRealTimers();
+  }
   await flushReact();
 }
 

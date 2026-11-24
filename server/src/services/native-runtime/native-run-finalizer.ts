@@ -114,6 +114,7 @@ import {
 } from "../heartbeat-run-summary.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { settledResponsePublicationSql } from "./native-response-publication-receipt.js";
+import { ensureNativePlanReviewCard } from "./native-plan-review-card.js";
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import {
   authorizeCommittedChatResponse,
@@ -1677,6 +1678,23 @@ export async function finalizeNativeRun(input: {
       ? await findSupersededExternalReviewRequests(input.db, {
         companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
       }) : [];
+    // A Plan-mode run that settles with a plan revision nobody was asked to
+    // review gets its review card here, whichever harness ran it and whether
+    // or not the agent remembered to open it. The card is the review gate below.
+    const planReview = terminalState === "succeeded" && input.workspaceFinalizeStatus === "succeeded" &&
+      authoritativeIssue.workMode === "planning" && result.reportedWorkDisposition !== "done" &&
+      !isNativePlanWaitResult(result) &&
+      !readNativeReviewAssignmentContext(run.contextSnapshot)
+      ? await ensureNativePlanReviewCard(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }).catch((error: unknown) => {
+          // The run already succeeded; a card that could not be opened must
+          // not fail its settlement. The task settles in its response wait and
+          // the stranded-task pass opens the card (idempotently) later.
+          logger.warn({ runId: run.id, issueId: authoritativeIssue.id, error }, "Plan review card could not be opened at settle; recovery will retry");
+          return null;
+        })
+      : null;
     const governanceGate = await pendingNativeGovernance({
       db: input.db,
       companyId: run.companyId,
@@ -1778,6 +1796,7 @@ export async function finalizeNativeRun(input: {
       monitorWaitSuperseded: supersededMonitorWait !== null,
       monitorWaitAuthorized: authoritativeIssue.workMode === "standard" && authoritativeIssue.executionRunId === run.id && monitorWaitAt !== null,
       planWaitAuthorized: planWait !== null,
+      planNotProduced: planReview?.kind === "no_plan" || planReview?.kind === "reviewed",
       hasPendingChildCompletion,
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,

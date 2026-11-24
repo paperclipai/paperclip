@@ -180,7 +180,7 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     let after: string | undefined;
     for (;;) {
       const page = await skills.eligibility({ after, limit: 50, purpose: options.purpose });
-      if (page.results.some(skill => skill.status !== "version_backed")) return true;
+      if (page.results.some(skill => skill.status !== "version_backed" && skill.status !== "source_unavailable")) return true;
       if (page.inspected < 50 || !page.after) return false;
       after = page.after;
     }

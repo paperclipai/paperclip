@@ -153,6 +153,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/read-v2",
   "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.
@@ -500,6 +501,18 @@ describe("openapi routes", () => {
       detail: { properties: { kind: { enum: ["questions"] } } },
     } } });
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it.each([
+    ["get", "/api/agents/{id}/runtime-state"],
+    ["post", "/api/agents/{id}/runtime-state/reset-session"],
+    ["get", "/api/agents/{id}/task-sessions"],
+  ])("documents %s %s as board-only", (method, path) => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths[path][method];
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.responses["403"]).toBeDefined();
   });
 
   it("documents task-tree controls as board-only and names the human page", () => {

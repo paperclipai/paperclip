@@ -136,6 +136,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "tool_connection.created": "created",
   "tool_connection.updated": "updated",
   "tool_connection.archived": "removed",
+  "tool_connection.sign_in_cancelled": "cancelled sign-in for",
   "tool_connection.catalog_refresh": "refreshed actions for",
   "tool_connection.installs_synced": "changed agent installs for",
   "tool_connection.install_access_extended": "extended agent access for",

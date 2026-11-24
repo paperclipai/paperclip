@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, projects, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -121,6 +122,21 @@ const support = await getEmbeddedPostgresTestSupport();
     const admitted = outcomes.filter(result => result.status === "fulfilled").length;
     expect(admitted).toBeGreaterThanOrEqual(1);
     expect((await f.exposure()).effectiveHeldCents).toBe(`${admitted * 60}.0000000`);
+  });
+
+  it("locks the run row without reading its large snapshot or log columns", async () => {
+    const f = await fixture({ reservationCents: "10" });
+    const runId = await f.queuedRun();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID(), payload: "x".repeat(65536) } })
+      .where(eq(heartbeatRuns.id, runId));
+    const queries: string[] = [];
+    const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as Db;
+    await expect(reserveRunBudget(recorded, f.companyId, runId, f.projectId)).resolves.toMatchObject({ reused: false });
+    const runLock = queries.filter(query => /from "heartbeat_runs"/.test(query) && /for update/.test(query));
+    expect(runLock).toHaveLength(1);
+    const selected = runLock[0].slice(0, runLock[0].indexOf(' from "heartbeat_runs"')).replaceAll('"heartbeat_runs".', "");
+    expect([...selected.matchAll(/"(\w+)"/g)].map(match => match[1]).sort())
+      .toEqual(["agent_id", "company_id", "cost_accounted_at", "id", "native_issue_id", "result_json", "runtime_mode", "status", "usage_json"]);
   });
 
   it("commits a budget release while dispatch waits for asynchronous lifecycle readiness", async () => {

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { refineTestPlan, selectionDurations } from "./test-selection-plan.mjs";
+import { activeNightlySuitesForEnv } from "./nightly-only-suites.mjs";
 import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
 import { selectProjects } from "./select-projects.mjs";
@@ -30,7 +31,7 @@ function runnerInventory(group) {
   const args = group === "serialized" ? ["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"]
     : ["--mode", "general", "--group", group,
       ...(group === "general-server-without-chat" ? ["--shard-index", "0", "--shard-count", "1"] : [])];
-  const env = { ...process.env, GITHUB_WORKFLOW: "PR" };
+  const env = { ...process.env, GITHUB_WORKFLOW: "PR", PAPERCLIP_CI_FULL: "1" };
   delete env.PAPERCLIP_CI_TEST_SELECTION;
   return JSON.parse(execFileSync(process.execPath, ["scripts/run-vitest-stable.mjs", ...args, "--dry-run"],
     { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
@@ -77,7 +78,8 @@ export async function createTestSelection(plan, head) {
       ...native.selectedGeneralServerSuites, "server/src/__tests__/chat-channels.integration.test.ts"].sort(),
     server.inventory, "Server inventory must be completely covered by existing lane ownership");
   }
-  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations() }), graphs };
+  const excludedSuites = activeNightlySuitesForEnv();
+  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations(), excludedSuites }), graphs };
 }
 
 async function main() {

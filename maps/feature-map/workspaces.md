@@ -53,7 +53,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 ### `task-workspace`
 
-Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx) and [task binding](../../server/src/__tests__/issue-runtime-workspace-binding.test.ts) cover host/binding contracts.
+Automated: [task binding](../../server/src/__tests__/issue-runtime-workspace-binding.test.ts) covers binding contracts (mocked `IssueWorkspaceCard` UI tests were removed; verify the workspace card UI manually).
 
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
@@ -173,7 +173,7 @@ For a child created by an admitted agent with an explicit existing workspace, ve
 
 ### `workspace-management`
 
-Automated: [workspace detail](../../ui/src/pages/ExecutionWorkspaceDetail.test.tsx) and [runtime service](../../server/src/__tests__/workspace-runtime.test.ts) cover UI and runtime contracts separately.
+Automated: [runtime service](../../server/src/__tests__/workspace-runtime.test.ts) covers runtime contracts (mocked `ExecutionWorkspaceDetail` UI tests were removed; verify workspace detail UI manually).
 
 Manual: Provision a disposable workspace, wait for readiness, start an available service, open its endpoint, and inspect a real response and logs. Stop it and verify it actually stops. Exercise close/reopen only after inspecting pending changes and active runs.
 

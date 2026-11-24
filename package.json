@@ -5,7 +5,7 @@
   "scripts": {
     "perf:workspace-admission": "node --import ./server/node_modules/tsx/dist/loader.mjs server/scripts/benchmark-workspace-admission.ts",
     "postinstall": "node scripts/link-plugin-dev-sdk.mjs",
-    "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
+    "preflight:workspace-links": "node scripts/ensure-workspace-package-links.mjs",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
@@ -28,8 +28,8 @@
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
     "test:runner-acceptance": "vitest run --config tests/runner-acceptance/vitest.config.ts",
     "test:runner-acceptance:typecheck": "tsc -p tests/runner-acceptance/tsconfig.json",
-    "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
-    "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
+    "test:run:general": "node scripts/ensure-workspace-package-links.mjs && node scripts/ensure-plugin-build-deps.mjs && node scripts/run-vitest-stable.mjs --mode general",
+    "test:run:serialized": "node scripts/ensure-workspace-package-links.mjs && node scripts/ensure-plugin-build-deps.mjs && node scripts/run-vitest-stable.mjs --mode serialized",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
@@ -95,7 +95,7 @@
     "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
     "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
     "test:lifecycle-baseline:typecheck": "node scripts/typecheck-test-projects.mjs tests/lifecycle-baseline",
-    "verify": "node --import ./cli/node_modules/tsx/dist/loader.mjs scripts/ensure-workspace-package-links.ts && node scripts/local-verify.mjs"
+    "verify": "node scripts/ensure-workspace-package-links.mjs && node scripts/local-verify.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

@@ -1489,6 +1489,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
+  "GET /api/agents/{id}/runtime-state",
+  "POST /api/agents/{id}/runtime-state/reset-session",
+  "GET /api/agents/{id}/task-sessions",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
@@ -12873,6 +12876,15 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Switch to the new machine sign-in key once the provider accepts it",
   responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/sign-in/cancel",
+  tags: ["tool-access"],
+  summary: "Remove a connection whose first sign-in was cancelled; a connection that ever signed in is left unchanged",
 });
 
 registerCurrentRoute({

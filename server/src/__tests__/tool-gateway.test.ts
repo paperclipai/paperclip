@@ -678,6 +678,38 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it.each([
+    [{ content: [{ type: "text", text: "Allowance used." }], structuredContent: { code: "usage_limit_reached", retryability: "later" }, isError: true },
+      { toolCode: "usage_limit_reached", retryable: true }],
+    [{ content: [{ type: "text", text: "Busy now (code: busy_now, retryable)" }], isError: true }, { toolCode: "busy_now", retryable: true }],
+    [{ content: [{ type: "text", text: "Search denied: outside consented tag" }], isError: true }, {}],
+  ])("attaches the tool's own error code and retryability to a session tool_error: %#", async (result, expected) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: { jsonrpc: "2.0", id: body?.id, result } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, toolName: "query_rows", riskLevel: "read",
+      });
+      await db.update(toolCatalogEntries).set({
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const failure = await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: {} })
+        .catch(error => error);
+      expect(failure).toMatchObject({ reasonCode: "tool_error" });
+      expect({ toolCode: failure.details.toolCode, retryable: failure.details.retryable }).toEqual({
+        toolCode: (expected as { toolCode?: string }).toolCode, retryable: (expected as { retryable?: boolean }).retryable });
+    } finally {
+      await remote.close();
+    }
+  });
+
   it.each(["managed", "mcp-key"])("returns %s GitHub recovery guidance directly to MCP callers without a pending approval", async method => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
