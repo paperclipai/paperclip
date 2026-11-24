@@ -1181,6 +1181,33 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it.each(["owner", "other-user", "agent", "blocked"])("rechecks the persisted standing conversation binding (%s)", async kind => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ conversationAgentId: seeded.agentId, conversationUserId: "queue-owner",
+      conversationState: "active", ...(kind === "blocked" ? {status: "blocked"} : {}) })
+      .where(eq(issues.id, seeded.issueId));
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: seeded.companyId, issueId: seeded.issueId,
+      body: "Continue our conversation", metadata: null,
+      authorType: kind === "agent" ? "agent" : "user", authorAgentId: kind === "agent" ? seeded.agentId : null,
+      authorUserId: kind === "agent" ? null : kind === "other-user" ? "other-operator" : "queue-owner" });
+    await heartbeatService(db).wakeup(seeded.agentId, { source: "on_demand", reason: "issue_commented",
+      requestedByActorType: kind === "agent" ? "agent" : "user",
+      requestedByActorId: kind === "agent" ? seeded.agentId : kind === "other-user" ? "other-operator" : "queue-owner",
+      payload: { issueId: seeded.issueId, commentId },
+      contextSnapshot: { issueId: seeded.issueId, wakeCommentId: commentId } });
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, seeded.companyId));
+    const admitted = receipts.filter(receipt => JSON.stringify(receipt.payload).includes(commentId));
+    if (kind === "owner") {
+      expect(admitted).toHaveLength(1);
+      expect(admitted[0].status).not.toBe("skipped");
+    } else expect(admitted).toHaveLength(0);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
+  });
+
   it("does not accept interruption authority from an agent wake payload", async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: "claude_local",

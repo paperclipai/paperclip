@@ -1033,7 +1033,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
       inArray(issueComments.id, ids), isNull(issueComments.deletedAt),
     ));
-    return comments.some(comment => canNotifyIssueCommentAssignee(comment.body, input.agentId, input.status, hasActionableCommentIntent(comment,input.agentId)));
+    // A person's standing agent conversation has its own persisted recipient
+    // and author binding. It is not an ordinary task-composer comment.
+    const [conversation] = await tx.select({ agentId: issues.conversationAgentId, userId: issues.conversationUserId })
+      .from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).limit(1);
+    return comments.some(comment => (
+      conversation?.agentId === input.agentId && !!conversation.userId &&
+      !comment.authorAgentId && comment.authorUserId === conversation.userId
+    ) || canNotifyIssueCommentAssignee(comment.body, input.agentId, input.status, hasActionableCommentIntent(comment,input.agentId)));
   }
 
   async function claimQueuedRun(

@@ -1863,8 +1863,13 @@ export function mergeCoalescedContextSnapshot(
     readNonEmptyString(value.wakeReason), value) ? mergeWakeCommentIds(value)
       : Array.isArray(value.ordinaryIssueCommentIds) ? value.ordinaryIssueCommentIds.filter((id): id is string => typeof id === "string") : [];
   merged.ordinaryIssueCommentIds = [...new Set([...ordinaryIds(existing), ...ordinaryIds(incoming)])];
+  // A legacy comment snapshot can contain stale interaction data. That data
+  // alone is not an independently admitted interaction continuation.
+  const hasIndependentExistingCause = !!readNonEmptyString(existing.wakeReason) &&
+    (!["issue_commented", "issue_comment_mentioned", "issue_reopened_via_comment"].includes(readNonEmptyString(existing.wakeReason)!) ||
+      existing.source === "issue.interaction.respond");
   if (isOrdinaryIssueCommentWake(readNonEmptyString(incoming.wakeReason), incoming) &&
-      readNonEmptyString(existing.wakeReason) && !isOrdinaryIssueCommentWake(readNonEmptyString(existing.wakeReason), existing)) {
+      readNonEmptyString(existing.wakeReason) && hasIndependentExistingCause) {
     for (const key of ["wakeReason", "source", "wakeSource", "wakeTriggerDetail", "interactionId", "interactionKind", "interactionStatus"])
       if (key in existing) merged[key] = existing[key]; else delete merged[key];
   }
@@ -1942,7 +1947,7 @@ export function mergeCoalescedContextSnapshot(
     !(
       (options.preserveExistingInteractionContinuation === true ||
         (isOrdinaryIssueCommentWake(readNonEmptyString(incoming.wakeReason), incoming) &&
-          !isOrdinaryIssueCommentWake(readNonEmptyString(existing.wakeReason), existing))) &&
+          hasIndependentExistingCause)) &&
       hasInteractionContinuationWakeContext(existing)
     )
   ) {

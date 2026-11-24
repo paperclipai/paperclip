@@ -14277,7 +14277,7 @@ export function issueService(db: Db) {
       // inbound chat message is automatically publishable. Presentation,
       // recovery, automation, and ordinary internal agent comments stay in
       // Paperclip even while a bound conversation is active.
-      if (commentCanTriggerTurn && authorType === "agent" && isExplicitExternalAgentComment(metadata)) {
+      if (authorType === "agent" && isExplicitExternalAgentComment(metadata)) {
         // An external-chat run may perform ordinary Paperclip lifecycle or
         // bookkeeping writes before its adapter result is finalized. Those
         // writes remain internal: only heartbeat's selected final presentation

@@ -281,7 +281,10 @@ export async function fastResponseSourceCurrent(tx: Db, request: Request) {
     (!source || source.updatedAt.getTime() > request.acceptedAt.getTime() + 10)
   )
     return false;
-  if (request.sourceKey.startsWith("comment:") &&
+  // External channel inputs retain their native, durable authorizeExternal
+  // check before provider work and again at settlement/publication. They are
+  // not ordinary task comments and must not require a task-composer marker.
+  if (!request.endpointId && request.sourceKey.startsWith("comment:") &&
       (!source || source.issueId !== issue.id ||
        !canNotifyIssueCommentAssignee(source.body, issue.assigneeAgentId, issue.status,hasActionableCommentIntent(source,issue.assigneeAgentId)))) return false;
   const [answer] = await tx
