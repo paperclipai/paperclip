@@ -91,11 +91,6 @@ function runtimeDirectory(): string {
   return resolve(configured);
 }
 
-function harnessStateDirectory(): { harnessStateDirectory?: string } {
-  const configured = process.env.PAPERCLIP_RUNNER_HARNESS_STATE_DIR;
-  return configured ? { harnessStateDirectory: configured } : {};
-}
-
 async function open(
   params: Record<string, unknown>,
   resume: boolean,
@@ -129,7 +124,9 @@ async function open(
     commandFd: launchBinding.commandFd,
     commandLifecycle: launchBinding.commandLifecycle,
     runtimeDirectory: runtimeDirectory(),
-    ...harnessStateDirectory(),
+    ...(process.env.PAPERCLIP_RUNNER_HARNESS_STATE_DIR
+      ? { harnessStateDirectory: process.env.PAPERCLIP_RUNNER_HARNESS_STATE_DIR }
+      : {}),
     environment: withoutAmbientOpenCodeCommand(process.env),
     runnerInstanceId:
       process.env.PAPERCLIP_RUNNER_INSTANCE_ID ?? "paperclip-runnerd-opencode",

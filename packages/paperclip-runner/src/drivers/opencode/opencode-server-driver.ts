@@ -376,13 +376,14 @@ export class OpenCodeServerDriver implements HarnessDriver {
   }
 
   async #readWorkspace(normalizedSessionId: string): Promise<string> {
-    const raw = await readFile(
-      join(
-        sessionRoot(this.#options.runtimeDirectory, normalizedSessionId),
-        "workspace",
-      ),
-      "utf8",
-    );
+    const root = this.#options.harnessStateDirectory === undefined
+      ? sessionRoot(this.#options.runtimeDirectory, normalizedSessionId)
+      : join(
+        await resolveHarnessStateDirectory(this.#options.harnessStateDirectory),
+        "opencode",
+        opencodeRuntimeSessionDirectoryName(normalizedSessionId),
+      );
+    const raw = await readFile(join(root, "workspace"), "utf8");
     return raw.trim();
   }
 
@@ -396,11 +397,12 @@ export class OpenCodeServerDriver implements HarnessDriver {
       input.normalizedSessionId,
     );
     await mkdir(root, { recursive: true, mode: 0o700 });
-    await writeFile(join(root, "workspace"), `${cwd}\n`, { mode: 0o600 });
-    await removeLegacyIsolatedHomes(root);
-    const dataHome = this.#options.harnessStateDirectory === undefined
+    const harnessState = this.#options.harnessStateDirectory === undefined
       ? undefined
-      : await prepareOpenCodeHarnessStateData(this.#options.harnessStateDirectory, input.normalizedSessionId, cwd);
+      : await prepareOpenCodeHarnessState(this.#options.harnessStateDirectory, input.normalizedSessionId, cwd);
+    await writeFile(join(harnessState?.root ?? root, "workspace"), `${cwd}\n`, { mode: 0o600 });
+    await removeLegacyIsolatedHomes(root);
+    const dataHome = harnessState?.dataHome;
     const trace = await createProviderTraceFileSink({
       path: this.#options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH,
       provider: "opencode",
@@ -3438,11 +3440,11 @@ export function opencodeRuntimeSessionDirectoryName(
   return safe;
 }
 
-async function prepareOpenCodeHarnessStateData(
+async function prepareOpenCodeHarnessState(
   harnessStateDirectory: string,
   normalizedSessionId: string,
   cwd: string,
-): Promise<string> {
+): Promise<{ root: string; dataHome: string }> {
   const directory = await resolveHarnessStateDirectory(harnessStateDirectory);
   const workspace = await realpath(cwd);
   if (directory === workspace || isInside(directory, workspace) || isInside(workspace, directory)) {
@@ -3453,7 +3455,7 @@ async function prepareOpenCodeHarnessStateData(
     "opencode",
     opencodeRuntimeSessionDirectoryName(normalizedSessionId),
   );
-  return await ensurePrivateDirectory(join(root, "data"), root, "Harness state");
+  return { root, dataHome: await ensurePrivateDirectory(join(root, "data"), root, "Harness state") };
 }
 
 function sessionRoot(

@@ -386,10 +386,14 @@ const server = createServer(async (request, response) => {
     await connectPaperclipMcp();
     return json(response, 200, true);
   }
-  if (request.method === "POST" && request.url === "/session")
+  if (request.method === "POST" && request.url === "/session") {
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-session.json"), JSON.stringify(session));
     return json(response, 200, session);
-  if (request.method === "GET" && request.url === `/session/${session.id}`)
-    return json(response, 200, session);
+  }
+  if (request.method === "GET" && request.url === `/session/${session.id}`) {
+    const stored = await readFile(join(process.env.XDG_DATA_HOME, "fake-session.json"), "utf8").catch(() => null);
+    return stored === null ? json(response, 404, { error: "session not found" }) : json(response, 200, JSON.parse(stored));
+  }
   if (
     request.method === "GET" &&
     request.url === `/session/${session.id}/message`

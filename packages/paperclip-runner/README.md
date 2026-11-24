@@ -1065,9 +1065,10 @@ later process needs to continue a session there, using the same namespacing:
 | `<dir>/acpx/<session>/<agent>-home` | The agent's configuration directory, including its conversation history |
 | `<dir>/acpx/<session>/data` | The agent's XDG data directory (Cursor's data directory) |
 | `<dir>/opencode/<session>/data` | OpenCode's XDG data directory, including its session store |
+| `<dir>/opencode/<session>/workspace` | The session's workspace record, read when OpenCode reopens the session |
 
-Caches, rewritten configuration, per-launch homes, the workspace record and the
-turn dispatch journal stay in the runtime directory. The directory must already
+Caches, rewritten configuration, per-launch homes, the ACPX workspace record and
+the turn dispatch journal stay in the runtime directory. The directory must already
 exist and be named by an absolute, normalized path with no symbolic link on it;
 it must not overlap the task workspace. The Runner creates private (`0700`)
 children below it and protects it from tools like the runtime directory. The

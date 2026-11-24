@@ -344,16 +344,26 @@ describe("OpenCodeServerDriver", () => {
       expect(JSON.parse(await readFile(join(data, "fake-environment.json"), "utf8")).configHome).toBe(join(sessionRoot, "config"));
       for (const path of [join(harnessStateDirectory, "opencode"), dirname(data), data]) expect((await stat(path)).mode & 0o777).toBe(0o700);
       await expect(stat(join(sessionRoot, "data"))).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await readFile(join(sessionRoot, "workspace"), "utf8")).toBe(`${workspace}\n`);
+      expect(await readFile(join(dirname(data), "workspace"), "utf8")).toBe(`${workspace}\n`);
+      await expect(stat(join(sessionRoot, "workspace"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await readFile(join(data, "fake-session.json"), "utf8"))).toMatchObject({ id: snapshot.providerSessionId });
     } finally {
       await session.close({ reason: "test" });
     }
+    const recover = () => new OpenCodeServerDriver({ ...options, harnessStateDirectory }).recoverSession!(snapshot);
+    await rm(runtimeDirectory, { recursive: true });
     await rm(join(data, "fake-environment.json"));
-    const recovered = await new OpenCodeServerDriver({ ...options, harnessStateDirectory }).recoverSession?.(snapshot);
+    const recovered = await recover();
     expect(recovered).toMatchObject({ recovered: true });
-    await recovered?.session?.close({ reason: "test" });
+    await expect(recovered.session!.read!()).resolves.toMatchObject({ sessionId: snapshot.providerSessionId });
+    await recovered.session!.close({ reason: "test" });
     expect(JSON.parse(await readFile(join(data, "fake-environment.json"), "utf8")).configHome).toBe(join(sessionRoot, "config"));
     await expect(stat(join(sessionRoot, "data"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await rm(join(data, "fake-session.json"));
+    expect(await recover()).toMatchObject({ recovered: false });
+    await rm(dirname(data), { recursive: true });
+    expect(await recover()).toMatchObject({ recovered: false });
 
     await symlink(harnessStateDirectory, join(root, "linked"));
     for (const [value, message] of [[join(root, "linked"), "physical path"], ["state", "absolute normalized"], [root, "overlap"]]) {
