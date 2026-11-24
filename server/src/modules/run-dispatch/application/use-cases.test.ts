@@ -222,6 +222,7 @@ describe("createPromoteDueScheduledRetries", () => {
     const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
 
     expect(result.releasePlan.degraded).toBe(true);
+    expect(result.degraded).toBe(true);
     expect(result.runIds).toEqual(["run-process-loss"]);
     // A denied retry is left parked on its own due time, not rescheduled onto
     // a fabricated one, so a later sweep re-decides it.

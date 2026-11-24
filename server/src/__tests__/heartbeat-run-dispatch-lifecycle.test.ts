@@ -23,10 +23,14 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
     return callback({ execute, transaction: db.transaction });
   } });
   const state = { due: input.due ?? null as number | null, suppressed: input.suppressed ?? false,
-    draining: input.draining ?? false, standby: false, fail: false };
+    draining: input.draining ?? false, standby: false, fail: false, degraded: false };
   const promote = vi.fn(async () => {
     if (state.fail) throw new Error("database unavailable");
+    // A degraded sweep denies the parked rows without rescheduling them, so
+    // the due time it woke on stays in the past for the next pass to re-decide.
+    if (state.degraded) return { degraded: true };
     if (state.due !== null && state.due <= Date.now()) state.due = null;
+    return { degraded: false };
   });
   const next = vi.fn(async () => state.due);
   const dispatch = vi.fn(async (_scope?: { companyId: string }) => {});
@@ -59,6 +63,18 @@ describe("run dispatch obligations", () => {
     await vi.advanceTimersByTimeAsync(1); expect(f.promote).toHaveBeenCalledTimes(2);
     expect(f.state.due).toBeNull(); expect(f.coordinator.nextWakeAt()).toBeNull();
     expect(f.dispatch).toHaveBeenCalledOnce();
+  });
+  it("backs a degraded sweep off for a recovery window instead of re-running every second", async () => {
+    // The parked quota-recovery row keeps its own (past) due time by design, so
+    // the sweep that woke on it gets a past deadline back: without a floor that
+    // is a 1s continuation, re-reading the in-flight count that just failed.
+    const f = fixture({ due: 1_000_000 }); f.state.degraded = true; await f.worker.ready;
+    expect(f.promote).toHaveBeenCalledOnce();
+    expect(f.coordinator.nextWakeAt()).toBe(1_030_000);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(f.promote).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.promote).toHaveBeenCalledTimes(2);
   });
   it("rearms earlier work and cancels a future deadline on a committed producer change", async () => {
     const f = fixture({ due: 1_600_000 }); await f.worker.ready;
@@ -109,7 +125,7 @@ describe("run dispatch obligations", () => {
     const f = fixture(); await f.worker.ready;
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    f.promote.mockImplementationOnce(() => held);
+    f.promote.mockImplementationOnce(() => held.then(() => ({ degraded: false })));
     await f.notifyRetry(); await f.settle();
     await f.notifyRetry(); await f.settle();
     expect(f.promote).toHaveBeenCalledTimes(2);
