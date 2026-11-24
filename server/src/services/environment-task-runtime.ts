@@ -4,7 +4,8 @@ import { attachSandboxCreation, environmentService } from "./environments.js";
 import { createOwnedSandbox, queueSandboxCreationCleanup, recordSandboxCreationResource } from "./sandbox-creation-operations.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
-import { readWorkspaceProviderBinding } from "@paperclipai/shared";
+import { agentHarnessName, readWorkspaceProviderBinding } from "@paperclipai/shared";
+import { pluginDriverSupportedAdapters } from "./plugin-environment-driver.js";
 import { canReadStoppedPluginTaskCredential, settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
@@ -294,13 +295,22 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       JSON.stringify([...proof.projectIds].sort()) !== JSON.stringify([...operation.projectIds].sort()))
       throw new Error("Plugin Runner file scope unavailable");
   }
+  if (operation.kind === "submit" && driver.supportedAdapters) {
+    // A listed adapter runs only while the worker can also finish its sign-in.
+    const harness = operation.runner.harness;
+    const adapter = agentHarnessName("paperclip_runner", ["codex", "opencode"].includes(harness)
+      ? { provider: harness } : { provider: "acpx", acpxAgent: harness });
+    if (!pluginDriverSupportedAdapters(driver, worker.supportedMethods)?.includes(adapter)) {
+      throw new Error("Plugin Runner harness is unavailable on this environment");
+    }
+  }
   if (operation.kind === "submit") {
     const proof = metadata.runnerTaskProjectAuthValidation as { configurationId?: unknown; provider?: unknown; projectIds?: string[] } | undefined;
-    const provider = operation.runner.harness === "codex" ? "openai" : operation.runner.harness === "claude" ? "anthropic" : operation.runner.harness;
+    const projectAuthProvider = (harness: string) => harness === "codex" ? "openai" : harness === "claude" ? "anthropic" : harness;
+    const provider = projectAuthProvider(operation.runner.harness);
     if (!provider || !operation.preparedLaunchId || proof?.configurationId !== operation.preparedLaunchId || proof.provider !== provider
       || (!Array.isArray(proof.projectIds) ? null : JSON.stringify([...proof.projectIds].sort())) !== JSON.stringify([...operation.projectIds].sort())
-      || (operation.credential && (operation.credential.type === "codex-auth-json" ? "openai"
-        : operation.credential.type === "claude-env" ? "anthropic" : operation.credential.provider) !== provider)) {
+      || (operation.credential && projectAuthProvider(operation.credential.type === "claude-env" ? "claude" : operation.credential.provider) !== provider)) {
       throw new Error("Plugin Runner managed project authentication validation unavailable");
     }
     requiredProjectAuthProof = proof as Record<string, unknown>;

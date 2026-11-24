@@ -821,7 +821,10 @@ export function environmentRoutes(
       },
     );
     res.json({ ...capabilities, loginPtyDrivers: Object.fromEntries(loginDrivers.map(driver => [
-      `${driver.pluginKey}:${driver.driverKey}`, { supportsLoginPty: driver.supportsLoginPty === true, supportsCodexLogin: driver.supportsCodexLogin === true },
+      `${driver.pluginKey}:${driver.driverKey}`, {
+        supportsLoginPty: driver.supportsLoginPty === true,
+        loginAdapters: driver.loginAdapters,
+      },
     ])) });
   });
 

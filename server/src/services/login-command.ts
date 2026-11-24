@@ -9,23 +9,15 @@
 // key routes the worker; it confers no command authority. A caller cannot pass a
 // command, so the sandbox pseudo-terminal never runs an arbitrary process.
 
-/**
- * The closed set of login command identities. The host resolves the key from the
- * trusted adapter type. The worker maps the key to a compile-time command. The
- * union is exhaustive: a value outside it fails closed before the worker RPC.
- */
-export type LoginCommandKey = "claude" | "codex" | "grok";
+import { adapterLoginCommandKey, isAdapterLoginCommandKey, type AdapterLoginCommandKey } from "@paperclipai/shared";
 
 /**
- * The exhaustive map from the trusted adapter type to the login command key. The
- * host reads only this map. It never reads the key from a request, a
- * configuration, a plugin manifest, or the provider driver key.
+ * The closed set of login command identities. The host resolves the key from the
+ * trusted adapter type through the shared adapter sign-in map. The worker maps the
+ * key to a compile-time command. A value outside the set fails closed before the
+ * worker RPC.
  */
-const ADAPTER_TYPE_TO_LOGIN_COMMAND_KEY: Readonly<Record<string, LoginCommandKey>> = {
-  claude_local: "claude",
-  codex_local: "codex",
-  grok_local: "grok",
-};
+export type LoginCommandKey = AdapterLoginCommandKey;
 
 /** The fixed non-secret error an unsupported adapter type returns. */
 export const LOGIN_COMMAND_UNSUPPORTED_ADAPTER = "LOGIN_PTY_UNSUPPORTED_ADAPTER";
@@ -34,12 +26,13 @@ export const LOGIN_SESSION_HOME_INVALID = "LOGIN_PTY_INVALID_SESSION_HOME";
 
 /**
  * Resolves the login command key from the trusted adapter type. It reads only the
- * exhaustive first-party map. It throws the fixed non-secret error for an adapter
+ * shared first-party map, never a request, a configuration, a plugin manifest, or
+ * the provider driver key. It throws the fixed non-secret error for an adapter
  * type that has no mapped key, so an unknown adapter fails closed before the
  * worker RPC.
  */
 export function resolveLoginCommandKey(adapterType: string): LoginCommandKey {
-  const key = ADAPTER_TYPE_TO_LOGIN_COMMAND_KEY[adapterType];
+  const key = adapterLoginCommandKey(adapterType);
   if (!key) {
     throw new Error(LOGIN_COMMAND_UNSUPPORTED_ADAPTER);
   }
@@ -48,7 +41,7 @@ export function resolveLoginCommandKey(adapterType: string): LoginCommandKey {
 
 /** Reports whether a value is a member of the closed login command key set. */
 export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
-  return value === "claude" || value === "codex" || value === "grok";
+  return isAdapterLoginCommandKey(value);
 }
 
 /**
@@ -58,7 +51,7 @@ export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
  * map later, so admission and command resolution stay consistent.
  */
 export function isLoginCommandSupportedAdapterType(adapterType: string): boolean {
-  return ADAPTER_TYPE_TO_LOGIN_COMMAND_KEY[adapterType] !== undefined;
+  return adapterLoginCommandKey(adapterType) !== undefined;
 }
 
 /**

@@ -147,7 +147,7 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
       runtime.acquireLoginLease({ ...acquireInput, sessionId: randomUUID() }),
     ).rejects.toThrow(DEVICE_LOGIN_PROVIDER_UNSUPPORTED);
     // The runtime re-checked the current capability from the environment id.
-    expect(assertProviderSupportsLoginPty).toHaveBeenCalledWith("env-1");
+    expect(assertProviderSupportsLoginPty).toHaveBeenCalledWith("env-1", "codex_local");
     // The gate failed before the provider lease, so no lease was acquired.
     expect(acquireRunLease).not.toHaveBeenCalled();
   });
@@ -183,7 +183,7 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
 
     const acquired = await runtime.acquireLoginLease({ ...acquireInput, sessionId: randomUUID() });
 
-    expect(assertProviderSupportsLoginPty).toHaveBeenCalledWith("env-1");
+    expect(assertProviderSupportsLoginPty).toHaveBeenCalledWith("env-1", "codex_local");
     // The gate passed, so the runtime acquired the provider lease after it.
     expect(acquireRunLease).toHaveBeenCalledTimes(1);
     expect(acquired.providerLeaseId).toBe("provider-lease-1");

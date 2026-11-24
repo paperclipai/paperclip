@@ -771,6 +771,29 @@ describe("Runner-only plugin environments", () => {
       .rejects.toThrow("The fake sandbox provider cannot execute runs.");
   });
 
+  it("offers and saves only the adapters a listing driver supports", async () => {
+    state.pluginByKey.mockResolvedValue(plugin({ supportsTasks: true, supportsLoginPty: true, creationOperationVersion: 1,
+      supportedAdapters: ["claude_local", "copilot_runtime"] }));
+    const target = await resolveAgentRunnerTargetForCompany({} as never, "company", "computer");
+    expect(target).toEqual({ driver: "plugin", runnerTasks: true, supportedAdapters: ["claude_local", "copilot_runtime"] });
+    expect(agentRunnerAvailability("claude_local", target)).toEqual({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
+    expect(agentRunnerAvailability("grok_local", target)).toEqual({ supportedRunners: [], defaultRunner: "legacy" });
+    const copilot = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5" };
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: copilot, defaultEnvironmentId: "computer" }))
+      .resolves.toMatchObject({ adapterType: "paperclip_runner" });
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, defaultEnvironmentId: "computer" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable", harness: "grok_local" } });
+    state.settings = { defaultEnvironmentId: "computer" };
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } }))
+      .rejects.toMatchObject({ details: { harness: "codex_local" } });
+  });
+  it("checks no harness against a driver that predates the list", async () => {
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, defaultEnvironmentId: "computer" }))
+      .resolves.toMatchObject({ adapterType: "paperclip_runner" });
+  });
+
   it("saves a Claude agent on the plugin environment as Paperclip Runner", async () => {
     const saved = await resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "claude_local", defaultEnvironmentId: "computer" });
     expect(saved).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } });

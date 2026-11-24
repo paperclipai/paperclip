@@ -526,7 +526,11 @@ export interface PluginDefinition {
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
   onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
 
-  /** Optional fixed credential read, advertised through supported-method discovery. */
+  /**
+   * Reads back the credential file a completed sign-in saved, advertised through
+   * supported-method discovery. A driver that lists an adapter whose sign-in
+   * saves a file must implement it.
+   */
   onLoginPtyReadCredential?(params: PluginLoginPtyReadCredentialParams): Promise<PluginLoginPtyReadCredentialResult>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */

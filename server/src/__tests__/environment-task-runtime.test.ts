@@ -315,7 +315,7 @@ describe("plugin-provided Runner execution", () => {
   });
   it("requires project validation for the exact configuration, provider, and projects before credential dispatch", async () => {
     const operation = { ...submit, preparedLaunchId: "configuration", accountIdentity: "account",
-      credential: { type: "codex-auth-json" as const, authJson: '{"OPENAI_API_KEY":"never-leak"}' } };
+      credential: { type: "auth-file" as const, provider: "codex" as const, content: '{"OPENAI_API_KEY":"never-leak"}' } };
     const proof = { configurationId: "configuration", provider: "openai", projectIds: [projectId] };
     for (const invalid of [undefined, { ...proof, configurationId: "other" }, { ...proof, provider: "anthropic" }, { ...proof, projectIds: [] }]) {
       const value = row(); Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: invalid });
@@ -347,6 +347,28 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(validated()).db, denied as never, { companyId: "company", leaseId,
       operation: { ...operation, credential: credentials[harness === "grok" ? "copilot" : "grok"] } })).rejects.toThrow("validation unavailable");
     expect(denied.call).not.toHaveBeenCalled();
+  });
+  it("submits only adapters that the listing driver's worker supports end to end", async () => {
+    const login = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+    Object.assign(state.plugin.manifestJson.environmentDrivers[0], { supportsLoginPty: true, creationOperationVersion: 1, supportedAdapters: ["codex_local", "copilot_runtime"] });
+    const validated = (provider: string) => {
+      const value = row();
+      Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: { configurationId: "configuration", provider, projectIds: [projectId] } });
+      return value;
+    };
+    const run = (harness: string, methods: string[]) => {
+      const workers = worker(); workers.getWorker = () => ({ supportedMethods: ["environmentTask", ...methods] });
+      const provider = harness === "codex" ? "openai" : harness;
+      return { workers, result: executeEnvironmentTask(database(validated(provider)).db, workers as never, { companyId: "company", leaseId,
+        operation: { ...submit, runner: { ...submit.runner, harness } } }) };
+    };
+    await expect(run("codex", [...login, "loginPtyReadCredential"]).result).resolves.toMatchObject({ kind: "accepted" });
+    await expect(run("copilot", []).result).resolves.toMatchObject({ kind: "accepted" });
+    for (const [harness, methods] of [["grok", [...login, "loginPtyReadCredential"]], ["codex", login]] as const) {
+      const { workers, result } = run(harness, [...methods]);
+      await expect(result).rejects.toThrow("harness is unavailable");
+      expect(workers.call).not.toHaveBeenCalled();
+    }
   });
   it.each(["allowed", "denied", "wrong-configuration", "wrong-provider", "timeout"])("records only a matching successful project validation (%s)", async mode => {
     const operation = { kind: "check_project_auth" as const, configurationId: "configuration", provider: "openai" as const, projectIds: [projectId] };

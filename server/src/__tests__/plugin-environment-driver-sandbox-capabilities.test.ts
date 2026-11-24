@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { listReadyPluginEnvironmentDrivers, pluginSupportsLoginPty } from "../services/plugin-environment-driver.js";
+import { listReadyPluginEnvironmentDrivers, pluginDriverLoginAdapters, pluginDriverSupportedAdapters, pluginSupportsLoginPty } from "../services/plugin-environment-driver.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockRegistry = vi.hoisted(() => ({
@@ -101,7 +101,7 @@ describe("live login capability admission and presentation", () => {
     expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks)).toBe(false);
     expect(pluginSupportsLoginPty({ supportsLoginPty: true }, [...hooks, "loginPtyReadCredential"], true)).toBe(false);
   });
-  it("requires the narrow credential hook only for Codex", () => {
+  it("requires the credential read hook only for sign-ins that save a file", () => {
     expect(pluginSupportsLoginPty(driver, hooks)).toBe(true);
     expect(pluginSupportsLoginPty(driver, hooks, true)).toBe(false);
     expect(pluginSupportsLoginPty(driver, [...hooks, "loginPtyReadCredential"], true)).toBe(true);
@@ -119,7 +119,42 @@ describe("live login capability admission and presentation", () => {
       const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: methods }) } as unknown as PluginWorkerManager;
       const [projected] = await listReadyPluginEnvironmentDrivers({ db: {} as never, workerManager, kind: "environment_driver" });
       expect(projected.supportsLoginPty).toBe(mode === "complete");
-      expect(projected.supportsCodexLogin).toBe(mode === "complete");
+      expect(projected.loginAdapters).toEqual(mode === "complete" ? ["claude_local", "codex_local"] : []);
+      expect(projected.supportedAdapters).toBeUndefined();
     },
   );
+});
+
+describe("declared adapter support", () => {
+  const login = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+  const declaration = { supportsTasks: true, supportsLoginPty: true, creationOperationVersion: 1 as const,
+    supportedAdapters: ["claude_local", "codex_local", "grok_local", "copilot_runtime"] };
+  it("keeps every listed adapter when the worker implements its whole lifecycle", () => {
+    const methods = ["environmentTask", ...login, "loginPtyReadCredential"];
+    expect(pluginDriverSupportedAdapters(declaration, methods)).toEqual(declaration.supportedAdapters);
+    expect(pluginDriverLoginAdapters(declaration, methods)).toEqual(["claude_local", "codex_local", "grok_local"]);
+  });
+  it("removes an adapter whose sign-in the worker cannot finish, never only its sign-in", () => {
+    const methods = ["environmentTask", ...login];
+    expect(pluginDriverSupportedAdapters(declaration, methods)).toEqual(["claude_local", "copilot_runtime"]);
+    expect(pluginDriverLoginAdapters(declaration, methods)).toEqual(["claude_local"]);
+    expect(pluginDriverSupportedAdapters(declaration, [...login, "loginPtyReadCredential"])).toEqual([]);
+  });
+  it("keeps the earlier sign-ins for a driver without the list", () => {
+    const legacy = { supportsLoginPty: true, creationOperationVersion: 1 as const };
+    expect(pluginDriverSupportedAdapters(legacy, login)).toBeUndefined();
+    expect(pluginDriverLoginAdapters(legacy, login)).toEqual(["claude_local"]);
+    expect(pluginDriverLoginAdapters(legacy, [...login, "loginPtyReadCredential"])).toEqual(["claude_local", "codex_local"]);
+  });
+  it("publishes the verified list for a listed driver", async () => {
+    mockRegistry.list.mockResolvedValue([{
+      id: PLUGIN_ID, pluginKey: PLUGIN_KEY, status: "ready", manifestJson: {
+        ...manifest, environmentDrivers: [{ ...manifest.environmentDrivers![0], ...declaration, kind: "environment_driver" }],
+      },
+    }]);
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentTask", ...login] }) } as unknown as PluginWorkerManager;
+    const [projected] = await listReadyPluginEnvironmentDrivers({ db: {} as never, workerManager, kind: "environment_driver" });
+    expect(projected.supportedAdapters).toEqual(["claude_local", "copilot_runtime"]);
+    expect(projected.loginAdapters).toEqual(["claude_local"]);
+  });
 });

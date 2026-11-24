@@ -1637,7 +1637,7 @@ export interface ProductionLoginSessionRuntimeDeps {
    * unsupported-provider error, so the runtime creates no lease and opens no
    * pseudo-terminal for an unsupported provider.
    */
-  assertProviderSupportsLoginPty: (environmentId: string) => Promise<void>;
+  assertProviderSupportsLoginPty: (environmentId: string, adapterType: string) => Promise<void>;
   /**
    * Opens the live pseudo-terminal for the acquired lease. When a caller omits
    * it, the runtime binds a fail-closed opener: the login run then fails and the
@@ -1673,7 +1673,7 @@ export function createProductionLoginSessionRuntime(
       // capability, not the stale route decision. It throws the fixed
       // unsupported-provider error, so the runtime acquires no lease and opens no
       // pseudo-terminal for an unsupported provider.
-      await deps.assertProviderSupportsLoginPty(input.environmentId);
+      await deps.assertProviderSupportsLoginPty(input.environmentId, input.adapterType);
       const record = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
           browserLogin: true,

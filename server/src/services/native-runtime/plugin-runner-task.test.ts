@@ -334,7 +334,7 @@ describe("plugin native Runner ownership", () => {
           provider: mode === "wrong-provider" ? "anthropic" : op.provider } : perform(op));
     const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       projectAuthCheckVersion: mode === "unsupported" ? undefined : 1,
-      credentialIdentity: "revision", accountIdentity: "account", credential: { type: "codex-auth-json", authJson: '{"OPENAI_API_KEY":"never-transfer"}' } });
+      credentialIdentity: "revision", accountIdentity: "account", credential: { type: "auth-file", provider: "codex", content: '{"OPENAI_API_KEY":"never-transfer"}' } });
     await expect(prepare(owner)).rejects.toThrow(mode === "unsupported" ? "validation unavailable" : "conflicts");
     expect(() => owner.launcher(launchSpec())).toThrow("requires preparation");
     expect(JSON.stringify(task.mock.calls)).not.toContain("never-transfer");
@@ -349,7 +349,7 @@ describe("plugin native Runner ownership", () => {
   it("collects refreshed credentials after process termination and before releasing task grants", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
-    const credential = { type: "codex-auth-json" as const, authJson: '{"OPENAI_API_KEY":"fixture-key"}' };
+    const credential = { type: "auth-file" as const, provider: "codex" as const, content: '{"OPENAI_API_KEY":"fixture-key"}' };
     let copied = false;
     task.mockImplementation(async operation => {
       if (operation.kind === "credentials") {
@@ -373,7 +373,7 @@ describe("plugin native Runner ownership", () => {
   it("retains grants when the credential handoff fails", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
-    task.mockImplementation(async op => op.kind === "credentials" ? { kind: "credentials", taskId: "task", credential: { type: "codex-auth-json", authJson: "{}" } } : perform(op));
+    task.mockImplementation(async op => op.kind === "credentials" ? { kind: "credentials", taskId: "task", credential: { type: "auth-file", provider: "codex", content: "{}" } } : perform(op));
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
     const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", accountIdentity: "account", pollMs: 1,
       onCredentials: async () => { throw new Error("credential handoff failed"); } });

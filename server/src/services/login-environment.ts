@@ -1,5 +1,6 @@
 import { agents, environmentLeases, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { adapterLoginCommandKey } from "@paperclipai/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "./environments.js";
@@ -28,7 +29,9 @@ export async function resolveLoginEnvironmentTarget(
     if (input.agentId) throw badRequest("A temporary sandbox login does not take an agent computer target.");
     return { environment, agentId: undefined };
   }
-  if (input.adapterType && !["codex_local", "claude_local"].includes(input.adapterType)) throw badRequest("This provider login is not supported on agent computers.", { code: "login_adapter_unsupported" });
+  // Which adapters a computer signs in is the driver's declared support, checked
+  // against its running worker by the provider capability gate.
+  if (input.adapterType && !adapterLoginCommandKey(input.adapterType)) throw badRequest("This provider login is not supported on agent computers.", { code: "login_adapter_unsupported" });
   if (!input.agentId) {
     if (!input.selectComputer) throw badRequest("Select an agent computer for sign-in.", { code: "login_agent_required" });
     const settings = await instanceSettingsService(db).get();
