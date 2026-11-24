@@ -130,4 +130,23 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(bounded.recoveryOutcomes?.at(-1)).toEqual(recoveryOutcomes.at(-1));
     expect(bounded.coverage.omitted?.recoveryOutcomes).toBeGreaterThan(0);
   });
+
+  it("scales every section down to the bytes left in the runner turn", () => {
+    const messages = Array.from({ length: 100 }, (_, index) => message(`m-${index}`, "x".repeat(2_000)));
+    const completedActions = Array.from({ length: 100 }, (_, index) => ({
+      runId: "run-1", receiptId: `r-${index}`, operationId: "write_document", result: { body: "y".repeat(2_000) },
+    }));
+    const bounded = boundExecutionContinuationForPrompt(envelope({ messages, completedActions }), { maxBytes: 48_000 });
+    expect(bytes(bounded.messages) + bytes(bounded.completedActions)).toBeLessThanOrEqual(48_000);
+    expect(bounded.messages.at(-1)?.id).toBe("m-99");
+  });
+
+  it("counts the length-dependent fence around backtick-heavy answers", () => {
+    const answer = { id: "i-0", kind: "ask_user_questions", status: "answered", resolvedByUserId: "user-1",
+      resolvedAt: "2026-11-24T00:00:00.000Z", result: { answers: [{ otherText: "`".repeat(30_000) }] } };
+    // 30 KB raw fits the 64 KB answer budget, but its fence adds 60 KB more.
+    const bounded = boundExecutionContinuationForPrompt(envelope({ humanResponses: [answer] }));
+    expect(bounded.humanResponses?.[0]?.result).toEqual({ resultOmitted: true });
+    expect(bounded.coverage.omitted?.humanResponses).toBe(1);
+  });
 });

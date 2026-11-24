@@ -39,6 +39,12 @@ import {
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 
+// One runner turn travels in a ~510 KiB PRP command. Keep the task prompt below
+// 400 KB, reserve room for the rest of the wake, and give history what remains.
+const RUNNER_TURN_PROMPT_MAX_BYTES = 400_000;
+const RUNNER_TURN_WAKE_RESERVE_BYTES = 48_000;
+const RUNNER_TURN_HISTORY_MIN_BYTES = 32_000;
+
 const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
   "## GitHub attachment recovery navigation",
   "Paperclip owns recovery navigation for unavailable GitHub attachments. It may append an authenticated task link after an accepted response, only when the current source remains authorized and a safe configured Board URL is available. The model does not select or authorize that link.",
@@ -219,7 +225,11 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     resumedSession: false,
     includeCommunicationGuidance: false,
     nativeWakeReaderAvailable: true,
-    boundContinuationForRunnerTurn: true,
+    // The history gets what remains of the runner turn after the task text.
+    boundContinuationForRunnerTurn: {
+      maxBytes: Math.max(RUNNER_TURN_HISTORY_MIN_BYTES,
+        RUNNER_TURN_PROMPT_MAX_BYTES - Buffer.byteLength(assignmentPrompt, "utf8") - RUNNER_TURN_WAKE_RESERVE_BYTES),
+    },
   });
   const externalChatTurn =
     isPaperclipExternalChatContractTurn(wakePayload) ||

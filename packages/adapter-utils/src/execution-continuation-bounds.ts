@@ -13,6 +13,9 @@ export const CONTINUATION_PROMPT_ACTIONS_MAX_BYTES = 64_000;
 export const CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES = 32_000;
 export const CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES = 64_000;
 export const CONTINUATION_PROMPT_RECOVERY_MAX_BYTES = 32_000;
+/** Sum of the section budgets above; a smaller turn budget scales them down. */
+export const CONTINUATION_PROMPT_MAX_BYTES = CONTINUATION_PROMPT_MESSAGES_MAX_BYTES + CONTINUATION_PROMPT_ACTIONS_MAX_BYTES
+  + CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES + CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES + CONTINUATION_PROMPT_RECOVERY_MAX_BYTES;
 /** A single long message keeps its start and its latest direction. */
 export const CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS = 16_000;
 /** A required message that still does not fit keeps a short excerpt. */
@@ -27,10 +30,12 @@ type RecoveryOutcome = NonNullable<ExecutionContinuationEnvelope["recoveryOutcom
 export type ContinuationPromptOmissions = NonNullable<ExecutionContinuationEnvelope["coverage"]["omitted"]>;
 
 // Measure what the prompt delivers: its renderer escapes every < and > as a
-// six-character unicode escape, five bytes more than the character itself.
+// six-character unicode escape, five bytes more than the character itself, and
+// fences each block with a backtick run longer than any run inside it.
 const bytes = (value: unknown) => {
   const json = JSON.stringify(value) ?? "";
-  return Buffer.byteLength(json, "utf8") + 5 * (json.match(/[<>]/g)?.length ?? 0);
+  const longestBacktickRun = json.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  return Buffer.byteLength(json, "utf8") + 5 * (json.match(/[<>]/g)?.length ?? 0) + 2 * longestBacktickRun;
 };
 // One element in a JSON array costs its own bytes plus a separator.
 const elementBytes = (value: unknown) => bytes(value) + 1;
@@ -46,7 +51,7 @@ function clipBody(message: Message, maxChars: number): Message {
   };
 }
 
-function boundMessages(continuation: ExecutionContinuationEnvelope) {
+function boundMessages(continuation: ExecutionContinuationEnvelope, maxBytes: number) {
   const all = continuation.messages;
   const objectiveId = continuation.objectiveSource?.kind === "comment" ? continuation.objectiveSource.id : null;
   // Required messages in priority order: the current objective, the newest
@@ -62,7 +67,7 @@ function boundMessages(continuation: ExecutionContinuationEnvelope) {
   const tryKeep = (index: number, candidates: Message[]) => {
     for (const candidate of candidates) {
       const size = elementBytes(candidate);
-      if (used + size > CONTINUATION_PROMPT_MESSAGES_MAX_BYTES) continue;
+      if (used + size > maxBytes) continue;
       kept.set(index, candidate);
       used += size;
       return true;
@@ -133,42 +138,53 @@ const compactAction = (action: CompletedAction): CompletedAction => ({
 /** Return the continuation that fits the prompt budget, with an exact omission record. */
 export function boundExecutionContinuationForPrompt(
   continuation: ExecutionContinuationEnvelope,
+  options: { maxBytes?: number } = {},
 ): ExecutionContinuationEnvelope {
   // Compact native input can omit history entirely; there is nothing to bound.
   if (!Array.isArray(continuation.messages)) return continuation;
+  // The caller passes what remains of the runner turn after the task text.
+  const scale = Math.min(1, Math.max(0, options.maxBytes ?? CONTINUATION_PROMPT_MAX_BYTES) / CONTINUATION_PROMPT_MAX_BYTES);
+  const cap = (value: number) => Math.floor(value * scale);
+  const caps = {
+    messages: cap(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES),
+    actions: cap(CONTINUATION_PROMPT_ACTIONS_MAX_BYTES),
+    interactions: cap(CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES),
+    responses: cap(CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES),
+    recoveries: cap(CONTINUATION_PROMPT_RECOVERY_MAX_BYTES),
+  };
   const actions = continuation.completedActions ?? [];
   const outcomes = Array.isArray(continuation.interactionOutcomes) ? continuation.interactionOutcomes : [];
   const responses = continuation.humanResponses ?? [];
   const recoveries = continuation.recoveryOutcomes ?? [];
   // Long bodies are clipped only when the messages together exceed the budget.
-  const messagesFit = bytes(continuation.messages) <= CONTINUATION_PROMPT_MESSAGES_MAX_BYTES;
-  const actionsFit = bytes(actions) <= CONTINUATION_PROMPT_ACTIONS_MAX_BYTES;
-  const outcomesFit = bytes(outcomes) <= CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES;
-  const responsesFit = bytes(responses) <= CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES;
-  const recoveriesFit = bytes(recoveries) <= CONTINUATION_PROMPT_RECOVERY_MAX_BYTES;
+  const messagesFit = bytes(continuation.messages) <= caps.messages;
+  const actionsFit = bytes(actions) <= caps.actions;
+  const outcomesFit = bytes(outcomes) <= caps.interactions;
+  const responsesFit = bytes(responses) <= caps.responses;
+  const recoveriesFit = bytes(recoveries) <= caps.recoveries;
   if (messagesFit && actionsFit && outcomesFit && responsesFit && recoveriesFit) return continuation;
   const messages = messagesFit
     ? { messages: continuation.messages, omitted: 0, clipped: 0, oldestIncludedMessageId: continuation.messages[0]?.id ?? null }
-    : boundMessages(continuation);
+    : boundMessages(continuation, caps.messages);
   const boundedActions = actionsFit
     ? { items: actions, compacted: 0, dropped: 0 }
-    : boundNewestFirst(actions, CONTINUATION_PROMPT_ACTIONS_MAX_BYTES, compactAction);
+    : boundNewestFirst(actions, caps.actions, compactAction);
   // An outcome that repeats a server-verified human answer points to it.
   const answered = new Set(responses.map((response) => response.id));
   const boundedOutcomes = outcomesFit
     ? { items: outcomes, compacted: 0, dropped: 0 }
-    : boundNewestFirst(outcomes, CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES, (outcome: InteractionOutcome) => ({
+    : boundNewestFirst(outcomes, caps.interactions, (outcome: InteractionOutcome) => ({
       id: outcome.id, kind: outcome.kind, status: outcome.status,
       result: answered.has(outcome.id) ? { seeHumanResponse: outcome.id } : { resultOmitted: true },
     }));
   const boundedResponses = responsesFit
     ? { items: responses, compacted: 0, dropped: 0 }
-    : boundNewestFirst(responses, CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES, (response: HumanResponse) => ({
+    : boundNewestFirst(responses, caps.responses, (response: HumanResponse) => ({
       ...response, result: { resultOmitted: true },
     }));
   const boundedRecoveries = recoveriesFit
     ? { items: recoveries, compacted: 0, dropped: 0 }
-    : boundNewestFirst(recoveries, CONTINUATION_PROMPT_RECOVERY_MAX_BYTES, (recovery: RecoveryOutcome) => ({
+    : boundNewestFirst(recoveries, caps.recoveries, (recovery: RecoveryOutcome) => ({
       recoveryActionId: recovery.recoveryActionId, decision: { resultOmitted: true },
     }));
   return {
