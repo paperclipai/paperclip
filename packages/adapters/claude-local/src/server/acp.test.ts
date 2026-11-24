@@ -1851,4 +1851,35 @@ describe("resolveClaudeAcpBillingIdentity", () => {
       } as never).billingType,
     ).toBe("subscription");
   });
+
+  it("ignores host env when managedAiConnection is configured", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
+    expect(
+      resolveClaudeAcpBillingIdentity({
+        config: {
+          managedAiConnection: { provider: "anthropic", method: "subscription" },
+        },
+      }),
+    ).toEqual({
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription",
+    });
+  });
+
+  it("preserves api billing for managed api_key connections", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
+    expect(
+      resolveClaudeAcpBillingIdentity({
+        config: {
+          managedAiConnection: { provider: "anthropic", method: "api_key" },
+          env: { ANTHROPIC_API_KEY: "sk-ant-managed-key" },
+        },
+      }),
+    ).toEqual({
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "api",
+    });
+  });
 });

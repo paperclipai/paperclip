@@ -178,12 +178,13 @@ export function resolveClaudeAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
-  const envConfig = parseObject(parseObject(ctx.config).env);
+  const config = parseObject(ctx.config);
+  const envConfig = parseObject(config.env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
-  const considerHostEnv = target?.kind !== "remote";
+  const considerHostEnv = target?.kind !== "remote" && !config.managedAiConnection;
   const readEnvValue = (key: string): string => {
     const fromConfig = envConfig[key];
     if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
