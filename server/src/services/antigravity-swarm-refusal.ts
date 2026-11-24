@@ -6,6 +6,13 @@
  */
 export const ANTIGRAVITY_SWARM_UNAVAILABLE = "antigravity_swarm_unavailable";
 
+/**
+ * The provider quota a swarm draws on. Google's Antigravity CLI bills a separate
+ * pool from the same account's ordinary route (seen live: the CLI's pool was
+ * exhausted while the connection answered), so its limits hold only swarms.
+ */
+export const ANTIGRAVITY_CLI_QUOTA_SCOPE = "antigravity_cli";
+
 /** The activity a signed-in user's /swarm request records (the request's only proof). */
 export const ANTIGRAVITY_SWARM_REQUESTED_ACTION = "issue.antigravity_swarm_requested";
 

@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
+import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, antigravitySwarmQuotaScope, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
@@ -169,6 +169,40 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
       await setStatus(run.id, "failed");
     }
     await expect(automatic(f, (await insertRun(f, {})).id)).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/three attempts/) });
+  });
+
+  it("records the CLI's quota scope on the swarm it selects, and names it before dispatch while the request is unfulfilled", async () => {
+    const f = await seed();
+    const scope = (runId: string, context: Record<string, unknown> = { issueId: f.issue.id }) =>
+      antigravitySwarmQuotaScope(db, { companyId: f.company.id, issueId: f.issue.id, runId, agent: f.agent, context });
+    // Before selection (the usage-limit hold runs first), a pending request already names the CLI's quota.
+    const first = await insertRun(f, {});
+    expect(await scope(first.id, { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id })).toBe("antigravity_cli");
+    expect(await automatic(f, first.id)).toMatchObject({ request: expect.any(String) });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first.id)))[0]!.contextSnapshot)
+      .toMatchObject({ antigravitySwarmCommentId: f.comment.id, providerQuotaScope: "antigravity_cli" });
+    await setStatus(first.id, "succeeded");
+    // Fulfilled: later work is ordinary and draws on the default quota.
+    expect(await scope((await insertRun(f, {})).id)).toBeNull();
+    const other = await seed({ record: "none" });
+    expect(await antigravitySwarmQuotaScope(db, { companyId: other.company.id, issueId: other.issue.id, runId: randomUUID(), agent: other.agent,
+      context: { issueId: other.issue.id } })).toBeNull();
+  });
+
+  it("treats a wake held for the CLI's quota as not yet run: its retry runs the swarm, and the three-attempt cap still applies", async () => {
+    const f = await seed();
+    const held = await insertRun(f, { status: "cancelled", errorCode: "provider_limit_wait", finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id } });
+    expect(await resolve(f, { runId: (await insertRun(f, { retryOfRunId: held.id })).id,
+      context: { issueId: f.issue.id, wakeReason: "provider_limit_retry" } })).toMatchObject({ request: expect.any(String) });
+    const g = await seed();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await insertRun(g, { status: "cancelled", errorCode: "provider_limit_wait", contextSnapshot: { issueId: g.issue.id, antigravitySwarmCommentId: g.comment.id } });
+      const run = await insertRun(g, {});
+      expect(await automatic(g, run.id)).toMatchObject({ request: expect.any(String) });
+      await setStatus(run.id, "failed");
+    }
+    await expect(automatic(g, (await insertRun(g, {})).id)).rejects.toMatchObject({ message: expect.stringMatching(/three attempts/) });
   });
 
   it("starts exactly one swarm for one request when two wakes arrive together", async () => {

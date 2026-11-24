@@ -1142,6 +1142,28 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("gives a swarm the route refused at session.open a plain run error and agent error reason, which clears on the next success", async () => {
+    const f = await fixture();
+    const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "startup", category: "model_unavailable",
+      message: plain, retryability: "requires_action" };
+    const raw = `PRP command session.open failed: {"commandType":"session.open","result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=antigravity_swarm_unavailable)","providerFailure":${JSON.stringify(providerFailure)}},"status":"failed"}`;
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Swarm", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, contextSnapshot: { issueId: issue!.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: issue!.id, runId: f.run.id,
+      phase: "terminal_failure", failureCode: "antigravity_swarm_unavailable" });
+    const statuses = createHeartbeatAgentStatus(db);
+    f.deps.finalizeAgentStatus.mockImplementation(statuses.finalizeAgentStatus);
+    await f.completion.failRun(f.failure(Object.assign(new Error(raw), { runnerCommandResult: { result: { providerFailure } } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain });
+    const [refused] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(refused!.errorReason ?? null).not.toMatch(/PRP command|[{}]|antigravity_swarm/);
+    if (refused!.status === "error") expect(refused!.errorReason).toBe(plain);
+    await statuses.finalizeAgentStatus(f.agent.id, "succeeded");
+    const [recovered] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(recovered).toMatchObject({ status: "idle", errorReason: null });
+  });
+
   it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
     const f = await fixture();
     const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,

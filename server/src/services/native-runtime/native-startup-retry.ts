@@ -43,6 +43,29 @@ export type ProviderLimitCredential =
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The run-context key naming the provider quota a run draws on when one
+ * credential reaches more than one quota (for example Google's Antigravity CLI,
+ * which bills a different pool than the same account's ordinary route). A limit
+ * holds only runs on the same credential AND the same quota scope. Absent (all
+ * rows saved before scopes existed, and every ordinary run) is the credential's
+ * default quota.
+ */
+export const PROVIDER_QUOTA_SCOPE_CONTEXT_KEY = "providerQuotaScope";
+const QUOTA_SCOPE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** The quota scope a run recorded; null is the credential's default quota. */
+export function runProviderQuotaScope(contextSnapshot: unknown): string | null {
+  const value = contextSnapshot && typeof contextSnapshot === "object"
+    ? (contextSnapshot as Record<string, unknown>)[PROVIDER_QUOTA_SCOPE_CONTEXT_KEY] : undefined;
+  return typeof value === "string" && QUOTA_SCOPE_PATTERN.test(value) ? value : null;
+}
+
+function quotaScopeEvidenceFilter(scope: string | null) {
+  const recorded = sql`${heartbeatRuns.contextSnapshot} ->> ${PROVIDER_QUOTA_SCOPE_CONTEXT_KEY}`;
+  return scope === null ? sql`${recorded} is null` : sql`${recorded} = ${scope}`;
+}
+
 /** The credential a run used, from the account it recorded when it started. */
 export function runProviderLimitCredential(contextSnapshot: unknown): ProviderLimitCredential {
   const grantId = recordedGrantId(contextSnapshot);
@@ -122,6 +145,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   failure?: ProviderFailure | null;
   /** The credential being checked. The caller's failure was reported on it. */
   credential: ProviderLimitCredential;
+  /** The quota scope being checked (see PROVIDER_QUOTA_SCOPE_CONTEXT_KEY); null or absent is the default quota. */
+  quotaScope?: string | null;
   now: Date;
 }): Promise<AgentProviderLimitCooldown | null> {
   if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now)) return null;
@@ -144,6 +169,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       gte(heartbeatRuns.startedAt, new Date(now - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
       ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
       ...credentialEvidenceFilter(input.credential),
+      // Another quota's limits, and its successes, say nothing about this one.
+      quotaScopeEvidenceFilter(input.quotaScope ?? null),
       or(
         eq(heartbeatRuns.status, "succeeded"),
         inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
@@ -215,6 +242,7 @@ export async function planNativeStartupRetry(input: {
       failure: input.failure,
       // The failure was reported on the account this run started with.
       credential: runProviderLimitCredential(run?.contextSnapshot),
+      quotaScope: runProviderQuotaScope(run?.contextSnapshot),
       now: input.now,
     })).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
     logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");

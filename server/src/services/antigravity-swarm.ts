@@ -24,7 +24,8 @@ import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from 
  */
 export const ANTIGRAVITY_SWARM_COMMAND = "swarm" as const;
 export { ANTIGRAVITY_SWARM_REQUESTED_ACTION, ANTIGRAVITY_SWARM_UNAVAILABLE, isAntigravityAgent } from "./antigravity-swarm-refusal.js";
-import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, ANTIGRAVITY_SWARM_UNAVAILABLE, isAntigravityAgent } from "./antigravity-swarm-refusal.js";
+import { ANTIGRAVITY_CLI_QUOTA_SCOPE, ANTIGRAVITY_SWARM_REQUESTED_ACTION, ANTIGRAVITY_SWARM_UNAVAILABLE, isAntigravityAgent } from "./antigravity-swarm-refusal.js";
+import { PROVIDER_QUOTA_SCOPE_CONTEXT_KEY } from "./native-runtime/native-startup-retry.js";
 /** Automatic wakes (recovery, sweeps) attempt one swarm request at most this often; the user can always ask again. */
 export const ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS = 3;
 
@@ -162,6 +163,25 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
 
 type SwarmDecision = AntigravitySwarmSelection | { refusal: string } | null;
 
+/**
+ * Read-only, before dispatch (the usage-limit hold runs before selection, which
+ * needs the prepared workspace): the quota this run would draw on. A run that
+ * would serve an unfulfilled recorded /swarm request draws on the CLI's quota.
+ * Selection still decides; a wrong guess here only lets one run reach the
+ * provider, which then reports its own limit.
+ */
+export async function antigravitySwarmQuotaScope(db: Db, input: {
+  companyId: string; issueId: string; runId: string; agent: { id: string; adapterType: string; adapterConfig: unknown }; context: unknown;
+}): Promise<string | null> {
+  if (!isAntigravityAgent(input.agent)) return null;
+  const requested = await recordedRequest(db, { ...input, remote: false, planning: false });
+  if (!requested) return null;
+  const [fulfilled] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"),
+      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${requested.commentId}`)).limit(1);
+  return fulfilled ? null : ANTIGRAVITY_CLI_QUOTA_SCOPE;
+}
+
 /** The recorded user /swarm request this run serves, if any (before any replacement). */
 async function recordedRequest(db: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1]): Promise<{ commentId: string; body: string } | null> {
   const marked = requestedAntigravitySwarmCommentId(input.context);
@@ -216,7 +236,9 @@ async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
   const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
     finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
-      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
+      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`,
+      // A wake held for a usage limit never started; its scheduled retry is this request's next attempt, not a Stop.
+      sql`${heartbeatRuns.errorCode} is distinct from 'provider_limit_wait'`));
   if (attempts.some(run => run.status === "succeeded")) return null;
   if (attempts.some(run => ["queued", "running"].includes(run.status))) return { refusal: "A swarm for this request is already running." };
   // The user asked for this attempt: it is the request's first run (the
@@ -244,7 +266,8 @@ async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
   await queueCommentsTheSwarmDoesNotSend(tx, { ...input, commentId });
   // The one stored fact every later decision reads: this run serves this request.
   await tx.update(heartbeatRuns)
-    .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId })}::jsonb` })
+    // The swarm draws on the CLI's own quota, so its limits are recorded (and held) apart from ordinary work.
+    .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId, [PROVIDER_QUOTA_SCOPE_CONTEXT_KEY]: ANTIGRAVITY_CLI_QUOTA_SCOPE })}::jsonb` })
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
   await logActivity(tx, {
     companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,

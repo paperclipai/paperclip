@@ -624,4 +624,59 @@ describePostgres("heartbeat provider usage limit wait", () => {
       expect(successor.contextSnapshot).toMatchObject({ wakeCommentId: commentId });
     }, 60_000);
   });
+
+  describe("quota-scoped holds (Google's Antigravity CLI bills swarms to its own pool)", () => {
+    const SWARM = { providerQuotaScope: "antigravity_cli" };
+    // The live swarm refusal: Google's CLI out of quota while the same account's ordinary route answered.
+    const swarmLimited = (minutesAgo: number) => ({ ...rateLimited(minutesAgo, {
+      provider: "antigravity", phase: "turn", message: "Google refused the swarm: this account is out of quota for now. Try again later." }),
+    errorCode: "native_provider_usage_limit" });
+
+    async function defer(f: { companyId: string; agentId: string; issueId: string }, scope: string | null) {
+      const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+        invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId: f.issueId } }).returning();
+      const deps = {
+        setRunStatusIfRunning: vi.fn(async () => ({ updated: true, run: { ...run, status: "cancelled" } })),
+        setWakeupStatus: vi.fn(async () => undefined),
+        appendRunEvent: vi.fn(async () => undefined),
+        scheduleBoundedRetryForRun: vi.fn(async () => ({ outcome: "scheduled" })),
+        releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
+        finalizeAgentStatus: vi.fn(async () => undefined),
+        providerQuotaScope: vi.fn(async () => scope),
+      };
+      const deferred = await createProviderLimitWait(db, deps as never)
+        .deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false });
+      return { deferred, deps };
+    }
+
+    it("lets ordinary work run after a swarm hit the CLI's quota", async () => {
+      const f = await seed([{ ...swarmLimited(5), contextSnapshot: SWARM }]);
+      expect((await defer(f, null)).deferred).toBe(false);
+    });
+
+    it("holds the next swarm after a swarm hit the CLI's quota, in plain words", async () => {
+      const f = await seed([{ ...swarmLimited(5), contextSnapshot: SWARM }]);
+      const { deferred, deps } = await defer(f, "antigravity_cli");
+      expect(deferred).toBe(true);
+      const [, , patch] = deps.setRunStatusIfRunning.mock.calls[0] as unknown as [string, string, { error: string; resultJson: Record<string, unknown> }];
+      expect(patch.error).toMatch(/^Swarms are out of quota for now\. Paperclip will try again after .+; other work on this agent continues\.$/);
+      expect(patch.resultJson.providerLimitWait).toMatchObject({ quotaScope: "antigravity_cli" });
+      // A later successful swarm clears it; an ordinary success does not.
+      const ordinaryOk = await seed([{ ...swarmLimited(10), contextSnapshot: SWARM },
+        { status: "succeeded", startedAt: new Date(Date.now() - 3 * 60_000), finishedAt: new Date(Date.now() - 2 * 60_000) }]);
+      expect((await defer(ordinaryOk, "antigravity_cli")).deferred).toBe(true);
+      const swarmOk = await seed([{ ...swarmLimited(10), contextSnapshot: SWARM },
+        { status: "succeeded", startedAt: new Date(Date.now() - 3 * 60_000), finishedAt: new Date(Date.now() - 2 * 60_000), contextSnapshot: SWARM }]);
+      expect((await defer(swarmOk, "antigravity_cli")).deferred).toBe(false);
+    });
+
+    it("does not hold a swarm for an ordinary-route limit, and old unscoped evidence still holds ordinary work", async () => {
+      const f = await seed([rateLimited(5)]);
+      expect((await defer(f, "antigravity_cli")).deferred).toBe(false);
+      const { deferred, deps } = await defer(await seed([rateLimited(5)]), null);
+      expect(deferred).toBe(true);
+      expect((deps.setRunStatusIfRunning.mock.calls[0] as unknown as [string, string, { error: string }])[2].error).toMatch(/^This agent's provider usage limit/);
+    });
+  });
 });

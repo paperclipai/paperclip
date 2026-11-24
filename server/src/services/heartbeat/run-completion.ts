@@ -1345,6 +1345,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // replaying an unfinished turn) nothing retries it, so offer Retry instead.
     const message = interruptedExactResume
       ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      // A refused /swarm explains itself in one plain sentence (its provider failure); the
+      // Runner's command JSON stays in the run's log and recovery history, not in the error.
+      : failureErrorCode === ANTIGRAVITY_SWARM_UNAVAILABLE && providerFailure?.message.trim()
+        ? redactFailureText(providerFailure.message.trim())
       : !storageUnavailable ? thrownMessage
         : failureErrorCode === STORAGE_UNAVAILABLE_CODE ? storageUnavailableMessage(err) : storageUnavailableHeldMessage(err);
     const failureCause = GENERIC_RUN_FAILURE_CODES.has(failureErrorCode) ? thrownFailureCause : null;

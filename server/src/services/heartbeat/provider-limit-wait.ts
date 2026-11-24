@@ -6,9 +6,15 @@ import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import {
-  agentHasProviderLimitEvidence, agentProviderLimitCooldown, runProviderLimitCredential, type ProviderLimitCredential,
+  agentHasProviderLimitEvidence, agentProviderLimitCooldown, runProviderLimitCredential, runProviderQuotaScope, type ProviderLimitCredential,
 } from "../native-runtime/native-startup-retry.js";
+
+/** Plain words for the work a scoped quota serves. */
+function quotaScopeLabel(scope: string): string {
+  return scope === ANTIGRAVITY_CLI_QUOTA_SCOPE ? "Swarms" : "Some requests for this agent";
+}
 import { aiConnectionService } from "../ai-connections.js";
+import { ANTIGRAVITY_CLI_QUOTA_SCOPE } from "../antigravity-swarm-refusal.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -36,6 +42,11 @@ export interface ProviderLimitWaitDependencies {
    * environment (a low-trust task's own environment).
    */
   sshAuthentication?: (agent: Agent, run: HeartbeatRun) => Promise<SshAuthentication | "undecided">;
+  /**
+   * The provider quota the pending run would draw on (PROVIDER_QUOTA_SCOPE_CONTEXT_KEY),
+   * decided read-only before dispatch; null is the credential's default quota.
+   */
+  providerQuotaScope?: (agent: Agent, run: HeartbeatRun) => Promise<string | null>;
 }
 
 /** How an SSH environment signs the harness in; null when no SSH environment applies. */
@@ -71,10 +82,12 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     // The limit belongs to the credential it was reported on. A run that would
     // use another account, or whose limited account was revoked, is not held.
     // Most agents have no live limit, so resolving the account waits for one.
+    let quotaScope: string | null = null;
     const cooldown = await agentHasProviderLimitEvidence(db, {
       companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
     }).then(async limited => {
       if (!limited) return null;
+      quotaScope = deps.providerQuotaScope ? await deps.providerQuotaScope(agent, run) : runProviderQuotaScope(run.contextSnapshot);
       const ssh = options.sshAuthentication !== undefined ? options.sshAuthentication
         : deps.sshAuthentication ? await deps.sshAuthentication(agent, run) : null;
       // Dispatch checks again once the environment, and so the account, is known.
@@ -82,6 +95,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
       return agentProviderLimitCooldown(db, {
         companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
         credential: await agentProviderLimitCredential(db, agent, run.responsibleUserId, ssh),
+        quotaScope,
       });
     }).catch((err: unknown) => {
       // Missing evidence must not stop work; the provider still reports its own limit.
@@ -90,7 +104,10 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     });
     if (!cooldown) return false;
     const resetAt = cooldown.resetAt.toISOString();
-    const message = cooldown.resetReported
+    const message = quotaScope !== null
+      // A limit on a separate quota (such as Google's Antigravity CLI for swarms) holds only that kind of work.
+      ? `${quotaScopeLabel(quotaScope)} are out of quota for now. Paperclip will try again after ${resetAt}; other work on this agent continues.`
+      : cooldown.resetReported
       ? `This agent's provider usage limit has a reported reset at ${resetAt}. Work is held; a retry must recheck availability before starting work.`
       : `This agent's provider usage limit has no reported reset time. Work is held; a retry can recheck availability after ${resetAt}; the limit may still apply then.`;
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
@@ -100,6 +117,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
         providerLimitWait: {
           resetAt, resetReported: cooldown.resetReported, category: cooldown.category,
           sourceRunId: cooldown.sourceRunId, grantId: cooldown.grantId, actionUrl: `/agents/${agent.id}/runtime`,
+          ...(quotaScope !== null ? { quotaScope } : {}),
         },
         cancellation: {
           source: "control_plane", expected: true, initiator: { type: "system" },
