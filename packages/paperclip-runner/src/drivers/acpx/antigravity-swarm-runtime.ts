@@ -1,5 +1,5 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
 import { retireAntigravityProcess } from "./antigravity-process.js";
@@ -39,7 +39,7 @@ const DEFAULT_HELPER_WAIT_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_CANCEL_GRACE_MS = 5_000;
 const READBACK_TIMEOUT_MS = 5_000;
 const SNAPSHOT_LIMIT = 20_000;
-const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
+const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".venv", "__pycache__"]);
 const BLOCKED_TEXT = /timed out waiting for user response|permission check failed/i;
 export const ANTIGRAVITY_SWARM_PROCESS_LOST = "ACPX_PROVIDER_PROCESS_LOST";
 
@@ -87,7 +87,11 @@ class Connection {
       if (this.#buffer.length > 16 * 1024 * 1024) { this.#fail(new Error("Antigravity CLI output exceeded its bound")); return; }
       for (let index = this.#buffer.indexOf("\n"); index >= 0; index = this.#buffer.indexOf("\n")) {
         const line = this.#buffer.slice(0, index); this.#buffer = this.#buffer.slice(index + 1);
-        if (line.trim()) this.#queue = this.#queue.then(() => new Promise<void>(resolve => setImmediate(() => { this.#line(line); resolve(); })));
+        if (line.trim()) this.#queue = this.#queue.then(() => new Promise<void>(resolve => setImmediate(() => {
+          // A handler failure must never escape into the event loop and end the sidecar.
+          try { this.#line(line); } catch (error) { this.#fail(error instanceof Error ? error : new Error("Antigravity CLI message could not be handled")); }
+          resolve();
+        })));
       }
     });
     child.stderr.resume();
@@ -96,6 +100,12 @@ class Connection {
   }
 
   get lost(): Error | null { return this.#lost; }
+
+  /** Settle every message already received from the CLI. */
+  async drain(): Promise<void> {
+    await new Promise(resolve => setImmediate(resolve));
+    await this.#queue;
+  }
 
   #fail(error: Error): void {
     if (this.#lost) return;
@@ -167,42 +177,55 @@ class EventQueue implements AsyncIterable<AcpRuntimeEvent> {
   }
 }
 
-type Snapshot = Map<string, string>;
-function snapshotWorkspace(root: string): Snapshot {
-  const files: Snapshot = new Map();
-  const walk = (directory: string) => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (files.size >= SNAPSHOT_LIMIT) return;
+type Snapshot = { files: Map<string, string>; complete: boolean };
+/**
+ * Bounded, asynchronous listing of the task folder. The limit counts every
+ * visited entry, and the walk yields between directories and stops when the
+ * turn is stopped, so a large workspace never blocks Stop or provider messages.
+ */
+async function snapshotWorkspace(root: string, signal: AbortSignal): Promise<Snapshot> {
+  const files = new Map<string, string>();
+  let visited = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    if (signal.aborted) return { files, complete: false };
+    const directory = pending.pop()!;
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (++visited > SNAPSHOT_LIMIT) return { files, complete: false };
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) { if (!SKIPPED_DIRECTORIES.has(entry.name)) walk(path); continue; }
-      const stat = lstatSync(path);
-      files.set(relative(root, path).split(sep).join("/"), `${stat.size}:${stat.mtimeMs}`);
+      if (entry.isDirectory()) { if (!SKIPPED_DIRECTORIES.has(entry.name)) pending.push(path); continue; }
+      try {
+        const stat = await lstat(path);
+        files.set(relative(root, path).split(sep).join("/"), `${stat.size}:${stat.mtimeMs}`);
+      } catch { /* removed while listing */ }
     }
-  };
-  walk(root);
-  return files;
+  }
+  return { files, complete: true };
 }
 
-function changedFiles(before: Snapshot, after: Snapshot): string[] {
+function changedFiles(before: Map<string, string>, after: Map<string, string>): string[] {
   const changed = [...after].filter(([path, identity]) => before.get(path) !== identity).map(([path]) => path);
   const removed = [...before.keys()].filter(path => !after.has(path)).map(path => `${path} (removed)`);
   return [...changed, ...removed].sort();
 }
 
-/** Files a helper's brief told it to write inside the task folder. */
-function claimedFiles(brief: string, workspace: string): string[] {
-  const claims: string[] = [];
-  for (const match of brief.matchAll(/\b(?:write|create|save)s?\s+[`'"]?([A-Za-z0-9_/.][\w./-]*\.[A-Za-z0-9]{1,10})\b/gi)) {
-    let path = match[1]!;
-    if (isAbsolute(path)) {
-      const inside = relative(workspace, path);
-      if (!inside || inside.startsWith("..") || isAbsolute(inside)) continue;
-      path = inside;
-    }
-    if (path.split("/").includes("..")) continue;
-    claims.push(path.replace(/^\.\//, ""));
+/**
+ * A visible edit, delete or move whose location is outside the task folder.
+ * Only the coordinator's calls reach the client; helper calls are confined by
+ * the CLI's auto mode and are not visible here.
+ */
+function outsideEdit(update: Json, workspace: string): string | null {
+  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return null;
+  if (!["edit", "delete", "move"].includes(String(update.kind))) return null;
+  const locations = Array.isArray(update.locations) ? update.locations.map(record) : [];
+  for (const location of locations) {
+    if (typeof location.path !== "string" || !isAbsolute(location.path)) continue;
+    const inside = relative(workspace, location.path);
+    if (inside.startsWith("..") || isAbsolute(inside)) return location.path;
   }
-  return claims;
+  return null;
 }
 
 function addUsage(total: Json | null, usage: unknown): Json | null {
@@ -230,6 +253,16 @@ export async function openAntigravitySwarmRuntime(
     throw new Error("The Antigravity CLI route serves only trusted swarm turns");
   }
   options.signal?.throwIfAborted();
+  // Host policy the registry route honours and this route cannot: refuse, never drop.
+  if (options.readOnly === true) {
+    throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm is not available while planning: helpers change files, and a planning run must not. Approve the plan first, then send /swarm.");
+  }
+  if (options.restoringSession === true) {
+    throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "A swarm cannot be resumed after an interruption. Retry starts a fresh swarm in the same task folder.");
+  }
+  if (options.mcpServers.some(server => !(server.runnerOwned && server.name === ANTIGRAVITY_SWARM_MCP_SERVER))) {
+    throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm is not available for this agent: it has other tool servers assigned, and a swarm uses only Paperclip's own tools.");
+  }
   const requestTimeoutMs = dependencies.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const model = options.profile.reportedModelId;
   const bridge = options.mcpServers.find((server): server is Extract<typeof server, { url: string }> =>
@@ -248,15 +281,25 @@ export async function openAntigravitySwarmRuntime(
 
   let updateListener: ((params: Json) => void) | null = null;
   let readback: (() => void) | null = null;
+  // A protocol failure outside a turn (for example a changed confirmed mode)
+  // is owned here: it fails admission or the next turn, and stops the CLI.
+  let protocolFailure: AntigravitySwarmError | null = null;
   connection.onNotification = (method, params) => {
     if (method !== "session/update") return;
-    if (updateListener) updateListener(params);
-    else guard.observe(params);
+    try {
+      if (updateListener) updateListener(params);
+      else guard.observe(params);
+    } catch (error) {
+      protocolFailure ??= error instanceof AntigravitySwarmError ? error
+        : new AntigravitySwarmError("ANTIGRAVITY_SWARM_RECEIPT_MISMATCH", "The swarm settings changed. Nothing more was run.");
+      void retire().catch(() => undefined);
+    }
     readback?.();
   };
   const waitForReadback = async (check: () => void): Promise<void> => {
     const deadline = Date.now() + (dependencies.readbackTimeoutMs ?? READBACK_TIMEOUT_MS);
     for (;;) {
+      if (protocolFailure) throw protocolFailure;
       try { check(); return; } catch (error) {
         if (Date.now() >= deadline || connection.lost) throw error;
         await new Promise<void>(resolve => {
@@ -297,8 +340,10 @@ export async function openAntigravitySwarmRuntime(
     await waitForReadback(() => guard.bindMode());
     await connection.request("session/set_model", { sessionId, modelId: model }, requestTimeoutMs);
     await waitForReadback(() => guard.bindModel());
+    await connection.drain();
     guard.assertSwarmCommand();
     receipt = guard.receipt();
+    if (protocolFailure) throw protocolFailure;
     options.signal?.throwIfAborted();
   } catch (error) {
     const cleanup = retire();
@@ -313,12 +358,14 @@ export async function openAntigravitySwarmRuntime(
   let closed = false;
 
   const runTurn = async (input: AcpxRuntimeTurnInput, events: EventQueue, started: () => void): Promise<AcpRuntimeTurnResult> => {
+    if (protocolFailure) { started(); return failed(protocolFailure.code, protocolFailure.message); }
     if (turns++ > 0) {
       started();
       return failed("ANTIGRAVITY_SWARM_UNAVAILABLE", "At most one swarm runs per task run. Send another /swarm message to start a new one.");
     }
     const workspace = options.cwd;
-    const before = snapshotWorkspace(workspace);
+    const listing = new AbortController();
+    const before = await snapshotWorkspace(workspace, listing.signal);
     const helpers = new Map<string, string>();
     let blocked = 0;
     let waitedAfterLastAdd = false;
@@ -339,6 +386,12 @@ export async function openAntigravitySwarmRuntime(
       if (escaped) {
         halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
           `Swarm stopped: helper ${escaped} was asked to work on its own copy of the task folder, which Paperclip does not allow.`));
+        return;
+      }
+      const outside = outsideEdit(update, workspace);
+      if (outside) {
+        halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
+          `Swarm stopped: it tried to change ${outside}, which is outside the task folder.`));
         return;
       }
       const args = { ...record(update.rawInput), ...record(update.args) };
@@ -397,13 +450,19 @@ export async function openAntigravitySwarmRuntime(
           return "cancelled";
         }
         usage = addUsage(usage, outcome.usage);
+        if (usage) {
+          // Billable usage is kept whatever the turn's outcome turns out to be.
+          status.lastRequestId = input.requestId;
+          status.terminalPromptUsage = { requestId: input.requestId, promptId: `${input.requestId}:swarm`,
+            event: { type: "status", tag: "usage_update", text: "terminal prompt usage", breakdown: usage } };
+        }
         return typeof outcome.stopReason === "string" ? outcome.stopReason : "end_turn";
       } finally {
         if (timer) clearTimeout(timer);
         wake = null;
       }
     };
-    active!.cancel = async () => { cancelled = true; connection.notify("session/cancel", { sessionId }); wake?.(); };
+    active!.cancel = async () => { cancelled = true; listing.abort(); connection.notify("session/cancel", { sessionId }); wake?.(); };
 
     const dispatch = input.dispatchJournal?.markReceived() ? input.dispatchJournal : null;
     try {
@@ -423,19 +482,13 @@ export async function openAntigravitySwarmRuntime(
           provider: { kind: refusal.kind, ...(refusal.httpStatus ? { httpStatus: refusal.httpStatus } : {}), ...(refusal.status ? { status: refusal.status } : {}) } });
         return failed(refusal.kind === "authentication" ? "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED" : "ANTIGRAVITY_SWARM_PROVIDER_REFUSED", refusal.message);
       }
-      const changed = changedFiles(before, snapshotWorkspace(workspace));
-      events.push(line("files", changed.length ? `Files changed in the task folder: ${changed.slice(0, 20).join(", ")}${changed.length > 20 ? ", …" : ""}` : "No files changed in the task folder"));
-      const missing = [...helpers].flatMap(([name, brief]) => claimedFiles(brief, workspace)
-        .filter(path => !existsSync(join(workspace, path))).map(path => `helper ${name} was asked to write ${path}`));
-      if (missing.length) {
-        return failed("ANTIGRAVITY_SWARM_RESULT_MISMATCH", `The swarm reported success, but the task folder does not contain what it claims: ${missing.join("; ")}.`);
-      }
-      if (usage) {
-        status.lastRequestId = input.requestId;
-        status.terminalPromptUsage = { requestId: input.requestId, promptId: `${input.requestId}:swarm`,
-          event: { type: "status", tag: "usage_update", text: "terminal prompt usage", breakdown: usage } };
-        events.push(line("usage", "Token usage is the coordinator's total and includes the helpers; Google does not report it per helper"));
-      }
+      // What the swarm changed is recorded from the task folder itself, never
+      // from what the coordinator or helpers say (helpers can misreport).
+      // Done still requires the hand-in through Paperclip's finish tool.
+      const after = await snapshotWorkspace(workspace, listing.signal);
+      const changed = changedFiles(before.files, after.files);
+      events.push(line("files", !before.complete || !after.complete ? "The task folder is too large to list every change"
+        : changed.length ? `Files changed in the task folder: ${changed.slice(0, 20).join(", ")}${changed.length > 20 ? ", …" : ""}` : "No files changed in the task folder"));
       return { status: "completed", stopReason: "end_turn" };
     } catch (error) {
       if (connection.lost instanceof ProcessLostError || error instanceof ProcessLostError) {
@@ -445,12 +498,14 @@ export async function openAntigravitySwarmRuntime(
         error instanceof Error ? error.message.slice(0, 1_000) : "The swarm failed.");
     } finally {
       updateListener = null;
+      if (usage) events.push(line("usage", "Token usage is the coordinator's total and includes the helpers; Google does not report it per helper"));
     }
   };
 
   const port: AcpxRuntimePort = {
     async identity(): Promise<AcpxRuntimePortIdentity> {
-      return { mode: ANTIGRAVITY_SWARM_MODE, acpxRecordId: `antigravity-cli-${sessionId}`, backendSessionId: sessionId, agentSessionId: sessionId };
+      // The record is stable per provider session key; the CLI session id is per run and never reloaded.
+      return { mode: ANTIGRAVITY_SWARM_MODE, acpxRecordId: `antigravity-cli:${options.providerSessionKey}`, backendSessionId: sessionId, agentSessionId: sessionId };
     },
     async getStatus(): Promise<AcpxModelStatus> {
       return { ...structuredClone(status), models: { currentModelId: model, availableModelIds: [model] } };
