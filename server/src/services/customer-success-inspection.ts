@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
-import { and, eq, getTableColumns, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, type SQL } from "drizzle-orm";
 import type { AnyPgTable, AnyPgColumn } from "drizzle-orm/pg-core";
 import * as schema from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
@@ -29,6 +29,42 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export interface CustomerSuccessInspectionOptions {
   pluginWorkerManager?: PluginWorkerManager;
+}
+
+/**
+ * The `summary` view of a run: status, timestamps, ids and error codes, never
+ * the large JSON columns (result, usage, context snapshot, runner profile...),
+ * which make a full run row 170-540 KB. An allowlist, so a new column stays out
+ * until someone adds it here.
+ */
+export const RUN_SUMMARY_COLUMNS = [
+  "id",
+  "companyId",
+  "agentId",
+  "issueId",
+  "scopeKind",
+  "invocationSource",
+  "triggerDetail",
+  "status",
+  "errorCode",
+  "exitCode",
+  "runtimeMode",
+  "driverKind",
+  "retryOfRunId",
+  "processLossRetryCount",
+  "scheduledRetryAttempt",
+  "continuationAttempt",
+  "livenessState",
+  "startedAt",
+  "finishedAt",
+  "createdAt",
+  "updatedAt",
+] as const;
+
+function durationMs(row: Record<string, unknown>): number | null {
+  const started = row.startedAt instanceof Date ? row.startedAt.getTime() : null;
+  const finished = row.finishedAt instanceof Date ? row.finishedAt.getTime() : null;
+  return started !== null && finished !== null ? Math.max(0, finished - started) : null;
 }
 
 // This is a reviewed catalog of readers, not a proxy for existing GET routes.
@@ -157,7 +193,7 @@ export async function readCustomerSuccessResource(
           .where(eq(schema.companies.id, q.companyId));
         if (!company) throw notFound("Inspection company not found");
       }
-      if (q.operation === "list" || q.operation === "get") {
+      if (q.operation === "list" || q.operation === "get" || q.operation === "count") {
         const reader = inspectionReaders[q.resource!];
         const all = getTableColumns(reader.table) as Record<string, AnyPgColumn>;
         const columns = Object.fromEntries(
@@ -180,6 +216,7 @@ export async function readCustomerSuccessResource(
           const { inArray } = await import("drizzle-orm");
           if (!memberships.length) {
             if (q.operation === "get") throw notFound("Inspection resource not found");
+            if (q.operation === "count") return { total: 0, byStatus: all.status ? {} : null };
             return { items: [], nextOffset: null };
           }
           predicates.push(
@@ -200,13 +237,49 @@ export async function readCustomerSuccessResource(
             throw unprocessable("This reader does not accept parentId");
           predicates.push(eq(all[reader.parent], q.parentId));
         }
+        if (q.operation === "count") {
+          // Totals only: no row content leaves the database.
+          if (!all.status) {
+            const [{ total }] = await tx
+              .select({ total: count() })
+              .from(reader.table)
+              .where(and(...predicates));
+            return { total: Number(total), byStatus: null };
+          }
+          const groups = await tx
+            .select({ status: all.status, total: count() })
+            .from(reader.table)
+            .where(and(...predicates))
+            .groupBy(all.status);
+          const byStatus: Record<string, number> = {};
+          let total = 0;
+          for (const group of groups) {
+            byStatus[String(group.status)] = Number(group.total);
+            total += Number(group.total);
+          }
+          return { total, byStatus };
+        }
         const limit = q.operation === "get" ? 1 : Math.max(1, q.limit ?? 25);
-        const order = all[reader.id ?? "id"] ?? all.createdAt ?? all.companyId;
+        const idColumn = all[reader.id ?? "id"];
+        let orderBy: SQL[] | AnyPgColumn[];
+        if (q.order) {
+          if (!all.createdAt) throw unprocessable("This resource has no creation time to order by");
+          const direction = q.order === "newest" ? desc : asc;
+          orderBy = idColumn ? [direction(all.createdAt), direction(idColumn)] : [direction(all.createdAt)];
+        } else {
+          orderBy = [idColumn ?? all.createdAt ?? all.companyId];
+        }
+        const selected =
+          q.view === "summary"
+            ? Object.fromEntries(
+                RUN_SUMMARY_COLUMNS.filter((key) => columns[key]).map((key) => [key, columns[key]]),
+              )
+            : columns;
         let rows = await tx
-          .select(columns)
+          .select(selected)
           .from(reader.table)
           .where(and(...predicates))
-          .orderBy(order)
+          .orderBy(...orderBy)
           .limit(limit + (q.operation === "get" ? 0 : 1))
           .offset(q.offset ?? 0);
         if (q.resource === "agents")
@@ -245,6 +318,7 @@ export async function readCustomerSuccessResource(
             q.companyId!,
             rows as Array<{ id: string }>,
           );
+        if (q.view === "summary") rows = rows.map((r) => ({ ...r, durationMs: durationMs(r) }));
         // Match the existing structured event/config redaction, without scanning
         // prose, documents, instructions, skill contents, or workspace files.
         if (
