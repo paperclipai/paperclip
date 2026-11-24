@@ -6,6 +6,13 @@ import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+export function isUndispatchedRunnerApiReceipt(receipt: unknown): boolean {
+  if (!receipt || typeof receipt !== "object") return false;
+  const value = receipt as Record<string, unknown>;
+  return value.state === "undispatched" && typeof value.operationId === "string" &&
+    typeof value.digest === "string" && /^[a-f0-9]{64}$/.test(value.digest);
+}
+
 export const RUNNER_API_COMPLETED_ACTION = "runner.api_completed";
 
 const UNKNOWN_API_OUTCOME = { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown",
@@ -81,7 +88,7 @@ export async function priorRecoveryApiReceipt(db: Db, input: {
   for (const source of sources) {
     for (const [callKey, value] of Object.entries(record(source.result?.apiToolReceipts))) {
       const receipt = record(value);
-      if (receipt.operationId !== input.operationId) continue;
+      if (receipt.operationId !== input.operationId || isUndispatchedRunnerApiReceipt(receipt)) continue;
       const result = receipt.encryptedResult
         ? record(JSON.parse(await getSecretProvider("local_encrypted").resolveVersion({ material: record(receipt.encryptedResult), externalRef: null })))
         : record(receipt.result);

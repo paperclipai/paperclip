@@ -1,3 +1,4 @@
+import { isUndispatchedRunnerApiReceipt } from "./recovery-effect-receipts.js";
 import { heartbeatRunEvents, heartbeatRuns, toolInvocations, type Db } from "@paperclipai/db";
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { parseObject } from "../adapters/utils.js";
@@ -13,7 +14,7 @@ export async function legacyRunHasUnsettledActions(db: Db, run: Pick<typeof hear
   if (pending) return true;
   if (Object.values(parseObject(run.resultJson?.apiToolReceipts)).some(receipt => {
     const value = parseObject(receipt);
-    return typeof value.operationId !== "string" || !("result" in value);
+    return !isUndispatchedRunnerApiReceipt(value) && (typeof value.operationId !== "string" || !("result" in value));
   })) return true;
   const events = await db.select().from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),

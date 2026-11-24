@@ -920,7 +920,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).projects.filter(project => project.name === "Already created")).toHaveLength(1);
   });
 
-  it("clears the API receipt when an upload fails before HTTP dispatch", async () => {
+  it("records that an upload failed before HTTP dispatch and allows the same call to retry", async () => {
     const fixture = await server.fixture();
     const filename = "not-yet-present.txt";
     const call = () => fixture.authority.execute({ tool: "call_api", callId: "upload-before-dispatch", arguments: {
@@ -933,7 +933,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       await expect(call()).rejects.toThrow("Workspace file not found");
       expect(network).not.toHaveBeenCalled();
       const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
-      expect(Object.values(run.resultJson?.apiToolReceipts ?? {})).toEqual([]);
+      expect(Object.values(run.resultJson?.apiToolReceipts ?? {})).toMatchObject([{ state: "undispatched" }]);
 
       await writeFile(join(fixture.workspace, filename), "upload body");
       const uploaded = await call();

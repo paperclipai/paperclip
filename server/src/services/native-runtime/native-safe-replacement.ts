@@ -29,6 +29,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { isUndispatchedRunnerApiReceipt } from "../recovery-effect-receipts.js";
 import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -585,6 +586,7 @@ export async function reconcileSafeNativeReplacements(
         );
       const events = await db
         .select({
+          seq: heartbeatRunEvents.seq,
           eventType: heartbeatRunEvents.eventType,
           payload: heartbeatRunEvents.payload,
         })
@@ -614,13 +616,8 @@ export async function reconcileSafeNativeReplacements(
         const envelope = record(event.payload);
         return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
       };
-      const completedProviderActions = freshConversation ? events
-        .filter(event => event.eventType === "tool.execution.completed")
-        .filter(event => {
-          const p = eventPayload(event);
-          return typeof p.executionId === "string" && typeof p.name === "string" &&
-            ["succeeded", "completed"].includes(String(p.status));
-        }) : [];
+      const apiReceipts = record(run.resultJson?.apiToolReceipts);
+      const completedProviderActions = freshConversation ? events.filter(event => event.eventType === "tool.execution.completed") : [];
       const safeControlReads = new Set([
         "connections_search",
         "connection_request",
@@ -661,10 +658,18 @@ export async function reconcileSafeNativeReplacements(
           const name = typeof p.name === "string" ? p.name : "unknown tool";
           if (freshConversation && completedProviderActions.some(done => {
             const completed = eventPayload(done);
+            const executionId = p.executionId;
+            if (typeof executionId !== "string" || completed.executionId !== executionId || completed.name !== name) return false;
+            // Claude's admitted MCP identity prefixes the provider tool-use ID.
+            // A failed result alone cannot prove that a mutation was never dispatched.
+            const settled = ["succeeded", "completed"].includes(String(completed.status)) ||
+              (done.seq > event.seq && name === "call_api" && p.transport === "mcp" && completed.transport === "mcp" && completed.status === "failed" &&
+                [executionId, `tool-use:${executionId}`].some(callId => isUndispatchedRunnerApiReceipt(
+                  apiReceipts[createHash("sha256").update(callId).digest("hex")])));
+            if (!settled) return false;
             const startSource = record(record(event.payload).prpEvent);
             const completedSource = record(record(done.payload).prpEvent);
-            return completed.executionId === p.executionId && completed.name === name &&
-              (startSource.sourceInstanceId === undefined ||
+            return (startSource.sourceInstanceId === undefined ||
                 completedSource.sourceInstanceId === startSource.sourceInstanceId &&
                 Number(completedSource.sourceSeq) > Number(startSource.sourceSeq));
           })) return [];
@@ -782,7 +787,7 @@ export async function reconcileSafeNativeReplacements(
           record(execution.provider).kind === "codex"),
         attempts: poolFailure ? 0 : coordinator.attempt,
         invocations,
-        apiReceipts: record(record(run.resultJson).apiToolReceipts),
+        apiReceipts,
         uncertainProviderActions,
       });
       if (!decision.allowed) {

@@ -1315,13 +1315,15 @@ export class PaperclipRunnerToolAuthority {
       const existing = record(receipts[key]);
       if (receipts[key]) {
         if (existing.digest !== digest) throw badRequest("API call id was reused with different arguments");
-        const result = await this.#apiReceiptResult(existing);
-        return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
+        if (existing.state !== "undispatched") {
+          const result = await this.#apiReceiptResult(existing);
+          return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
+        }
       }
       // A new call that would be rejected before dispatch must not reserve a
       // pending receipt; that would make its callId report an unknown outcome.
       assertRunnerApiDispatchable(operation, input, record(value));
-      if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
+      if (!receipts[key] && Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
       return null;
@@ -1340,13 +1342,13 @@ export class PaperclipRunnerToolAuthority {
           const receipts = record(resultJson.apiToolReceipts);
           const receipt = record(receipts[key]);
           if (receipt.state !== "pending" || receipt.digest !== digest) return;
-          delete receipts[key];
+          receipts[key] = { ...receipt, state: "undispatched" };
           await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(and(
             eq(heartbeatRuns.id, this.binding.runId),
             eq(heartbeatRuns.companyId, this.binding.companyId),
           ));
         }).catch(cleanupError => logger.warn({ err: cleanupError, runId: this.binding.runId, operationId: operation.operationId },
-          "Failed to clear undispatched runner API receipt"));
+          "Failed to record undispatched runner API receipt"));
       }
       throw error;
     });

@@ -15,7 +15,7 @@ import {
   markExecutionReconciliation,
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
 import { hasNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
@@ -350,6 +350,72 @@ const support = externalDatabaseUrl
         currentId = next.id;
       }
       expect(selection.memberId).toBe(members[4].id);
+    });
+    it.each([
+      { state: "pending", matchingCall: true, blocked: "uncertain_control_plane_action" },
+      { state: "undispatched", matchingCall: false, blocked: "uncertain_provider_action" },
+      { state: "undispatched", matchingCall: true, blocked: null },
+    ])("uses the upload receipt for Claude-to-Codex failover ($state, matchingCall=$matchingCall)", async ({ state, matchingCall, blocked }) => {
+      const source = await seed();
+      const userId = `quota-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const { harnessPoolService } = await import("../harness-pools.js");
+      const accounts = aiConnectionService(db);
+      const claude = await accounts.save(source.companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude", loginSessionId: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const codex = await accounts.save(source.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "Codex", apiKey: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const claudeId = randomUUID();
+      const codexId = randomUUID();
+      const pool = await harnessPoolService(db).save(source.companyId, { config: {
+        schemaVersion: 2, kind: "harness_pool", name: "Smart", enabled: true, mode: "failover", members: [
+          { id: claudeId, harness: { type: "claude_code" }, runner: "paperclip", model: "claude-sonnet-5",
+            connection: { ...claude, mode: "delegated", provider: "anthropic", method: "subscription" } },
+          { id: codexId, harness: { type: "codex" }, model: "gpt-6.1-sol",
+            connection: { ...codex, mode: "delegated", provider: "openai", method: "api_key" } },
+        ],
+      } }, userId);
+      await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, source.agentId));
+      const router = aiConnectionRouterService(db);
+      const selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
+        userId, adapterType: "paperclip_runner", taskKey: source.issueId, skipUsageProbe: true });
+      expect(selection.memberId).toBe(claudeId);
+      const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
+        responsibleUserId: userId, adapterType: "paperclip_runner", config: selection.runtimeConfig, binding: selection.binding });
+      await db.update(heartbeatRuns).set({
+        scopeKind: "issue", issueId: source.issueId, responsibleUserId: userId, finishedAt: new Date(),
+        errorCode: "native_provider_usage_limit",
+        resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
+          category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
+        contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection },
+      }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId,
+        agentId: source.agentId, credentialIdentity: runtime.sessionIdentity,
+        retryNotBefore: new Date(Date.now() + 60 * 60_000).toISOString() })).toBe(true);
+      const callId = "failed-attachment-upload";
+      const callKey = createHash("sha256").update(matchingCall ? `tool-use:${callId}` : "different-call").digest("hex");
+      const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
+        [callKey]: { state, operationId: "create_issue_attachment", digest: "a".repeat(64) },
+      } } }).where(eq(heartbeatRuns.id, source.runId));
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
+        payload: { executionId: callId, name: "call_api", transport: "mcp", status: "running" } });
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
+        payload: { executionId: callId, name: "call_api", transport: "mcp", status: "failed" } });
+      const now = new Date();
+      if (blocked) {
+        expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession: async () => ({ evidence: {}, retire: () => true }) }))
+          .toMatchObject({ scheduled: 0 });
+        const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(owner?.failureDetail?.replacementDenied).toBe(blocked);
+        return;
+      }
+      expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession: async () => ({ evidence: {}, retire: () => true }) }))
+        .toMatchObject({ scheduled: 1 });
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(successor).toMatchObject({ issueId: source.issueId, status: "scheduled_retry", scheduledRetryAt: now,
+        contextSnapshot: { forceFreshSession: true, aiRouterSelection: { memberId: codexId, binding: { provider: "openai" } },
+          aiPoolFailover: { sourceRunId: source.runId, reason: "quota" } } });
     });
     it.each(["deadline", "reconnect"] as const)("atomically commits the quota successor and pin and rolls both back on failure (%s)", async repair => {
       const source = await seed();
