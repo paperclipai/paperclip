@@ -7,7 +7,7 @@ import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_A
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 import { planNotProducedDecision } from "./plan-mode-status.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
-  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS } from "./native-agent-blocker.js";
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS } from "./native-agent-blocker.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -654,7 +654,8 @@ export function arbitrateNativeStatus(input: {
   const retries = input.failureRetryCount ?? 0;
   const progressNextAction = input.agentBlockerProgress && !input.hasUnresolvedIssueBlockers
     ? blocker?.unblockAction.trim() : undefined;
-  const agentContinuationAvailable = retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS || Boolean(progressNextAction);
+  const agentContinuationAvailable = retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS
+    || (Boolean(progressNextAction) && retries < NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS);
   const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
     (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
     (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&

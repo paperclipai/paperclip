@@ -10,7 +10,7 @@ import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES, NATIVE_ENVIRONMENT_BLOCKER_MESSAGE,
   NATIVE_ENVIRONMENT_BLOCKER_RETRY_DELAY_MS } from "./native-environment-blocker.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS, NATIVE_AGENT_BLOCKER_HINT,
-  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
 import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
 
@@ -113,7 +113,9 @@ async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane
   )).limit(1);
   if (existing) return existing.id;
   const attempt = executionFailureRetryCount(run) + 1;
-  if (attempt > lane.maxRetries && !lane.progressNextAction) throw new Error(lane.exhaustedError);
+  const progressContinuationAvailable = Boolean(lane.progressNextAction)
+    && attempt <= NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS;
+  if (attempt > lane.maxRetries && !progressContinuationAvailable) throw new Error(lane.exhaustedError);
   const now = new Date();
   const dueAt = new Date(now.getTime() + lane.delayMs(attempt));
   const retryId = randomUUID();

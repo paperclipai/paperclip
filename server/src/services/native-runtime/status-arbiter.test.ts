@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { arbitrateNativeStatus } from "./status-arbiter.js";
+import { NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS } from "./native-agent-blocker.js";
 
 function assessment(
   overrides: Partial<NativeEvidenceAssessment> = {},
@@ -820,5 +821,16 @@ describe("native status authority", () => {
     for (const held of [{ isConversation: true }, { agentBlockerRecoverable: false }]) {
       expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
     }
+  });
+
+  it("keeps continuing a blocker the agent owns while each run saves progress, up to a hard cap, then hands it to the board", () => {
+    const blocked = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+      blocker: { unblockAction: "Finish the remaining stories.", boardOwned: false, ownerKind: "agent", scope: "task_wide" } });
+    const progressing = { assessment: blocked, agentBlockerRecoverable: true, agentBlockerProgress: true };
+    expect(arbitrate({ ...progressing, failureRetryCount: NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS - 1 })).toMatchObject({
+      reasonCode: "native_agent_blocker_continuation",
+      effects: [{ kind: "schedule_retry", progressNextAction: "Finish the remaining stories." }] });
+    expect(arbitrate({ ...progressing, failureRetryCount: NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS })).toMatchObject({
+      toStatus: "blocked", reasonCode: "native_agent_blocker_needs_person", unblockDescriptor: { owner: "board" } });
   });
 });

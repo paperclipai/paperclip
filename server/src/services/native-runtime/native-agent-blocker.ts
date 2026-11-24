@@ -6,6 +6,13 @@ import { alias } from "drizzle-orm/pg-core";
 export const NATIVE_AGENT_BLOCKER_CONTINUATION_CODE = "native_agent_blocker_continuation";
 export const NATIVE_AGENT_BLOCKER_HANDOFF_CODE = "native_agent_blocker_needs_person";
 export const NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS = 1;
+/**
+ * A run that saved new task work may continue past the single plain
+ * continuation, but not forever: an agent that saves a sliver of work and
+ * names a next action in every run would otherwise chain fresh sessions
+ * without end. Past this cap the blocker goes to the board.
+ */
+export const NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS = 6;
 export const NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS = 30_000;
 export const NATIVE_AGENT_BLOCKER_MESSAGE =
   "The agent reported a blocker it owns. Paperclip continues the task in a fresh session.";
