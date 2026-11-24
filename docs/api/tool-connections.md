@@ -1,6 +1,6 @@
 ---
 title: Tool Connections
-summary: Remove a connection or one of its grants, read what happened at the provider, and read what to set up in AWS for an AWS role connection
+summary: Remove a connection or one of its grants, cancel a first sign-in, read what happened at the provider, and read what to set up in AWS for an AWS role connection
 ---
 
 Removing a connection or a grant always completes in Paperclip. The response says what happened at the provider when Paperclip can ask the provider to end access.
@@ -15,6 +15,20 @@ DELETE /api/tool-connections/{connectionId}?deleteStoredContent=true
 The caller needs `connections:configure` for the connection. Only a board user can set `deleteStoredContent=true`.
 
 The `200` response is the archived connection with a `removal` object. `removal` holds counts of what was torn down, for example `secretsRevoked` and `grantsRevoked`. With `deleteStoredContent=true`, the response also has `contentDeletion`.
+
+## Cancel a First Sign-In
+
+```
+POST /api/tool-connections/{connectionId}/sign-in/cancel
+```
+
+Use this when a user cancels the provider sign-in for a new connection. The caller needs `connections:configure` for the connection.
+
+Paperclip removes the connection only if it is an OAuth draft that never held a credential. The removal is the same teardown as `DELETE`, and the activity log gets `tool_connection.sign_in_cancelled`. The `200` response is `{ "abandoned": true, "connection": ... }` with the archived connection.
+
+For any other connection, Paperclip changes nothing. This includes an active connection and a connection that needs a new sign-in after it worked before. The `200` response is `{ "abandoned": false, "connection": ... }` with the unchanged connection.
+
+`GET /api/companies/{companyId}/tools/connections` sets `firstSignInPending: true` on an OAuth draft that never held a credential. The Apps page does not show these drafts, and the next setup for the same app reuses them.
 
 ## Remove a Grant
 

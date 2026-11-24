@@ -2552,6 +2552,38 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
   });
 
+  router.post("/tool-connections/:connectionId/sign-in/cancel", managementGuard("connections:configure", "POST /tool-connections/:connectionId/sign-in/cancel", { personal: true }), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const applicationBefore = await svc.getApplication(existing.applicationId);
+    const result = await svc.abandonFirstSignIn(existing.id, existing.companyId, connectionRequestActor(req));
+    if (!result.abandoned) {
+      res.json({ abandoned: false, connection: result.connection });
+      return;
+    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.sign_in_cancelled",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: { transport: existing.transport, ...result.removal },
+    });
+    const applicationAfter = await svc.getApplication(existing.applicationId);
+    if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
+      await logActivity(db, {
+        companyId: applicationAfter.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_application.archived",
+        entityType: "tool_application",
+        entityId: applicationAfter.id,
+        details: { type: applicationAfter.type, name: applicationAfter.name, reason: "sign_in_cancelled" },
+      });
+    }
+    res.json({ abandoned: true, connection: result.connection });
+  });
+
   async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {
     const actor = getActorInfo(req);
     const { deletion, created } = await contentDeletion.request(connection, {

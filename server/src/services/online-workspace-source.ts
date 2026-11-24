@@ -6,6 +6,7 @@ import { executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } fro
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { explainOnlineOrdinarySource, inspectImportedWorkspaceSourcePaths, physicalPath, requiresOnlineOrdinarySource, type WorkspaceSourceScope } from "./remote-workspace-migration-tree.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
+import { WORKSPACE_SOURCE_KEY_LIMIT } from "./workspace-source-key-limit.js";
 import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitLinkedRoots, readWorkspaceGitSourceRoots, type WorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceRecoverySource, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import type { LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
@@ -111,7 +112,13 @@ export async function explainOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     }
   } catch { return unproven("git_identity_unreadable"); }
   const captureRoot = await physicalPath(cwd), gitSources = selected.git ? [selected.git] : nestedGit;
-  if (!gitSources.length) return unproven(ordinaryUnproven ?? "not_git_source");
+  if (!gitSources.length) {
+    if (ordinaryUnproven) return unproven(ordinaryUnproven);
+    const marker = await fs.lstat(path.join(captureRoot, ".git")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error; return null;
+    });
+    return unproven(marker ? "git_marker_not_repository" : "git_checkout_missing");
+  }
   if (selected.git && selected.git.root !== captureRoot) return unproven("git_root_mismatch");
   if (selected.unownedPaths.length) return unproven("unowned_path");
   if (!workspace.sourceIssueId) return unproven("task_binding_missing");
@@ -199,7 +206,7 @@ export async function explainOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   if ([...linkedSources.values()].some(proof => proof.links.some(link => !registeredRoots.some(root =>
     link.root.path === root || link.root.path.startsWith(root + path.sep))))) return unproven("git_link_unregistered");
   const issueIds = [...new Set([...physicalIssueIds, ...included.map(node => node.row.sourceIssueId!)])].sort();
-  if (issueIds.length + projectIds.size > 128) return unproven("source_keys_exceeded");
+  if (issueIds.length + projectIds.size > WORKSPACE_SOURCE_KEY_LIMIT) return unproven("source_keys_exceeded");
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
   const gitSourceRoots = [...[...projectIds].map(id => path.join(instance, "projects", workspace.companyId, id)),
     ...issueIds.flatMap(id => ["isolated-workspaces", "isolated-workspace-attempts", "isolated-repository-sources"].map(kind =>

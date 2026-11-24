@@ -8,6 +8,7 @@ import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode } from "./native-sandbox-disk-full.js";
+import { isNativeRunPayloadTooLarge, NATIVE_RUN_PAYLOAD_TOO_LARGE, NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION } from "./native-run-payload-too-large.js";
 import { runFailureMessage } from "@paperclipai/shared";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
@@ -78,7 +79,7 @@ import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-bus
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
-import { coldAdmissionTimeoutMs } from "../../vendor/paperclip-runner/index.js";
+import { coldAdmissionTimeoutMs, nativeRunAttachReservedBytes } from "../../vendor/paperclip-runner/index.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { nativeCaseHandoffResult } from "./native-case-handoff.js";
@@ -334,6 +335,7 @@ import {
   type NativeStatusDecision,
 } from "./status-arbiter.js";
 import { conflict, HttpError } from "../../errors.js";
+import { planReviewConfirmationInput } from "./native-plan-review-card.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
 import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
@@ -2321,33 +2323,15 @@ export async function synchronizeCompletedProviderPlan(input: {
         id: input.execution.binding.issueId,
         companyId: input.execution.binding.companyId,
       },
-      {
-        kind: "request_confirmation",
-        idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
+      planReviewConfirmationInput({
+        issueId: input.execution.binding.issueId,
+        documentId: current.id,
+        revisionId: revision.id,
+        revisionNumber: revision.revisionNumber,
         sourceRunId: input.execution.binding.runId,
-        title: `Review plan revision ${revision.revisionNumber}`,
-        summary: "Review the synchronized Paperclip plan.",
-        continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          prompt: `Approve plan revision ${revision.revisionNumber}?`,
-          detailsMarkdown:
-            "The completed provider plan has been synchronized to the canonical Plan document.",
-          acceptLabel: "Approve plan",
-          rejectLabel: "Request changes",
-          rejectRequiresReason: true,
-          supersedeOnUserComment: false,
-          target: {
-            type: "issue_document",
-            issueId: input.execution.binding.issueId,
-            documentId: current.id,
-            key: "plan",
-            revisionId: revision.id,
-            revisionNumber: revision.revisionNumber,
-            label: `Plan v${revision.revisionNumber}`,
-          },
-        },
-      } as never,
+        source: "provider_plan",
+        idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
+      }) as never,
       {
         agentId: input.execution.binding.agentId,
         runId: input.execution.binding.runId,
@@ -9087,7 +9071,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
     sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
     sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER ||
-    sourceFailureCode === NATIVE_SANDBOX_DISK_FULL;
+    sourceFailureCode === NATIVE_SANDBOX_DISK_FULL ||
+    sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -9289,6 +9274,7 @@ function classifyNativeSessionFailure(
   error: unknown,
 ):
   | "native_permission_declined"
+  | typeof NATIVE_RUN_PAYLOAD_TOO_LARGE
   | "native_provider_terminal_failed"
   | "native_governed_wait_settlement_pending"
   | typeof NATIVE_PROVIDER_STATE_INCOMPATIBLE
@@ -9371,6 +9357,7 @@ function classifyNativeSessionFailure(
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
   if (/"code":"controller_sequence_mismatch"/.test(message)) return NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
+  if (isNativeRunPayloadTooLarge(error)) return NATIVE_RUN_PAYLOAD_TOO_LARGE;
   if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
     return "runner_task_admission_rejected";
   }
@@ -13610,6 +13597,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
                     ? NATIVE_SANDBOX_DISK_FULL_ACTION
+                  : sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE
+                    ? NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
                   : sourceFailureCode === "native_governed_wait_settlement_pending"
@@ -13902,6 +13891,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
                 ? NATIVE_SANDBOX_DISK_FULL_ACTION
+              : sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE
+                ? NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
@@ -16786,6 +16777,7 @@ async function createRunnerdBackendWithinSessionClaim(
   input.executionContext?.signal.throwIfAborted();
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     apiUrl: resolveLocalRuntimeApiUrl(),
+    runAttachReservedBytes: nativeRunAttachReservedBytes(input.execution),
     casesEnabled: input.casesEnabled === true,
     responsibilitiesEnabled: input.responsibilitiesEnabled === true,
     ...(nativeReview ? { nativeReview } : {}),

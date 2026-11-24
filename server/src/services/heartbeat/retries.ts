@@ -93,6 +93,7 @@ import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION } from "../native-runtime/native-sandbox-disk-full.js";
+import { NATIVE_RUN_PAYLOAD_TOO_LARGE, NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION } from "../native-runtime/native-run-payload-too-large.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -544,6 +545,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     if (run.errorCode === NATIVE_SANDBOX_DISK_FULL) {
       return { outcome: "not_scheduled" as const, reason: NATIVE_SANDBOX_DISK_FULL_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_RUN_PAYLOAD_TOO_LARGE) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION,
         issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {

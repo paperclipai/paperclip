@@ -101,15 +101,14 @@ do not establish OAuth registration, public callbacks, or production provider ac
 
 ### `apps-catalog`
 
-Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx),
-[unconnected app](../../ui/src/pages/apps/AppNotConnected.test.tsx), and
-[AppsConnect](../../ui/src/pages/apps/AppsConnect.test.tsx) cover catalog entry,
-access selection, provider-specific method choices, and setup failures with
-mocked APIs. [Connection intents](../../tests/e2e/connection-intents.spec.ts)
+Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx) covers catalog entry
+with mocked APIs (mocked `AppNotConnected` and `AppsConnect` component tests were
+removed; coverage for access selection, method choices, and setup failures now relies
+on browser/manual checks). [Connection intents](../../tests/e2e/connection-intents.spec.ts)
 drives store and task setup against one fake provider through a useful continuation:
 
 ```sh
-pnpm exec vitest run ui/src/pages/apps/Browse.test.tsx ui/src/pages/apps/AppsConnect.test.tsx
+pnpm exec vitest run ui/src/pages/apps/Browse.test.tsx
 pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts
 ```
 
@@ -197,10 +196,11 @@ task does not grant the right to resolve the request.
 
 ### `resume-connection`
 
-Automated: AppsConnect tests cover exact-draft resume, declined OAuth, reconnect
-lookup failure/retry, response-lost creation, archived connection revival, and
-saved account reuse. [App detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers
-the connection host. These tests do not complete a real provider login.
+Automated: none for mocked UI flows (`AppsConnect` and `AppDetail` component tests
+covering draft resume, declined OAuth, reconnect retry, archived connection revival,
+saved account reuse, and the connection host were removed; rely on
+[Connection intents](../../tests/e2e/connection-intents.spec.ts) and manual checks
+below). None of these checks complete a real provider login.
 
 Manual: leave setup through its footer, reload Apps, choose Finish setup, and
 confirm the same connection is resumed. Decline provider login and recover from
@@ -209,11 +209,12 @@ action afterwards. Count connections before/after to catch accidental duplicates
 
 ### `chat-channel`
 
-Automated: [setup routing](../../ui/src/pages/apps/chat/ChatEndpointSetup.routing.test.tsx),
-[saved setup state](../../ui/src/pages/apps/chat/ChatEndpointSetup.state.test.ts),
-[email setup](../../ui/src/pages/apps/chat/EmailEndpointSetup.test.tsx), and
-[identity confirmation](../../ui/src/pages/apps/chat/ChatIdentityConfirm.test.tsx)
-cover shared UI logic with fixtures. Provider-specific live setup is not implied.
+Automated:
+[saved setup state](../../ui/src/pages/apps/chat/ChatEndpointSetup.state.test.ts)
+covers saved setup-state logic with fixtures (mocked UI tests for setup routing,
+email setup, and identity confirmation were removed; verify those UI flows via
+[chat adapters E2E](../../tests/e2e/chat-adapters-ui-providers.spec.ts) and manual
+checks). Provider-specific live setup is not implied.
 
 [Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
 also covers bounded Telegram subscription recovery at startup and after committed

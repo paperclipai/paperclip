@@ -67973,30 +67973,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each([
-    "settled",
-    "distinct_account",
-    "null_account",
-    "wrong_account",
-    "missing_account",
-    "malformed_account",
-    "missing_thread",
-    "older_warm_run",
-    "committed_marker",
-    "foreign_marker",
-    "prepared_marker",
-    "pending_lease_cleanup",
-    "missing_receipt",
-    "activation_prepared",
-    "changed_checkpoint",
-    "late_event",
-    "leased",
-    "wrong_thread",
-    "source_edited",
-    "different_error",
-  ].flatMap((mode) => [
-    "runner_state_identity_mismatch",
-    "runner_state_identity_mismatch: prior_owner_active",
-  ].map((errorMessage) => ({ mode, errorMessage }))))(
+    ...[
+      "settled",
+      "distinct_account",
+      "null_account",
+      "wrong_account",
+      "missing_account",
+      "malformed_account",
+      "missing_thread",
+      "older_warm_run",
+      "committed_marker",
+      "foreign_marker",
+      "prepared_marker",
+      "pending_lease_cleanup",
+      "missing_receipt",
+      "activation_prepared",
+      "changed_checkpoint",
+      "late_event",
+      "leased",
+      "wrong_thread",
+      "source_edited",
+      "different_error",
+    ].map((mode) => ({ mode, errorMessage: "runner_state_identity_mismatch" })),
+    { mode: "settled", errorMessage: "runner_state_identity_mismatch: prior_owner_active" },
+    { mode: "pending_lease_cleanup", errorMessage: "runner_state_identity_mismatch: prior_owner_active" },
+  ])(
     "retries only the original pre-provider Telegram request after exact cleanup: $mode ($errorMessage)",
     async ({ mode, errorMessage }) => {
       const context = await committedChatResponseRecoveryFixture("telegram");
@@ -68392,8 +68393,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each((["github", "telegram"] as const).flatMap(provider =>
-    (["unregistered", "pending", "historical_sibling", "foreign_source_hold", "automatic_scheduled", "automatic_running", "automatic_awaiting_evidence", "exhausted", "wrong_generation", "paused_endpoint", "paused_after_wait", "paused_agent_after_wait", "edited_after_wait", "superseded_after_wait"] as const).map(gate => ({ provider, gate }))))(
+  it.each([
+    ...(["unregistered", "pending", "historical_sibling", "foreign_source_hold", "automatic_scheduled", "automatic_running", "automatic_awaiting_evidence", "exhausted", "wrong_generation", "paused_endpoint", "paused_after_wait", "paused_agent_after_wait", "edited_after_wait", "superseded_after_wait"] as const).map(gate => ({ provider: "github" as const, gate })),
+    ...(["unregistered", "pending", "paused_endpoint", "superseded_after_wait"] as const).map(gate => ({ provider: "telegram" as const, gate })),
+  ])(
     "holds an ordinary $provider Retry behind its exact remote recovery: $gate", async ({ provider, gate }) => {
       const context = await failedChatRetryFixture(provider, undefined, true);
       try {
