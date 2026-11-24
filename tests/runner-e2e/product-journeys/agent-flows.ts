@@ -34,7 +34,10 @@ type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
   | "saved-skill-use">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
-const active = (run: Row) => ["queued", "running"].includes(run.status);
+const ACTIVE_RUN_STATUSES = ["queued", "running"];
+const SETTLED_RUN_STATUSES = ["succeeded", "cancelled"];
+const active = (run: Row) => ACTIVE_RUN_STATUSES.includes(run.status);
+const settledRun = (run: Row) => SETTLED_RUN_STATUSES.includes(run.status);
 
 /** These fixture replies are plain text. The rich editor escapes underscores in
  * its persisted Markdown; compare the intended text while retaining exact count
@@ -61,9 +64,10 @@ export function startedTaskRuns(state: Pick<TaskState, "taskRuns">) {
   return state.taskRuns.filter(run => !retiredBeforeProviderStart(run));
 }
 
-/** The task is done after exactly `count` started runs, with nothing active or pending. */
+/** The task is done after exactly `count` started runs, and every run finished as succeeded or cancelled:
+ * an active run, or a failed run still waiting for its scheduled same-run retry, is not settled. */
 export function agentTaskSettled(state: TaskState, count: number) {
-  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(run => run.status === "succeeded" || run.status === "cancelled")
+  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(settledRun)
     && state.interactions.every(row => row.status !== "pending");
 }
 
@@ -83,7 +87,7 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
     // A projected exact-session retry is still work in progress. Keep observing
     // the same run under the original campaign deadline and run limit.
     if (deadlineAt !== undefined && isPendingNativeRecovery(run, deadlineAt)) continue;
-    if (!["queued", "running", "succeeded"].includes(run.status) && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");
+    if (!active(run) && run.status !== "succeeded" && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");
   }
 }
 
