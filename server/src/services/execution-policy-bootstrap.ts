@@ -52,6 +52,40 @@ function parsePositiveIntMs(value: string | undefined): number | undefined {
   return parsed;
 }
 
+/**
+ * Parse one of the `PAPERCLIP_K8S_EXTRA_*` env vars: a JSON array of objects,
+ * each with the listed string keys. Checks the shape only, so a typo fails
+ * the boot; the plugin's config schema enforces the rest (allowed volume
+ * sources, reserved names and paths, mounts naming a declared volume).
+ */
+function parseExtraObjects(
+  envName: string,
+  value: string | undefined,
+  requiredStrings: string[],
+): Array<Record<string, unknown>> | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${envName} must be JSON.`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${envName} must be a JSON array.`);
+  return parsed.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${envName}[${index}] must be an object.`);
+    }
+    for (const key of requiredStrings) {
+      const field = (entry as Record<string, unknown>)[key];
+      if (typeof field !== "string" || field.length === 0) {
+        throw new Error(`${envName}[${index}].${key} must be a non-empty string.`);
+      }
+    }
+    return entry as Record<string, unknown>;
+  });
+}
+
 function parseList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   const items = value
@@ -112,6 +146,26 @@ export function parseExecutionPolicyBootstrapEnv(
 
   const imageRegistry = env.PAPERCLIP_K8S_IMAGE_REGISTRY?.trim();
   if (imageRegistry) kubernetesConfig.imageRegistry = imageRegistry;
+
+  const extraVolumes = parseExtraObjects("PAPERCLIP_K8S_EXTRA_VOLUMES", env.PAPERCLIP_K8S_EXTRA_VOLUMES, ["name"]);
+  if (extraVolumes) {
+    kubernetesConfig.extraVolumes = extraVolumes as KubernetesEnvironmentConfigInput["extraVolumes"];
+  }
+  const extraVolumeMounts = parseExtraObjects(
+    "PAPERCLIP_K8S_EXTRA_VOLUME_MOUNTS",
+    env.PAPERCLIP_K8S_EXTRA_VOLUME_MOUNTS,
+    ["name", "mountPath"],
+  );
+  if (extraVolumeMounts) {
+    kubernetesConfig.extraVolumeMounts = extraVolumeMounts as KubernetesEnvironmentConfigInput["extraVolumeMounts"];
+  }
+  const extraEnv = parseExtraObjects("PAPERCLIP_K8S_EXTRA_ENV", env.PAPERCLIP_K8S_EXTRA_ENV, ["name"]);
+  if (extraEnv) {
+    for (const [index, entry] of extraEnv.entries()) {
+      if (typeof entry.value !== "string") throw new Error(`PAPERCLIP_K8S_EXTRA_ENV[${index}].value must be a string.`);
+    }
+    kubernetesConfig.extraEnv = extraEnv as KubernetesEnvironmentConfigInput["extraEnv"];
+  }
 
   const rpcTimeoutMs = parsePositiveIntMs(env.PAPERCLIP_K8S_RPC_TIMEOUT_MS);
   if (rpcTimeoutMs !== undefined) kubernetesConfig.timeoutMs = rpcTimeoutMs;

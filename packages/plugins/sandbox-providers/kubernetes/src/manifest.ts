@@ -76,6 +76,24 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["standard", "cilium"],
             description: "Network policy mode. `cilium` enables FQDN-based egress filtering via CiliumNetworkPolicy.",
           },
+          extraVolumes: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Extra pod volumes for every agent pod (Kubernetes Volume objects, e.g. `{\"name\": \"git-mirror\", \"persistentVolumeClaim\": {\"claimName\": \"git-mirror\", \"readOnly\": true}}`). Sources are limited to those the restricted Pod Security profile allows. Default: none.",
+          },
+          extraVolumeMounts: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Extra volumeMounts for the agent container (`name`, `mountPath`, optional `subPath`, `readOnly`); each must name an entry of extraVolumes. Default: none.",
+          },
+          extraEnv: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Extra env (`name`, `value`) for the agent container. Takes precedence over the run's secret env; HOME is reserved. Default: none.",
+          },
           runtimeClassName: {
             type: "string",
             description:

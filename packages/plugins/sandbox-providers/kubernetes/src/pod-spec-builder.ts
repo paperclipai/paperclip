@@ -1,4 +1,23 @@
-export interface BuildJobManifestInput {
+/** A Kubernetes `Volume`: a name plus one volume source, validated by the config schema. */
+export type ExtraVolume = { name: string } & Record<string, unknown>;
+export interface ExtraVolumeMount {
+  name: string;
+  mountPath: string;
+  subPath?: string;
+  readOnly?: boolean;
+}
+
+/**
+ * Operator-configured additions to every agent pod, appended after the
+ * built-in env, mounts and volumes. Empty by default.
+ */
+export interface ExtraPodConfig {
+  extraVolumes?: ExtraVolume[];
+  extraVolumeMounts?: ExtraVolumeMount[];
+  extraEnv?: Array<{ name: string; value: string }>;
+}
+
+export interface BuildJobManifestInput extends ExtraPodConfig {
   namespace: string;
   jobName: string;
   adapterType: string;
@@ -64,7 +83,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
               // HOME is inside the readOnly root filesystem. Agent runtimes
               // can silently exit with code 0 and no output when HOME is
               // unwritable, so set this explicitly.
-              env: [{ name: "HOME", value: "/home/paperclip" }],
+              env: [{ name: "HOME", value: "/home/paperclip" }, ...(input.extraEnv ?? [])],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,
@@ -83,6 +102,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
                 { name: "home", mountPath: "/home/paperclip" },
                 { name: "cache", mountPath: "/home/paperclip/.cache" },
                 { name: "tmp", mountPath: "/tmp" },
+                ...(input.extraVolumeMounts ?? []),
               ],
             },
           ],
@@ -91,6 +111,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
             { name: "home", emptyDir: { sizeLimit: "1Gi" } },
             { name: "cache", emptyDir: { sizeLimit: "1Gi" } },
             { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
+            ...(input.extraVolumes ?? []),
           ],
         },
       },

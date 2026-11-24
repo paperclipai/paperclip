@@ -120,6 +120,42 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
+  it("reads PAPERCLIP_K8S_EXTRA_VOLUMES, _VOLUME_MOUNTS and _ENV into kubernetesConfig", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_EXTRA_VOLUMES: '[{"name":"git-mirror","persistentVolumeClaim":{"claimName":"git-mirror","readOnly":true}}]',
+        PAPERCLIP_K8S_EXTRA_VOLUME_MOUNTS: '[{"name":"git-mirror","mountPath":"/mnt/git-mirror","readOnly":true}]',
+        PAPERCLIP_K8S_EXTRA_ENV: '[{"name":"GIT_MIRROR","value":"/mnt/git-mirror"}]',
+      }),
+    );
+    expect(parsed?.kubernetesConfig.extraVolumes).toEqual([
+      { name: "git-mirror", persistentVolumeClaim: { claimName: "git-mirror", readOnly: true } },
+    ]);
+    expect(parsed?.kubernetesConfig.extraVolumeMounts).toEqual([
+      { name: "git-mirror", mountPath: "/mnt/git-mirror", readOnly: true },
+    ]);
+    expect(parsed?.kubernetesConfig.extraEnv).toEqual([{ name: "GIT_MIRROR", value: "/mnt/git-mirror" }]);
+
+    const plain = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }))?.kubernetesConfig;
+    expect(plain).not.toHaveProperty("extraVolumes");
+    expect(plain).not.toHaveProperty("extraVolumeMounts");
+    expect(plain).not.toHaveProperty("extraEnv");
+  });
+
+  it.each([
+    ["PAPERCLIP_K8S_EXTRA_VOLUMES", "not JSON", "[{"],
+    ["PAPERCLIP_K8S_EXTRA_VOLUMES", "an object instead of an array", '{"name":"x","emptyDir":{}}'],
+    ["PAPERCLIP_K8S_EXTRA_VOLUMES", "an entry without a name", '[{"emptyDir":{}}]'],
+    ["PAPERCLIP_K8S_EXTRA_VOLUME_MOUNTS", "a mount without a mountPath", '[{"name":"x"}]'],
+    ["PAPERCLIP_K8S_EXTRA_ENV", "an entry that is not an object", '["A=1"]'],
+    ["PAPERCLIP_K8S_EXTRA_ENV", "a non-string value", '[{"name":"A","value":1}]'],
+  ])("throws when %s is %s", (name, _why, value) => {
+    expect(() => parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", [name]: value }))).toThrow(
+      new RegExp(name),
+    );
+  });
+
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
