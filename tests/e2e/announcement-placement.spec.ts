@@ -97,6 +97,52 @@ test.describe("Announcement placement on a new company's first task", () => {
     }
   });
 
+  test("a long announcement stays scrollable on a small phone", async ({ baseURL, browser, page, request }) => {
+    const { company, issue } = await firstTask(request, "Mobile Announcement Long");
+    const long = {
+      ...CONNECTORS_ANNOUNCEMENT,
+      title: "Give your agents the access they need to work across your connected apps",
+      description: "Connect Gmail, GitHub, Notion, and more. ".repeat(10).slice(0, 400).trim(),
+      secondaryLink: { kind: "route", label: "View tasks", path: "/issues" },
+    };
+    await serveConnectorsAnnouncement(page, long);
+    const viewport = { width: 320, height: 568 };
+    const taskPath = `/${company.issuePrefix}/issues/${issue.identifier}`;
+    await page.setViewportSize(viewport);
+    await page.goto(taskPath);
+
+    const announcement = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await expect(announcement.getByRole("heading", { name: long.title })).toBeVisible();
+    await expect(announcement.getByText(long.description, { exact: true })).toHaveCount(1);
+    expect((await box(announcement, "mobile announcement")).height).toBeLessThanOrEqual(viewport.height * 0.4 + 1);
+    expect(await announcement.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(0);
+
+    for (const name of ["View tasks", "Explore connectors"]) {
+      const action = announcement.getByRole("link", { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
+      await expect(action).toBeInViewport();
+      // Require a real hit target without activating the link, which dismisses the card.
+      await action.click({ trial: true });
+    }
+    const dismiss = announcement.getByRole("button", { name: "Dismiss announcement" });
+    await dismiss.scrollIntoViewIfNeeded();
+    await dismiss.click();
+    await expect(announcement).toBeHidden();
+
+    // Following a link dismisses the card too. Use another visit to exercise it.
+    const returningPage = await browser.newPage({ baseURL, viewport });
+    try {
+      await serveConnectorsAnnouncement(returningPage, long);
+      await returningPage.goto(taskPath);
+      const primary = returningPage.getByRole("complementary", { name: "Paperclip announcements" })
+        .getByRole("link", { name: "Explore connectors", exact: true });
+      await primary.click();
+      await expect(returningPage).toHaveURL(/\/apps(?:[/?#]|$)/);
+    } finally {
+      await returningPage.close();
+    }
+  });
+
   test("a long announcement docked in a narrow sidebar keeps navigation and the account menu usable", async ({ page, request }) => {
     const { company, issue } = await firstTask(request, "Announcement Long");
     const long = {
