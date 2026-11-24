@@ -274,6 +274,7 @@ export function trackConnectionCreated(
     setup_flow: RawDimension<EventDimensionsMap["connection.created"]["setup_flow"]>;
     status: RawDimension<EventDimensionsMap["connection.created"]["status"]>;
     enabled: boolean;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.created", {
@@ -296,6 +297,7 @@ export function trackConnectionUpdated(
     status: RawDimension<EventDimensionsMap["connection.updated"]["status"]>;
     previous_enabled: boolean;
     enabled: boolean;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.updated", {
@@ -316,6 +318,7 @@ export function trackConnectionInvoked(
     status: RawDimension<EventDimensionsMap["connection.invoked"]["status"]>;
     origin: RawDimension<EventDimensionsMap["connection.invoked"]["origin"]>;
     duration_seconds?: number;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.invoked", {
@@ -323,6 +326,36 @@ export function trackConnectionInvoked(
     transport: asEventDimension(dims.transport),
     status: asEventDimension(dims.status),
     origin: asEventDimension(dims.origin),
+  });
+}
+
+export function trackConnectionAppLinked(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["connection.app_linked"]["provider"]>;
+    app: string;
+  },
+): void {
+  client.track("connection.app_linked", {
+    provider: asEventDimension(dims.provider),
+    app: dims.app,
+  });
+}
+
+export function trackConnectionAppRequested(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["connection.app_requested"]["provider"]>;
+    app: string;
+    origin: RawDimension<EventDimensionsMap["connection.app_requested"]["origin"]>;
+    outcome: RawDimension<EventDimensionsMap["connection.app_requested"]["outcome"]>;
+  },
+): void {
+  client.track("connection.app_requested", {
+    provider: asEventDimension(dims.provider),
+    app: dims.app,
+    origin: asEventDimension(dims.origin),
+    outcome: asEventDimension(dims.outcome),
   });
 }
 

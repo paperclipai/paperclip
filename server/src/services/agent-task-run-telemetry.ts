@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { agentHarnessType, requiresExecutionReconciliation } from "@paperclipai/shared";
+import { agentHarnessName, requiresExecutionReconciliation } from "@paperclipai/shared";
 import { PERMANENT_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "./continuation-cause.js";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
@@ -144,7 +144,7 @@ export function agentRunFailureCause(input: {
 }
 
 export function telemetryAdapterType(agent: { adapterType: string; adapterConfig: unknown }): string {
-  return agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig));
+  return agentHarnessName(agent.adapterType, parseObject(agent.adapterConfig));
 }
 
 function providerFailureCategory(resultJson: unknown): string | null {

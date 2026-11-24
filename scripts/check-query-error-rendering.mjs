@@ -62,7 +62,6 @@ export const ALLOWLIST = new Set([
   "ui/src/artifact-directions/main.tsx:retry-false",
   "ui/src/wizard-preview-main.tsx:retry-false",
   "ui/src/fixtures/TaskChatPerfHarness.tsx:retry-false",
-  "ui/src/pages/NewAgent.test-support.tsx:retry-false",
   "ui/src/components/TaskChatThread.tsx:is-error-render",
   "ui/src/components/transcript/RunTranscriptView.tsx:is-error-render",
   "ui/src/components/task-chat/transcript-adapter.ts:is-error-render",

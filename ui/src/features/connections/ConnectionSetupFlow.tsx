@@ -61,7 +61,11 @@ import {
   getAvailableConnectionMethods,
   getRecommendedConnectionMethod,
   isGoogleWorkspaceConnectorProfileId,
+  appDefinitionForDeployment,
+  isCloudOnlyConnectionMethod,
+  GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE,
 } from "@paperclipai/shared";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -888,6 +892,31 @@ function StandardConnectionSetupFlow({
     oauthPopupRef.current = null;
     return true;
   }, []);
+  const firstSignInDraftRef = useRef<string | null>(null);
+  const trackFirstSignInDraft = useCallback((connection: Pick<ToolConnection, "id" | "status"> | undefined) => {
+    firstSignInDraftRef.current = connection?.status === "draft" && !resumeConnectionId && !reconnectConnectionId && !connectionIntentId
+      ? connection.id
+      : null;
+  }, [connectionIntentId, reconnectConnectionId, resumeConnectionId]);
+  const [cancellingSignIn, setCancellingSignIn] = useState(false);
+  const cancelFirstSignInDraft = useCallback(async (): Promise<boolean> => {
+    const connectionId = firstSignInDraftRef.current;
+    if (!connectionId || !selectedCompanyId) return true;
+    setCancellingSignIn(true);
+    try {
+      await toolsApi.cancelFirstSignIn(connectionId);
+    } catch (error) {
+      pushToast({ title: "Couldn’t cancel sign-in", body: `${describeError(error).body} Click Cancel to try again.`, tone: "error" });
+      return false;
+    } finally {
+      setCancellingSignIn(false);
+    }
+    firstSignInDraftRef.current = null;
+    setConnectResult((current) => current?.connectionId === connectionId ? null : current);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId) });
+    return true;
+  }, [pushToast, queryClient, selectedCompanyId]);
   useEffect(() => {
     if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
       cancelOAuthLookup();
@@ -1189,8 +1218,12 @@ function StandardConnectionSetupFlow({
     ),
     [galleryQuery.data, chatConnectorsEnabled, githubEnabled, memoryConnectorsEnabled, connectorAvailability.enabled],
   );
-  const fullRequestedDefinition = requestedAppKey
+  const cloudInstance = useCloudInstance();
+  const bundledRequestedDefinition = requestedAppKey
     ? getConnectableAppDefinition(requestedAppKey)
+    : null;
+  const fullRequestedDefinition = bundledRequestedDefinition
+    ? appDefinitionForDeployment(bundledRequestedDefinition, { cloudHosted: Boolean(cloudInstance) })
     : null;
   const customOAuthMethod = fullRequestedDefinition?.methods.find((candidate) =>
     connectionMethodAcceptsCustomerOAuthClient(candidate)
@@ -1518,6 +1551,7 @@ function StandardConnectionSetupFlow({
   });
   const mutateOAuthStart = oauthStartMutation.mutate;
   const startOAuth = useCallback((connection: ToolConnection) => {
+    trackFirstSignInDraft(connection);
     if (connection.config?.sourceTemplateKey === "google-workspace" && !workspaceSelectionRef.current) {
       setWorkspaceConnection(connection);
       setWorkspaceConsent(() => () => {
@@ -1532,7 +1566,7 @@ function StandardConnectionSetupFlow({
     reserveOAuthPopup();
     if (!connectionIntentId) setDialogOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
-  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
+  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId, trackFirstSignInDraft]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -1682,7 +1716,8 @@ function StandardConnectionSetupFlow({
         if (result.auth.manualClientRequired) {
           oauthPopupRef.current?.close();
           oauthPopupRef.current = null;
-          setLinkGuidance(genericConnectGuidance("oauth_manual_client_required", null));
+          const guidance = genericConnectGuidance("oauth_manual_client_required", null);
+          setLinkGuidance(result.auth.manualClientReason ? { ...guidance, body: result.auth.manualClientReason } : guidance);
           setLinkAuthMode("oauth");
           setLinkAdvancedOpen(true);
           setGenericOAuthPending(false);
@@ -1692,6 +1727,7 @@ function StandardConnectionSetupFlow({
         setGenericOAuthPending(!entry);
         const startUrl = result.auth.startUrl?.trim();
         if (startUrl && !connectionIntentId) {
+          trackFirstSignInDraft(result.connection);
           setDialogOAuthConnectionId(result.connectionId);
           void prepareAndOpenOAuth({ authorizationUrl: startUrl, handoff: result.auth.handoff });
         } else startOAuth(result.connection);
@@ -2410,12 +2446,19 @@ function StandardConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
+  // "unreachable" means Cloud did not answer the check, not that this instance
+  // is unenrolled. Offering enrollment there sends a Cloud workspace (or an
+  // already-enrolled instance) into a flow that cannot succeed; a retry can.
+  const cloudConnectorUnreachable = connectorEnrollmentQuery.data?.status === "unreachable";
+  // Incomplete managed identity settings: registration cannot run here, and
+  // only an administrator can finish the settings.
+  const cloudConnectorMisconfigured = connectorEnrollmentQuery.data?.status === "misconfigured";
   const managedConnectorUnavailable = Boolean(
     step === "key"
     && entry
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
-    && connectorEnrollmentQuery.data?.configured === true
+    && (connectorEnrollmentQuery.data?.configured === true || cloudConnectorUnreachable || cloudConnectorMisconfigured)
   );
 
   const showConnectorEnrollmentStep = Boolean(
@@ -2423,6 +2466,8 @@ function StandardConnectionSetupFlow({
     && entry
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
+    && !cloudConnectorUnreachable
+    && !cloudConnectorMisconfigured
     && (
       connectorEnrollmentQuery.isLoading
       || connectorEnrollmentView.kind === "error"
@@ -2467,6 +2512,7 @@ function StandardConnectionSetupFlow({
         defaults={curatedOAuthDefaults}
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={async () => {
           if (pendingOAuthLookupRef.current) return;
           directOAuthAccessConfirmedRef.current = true;
@@ -2554,9 +2600,11 @@ function StandardConnectionSetupFlow({
           setOAuthError(null);
           backToGallery();
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -2581,6 +2629,7 @@ function StandardConnectionSetupFlow({
         authorizationUrl={authorizationFallbackUrl}
         defaults={connectionDefaults}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={() => {
           setOAuthError(null);
           const connection = connectResult?.connection;
@@ -2600,9 +2649,11 @@ function StandardConnectionSetupFlow({
           setOAuthPhase("entry");
           setOAuthError(null);
         }}
-        onCancel={() => {
+        onCancel={async () => {
+          if (cancellingSignIn) return;
           cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
+          if (!await cancelFirstSignInDraft()) return;
           (onCancel ?? (() => navigate("/apps")))();
         }}
       />
@@ -2727,7 +2778,11 @@ function StandardConnectionSetupFlow({
         <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
           <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+            {cloudConnectorUnreachable
+              ? `Paperclip couldn’t reach Paperclip Cloud to start ${entry.name} sign-in. Try again in a moment.`
+              : cloudConnectorMisconfigured
+              ? `${entry.name} sign-in through Paperclip Cloud isn’t set up on this instance. Ask your instance administrator to finish the Paperclip Cloud settings.`
+              : `This instance is connected to Paperclip, but ${entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.`}
           </p>
           {customOAuthMethod ? (
             <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
@@ -2736,8 +2791,15 @@ function StandardConnectionSetupFlow({
           ) : null}
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={backToGallery}>Back</Button>
-            <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
-              {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            <Button
+              type="button"
+              disabled={galleryQuery.isFetching || connectorEnrollmentQuery.isFetching}
+              onClick={() => {
+                void galleryQuery.refetch();
+                void connectorEnrollmentQuery.refetch();
+              }}
+            >
+              {galleryQuery.isFetching || connectorEnrollmentQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Try again
             </Button>
           </div>
@@ -2808,6 +2870,7 @@ function StandardConnectionSetupFlow({
         <KeyStep
           settingsValid={additionalSettingsValid && instructionsValid && !dedicatedAgentMissing}
           entry={entry}
+          selfHostedGoogleApp={!cloudInstance && Boolean(getConnectableAppDefinition(entry.slug)?.methods.some(isCloudOnlyConnectionMethod))}
           error={connectMutation.error ? describeError(connectMutation.error).body : null}
           values={credentials}
           onChange={setCredentials}
@@ -3012,6 +3075,7 @@ export function OAuthConnectStateScreen({
   defaults,
   onRetry,
   settingsValid = true,
+  cancelling = false,
   onOpenAuthorization,
   onBack,
   onCancel,
@@ -3044,6 +3108,7 @@ export function OAuthConnectStateScreen({
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
   settingsValid?: boolean;
+  cancelling?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
   onBack: () => void;
@@ -3131,7 +3196,7 @@ export function OAuthConnectStateScreen({
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
-            <Button type="button" onClick={onRetry} disabled={!settingsValid}>
+            <Button type="button" onClick={onRetry} disabled={!settingsValid || cancelling}>
               {phase === "entry"
                 ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
                 : "Try again"}
@@ -3143,7 +3208,7 @@ export function OAuthConnectStateScreen({
             </Button>
           )}
           {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>Open sign-in in a new tab</a></Button> : null}
-          <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
+          <Button type="button" variant="ghost" onClick={onBack} disabled={cancelling}>Back</Button>
         </div>
       </div>
     </div>
@@ -3476,6 +3541,7 @@ function normalizeAppLink(value: string): string | null {
 function KeyStep({
   settingsValid = true,
   entry,
+  selfHostedGoogleApp = false,
   error,
   values,
   onChange,
@@ -3505,6 +3571,7 @@ function KeyStep({
 }: {
   settingsValid?: boolean;
   entry: AppDefinition;
+  selfHostedGoogleApp?: boolean;
   error?: string | null;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
@@ -3804,6 +3871,8 @@ function KeyStep({
 
   const managedAsana = method?.connectorProfile === "asana.mcp";
   const requirementsUrl = managedAsana ? null : method?.consoleLinks?.docs ?? entry.docsUrl;
+  const selfHostedGoogleClient = selfHostedGoogleApp && connectionMethodAcceptsCustomerOAuthClient(method);
+  const selfHostedGoogleClientGuide = method?.consoleLinks?.docs ?? entry.docsUrl ?? null;
 
   return (
     <div className="mx-auto max-w-xl">
@@ -3824,6 +3893,25 @@ function KeyStep({
       <div className="space-y-6">
         {managedAsana ? (
           <p className="text-sm text-muted-foreground">Sign in with Asana to choose your workspace and connect it to Paperclip.</p>
+        ) : null}
+        {selfHostedGoogleClient ? (
+          <InlineBanner tone="info">
+            {GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}
+            {selfHostedGoogleClientGuide ? (
+              <>
+                {" "}
+                <a
+                  href={selfHostedGoogleClientGuide}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2"
+                >
+                  How to set up a Google OAuth client
+                  <ArrowUpRight className="h-3 w-3" />
+                </a>
+              </>
+            ) : null}
+          </InlineBanner>
         ) : null}
         {method?.capabilityProfile && (
           <p className="text-sm text-muted-foreground">

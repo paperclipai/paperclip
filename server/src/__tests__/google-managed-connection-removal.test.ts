@@ -4,83 +4,35 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
-  authUsers,
-  companies,
   companyMemberships,
-  companySecretBindings,
   companySecrets,
-  companySecretVersions,
   connectionGrants,
-  connectionTokenIssuances,
   createDb,
-  secretAccessEvents,
+  googlePendingRevocations,
   toolAccessAuditEvents,
-  toolApplications,
-  toolCatalogEntries,
-  toolConnectionContentDeletions,
   toolConnectionInstalls,
   toolConnections,
-  toolOauthStates,
-  toolProfileBindings,
-  toolProfileEntries,
-  toolProfiles,
-  userSecretDeclarations,
-  userSecretDefinitions,
 } from "@paperclipai/db";
 import { and, eq, isNull, ne } from "drizzle-orm";
-import { GOOGLE_WORKSPACE_CONNECTOR_PROFILES } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { errorHandler } from "../middleware/index.js";
 import { logger } from "../middleware/logger.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import {
+  connectManagedGmail as connectManagedGmailFixture,
+  deleteManagedGoogleTestRows,
+  liveSecretCount as countLiveSecrets,
+  REFRESH_TOKEN,
+} from "./helpers/managed-google-connection.js";
+
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => true }));
+
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-
-const REFRESH_TOKEN = "gmail-refresh-token-do-not-log";
-
-function fakeConnector(companyId: string, userId: string) {
-  const credentials = {
-    v: 1 as const,
-    accessToken: "gmail-access-token",
-    refreshToken: REFRESH_TOKEN,
-    tokenType: "Bearer",
-    accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    refreshTokenExpiresAt: null,
-    scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES["gmail.draft"].scopes],
-    subject: userId,
-    companyId,
-    instanceId: "test-instance",
-    environment: "development" as const,
-    provider: "google" as const,
-    profile: "gmail.draft" as const,
-  };
-  return {
-    getCapabilities: vi.fn(async () => ["gmail.draft" as const]),
-    startAuthorization: vi.fn(async ({ returnState }: { returnState: string }) => ({
-      authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(returnState)}`,
-      expiresAt: new Date(Date.now() + 600_000).toISOString(),
-    })),
-    claim: vi.fn(async ({ subject }: { subject: string }) => subject === userId
-      ? credentials
-      : { ...credentials, subject, refreshToken: `${subject}-refresh-do-not-log`, accessToken: `${subject}-access` }),
-    refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async (_values: { subject: string; token: string }): Promise<{ outcome?: string }> => ({ outcome: "revoked" })),
-  };
-}
-
-function toolsListFetch() {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-    const body = JSON.parse(String(init?.body));
-    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
-    return Response.json({ jsonrpc: "2.0", id: body.id,
-      result: body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { tools: [] } });
-  });
-}
 
 describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () => {
   let db!: ReturnType<typeof createDb>;
@@ -95,28 +47,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
-    await db.delete(toolConnectionContentDeletions);
-    await db.delete(toolOauthStates);
-    await db.delete(connectionTokenIssuances);
-    await db.delete(connectionGrants);
-    await db.delete(secretAccessEvents);
-    await db.delete(companySecretBindings);
-    await db.delete(userSecretDeclarations);
-    await db.delete(companySecretVersions);
-    await db.delete(companySecrets);
-    await db.delete(userSecretDefinitions);
-    await db.delete(activityLog);
-    await db.delete(toolAccessAuditEvents);
-    await db.delete(toolConnectionInstalls);
-    await db.delete(toolProfileBindings);
-    await db.delete(toolProfileEntries);
-    await db.delete(toolProfiles);
-    await db.delete(toolCatalogEntries);
-    await db.delete(toolConnections);
-    await db.delete(toolApplications);
-    await db.delete(companyMemberships);
-    await db.delete(companies);
-    await db.delete(authUsers);
+    await deleteManagedGoogleTestRows(db);
   });
 
   afterAll(async () => {
@@ -124,52 +55,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     await tempDb?.cleanup();
   });
 
-  async function connectManagedGmail(grantKind: "user" | "organization" = "user") {
-    const [company] = await db.insert(companies).values({
-      name: `Google removal ${randomUUID()}`,
-      issuePrefix: `GR${randomUUID().slice(0, 6).toUpperCase()}`,
-    }).returning();
-    const userId = `google-removal-${randomUUID()}`;
-    await db.insert(companyMemberships).values({
-      companyId: company!.id, principalType: "user", principalId: userId, status: "active", membershipRole: "owner",
-    });
-    const connector = fakeConnector(company!.id, userId);
-    const cloudConnector = connector as unknown as PaperclipCloudConnector;
-    const service = toolAccessService(db, {
-      paperclipCloudConnector: cloudConnector,
-      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
-      remoteHttpRequest: async (url, init) => fetch(url, init),
-    });
-    const actor = { actorType: "user" as const, actorId: userId };
-    toolsListFetch();
-    const connected = await service.connectGalleryApp(company!.id, {
-      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind, name: "Gmail",
-    }, actor);
-    const started = await service.startOAuth(company!.id, connected.connectionId, {
-      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
-    });
-    await service.completePaperclipCloudConnectorCallback({
-      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "removal-claim", actor,
-    });
-    const app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = {
-        type: "board", userId, sessionId: `session-${randomUUID()}`, userName: "Owner", userEmail: null,
-        isInstanceAdmin: false, source: "session", companyIds: [company!.id],
-        memberships: [{ companyId: company!.id, membershipRole: "owner", status: "active" }],
-      };
-      next();
-    });
-    app.use("/api", toolAccessRoutes(db, {
-      paperclipCloudConnector: cloudConnector,
-      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
-      remoteHttpRequest: async (url, init) => fetch(url, init),
-    }));
-    app.use(errorHandler);
-    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
-    return { company: company!, userId, connector, app, service, connectionId: connected.connectionId, grant: grant! };
-  }
+  const connectManagedGmail = (grantKind: "user" | "organization" = "user") => connectManagedGmailFixture(db, grantKind);
 
   async function googleAudit(connectionId: string) {
     const rows = await db.select().from(toolAccessAuditEvents).where(and(
@@ -177,18 +63,15 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     return rows.map((row) => ({ reasonCode: row.reasonCode, providerAccess: (row.details as Record<string, unknown>).providerAccess }));
   }
 
-  async function liveSecretCount(companyId: string) {
-    return (await db.select({ id: companySecrets.id }).from(companySecrets)
-      .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt)))).length;
-  }
+  const liveSecretCount = (companyId: string) => countLiveSecrets(db, companyId);
 
   it.each([
     ["revoked", "ended"],
     ["other_connections_remain", "other_connections_remain"],
-    ["provider_revocation_failed", "not_ended"],
+    ["provider_revocation_failed", "retrying"],
     ["binding_not_known", "not_ended"],
     ["provider_revocation_disabled", "not_ended"],
-    ["revocation_in_progress", "not_ended"],
+    ["revocation_in_progress", "retrying"],
   ] as const)("asks Cloud to end Google access and reports %s as %s", async (outcome, result) => {
     const fixture = await connectManagedGmail();
     fixture.connector.revoke.mockResolvedValue({ outcome });
@@ -245,10 +128,10 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
   });
 
   it.each([
-    ["an older broker", new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "REVOCATION_NOT_AVAILABLE"), "revocation_not_available"],
-    ["a broker timeout", new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE"), "broker_unavailable"],
-    ["a network error", new TypeError("fetch failed"), "broker_error"],
-  ] as const)("still removes the connection locally after %s", async (_label, error, outcome) => {
+    ["an older broker", new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "REVOCATION_NOT_AVAILABLE"), "revocation_not_available", "not_ended"],
+    ["a broker timeout", new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE"), "broker_unavailable", "retrying"],
+    ["a network error", new TypeError("fetch failed"), "broker_error", "retrying"],
+  ] as const)("still removes the connection locally after %s", async (_label, error, outcome, result) => {
     const fixture = await connectManagedGmail();
     fixture.connector.revoke.mockRejectedValue(error);
     const logged: unknown[] = [];
@@ -260,8 +143,9 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("archived");
-    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "not_ended", outcomes: [outcome] });
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result, outcomes: [outcome] });
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+    expect(await db.select().from(googlePendingRevocations)).toHaveLength(result === "retrying" ? 1 : 0);
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
     expect(connection!.credentialSecretRefs).toEqual([]);
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
@@ -418,7 +302,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
     expect(response.status).toBe(200);
     const providerAccess = path === "connection" ? response.body.removal.providerAccess : response.body.providerAccess;
-    expect(providerAccess).toEqual({ provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] });
+    expect(providerAccess).toEqual({ provider: "google", result: "retrying", outcomes: ["broker_unavailable"] });
     const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
     expect(grantRow!.status).toBe("revoked");
   });

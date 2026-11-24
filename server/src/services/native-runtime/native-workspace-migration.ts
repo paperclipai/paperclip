@@ -36,8 +36,10 @@ export async function inspectNativeWorkspaceMigration(db: Db, workspace: Workspa
     const sync = readNativeWorkspaceSyncReference(saved?.sync);
     if (execution.binding.executionWorkspaceId !== workspace.id || execution.binding.companyId !== workspace.companyId
       || execution.binding.agentId !== row.agentId || execution.binding.issueId !== row.issueId
-      || execution.session.normalizedSessionId !== row.sessionId || !absolute(execution.workspace.cwd)
-      || !sync || sync.workspaceId !== workspace.id || !absolute(sync.remoteCwd)) throw new Error("native_workspace_migration_identity_unproven");
+      || execution.session.normalizedSessionId !== row.sessionId) throw new Error("native_workspace_migration_identity_rebound");
+    if (!sync) throw new Error("native_workspace_migration_identity_unsynced");
+    if (sync.workspaceId !== workspace.id) throw new Error("native_workspace_migration_identity_other_workspace");
+    if (!absolute(execution.workspace.cwd) || !absolute(sync.remoteCwd)) throw new Error("native_workspace_migration_identity_path_invalid");
     if (remoteCwd && remoteCwd !== sync.remoteCwd) throw new Error("native_workspace_migration_remote_path_conflict");
     remoteCwd = sync.remoteCwd;
     sessions.push({ sourceRunId: source.id, agentId: row.agentId, issueId: row.issueId, sessionId: row.sessionId, logicalCwd: execution.workspace.cwd });

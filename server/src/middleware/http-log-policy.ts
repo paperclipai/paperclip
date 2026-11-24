@@ -74,6 +74,24 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
 }
 
+const TOOL_CALL_HTTP_PATHS = [
+  /^\/api\/tool-gateway\/tools\/call\/?$/i,
+  /^\/api\/tool-gateway\/gateways\/[^/]+\/mcp\/?$/i,
+  /^\/mcp\/gateways\/[^/]+\/?$/i,
+  /^\/mcp\/native-runs\/[^/]+\/?$/i,
+  /^\/mcp\/runtime-tools\/?$/i,
+  /^\/mcp\/runner\/?$/i,
+  /^\/api\/mcp\/project-tools\/?$/i,
+  /^\/api\/issues\/[^/]+\/mcp-app-views\/[^/]+\/tool-calls\/?$/i,
+  /^\/api\/tool-connections\/[^/]+\/test-calls\/?$/i,
+];
+
+export function isPrivateToolCallHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return TOOL_CALL_HTTP_PATHS.some((pattern) => pattern.test(pathname));
+}
+
 /** Destination credentials stay private even on malformed settings requests. */
 export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
   if (!url) return false;

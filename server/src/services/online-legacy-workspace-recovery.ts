@@ -209,6 +209,13 @@ async function coveredHistoricalSource(db: ReadDb, workspace: Workspace, recover
   }
 }
 
+const TASK_RECOVERY_FILE_KEYS = ["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock"];
+
+export function isTaskDispositionRecovery(recovery: Pick<Recovery, "kind" | "cause" | "evidence">) {
+  return ["stranded_assigned_issue", "configuration_validation", "missing_disposition", "deliberate_wait_without_target"].includes(recovery.kind)
+    && !workspaceExportCauses.includes(recovery.cause) && !TASK_RECOVERY_FILE_KEYS.some(key => recovery.evidence?.[key] != null);
+}
+
 export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input: {
   workspace: Workspace; recovery: Recovery;
 }): Promise<OnlineLegacyWorkspaceRecoveryHold | null> {
@@ -216,11 +223,7 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
   if (recovery.companyId !== input.workspace.companyId || !["active", "escalated"].includes(recovery.status) || !await isLegacyWorkspaceTaskRelated(db, {
     companyId: input.workspace.companyId, issueId: recovery.sourceIssueId, sourceIssueId: input.workspace.sourceIssueId,
   })) return null;
-  const fileKeys = ["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock"];
-  if (["stranded_assigned_issue", "configuration_validation", "missing_disposition", "deliberate_wait_without_target"].includes(recovery.kind)
-    && !workspaceExportCauses.includes(recovery.cause) && !fileKeys.some(key => recovery.evidence?.[key] != null)) {
-    return { fingerprint: fingerprint(recovery), finalizedHold: null };
-  }
+  if (isTaskDispositionRecovery(recovery)) return { fingerprint: fingerprint(recovery), finalizedHold: null };
   if (typeof recovery.evidence?.runId !== "string") return null;
   const remote = await inspectRemoteRecoveryHold(db, input);
   if (remote) return remote;
@@ -240,7 +243,7 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     && failureBlock?.runId === settled.run.id
     && Number.isSafeInteger(failureBlock.statusVersion) && Number(failureBlock.statusVersion) > 0
     && recovery.fingerprint === createHash("sha256").update(`${settled.run.id}:${recovery.cause}`).digest("hex")
-    && !fileKeys.filter(key => key !== "nativeFailureBlock").some(key => recovery.evidence?.[key] != null)) {
+    && !TASK_RECOVERY_FILE_KEYS.filter(key => key !== "nativeFailureBlock").some(key => recovery.evidence?.[key] != null)) {
     const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
       executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
       eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
@@ -255,7 +258,7 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     && settled.owner.failureCode === recovery.cause && recovery.ownerType === "board"
     && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId && recovery.wakePolicy === null
     && recovery.fingerprint === nativeSha256({ runId: settled.run.id, failureCode: recovery.cause })
-    && !fileKeys.some(key => recovery.evidence?.[key] != null)) {
+    && !TASK_RECOVERY_FILE_KEYS.some(key => recovery.evidence?.[key] != null)) {
     const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
     if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId)
       return { fingerprint: fingerprint({ recovery, source }), finalizedHold: null, preparedSource: source };
