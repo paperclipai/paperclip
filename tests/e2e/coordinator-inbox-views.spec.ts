@@ -15,9 +15,10 @@ for (const mobile of [false, true]) test(`Mine retains Inbox behavior inside Tas
   });
   const company = await json(await request.post("/api/companies", { data: { name: "Personal Tasks verification" } }));
   const preferences = await json(await request.get("/api/workspace-preferences/me"));
-  const preferencePath = `/api/companies/${company.id}/workspace-preferences/me`;
+  await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+    ...preferences, coordinatorWorkspaceEnabled: true,
+  } }));
   try {
-    await json(await request.put(preferencePath, { data: { coordinatorWorkspaceEnabled: true } }));
     const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
       name: "Inbox activity fixture", adapterType: "process", adapterConfig: {
         command: process.execPath, args: [path.resolve("tests/e2e/fixtures/inbox-activity.mjs")],
@@ -101,7 +102,6 @@ for (const mobile of [false, true]) test(`Mine retains Inbox behavior inside Tas
       expect(firstFilter!.x).toBeCloseTo(search!.x, 0);
     }
   } finally {
-    await request.put(preferencePath, { data: { coordinatorWorkspaceEnabled: preferences.coordinatorWorkspaceEnabled } });
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });

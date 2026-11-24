@@ -132,9 +132,9 @@ history remains and the conversation does not close as a completed task.
 
 ### `attention`
 
-Automated: [attention resolver](../../ui/src/components/AttentionInteractionResolver.test.tsx)
-covers preparing-request refresh without accepting it. The resolution-route
-tests above cover the API, not every Decisions or Inbox navigation path.
+Automated: the resolution-route tests above cover the API (mocked
+`AttentionInteractionResolver` UI component tests were removed; verify
+preparing-request refresh and Decisions/Inbox navigation manually).
 
 Manual: open the same pending request in an attention row and task tab. Resolve
 from the row; both surfaces must settle after refresh. Check an empty queue,
