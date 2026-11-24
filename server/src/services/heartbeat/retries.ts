@@ -7,7 +7,7 @@ import { notifyIssueAttentionRetentionWork } from "../retention-work-notificatio
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
-import { switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { applyHistoricalQuotaHandoff, switchHistoricalQuotaPin, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { poolFailureKind, switchFailedPoolPin, poolConversationHandoff } from "./pool-failover.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
@@ -1269,14 +1269,26 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           delete retryContextSnapshot.transientRetryNotBefore;
           sessionBefore = null;
         }
-        if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON && issueId && !sessionBefore && agent.adapterType === "claude_local") {
-          const selected = await switchUnstartedLegacyQuotaPin(tx as unknown as Db, { companyId: run.companyId,
-            runId: run.id, issueId, agentId: run.agentId, userId: responsibleUserId });
-          if (selected) {
+        if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON && issueId) {
+          const [source] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId)));
+          const historical = source && await switchHistoricalQuotaPin(tx as unknown as Db, {
+            source, issueId, executionRunId: source.id, userId: responsibleUserId,
+          });
+          const firstClaim = !historical && !sessionBefore && agent.adapterType === "claude_local"
+            ? await switchUnstartedLegacyQuotaPin(tx as unknown as Db, { companyId: run.companyId,
+                runId: run.id, issueId, agentId: run.agentId, userId: responsibleUserId })
+            : null;
+          if (historical || firstClaim) {
             schedule.dueAt = now;
             schedule.delayMs = 0;
-            retryContextSnapshot.aiRouterSelection = selected;
             retryContextSnapshot.scheduledRetryAt = now.toISOString();
+            if (historical) {
+              applyHistoricalQuotaHandoff(retryContextSnapshot, historical);
+              sessionBefore = null;
+            } else {
+              retryContextSnapshot.aiRouterSelection = firstClaim;
+            }
           }
         }
 

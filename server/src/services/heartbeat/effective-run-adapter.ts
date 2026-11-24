@@ -3,11 +3,13 @@ import { resolvePaperclipRunnerProviderProfile } from "../native-runtime/provide
 import { agentTaskSessions, aiConnectionPools, aiConnectionTaskPins, agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { parseObject } from "../../adapters/utils.js";
+import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { applyAiConnectionRouterTaskSettings, aiConnectionRouterService, LOCAL_POOL_ADAPTERS, AiConnectionPoolExhausted } from "../ai-connection-router.js";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, decodeHarnessPoolConfig, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../errors.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
 import { reselectUnstartedPoolSuccessor } from "./pool-failover.js";
+import { reselectHistoricalQuotaWaitSuccessor } from "./quota-prestart-fence.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { resolveHarnessPoolExecution } from "./harness-pool-admission.js";
 import { companyPoolSourceAgent } from "./company-pool-execution.js";
@@ -19,6 +21,9 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   const existing = parseObject(parseObject(run.runnerProfileJson).adapterDispatch);
   if (typeof existing.adapterType === "string") return { adapterDispatch: existing, context: {} };
   const adapterDispatch = { adapterType: agent.adapterType, configuredAdapterType: agent.adapterType };
+  const historicalHandoff = await reselectHistoricalQuotaWaitSuccessor(db, run, userId);
+  if (historicalHandoff) run = { ...run, contextSnapshot: historicalHandoff, sessionIdBefore: null };
+  const handoffContext = historicalHandoff ? { forceFreshSession: true, previousRunId: historicalHandoff.previousRunId } : {};
   if (agent.runtimeConfig.harnessPool) {
     try {
       if (run.scopeKind === "company" && !run.issueId && !run.nativeIssueId && run.runtimeMode !== "native") {
@@ -38,7 +43,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
       }
       const admitted = await resolveHarnessPoolExecution({ db, run, agent, userId });
       return { adapterDispatch: { ...adapterDispatch, adapterType: admitted.routerSelection.adapterType ?? agent.adapterType, poolId: admitted.selection.poolId, memberId: admitted.selection.memberId, harnessPoolProfile: admitted.profile },
-        context: { aiRouterSelection: admitted.routerSelection, aiRouterTaskKey: admitted.taskKey, harnessPoolSelection: admitted.selection } };
+        context: { ...handoffContext, aiRouterSelection: admitted.routerSelection, aiRouterTaskKey: admitted.taskKey, harnessPoolSelection: admitted.selection } };
     } catch (error) {
       return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: error instanceof AiConnectionPoolExhausted
         ? { kind: "exhausted", message: error.message, poolId: error.poolId, retryAt: error.retryAt }
@@ -47,9 +52,14 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
     }
   }
   const binding = parseObject(parseObject(agent.runtimeConfig).aiConnection);
-  if (run.startedAt || binding.mode !== "router" || typeof binding.connectionId !== "string" || !LOCAL_POOL_ADAPTERS.includes(agent.adapterType))
+  if (run.startedAt || binding.mode !== "router" || typeof binding.connectionId !== "string")
     return { adapterDispatch: { adapterType: agent.adapterType }, context: {} };
-  const context: Record<string, unknown> = await reselectUnstartedPoolSuccessor(db, run, userId) ?? parseObject(run.contextSnapshot);
+  const context: Record<string, unknown> = historicalHandoff ??
+    await reselectUnstartedPoolSuccessor(db, run, userId) ?? parseObject(run.contextSnapshot);
+  if (!LOCAL_POOL_ADAPTERS.includes(agent.adapterType) && !(agent.adapterType === "paperclip_runner" &&
+      context.forceFreshSession === true && context.aiRouterSelection && context.previousRunId &&
+      run.scheduledRetryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON))
+    return { adapterDispatch: { adapterType: agent.adapterType }, context: {} };
   const taskKey = typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim()
     ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.id;
   if (context.aiRouterTaskKey !== taskKey) {
@@ -75,7 +85,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
       skipUsageProbe: pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY,
       existingGrantId: typeof identity === "string" ? identity.split(":")[0] : undefined });
     return { adapterDispatch: { ...adapterDispatch, adapterType: selection.adapterType ?? agent.adapterType, poolId: selection.poolId, memberId: selection.memberId },
-      context: { aiRouterSelection: selection, aiRouterTaskKey: taskKey } };
+      context: { ...handoffContext, aiRouterSelection: selection, aiRouterTaskKey: taskKey } };
   } catch (error) {
     const failure = error instanceof AiConnectionPoolExhausted
       ? { kind: "exhausted", message: error.message, retryAt: error.retryAt, poolId: error.poolId }
