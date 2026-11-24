@@ -51,13 +51,13 @@ describe("admitted unversioned runtime skill preservation", () => {
     await database?.cleanup();
     if (home) await removeRuntimeAssetTree(home);
   });
-  async function fixture() {
+  async function fixture(skill = "# original admitted skill\n") {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Skill preservation", issuePrefix: `R${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Recovery source" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Preserve admitted skill" });
     const bundle = await materializeAsset([
-      { path: "SKILL.md", content: Buffer.from("# original admitted skill\n"), mode: 0o400 },
+      { path: "SKILL.md", content: Buffer.from(skill), mode: 0o400 },
       { path: "scripts/run.sh", content: Buffer.from("#!/bin/sh\necho preserve\n"), mode: 0o500 },
       { path: "binary", content: Buffer.from([0, 255, 7]), mode: 0o444 },
     ]);
@@ -186,6 +186,20 @@ describe("admitted unversioned runtime skill preservation", () => {
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked", leaseOwner: "original-live-owner" });
     await removeRuntimeAssetTree(f.bundle.rootPath);
     expect(await preserveRuntimeSkillAssets(db, f, storage)).toEqual({ preserved: 1 });
+  });
+  it("names a retained run whose bundle left this disk and still saves the runs after it", async () => {
+    const lost = await fixture("# lost admitted skill\n"), kept = await fixture("# kept admitted skill\n");
+    await removeRuntimeAssetTree(lost.bundle.rootPath);
+    const page = await migrateRuntimeSkillAssets(db, { apply: true }, storage);
+    expect([...page.results].sort((a, b) => a.runId.localeCompare(b.runId))).toEqual([
+      { runId: lost.runId, status: "unsaved", code: "runtime_skill_source_absent:missing" },
+      { runId: kept.runId, status: "preserved", preserved: 1 },
+    ].sort((a, b) => a.runId.localeCompare(b.runId)));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, kept.runId)))[0]!.runnerProfileJson)
+      .toHaveProperty("nativeRuntimeSkillPreservation");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lost.runId)))[0]!.runnerProfileJson)
+      .not.toHaveProperty("nativeRuntimeSkillPreservation");
+    expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
   });
   it("retains the original receipt through a contract revision but rejects a changed admitted asset or binding", async () => {
     const f = await fixture();

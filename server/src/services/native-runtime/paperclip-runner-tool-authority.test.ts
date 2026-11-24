@@ -1080,6 +1080,24 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("moves assigned tools on demand when the run's reserved attachment bytes leave no room for them", async () => {
+    const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 40 }, (_, i) => ({
+      name: `app.lookup_${i}`, displayName: `Lookup ${i}`, description: "Read a fixture",
+      parametersSchema: { type: "object", properties: { query: { type: "string", description: "Lookup field documentation. ".repeat(80) } } }, risk: "read",
+    })));
+    const assignedMcpTools = await createAssignedMcpTools({
+      gateway: { listToolsForNamedGateway } as unknown as ToolGatewayService,
+      gatewayPublicId: "fixture", bearerToken: "fixture-token",
+    });
+    const binding = { companyId, agentId, issueId, runId, assignedMcpTools };
+    const direct = new PaperclipRunnerToolAuthority(db, binding).definitions().map(tool => String(tool.name));
+    expect(direct.filter(name => name.includes("lookup"))).toHaveLength(40);
+    const reserved = new PaperclipRunnerToolAuthority(db, { ...binding, runAttachReservedBytes: 340 * 1024 })
+      .definitions().map(tool => String(tool.name));
+    expect(reserved.filter(name => name.includes("lookup"))).toEqual([]);
+    expect(reserved).toEqual(expect.arrayContaining(["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"]));
+  });
+
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
     const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 224 }, (_, i) => ({
       name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",

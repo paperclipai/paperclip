@@ -35,6 +35,69 @@ is the current release contract and acceptance ledger.
   the built-in `agent_platform_only` marking. Inference is a separate question.
 - The ACP layer exposes no Orchestrator mode.
 
+## Swarm (`/swarm`) and Orchestrator (2026-11-23)
+
+These are two different features. The pinned 1.5.2 ACP server offers neither.
+
+- **Orchestrator** is a model choice ("Orchestrator (Neon)": Neon plans,
+  Hydrogen implements). The 1.5.2 server lists no Orchestrator entry in its
+  model picker.
+- **`/swarm`** is a slash command. It turns the conversation into a
+  coordinator that adds named workers and a verifier. The members talk on a
+  shared message board. Workers share the workspace or get their own working
+  copy. Google's docs list it for the Antigravity App and the Antigravity CLI
+  only, on all plans. It does not need Neon: workers use the conversation's
+  model. Sources: [Swarm](https://antigravity.google/docs/swarm),
+  [Slash commands](https://antigravity.google/docs/slash-commands), App
+  changelog 2.31.0 (2026-11-09).
+- The 1.5.2 server (registry entry `antigravity-acp`, the IDE-extension
+  server) does not offer `/swarm`:
+  - Live `available_commands_update` after `session/new` lists only `plan`,
+    `logout` and `usage`. Session modes are `default`, `auto_edit` and
+    `yolo`. Config options are `model`, `thinking_level` and `mode`.
+  - The bundled SDK knows one built-in slash command (`plan`). Its built-in
+    tool list has no swarm or board tools. The server sends `/swarm` text to
+    the model as ordinary prompt text.
+  - The helper `localharness_external` contains swarm code behind
+    `enable-native-swarm` flags, but the 1.5.2 server does not enable it.
+- Google now documents `agy acp` (part of the Antigravity CLI) as the ACP
+  route, and says CLI slash commands appear in the client's command menu.
+  Paperclip does not use `agy acp`. Whether `agy acp` offers `/swarm` is not
+  verified.
+- Paperclip side: the task prompt is one JSON line, so `/swarm` in a task
+  never starts a prompt line and the slash-command guard does not fire. In a
+  local run on Gemini 3.8 Flash (Google sign-in), the agent read `/swarm` as a
+  plain request. It hired three new agents and made three subtasks with
+  Paperclip's own tools. No native swarm started. The parent task finished
+  after five successful runs across four agents (about 270k input tokens);
+  one verifier run failed with a provider error and its retry passed.
+
+### Antigravity CLI route: distribution only (experimental, 2026-11-23)
+
+A second distribution, Google's Antigravity CLI (`agy`) 1.5.15, build
+`1.5.15-5514532022517760`, is pinned for darwin-arm64, linux-x64 and
+linux-arm64 in `packages/paperclip-runner/antigravity-cli-distributions.json`.
+It is the planned route for native `/swarm`. This step adds only the pin,
+`paperclipai runtime setup antigravity-cli` and a launch resolver. No route
+selection, driver or command detection exists yet, so nothing runs the CLI.
+
+- **Experimental.** It is not part of the registry-server profile above and
+  changes none of its pins, its admission patch or its qualification state.
+- **Fetched at setup time.** Setup downloads the archive from Google's
+  versioned URL and checks it against the pinned size, SHA-512 and SHA-256. It
+  then checks the extracted executable's SHA-256 and SHA-512. It installs into
+  `~/.paperclip/runtimes/antigravity-cli/`, beside the registry-server runtime.
+  Any mismatch installs nothing. The provider pack and Docker images do not
+  carry the binary. The reasons are that Google publishes no redistribution
+  licence for the CLI and that the bucket's object immutability cannot be
+  checked anonymously.
+- **Integrity without a patch.** The CLI is one signed Go binary with no patch
+  point, so the owned admission patch cannot apply. Integrity is the pinned
+  archive plus the pinned executable. Each launch runs the sealed-store copy
+  and re-hashes the executable it spawns. Self-update is off through the pinned
+  environment `AGY_CLI_DISABLE_AUTO_UPDATE=1`. The endpoint, `--gemini-dir`,
+  modes and other flags are driver policy and are not pinned here.
+
 ## Routes to Neon
 
 State as of the end of 2026-11-22. "Admitted" means the patched server returned
@@ -76,10 +139,12 @@ Order: 1 and 2 in parallel; then 3, 4 and 5; then 6.
 Profile state: **pending**. The qualification flip has not happened and must
 not happen until every row marked NOT RUN below has passed live.
 
-**No prompt has completed on 1.5.2 on any platform.** The only Gemini key
-available is free tier; Google answered every prompt attempt on two days with
-503 (overloaded) or 429 (`RESOURCE_EXHAUSTED`). Everything below that needs a
-model to answer is therefore NOT RUN, not failed and not passed.
+**First prompts completed on 1.5.2 on 2026-11-23, local darwin-arm64 only,
+Google sign-in route, model `gemini-3.8-flash-low`** (see "First live tasks"
+below). The API-key route has still not completed a prompt: the only Gemini
+key available is free tier, and Google answered every attempt with 503
+(overloaded) or 429 (`RESOURCE_EXHAUSTED`). Rows that need another model, the
+API-key route or Daytona remain NOT RUN, not failed and not passed.
 
 | Gate | Required observation | Verdict (2026-11-22) |
 | --- | --- | --- |
@@ -88,18 +153,54 @@ model to answer is therefore NOT RUN, not failed and not passed.
 | Remote provider pack | Pack carries the Linux closure; server's remote path verifies it | Passed for linux-x64 through the server's remote path in Daytona. Re-verification on a reused sandbox lease 4.3 s → ~0.25 s |
 | API-key auth | Native `gemini-api-key` session reaches an exact-model receipt | Passed live on macOS and Linux x64 (receipt only; no prompt) |
 | Model admission | Every model ID admitted by exact-model admission, prompt-free | Passed: all 28 IDs (14 Gemini 3, 14 Gemini 4 including Neon at four levels) get exact receipts under an API key on both platforms, without `AGY_ACP_DEFAULT_MODEL` |
-| Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. Not yet shown with a completed prompt, and no live `session/load` was observed |
+| Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. With completed prompts (2026-11-23, local, sign-in): native process kill recovered and the task finished. No live `session/load` call was observed in the logs |
 | Launch cost | Run start to native initialize | Sealed verified store: 1.46 s (macOS) / 1.74 s (Linux x64), from 3.45 / 3.65 s. Measured before the launcher regained its streamed executable hash (below); that hash measured ~60 ms for the 179 MB macOS server and is not yet re-measured for the ~722 MB Linux launcher |
-| Model lineup inference | Per model/level: one accepted prompt | NOT RUN (no prompt completes on the free key) |
-| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0) |
-| Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | NOT RUN on 1.5.2 (local macOS passed on 1.4.3 in October) |
+| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` accepted prompts over Google sign-in (local). The signed-in catalog listed only three Gemini 3.8 Flash levels, so the rest of the lineup is NOT RUN; the free API key still completes no prompt |
+| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0; the signed-in catalog does not list Neon) |
+| Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | Local darwin-arm64 passed on 1.5.2 (sign-in, 2026-11-23), including a follow-up on the same task. Daytona NOT RUN |
 | Scoped tools | Semantic and MCP round trip; wrong-company and stale authority denied | NOT RUN |
-| Questions and permissions | Native identity, one continuation, denial holds | NOT RUN |
-| Stop and lifecycle | Stop during a tool call, pending-input Stop, provider death mid-turn, no late revival | NOT RUN |
+| Questions and permissions | Native identity, one continuation, denial holds | Question passed locally (asked, answered, task finished). Permissions NOT RUN |
+| Stop and lifecycle | Stop during a tool call, pending-input Stop, provider death mid-turn, no late revival | Partial: Stop of a running task passed locally (run cancelled, task kept its status, as for every native harness). Pending-input Stop and provider death mid-turn NOT RUN |
 | Continuity and recovery | Loaded session keeps model and instructions; interrupted run resumes or Retry works | Partial: prompt-free resume only (see Kill and resume) |
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
+| Swarm (`/swarm`) | Native swarm starts from a task | Not supported by 1.5.2 (2026-11-23): not advertised, no swarm tools. A live `/swarm` task ran as a plain request |
+
+### First live tasks (2026-11-23, local, Google sign-in)
+
+Setup: ACP server 1.5.2 (`1.5.2-paperclip.2`), darwin-arm64, a local source
+checkout of Paperclip, Google sign-in connection, model
+`gemini-3.8-flash-low`. A source checkout needed the dev-only "Run tasks in
+this worktree" setting before tasks would start; installed builds do not.
+
+| Case | Result |
+| --- | --- |
+| Ordinary task (create a file, reply with its content, mark Done) | Passed |
+| Follow-up on the same task (recall the earlier file, append a line) | Passed |
+| Question (agent asks, user answers, agent finishes) | Passed |
+| Stop of a running task | Passed: run cancelled, task keeps its status |
+| Native process killed during a task | Passed: recovered automatically and finished |
+
+Provider capacity: 10 of 17 runs were refused by Google with 503
+`No capacity available for model ...`; every task still finished through
+automatic retries, with no user action. This exposed three product issues:
+
+- Two refusals arrived after the agent's finish had already been accepted;
+  the run was counted as failed and retried, so one task got the same reply
+  three times. Fixed: an accepted done report followed only by a transient
+  provider refusal (capacity or rate limit) is now the run's outcome, for
+  every native harness.
+- A refusal before any accepted result takes the saved-work replacement
+  path (about 30 s, task shown as blocked meanwhile), while one after an
+  accepted result takes the bounded capacity retry. Both carry the same typed
+  `overloaded`/`transient` failure; the split is by path, not by classifier.
+  Open decision below.
+- Antigravity 1.5.2 streams the provider's error text as agent text before it
+  ends the turn, so the live transcript shows it like a reply. Open below.
+
+No live `session/load` call was observed in the logs, so the profile still
+must not claim `recovery: "session-load"`.
 
 ### Must pass live before the qualification flip
 
@@ -114,7 +215,9 @@ model to answer is therefore NOT RUN, not failed and not passed.
 
 ### Excluded or unsupported for this release
 
-- Orchestrator mode: excluded. 1.5.2 does not expose it over ACP.
+- Orchestrator model: excluded. 1.5.2 does not list it over ACP.
+- `/swarm`: not available. The live 1.5.2 `available_commands_update` lists
+  only `plan`, `logout` and `usage`, and the agent gets no swarm tools.
 - Google sign-in in a cloud sandbox: refused at save and Test.
 - Warm (session-reusing) runs: per-turn only.
 - darwin-x64: no native host; inventory only.
@@ -131,12 +234,17 @@ model to answer is therefore NOT RUN, not failed and not passed.
    level. A free-tier key can be admitted but may be refused at prompt time;
    Neon needs a paid key.
 4. Not supported: Google sign-in in a cloud sandbox, warm sessions,
-   Orchestrator mode, darwin-x64.
+   the Orchestrator model, `/swarm`, darwin-x64.
 
 While the profile is pending, a cloud (Daytona) run needs an operator grant
 for the company and exact model that names linux-x64 and the patched linux-x64
 closure, with an API-key connection, per-turn. The runner E2E harness stages
 that grant for Daytona cells; a local cell's grant names the host instead.
+With that grant, the agent picker offers Google Antigravity for a Core sandbox
+or SSH environment that is linux-x64 with a supported glibc (or the managed
+cloud image), and for this host only a grant that names this host. It offers
+nothing for a plugin Runner-task environment (the warm Agent Computer in
+Paperclip Cloud): that path cannot launch Antigravity yet (see Open decisions).
 
 ### Launch integrity follow-up (2026-11-22)
 
@@ -171,8 +279,36 @@ provider-death fixtures now target the store and per-launch directory layout.
 
 ## Open decisions
 
+- Capacity refusals before an accepted result: route them to the bounded
+  capacity retry (one-, then two-minute waits, then blocked) instead of the
+  saved-work replacement, and keep the task out of "blocked" while that retry
+  is pending. The replacement path proves the previous session stopped and
+  reconciles unconfirmed actions before a fresh session; the capacity retry
+  does not, so moving these failures changes a recovery safeguard.
+- Hide provider error text that Antigravity streams as agent text when the
+  turn then ends with a typed provider failure (runner driver change).
+
 - A paid Gemini key for the prompt-dependent gates (the API-key route to Neon
   is admitted; inference is unproven).
-- Orchestrator mode: excluded for this release (not exposed over ACP in 1.5.2).
+- Orchestrator model: excluded for this release (not listed over ACP in 1.5.2).
+- `/swarm`. Options:
+  1. Keep it excluded (current state). A `/swarm` task runs as a plain
+     request, and the agent may hire agents and make subtasks.
+  2. Evaluate `agy acp` as the runtime. If it offers `/swarm`, swarm workers
+     are sub-conversations inside one native process. Decide how their tool
+     calls, approvals, usage and Stop map to one Paperclip run with one
+     assignee and one budget.
+  3. Map `/swarm` to Paperclip delegation: subtasks for existing agents, each
+     with its own workspace, budget and approvals. Hiring needs a decision.
+  Recommendation: option 1 now. Then evaluate option 2 with a paid key, and
+  keep option 3 as the cross-agent pattern.
 - Merge and production flip after the PR is green.
 - Disposition of community PR #21121 (separate legacy-style adapter).
+- Plugin Runner-task environments. Paperclip Cloud's warm Agent Computer runs
+  agents only as plugin Runner tasks, and that path has no Antigravity launch:
+  the plugin task credential contract has no Gemini API key type, the plugin
+  prepares the provider launch without a candidate grant (so a pending profile
+  is refused by the sidecar), the Cloud plugin's harness table lists only Codex,
+  Claude and OpenCode, and Test refuses the path. Kimi, Copilot and Pi do not
+  run there either. Closing it needs a plugin SDK contract change plus a Cloud
+  plugin and image change.

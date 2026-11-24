@@ -140,13 +140,13 @@ test fails when a code in those sets has no telemetry code.
 The `adapter_type` dimension on `agent.task_run` and `agent.task_completed`
 reports the harness the agent runs, as `agentHarnessType()` resolves it. A
 Paperclip runner agent therefore reports its underlying harness (for example
-`claude_local` or `codex_local`), not `paperclip_runner`. Some runner harnesses
-are not in the generated `adapter_type` enum yet: `acpx:copilot`,
-`antigravity_runtime`, `aws_agentcore`, `claude_managed`, `grok_bot`, `muse`,
-and `openai_dot`. The receiving layer reports them as `other` until the
-contract lists them. A test in
+`claude_local` or `codex_local`), not `paperclip_runner`. The one rename is the
+Copilot harness: `agentHarnessType()` returns `acpx:copilot`, and telemetry
+sends `copilot_runtime`, the name `agentRuntimeSettingsHarness()` also uses.
+Every runner harness is in the generated `adapter_type` enum. A test in
 `server/src/__tests__/agent-task-run-telemetry.test.ts` fails when a runner
-harness that is not in this list is missing from the contract.
+harness is missing from the contract. Add it to the telemetry-backend schema
+first, then copy the regenerated contract here.
 
 ## Product Lifecycle Events
 
@@ -200,6 +200,41 @@ person with `withTelemetryActor()` and `resolveTelemetryPerson()`: the task
 creator, else the task's responsible user, else the run owner (the acting
 person, the plan author, or the user who owns the model connection). A live
 request still wins. The self-hosted collector envelope does not change.
+
+## Connector Events
+
+`connection.created`, `connection.updated`, and `connection.invoked` describe
+tool connectors. `connection.app_linked` and `connection.app_requested`
+describe apps reached through the Composio, Arcade, and Executor aggregator
+gateways. The server emits all of them through
+`server/src/services/connector-telemetry.ts`.
+
+- `connector_key` is a slug from the shared connector catalog. Every other
+  connection, including custom MCP servers and plugin connectors, sends the
+  literal `custom`.
+- `server_domain` is sent only when `connector_key` is `custom`. It is the
+  registrable domain of the remote server (the ICANN public suffix plus one
+  label, from `tldts`), so `mcp.example.com/sse?token=...` sends `example.com`.
+  The path, query, port, credentials, and subdomains are never sent. IP
+  addresses, loopback, single-label hosts, non-ICANN or special-use suffixes
+  (such as `.local`, `.internal`, `.home.arpa`, `.onion`), non-HTTP schemes,
+  and unparsable addresses send `private`. Local stdio servers send `stdio`. A
+  remote connection with no address yet omits the field.
+- `app` is a slug from the shared aggregator app catalog
+  (`aggregator-app-catalog.ts`), resolved from the provider's toolkit name.
+  Every other toolkit, including Executor custom integrations, sends `other`.
+  The provider's own app name or account name is never sent.
+- `connection.app_linked` is sent when a person's cached app observation
+  changes to `connected` from any other status or from no observation. A
+  re-sync that finds the app still connected sends nothing.
+- `connection.app_requested` is sent once per request to add an app: from
+  the app setup screens (`origin: user`), or from the tool gateway when an
+  agent calls `COMPOSIO_MANAGE_CONNECTIONS` with `add`, or when an Arcade tool
+  call answers with an authorization step (`origin: agent`). `outcome` is
+  read from each app's own result: `needs_auth` when the provider returns a
+  sign-in step for that app, `succeeded` when the app is connected, and
+  `failed` otherwise. A sign-in link for another app in the same request
+  never counts.
 
 ## Cloud Direct Delivery
 

@@ -243,7 +243,10 @@ jobs:
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
 
       - name: Test general-server shard partition
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/run-vitest-stable-shard.test.mjs
+        run: |
+          tests=(./scripts/__tests__/run-vitest-stable-shard.test.mjs)
+          if [[ -f ./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs ]]; then tests+=(./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs); fi
+          node "$CI_NODE_TEST" "${tests[@]}"
 
       - name: Test e2e shard partition
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
@@ -251,6 +254,9 @@ jobs:
       - name: Test release verify workflow wiring
         run: |
           tests=(./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs)
+          for test in ./scripts/github-actions-rate-limit.test.mjs ./scripts/docker-image-metadata.test.mjs; do
+            if [[ -f "$test" ]]; then tests+=("$test"); fi
+          done
           if [[ -f ./scripts/verify-canary-provenance.test.mjs ]]; then tests+=(./scripts/verify-canary-provenance.test.mjs); fi
           node "$CI_NODE_TEST" "${tests[@]}"
 
@@ -300,6 +306,9 @@ jobs:
     timeout-minutes: 20
 
     env:
+      CI_PLAN: ${{ needs.gate.outputs.plan }}
+      PAPERCLIP_CI_BASE_SHA: ${{ needs.gate.outputs.plan != '' && fromJSON(needs.gate.outputs.plan).diff.base || github.event.pull_request.base.sha }}
+      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Typecheck + Release Registry
 
@@ -308,6 +317,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - name: Initialize CI profile
         continue-on-error: true
@@ -511,9 +521,10 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/12)","shard_index":0,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/12)","shard_index":1,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/12)","shard_index":2,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/12)","shard_index":3,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/12)","shard_index":4,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/12)","shard_index":5,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/12)","shard_index":6,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/12)","shard_index":7,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/12)","shard_index":8,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/12)","shard_index":9,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/12)","shard_index":10,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/12)","shard_index":11,"shard_count":12,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/5)","shard_index":0,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/5)","shard_index":1,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/5)","shard_index":2,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (4/5)","shard_index":3,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (5/5)","shard_index":4,"shard_count":5,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
 
     env:
+      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -846,9 +857,10 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/6)","command":"test:typescript:vitest --package-lane=1/6","task":"ci:runner-package"},{"lane_label":"vitest package (2/6)","command":"test:typescript:vitest --package-lane=2/6","task":"ci:runner-package"},{"lane_label":"vitest package (3/6)","command":"test:typescript:vitest --package-lane=3/6","task":"ci:runner-package"},{"lane_label":"vitest package (4/6)","command":"test:typescript:vitest --package-lane=4/6","task":"ci:runner-package"},{"lane_label":"vitest package (5/6)","command":"test:typescript:vitest --package-lane=5/6","task":"ci:runner-package"},{"lane_label":"vitest package (6/6)","command":"test:typescript:vitest --package-lane=6/6","task":"ci:runner-package"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
+      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Verify Paperclip Runner (${{ matrix.lane_label }})
 
@@ -1004,10 +1016,11 @@ jobs:
       # path list and the key live in scripts/runner-release-crate-cache.mjs
       # and must match the writer's; a guard test holds them together.
       #
-      # Only the lanes that build the release crate restore it: the Rust
-      # lane's release tests link the lib, and the final vitest shard hosts
-      # the server's native-runner suite, which builds the binary in its
-      # beforeAll. The static and first vitest lanes run no cargo at all.
+      # Only the lanes that build the release crate restore it: `static checks`
+      # runs `check:api-authority` (which builds `paperclip-runnerd` in release
+      # mode), the Rust lane's release tests link the lib, and `vitest native
+      # server` builds the binary in its beforeAll. The package vitest lanes
+      # only use the debug crate cache.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         if: ${{ matrix.release_crate == true }}
@@ -1087,6 +1100,7 @@ jobs:
     timeout-minutes: 20
 
     env:
+      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Build
 
@@ -1150,25 +1164,6 @@ jobs:
             pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
             pnpm install --frozen-lockfile
           fi
-
-      # The public-install verifier at the end of this lane downloads the whole
-      # public registry graph into an empty npm cache: its consumer install
-      # took 119-129s of the 226-241s step, more than half of this ~415-446s
-      # lane, in runs 38426120144, 38432086560 and 38423713537 (2026-10-13).
-      # That graph is fixed by source manifests, so this fetches it in the
-      # background while the Rust restore, Evalbook and `pnpm build` run, about
-      # 150s before the verifier installs anything. Only the cache is handed
-      # over, and the verify step waits for this first. A failed or partial
-      # warm-up leaves the verifier to fetch what is missing as before.
-      - name: Start warming the public-install npm cache
-        if: ${{ hashFiles('scripts/warm-public-install-npm-cache.mjs') != '' }}
-        run: |
-          (
-            # The default `bash -e` would skip the status line on a failure.
-            set +e
-            PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache" node scripts/warm-public-install-npm-cache.mjs
-            echo $? > "$RUNNER_TEMP/public-install-npm-cache.status"
-          ) > "$RUNNER_TEMP/public-install-npm-cache.log" 2>&1 &
 
       # pnpm build reaches the Runner package's build:binary step; without the
       # shared Rust cache that is a ~3m40s cold compile of all third-party
@@ -1287,41 +1282,19 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # The production image starts the server from this bundle with plain
-      # node (Dockerfile CMD), so prove it boots before the image is built:
-      # bundle the `pnpm build` output, start it against a throwaway embedded
-      # instance, and wait for /api/health to report ok.
-      - name: Boot the production runtime bundle
+      # Always verify the production runtime bundle builds cleanly (~4s).
+      # Full embedded-Postgres boot smoke (~53s) runs on full-ci / release
+      # verification; ordinary PRs already boot the server in e2e_shards.
+      - name: Build production runtime bundle
         run: |
           pnpm --filter @paperclipai/server build:runtime
-          scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
-
-      # This verification only needs `pnpm build` output (the verifier stages
-      # the public packages' dist and reuses ui/dist itself), yet it ran at the
-      # end of Canary Dry Run, serially after the ~210-295s release.sh dry run.
-      # That made Canary Dry Run the slowest check in every green PR run:
-      # 484s, 572s and 483s in runs 37310951026, 37309272947 and 37308895471
-      # (2026-10-05), with this step alone at 210-223s of each. The Build lane
-      # finished its `pnpm build` in ~206s total in those same runs, so it
-      # absorbs the step at ~416s while Canary Dry Run drops to ~275-350s and
-      # neither remains the critical path (server 2/12 at ~437-467s is).
-      # docker-runner-check.yml runs the same verifier after `pnpm build`.
-      - name: Verify built-in Grok from a clean public npm install
-        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
-        run: |
-          status="$RUNNER_TEMP/public-install-npm-cache.status"
-          if [ -f "$RUNNER_TEMP/public-install-npm-cache.log" ]; then
-            # Normally finished long before this; never let it hold the lane.
-            for _ in $(seq 180); do [ -f "$status" ] && break; sleep 1; done
-            if [ "$(cat "$status" 2>/dev/null)" = 0 ]; then
-              tail -n 1 "$RUNNER_TEMP/public-install-npm-cache.log"
-            else
-              echo '::notice title=Public-install npm cache::warm-up did not finish cleanly; the verifier fetches what is missing'
-              tail -n 20 "$RUNNER_TEMP/public-install-npm-cache.log"
-            fi
-            export PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache"
+          if [ "${PAPERCLIP_CI_FULL:-}" = "1" ]; then
+            scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
           fi
-          node scripts/verify-grok-npm-install.mjs
+
+      # Clean public npm install verification (`verify-grok-npm-install.mjs`,
+      # ~231s) is covered by release-smoke.yml and docker-runner-check.yml
+      # rather than running on every pull request Build job.
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -1346,6 +1319,7 @@ jobs:
       matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
 
     env:
+      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1758,10 +1732,21 @@ jobs:
           }
           CONF
 
+      # Reuse master's exact UI build on non-UI PRs so all 8 E2E shards skip
+      # rebuilding Vite (~35s each). Exact key only (no restore-keys): a UI
+      # change misses and Playwright builds server/ui-dist inline.
+      - name: Restore prebuilt UI assets (read only)
+        id: e2e_ui_dist
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: server/ui-dist
+          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
+          PAPERCLIP_E2E_SKIP_UI_BUILD: ${{ steps.e2e_ui_dist.outputs.cache-hit == 'true' && '1' || '' }}
         run: |
           # Playwright's own --shard balances by test count, and one spec
           # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
