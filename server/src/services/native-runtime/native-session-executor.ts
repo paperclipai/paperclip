@@ -118,6 +118,7 @@ import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
 import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
@@ -9090,7 +9091,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
     sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER ||
     sourceFailureCode === NATIVE_SANDBOX_DISK_FULL ||
-    sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE;
+    sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE ||
+    sourceFailureCode === ANTIGRAVITY_SWARM_UNAVAILABLE;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -9324,6 +9326,7 @@ function classifyNativeSessionFailure(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
+  | typeof ANTIGRAVITY_SWARM_UNAVAILABLE
   | "provider_session_open_timeout"
   | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
@@ -9452,6 +9455,14 @@ function classifyNativeSessionFailure(
     // and fail the same way, so this needs a model choice, not a retry.
     if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
       return "native_provider_model_rejected";
+    }
+    // The swarm route refused this /swarm (typed, with its own plain message).
+    // Every automatic attempt would refuse the same way, so it waits for the user.
+    if (/classification=antigravity_swarm_[a-z_]+\)/.test(message)) return ANTIGRAVITY_SWARM_UNAVAILABLE;
+    // The Runner and its provider process disagree on the request contract, or the
+    // operator grant does not cover this execution: the same run cannot open again.
+    if (/classification=(?:sidecar_request_invalid|candidate_admission_invalid)\)/.test(message)) {
+      return NATIVE_PROVIDER_STARTUP_REJECTED;
     }
     if (deterministicProviderStartupFailure(error)) return NATIVE_PROVIDER_STARTUP_REJECTED;
     return "provider_session_open_rejected";

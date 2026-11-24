@@ -16089,6 +16089,21 @@ describe("native session bounded recovery", () => {
       });
     });
 
+    it("settles a typed swarm or request-contract refusal at session.open without same-run retries", () => {
+      const rejected = (classification: string, extra = "") => new Error(`PRP command session.open failed: {"commandId":"command_prp_00000002","commandType":"session.open","controllerSeq":2,"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=${classification})"${extra}},"status":"failed"}`);
+      for (const classification of ["antigravity_swarm_unavailable", "antigravity_swarm_sign_in_required", "antigravity_swarm_receipt_mismatch"]) {
+        expect(nativeSessionFailureSourceCode(rejected(classification))).toBe("antigravity_swarm_unavailable");
+        expect(nativeSessionFailureDisposition(1, new Date(), "antigravity_swarm_unavailable")).toEqual({
+          phase: "terminal_failure", failureCode: "antigravity_swarm_unavailable", nextAttemptAt: null });
+      }
+      // The live /swarm failure: the provider process refused the request by its own contract.
+      const skew = rejected("sidecar_request_invalid", `,"sidecarRejection":{"command":"session.open","code":"ACPX_SIDECAR_REQUEST_INVALID","message":"mode is supported only for Cursor"}`);
+      expect(nativeSessionFailureSourceCode(skew)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(skew.message).toContain("mode is supported only for Cursor");
+      expect(nativeSessionFailureSourceCode(rejected("candidate_admission_invalid"))).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeSessionFailureSourceCode(rejected("unclassified"))).toBe("provider_session_open_rejected");
+    });
+
     it("rests a run whose Runner refused its commands as out of sequence with a precise code and a Retry", () => {
       const refused = new Error(`PRP command session.open rejected: {"commandId":"c","controllerSeq":11,"commandType":"session.open","status":"rejected","result":{"code":"controller_sequence_mismatch","message":"controller sequence must be contiguous: expected 13, received 11","expectedControllerSeq":13,"receivedControllerSeq":11}}`);
       expect(nativeSessionFailureSourceCode(refused)).toBe(NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER);
