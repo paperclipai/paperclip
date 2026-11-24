@@ -361,3 +361,34 @@ it("marks the unread conversation and keeps its link separate from the default c
   await vi.waitFor(() => expect(history.querySelector('[aria-label="2 unread messages in First discussion"]')).toBeNull());
   expect(history.querySelector('[aria-label="1 unread message in Second discussion"]')).not.toBeNull();
 });
+
+it("lists and filters hundreds of conversations with hundreds of agents in linear work", async () => {
+  // A history row per saved conversation: an agent lookup that scans the roster per chat would read agent ids
+  // agents x chats times. Count every read and stop a runaway render at the budget.
+  const agentCount = 500;
+  const readBudget = 50 * agentCount;
+  let idReads = 0;
+  const agents = Array.from({ length: agentCount }, (_, index) => {
+    const id = `agent-${index}`;
+    return Object.defineProperty({ companyId: "company-a", name: `Agent ${index}`, urlKey: `agent-${index}`, role: "general", title: "Teammate", status: "idle" },
+      "id", { enumerable: true, get: () => {
+        if (++idReads > readBudget) throw new Error(`The chat sidebar read agent ids ${idReads} times`);
+        return id;
+      } }) as unknown as Agent;
+  });
+  const chats = Array.from({ length: agentCount }, (_, index) => ({ ...chat(`agent-${agentCount - 1 - index}`),
+    id: `history-${index}`, title: `Topic ${index}`, conversationDefault: index % 2 === 0 }));
+  client.setQueryData(queryKeys.agents.list("company-a"), agents);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), chats);
+  await render();
+  const history = () => container.querySelector('nav[aria-label="Chat history"]')!;
+  expect(history().querySelectorAll("a")).toHaveLength(agentCount);
+  const search = container.querySelector<HTMLInputElement>('input[aria-label="Search chats"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "Topic 49");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // Topic 49 and Topic 490-499.
+  expect(history().querySelectorAll("a")).toHaveLength(11);
+  expect(idReads).toBeLessThanOrEqual(readBudget);
+}, 30_000);
