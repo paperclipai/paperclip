@@ -76,6 +76,9 @@ describe("deployment sandbox runtime qualification", () => {
       const invalid = input(); invalid.installed.runnerSha256 = hash("other-runner");
       expect(run(JSON.stringify(invalid)).status).toBe(2);
       expect(run("invalid JSON").status).toBe(1);
+      const { manifest: _manifest, ...withoutManifest } = input().installed;
+      expect(run(JSON.stringify({ installed: withoutManifest })).status).toBe(1);
+      expect(run(JSON.stringify({ installed: { ...withoutManifest, manifest: {} } })).status).toBe(1);
       expect(readFileSync(manifest, "utf8")).toBe(JSON.stringify(expected.manifest));
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });

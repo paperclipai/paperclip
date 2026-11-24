@@ -17,7 +17,10 @@ export function qualifySandboxRuntime(input: QualificationInput, expected: {
     ...[...new Set([...Object.keys(expected.manifest?.payload?.acpxProfileDigests ?? {}),
       ...Object.keys(expected.manifest?.payload?.providers ?? {}), ...Object.keys(expected.manifest?.payload?.candidateProviders ?? {})])]
       .sort().map(agent => ({ kind: "acpx" as const, agent }))];
-  if (!input || !input.installed || !Array.isArray(providers) || !providers.length || providers.length > 32 ||
+  if (!input || !input.installed || !input.installed.manifest ||
+      typeof input.installed.manifest.schema !== "string" || typeof input.installed.manifest.digest !== "string" ||
+      !input.installed.manifest.payload || typeof input.installed.manifest.payload !== "object" || Array.isArray(input.installed.manifest.payload) ||
+      !Array.isArray(providers) || !providers.length || providers.length > 32 ||
       !/^[a-f0-9]{64}$/.test(input.installed.runnerSha256) || typeof input.installed.immutable !== "boolean" ||
       providers.some(provider => !provider || (provider.kind !== "opencode" &&
         (provider.kind !== "acpx" || typeof provider.agent !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(provider.agent))))) {
