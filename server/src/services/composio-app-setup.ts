@@ -7,6 +7,10 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function reportsFailure(entry: Record<string, unknown>) {
+  return Boolean(entry.error) || entry.success === false || entry.successful === false;
+}
+
 function payloadsFrom(response: unknown) {
   const root = record(response);
   const result = record(root?.result) ?? root;
@@ -18,7 +22,7 @@ function payloadsFrom(response: unknown) {
       try { payloads.push(record(JSON.parse(block.text))); } catch { /* Plain text is not proof. */ }
     }
   }
-  if (root?.error || result?.isError === true || payloads.some(p => p?.successful === false || p?.success === false || p?.error)) {
+  if (root?.error || result?.isError === true || payloads.some(p => p !== null && reportsFailure(p))) {
     throw unprocessable("Composio could not configure this app. Check the app in Composio and try again.");
   }
   return payloads;
@@ -30,6 +34,7 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
   let observed = false;
   let incomplete = false;
   let visited = 0;
+  const checkFailed = () => unprocessable("Composio could not check this app. Refresh its accounts before trying again.");
   function visit(value: unknown, matched: boolean, depth: number) {
     if (++visited > 20_000 || depth > 12) { incomplete = true; return; }
     if (Array.isArray(value)) { value.forEach(item => visit(item, matched, depth + 1)); return; }
@@ -37,13 +42,13 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
     if (!entry) return;
     const named = entry.toolkit ?? entry.toolkit_name ?? entry.toolkit_slug;
     const selected = matched || named === toolkit || record(named)?.slug === toolkit;
-    if (selected && (entry.error || entry.success === false || entry.successful === false)) {
-      throw unprocessable("Composio could not check this app. Refresh its accounts before trying again.");
-    }
+    if (selected && reportsFailure(entry)) throw checkFailed();
     if (selected && Array.isArray(entry.accounts)) {
       observed = true;
       for (const item of entry.accounts) {
+        if (++visited > 20_000) { incomplete = true; return; }
         const account = record(item);
+        if (account && reportsFailure(account)) throw checkFailed();
         const id = account?.id ?? account?.account_id ?? account?.connected_account_id;
         if (typeof id !== "string" || !id || id.length > 200) { incomplete = true; continue; }
         accounts.set(id, { id, alias: typeof account?.alias === "string" ? account.alias.slice(0, 100) : null,
@@ -51,7 +56,13 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
           isDefault: account?.is_default === true || account?.isDefault === true });
       }
     }
-    for (const [key, child] of Object.entries(entry)) visit(child, selected || key === toolkit, depth + 1);
+    for (const [key, child] of Object.entries(entry)) {
+      if (key !== "accounts" || !Array.isArray(child)) { visit(child, selected || key === toolkit, depth + 1); continue; }
+      for (const item of child) {
+        if (++visited > 20_000) { incomplete = true; return; }
+        if (Array.isArray(record(item)?.accounts)) visit(item, selected, depth + 2);
+      }
+    }
   }
   payloadsFrom(response).forEach(payload => visit(payload, false, 0));
   return observed && !incomplete ? [...accounts.values()] : undefined;
