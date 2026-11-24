@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,7 +51,7 @@ async function fixture(t, { archive = tarGz(), platforms } = {}) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const scripts = join(root, "scripts");
   await mkdir(scripts);
-  for (const name of ["materialize-antigravity-cli-distribution.mjs", "materialize-antigravity-distribution.mjs", "provision-antigravity-cli.mjs"]) await copyFile(new URL(name, import.meta.url), join(scripts, name));
+  for (const name of ["materialize-antigravity-cli-distribution.mjs", "materialize-antigravity-distribution.mjs", "provision-antigravity-cli.mjs", "antigravity-provisioner-layout.mjs"]) await copyFile(new URL(name, import.meta.url), join(scripts, name));
   // The registry-server module imports its patcher; the CLI route never calls it.
   await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='unused'; export async function patchAntigravityRuntime() { throw new Error('unused'); }\n");
   const pins = platforms ?? { "darwin-arm64": pin(archive) };
@@ -228,4 +228,16 @@ test("a failed replacement keeps the previous installation in place", async t =>
   await assert.rejects(f.provision({ archivePath: undefined, fetch: () => new Response("gone", { status: 503 }) }), /download failed \(HTTP 503\)/);
   assert.equal(await readFile(installed.executable, "utf8"), "#!/bin/sh\necho modified\n");
   assert.deepEqual(await readdir(join(f.home, ".paperclip/runtimes/antigravity-cli/darwin-arm64")), [installed.closureSha256]);
+});
+
+test("setup refuses a linked runtime cache directory, as the launch resolver does", async t => {
+  for (const linked of [".paperclip", ".paperclip/runtimes/antigravity-cli"]) {
+    const f = await fixture(t);
+    const elsewhere = await realpath(await mkdtemp(join(tmpdir(), "paperclip-antigravity-cli-elsewhere-")));
+    t.after(() => rm(elsewhere, { recursive: true, force: true }));
+    await mkdir(join(f.home, linked, ".."), { recursive: true, mode: 0o700 });
+    await symlink(elsewhere, join(f.home, linked));
+    await assert.rejects(f.provision(), /must contain real directories.*Nothing was installed/s);
+    assert.deepEqual(await readdir(elsewhere), []);
+  }
 });

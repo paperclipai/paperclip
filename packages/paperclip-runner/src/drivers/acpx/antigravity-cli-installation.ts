@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { ANTIGRAVITY_CLI_DISTRIBUTION, type AntigravityCliTarget } from "./antigravity-cli-pins.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
+import { realRuntimeCachePath } from "./runtime-cache-path.js";
 
 /**
  * Google Antigravity CLI (`agy acp`) route: distribution and launch identity only.
@@ -64,15 +65,7 @@ function pinnedTarget(platform: string, architecture: string): AntigravityCliTar
 export function antigravityCliRuntimeCachePath(closure: string, platform: string, architecture: string, home = userInfo().homedir): string {
   pinnedTarget(platform, architecture);
   if (!/^[a-f0-9]{64}$/.test(closure) || !isAbsolute(home) || home.includes("\0")) throw new Error("Invalid Antigravity CLI runtime cache identity");
-  let directory = home;
-  for (const part of [".paperclip", "runtimes", "antigravity-cli", `${platform}-${architecture}`, closure]) {
-    directory = join(directory, part);
-    try {
-      const stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Antigravity CLI runtime cache must contain real directories");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  }
-  return directory;
+  return realRuntimeCachePath(home, "antigravity-cli", `${platform}-${architecture}`, closure, "Antigravity CLI runtime cache must contain real directories");
 }
 
 /** Resolve the pinned, installed CLI for this host and admit it through the sealed launch store. */

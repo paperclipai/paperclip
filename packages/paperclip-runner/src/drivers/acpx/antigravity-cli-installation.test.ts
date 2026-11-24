@@ -77,3 +77,17 @@ describe("Antigravity CLI launch resolver", () => {
     await expect(resolveAntigravityCliLaunch({ home, arguments: ["bad\0arg"] })).rejects.toThrow("Antigravity CLI launch arguments are invalid");
   });
 });
+
+describe("Antigravity CLI runtime cache layout", () => {
+  it("refuses a linked ~/.paperclip or a link inside the route directory, like the registry-server route", async () => {
+    const { symlink, rm: remove } = await import("node:fs/promises");
+    for (const linked of [".paperclip", `.paperclip/runtimes/antigravity-cli/${fixture.target}`]) {
+      const { home, closure } = await installedHome();
+      const elsewhere = await realpath(await mkdtemp(join(tmpdir(), "antigravity-cli-elsewhere-"))); roots.push(elsewhere);
+      await remove(join(home, linked), { recursive: true, force: true });
+      await symlink(elsewhere, join(home, linked));
+      expect(() => antigravityCliRuntimeCachePath(closure, process.platform, process.arch, home)).toThrow("real directories");
+      await expect(resolveAntigravityCliLaunch({ home })).rejects.toThrow("real directories");
+    }
+  });
+});

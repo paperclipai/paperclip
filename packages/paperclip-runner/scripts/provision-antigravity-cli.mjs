@@ -1,16 +1,10 @@
 #!/usr/bin/env node
 import { chmod, lstat, rename, rm } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { antigravityCliRuntimeCachePath } from "./antigravity-provisioner-layout.mjs";
 import { ownedDirectory } from "./materialize-antigravity-distribution.mjs";
 import { antigravityCliDistribution, materializePinnedAntigravityCliDistribution, verifyAntigravityCliDistribution } from "./materialize-antigravity-cli-distribution.mjs";
-
-/** Beside the registry-server runtime (`runtimes/antigravity`), never inside it. */
-export function antigravityCliRuntimeCachePath(closureSha256, platform = process.platform, architecture = process.arch, home = homedir()) {
-  if (!/^[a-f0-9]{64}$/.test(closureSha256) || !["darwin", "linux"].includes(platform) || !["arm64", "x64"].includes(architecture) || !isAbsolute(home)) throw new Error("Invalid Antigravity CLI runtime cache identity");
-  return resolve(home, ".paperclip/runtimes/antigravity-cli", `${platform}-${architecture}`, closureSha256);
-}
 
 function assertPublishedProvisioner(moduleUrl) {
   const url = new URL(moduleUrl);
