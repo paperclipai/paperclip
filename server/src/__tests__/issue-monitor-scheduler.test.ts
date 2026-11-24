@@ -359,6 +359,30 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
   });
 
+  it("dispatches a due monitor once a later Retry succeeds after an earlier Retry also failed", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const failedRun = async (id: string, startedAt: string, finishedAt: string, previousRunId?: string) => {
+      await db.insert(heartbeatRuns).values({ id, companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+        status: "failed", nativePhase: "retryable_failure", startedAt: new Date(startedAt), finishedAt: new Date(finishedAt),
+        contextSnapshot: previousRunId ? { issueId, previousRunId, taskRetryRequestId: randomUUID() } : { issueId } });
+      await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: id, phase: "retryable_failure" });
+    };
+    const firstRunId = randomUUID(), firstRetryId = randomUUID();
+    await failedRun(firstRunId, "2026-04-11T11:00:00.000Z", "2026-04-11T11:10:00.000Z");
+    await failedRun(firstRetryId, "2026-04-11T11:20:00.000Z", "2026-04-11T11:30:00.000Z", firstRunId);
+    const heartbeat = heartbeatService(db);
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"))).enqueued).toBe(0);
+
+    // The second Retry names only the first Retry, and succeeds.
+    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+      status: "succeeded", nativePhase: "committed", startedAt: new Date("2026-04-11T11:40:00.000Z"),
+      finishedAt: new Date("2026-04-11T11:50:00.000Z"),
+      contextSnapshot: { issueId, previousRunId: firstRetryId, taskRetryRequestId: randomUUID() } });
+
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:32:00.000Z"))).enqueued).toBe(1);
+    expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
+  });
+
   // Before the fresh-continuation fallback this hold deferred the monitor for
   // a person. The due monitor is an ordinary continuation: it now settles the
   // hold and starts one fresh run, without replaying the interrupted execution.
