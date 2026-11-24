@@ -5,6 +5,7 @@ import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
+import { apiEquivalentByAgent, sumApiEquivalents } from "./api-equivalent-costs.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -101,6 +102,8 @@ export function dashboardService(db: Db) {
         ));
 
       const monthSpendCents = Number(monthSpend);
+      const monthApiEquivalent = await retryIdempotentDatabaseOperation(() => apiEquivalentByAgent(db, companyId, { from: monthStart, to: now }));
+      const monthApiEquivalentCents = sumApiEquivalents(monthApiEquivalent.values()).cents;
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed or shutdown-interrupted run whose retry succeeded is
@@ -207,6 +210,7 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthApiEquivalentCents,
         },
         pendingApprovals,
         budgets: {

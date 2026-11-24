@@ -12,6 +12,7 @@ import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
+import { apiEquivalentByAgent, emptyApiEquivalent, sumApiEquivalents } from "./api-equivalent-costs.js";
 export type { CostDateRange } from "./cost-date-range.js";
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -197,6 +198,7 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         spendCentsExact: normalizeCents(totalExact),
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        apiEquivalent: sumApiEquivalents((await apiEquivalentByAgent(db, companyId, range)).values()),
       };
     }),
 
@@ -450,9 +452,11 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.appearance, agents.status)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
+      const apiEquivalents = await apiEquivalentByAgent(db, companyId, range);
       return rows.map(row => {
         const appearance = row.agentId ? resolveAgentAppearance(row.agentAppearance, row.agentId) : null;
-        return { ...row, agentAppearance: appearance, avatarUrl: appearance ? agentAvatarUrl(appearance, 512) : undefined };
+        return { ...row, agentAppearance: appearance, avatarUrl: appearance ? agentAvatarUrl(appearance, 512) : undefined,
+          apiEquivalent: apiEquivalents.get(row.agentId) ?? emptyApiEquivalent() };
       });
     },
 
