@@ -7,6 +7,8 @@ export interface EphemeralMigrationResult {
   decisionSigningSecret: string;
 }
 
+const OWNER_REFUSAL = /^[a-z_]{1,80}(?::[a-z_]{1,60}(?:,[a-z_]{1,60}){0,15})?$/;
+
 /** A dedicated maintenance process, never mounted on the ordinary app router.
  * Cloud supplies a fresh attempt token and keeps tenant routing closed. Only
  * the authenticated export transfers the original key to its durable vault. */
@@ -57,11 +59,15 @@ export async function startEphemeralMigrationService(input: {
       if (!migrated.eligibility.eligible || migrated.decisionSigningSecret.trim().length < 32) throw new Error("incomplete_migration_receipt");
       result = migrated; state = "ready";
     } catch (error) {
-      // Owner codes are safe diagnostics. Never echo arbitrary SDK errors,
+      // Owner codes are safe diagnostics, including an owner's fixed reason
+      // list (`owner_code:reason,reason`). Never echo arbitrary SDK errors,
       // credential-bearing URLs, file contents or stack traces through HTTP.
       const code = error instanceof Error ? error.message : "owner_migration_failed";
-      failure = /^[a-z_]{1,80}$/.test(code) ? code : "owner_migration_failed";
+      failure = OWNER_REFUSAL.test(code) ? code : "owner_migration_failed";
       state = "blocked";
+      // The maintenance process has no other log. Record the same fixed codes
+      // so the provider's deployment log names the refusal too.
+      console.error(JSON.stringify({ event: "ephemeral_migration_blocked", phase, failure }));
     } finally {
       // Successful export authority expires at the original deadline too.
       // A failed migration has no export authority to retain.

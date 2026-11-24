@@ -41,6 +41,23 @@ it("fails closed without exposing owner errors or credentials", async () => {
   expect((await request("/export", "POST")).status).toBe(409);
 });
 
+it("reports an owner's structured refusal and the workspace it was moving", async () => {
+  const workspaceId = randomUUID();
+  const { request } = await start(async (_signal, phase) => {
+    phase(`workspace:${workspaceId}`);
+    throw new Error("remote_workspace_migration_blocked:archived_git_source_unavailable,local_source_unsafe_or_missing");
+  });
+  await service!.finished;
+  expect(await (await request("/status")).json()).toMatchObject({ state: "blocked", phase: `workspace:${workspaceId}`,
+    failure: "remote_workspace_migration_blocked:archived_git_source_unavailable,local_source_unsafe_or_missing" });
+});
+
+it.each(["remote_workspace_migration_blocked:", "a:b:c", "code:Secret", `code:${"a,".repeat(30)}a`, "x".repeat(81)])("collapses a malformed refusal %#", async message => {
+  const { request } = await start(async () => { throw new Error(message); });
+  await service!.finished;
+  expect(await (await request("/status")).json()).toMatchObject({ failure: "owner_migration_failed" });
+});
+
 it("rejects incomplete eligibility even when a key was recovered", async () => {
   const { request } = await start(async () => ({ ...result(), eligibility: { eligible: false, blockers: ["legacy_data"] } }));
   await service!.finished;
