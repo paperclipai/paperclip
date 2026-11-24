@@ -18707,7 +18707,14 @@ async function createRunnerdBackendWithinSessionClaim(
           onSpawn: input.onSpawn,
           onLog: input.onLog,
           trace: input.trace,
-          onRunnerProcessSpawned: () => resolveRemoteRunnerProcessSpawned?.(),
+          onRunnerProcessSpawned: () => {
+            // A process that is launched here receives the credential that was
+            // prepared for this run. An adopted runner never reaches this
+            // callback and keeps the identity of the token it started with.
+            void recordReplacementRunnerCredential(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId })
+              .catch(err => logger.warn({ err, runId: input.execution.binding.runId }, "could not record the credential of a launched runner"));
+            resolveRemoteRunnerProcessSpawned?.();
+          },
         })
       : undefined;
   const runnerExecution: NativeExecutionInput = remoteTarget
@@ -19469,7 +19476,6 @@ async function createRunnerdBackendWithinSessionClaim(
           restartRecovery: { ...claim, kind: "bootstrap_incomplete" },
         }, sessionScopeId);
         replacementBackend = fresh;
-        await recordReplacementRunnerCredential(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         return fresh.openSession(sessionInput);
       }
       cursorCloudRuntime?.register();
