@@ -496,13 +496,38 @@ export function toolResultErrorMessage(result: Record<string, unknown>, failureI
 }
 
 
+const TOOL_CODE = "[a-z][a-z0-9_.-]{0,90}";
+const PLUGIN_TOOL_CODE = new RegExp(`\\(code: (${TOOL_CODE})[,)]`);
+const JSON_TOOL_CODE = new RegExp(`"code"\\s*:\\s*"(${TOOL_CODE})"`, "g");
+const PREFIX_TOOL_CODE = new RegExp(`^(${TOOL_CODE}):`);
+const RETRYABLE_TOOL_TEXT = new RegExp(`\\(code: ${TOOL_CODE}, retryable\\)|"retryable"\\s*:\\s*true|"retryability"\\s*:\\s*"later"`);
+
+function explicitToolCode(code: unknown): string | undefined {
+  return typeof code === "string" && code.length <= 91 && /^[a-z][a-z0-9_.-]*$/.test(code) && !/[_.-]$/.test(code) ? code : undefined;
+}
+
+/**
+ * A connected tool's own stable error code and retryability, normalized once for
+ * every caller. Structured fields win; then the plugin marker, a JSON "code", and
+ * a first-line prefix that contains a separator, so prose labels are never codes.
+ */
 export function toolResultErrorDetails(result: Record<string, unknown>): { toolCode?: string; retryable?: true } {
   const object = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const data = object(result.data);
-  const sources = [object(result.structuredContent), object(data.structuredContent), data];
-  const toolCode = sources.map((source) => source.code).find((code): code is string => typeof code === "string" && code.length <= 91
-    && /^[a-z][a-z0-9_.-]*$/.test(code) && !/[_.-]$/.test(code));
-  const retryable = sources.some((source) => source.retryable === true || source.retryability === "later");
+  const structured = object(result.structuredContent ?? data.structuredContent);
+  const sources = [result, structured, data];
+  const content = Array.isArray(result.content) ? result.content : Array.isArray(data.content) ? data.content : [];
+  const text = [
+    ...content.flatMap((item) => typeof object(item).text === "string" ? [object(item).text as string] : []),
+    ...(typeof result.error === "string" ? [result.error] : []),
+  ].join("\n");
+  const firstLine = text.trim().split("\n")[0] ?? "";
+  const prefixCode = PREFIX_TOOL_CODE.exec(firstLine)?.[1];
+  const toolCode = [structured.code, data.code].map(explicitToolCode).find(Boolean)
+    ?? explicitToolCode(PLUGIN_TOOL_CODE.exec(text)?.[1])
+    ?? [...text.matchAll(JSON_TOOL_CODE)].map((match) => explicitToolCode(match[1])).find(Boolean)
+    ?? (prefixCode && /[_.-]/.test(prefixCode) ? explicitToolCode(prefixCode) : undefined);
+  const retryable = sources.some((source) => source.retryable === true || source.retryability === "later") || RETRYABLE_TOOL_TEXT.test(text);
   return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
 }
 

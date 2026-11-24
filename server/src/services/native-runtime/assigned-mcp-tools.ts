@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
-import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { deduplicateToolDescriptors, ToolGatewayHttpError, toolResultErrorDetails, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
 type WorkMode = "standard" | "planning" | "ask" | "skill_test";
 type ToolDefinition = Record<string, unknown>;
@@ -188,51 +188,14 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-const TOOL_CODE = "[a-z][a-z0-9_.-]{0,95}";
-const PLUGIN_CODE = new RegExp(`\\(code: (${TOOL_CODE})[,)]`);
-const JSON_CODE = new RegExp(`"code"\\s*:\\s*"(${TOOL_CODE})"`, "g");
-const PREFIX_CODE = new RegExp(`^(${TOOL_CODE}):`);
-
-export function isToolCode(code: unknown): code is string {
-  return typeof code === "string" && code.length <= 96 && /^[a-z][a-z0-9_.-]*$/.test(code)
-    && /[_.-]/.test(code) && !/[_.-]$/.test(code);
+function runnerToolCode(code: string | undefined): string {
+  if (!code) return "assigned_tool_error";
+  return /[_.-]/.test(code) ? code : `tool_${code}`;
 }
 
-function explicitToolCode(code: unknown): string | undefined {
-  if (typeof code !== "string" || code.length > 91 || !/^[a-z][a-z0-9_.-]*$/.test(code) || /[_.-]$/.test(code)) return undefined;
-  return isToolCode(code) ? code : `tool_${code}`;
-}
-
-const RETRYABLE_TEXT = new RegExp(`\\(code: ${TOOL_CODE}, retryable\\)|"retryable"\\s*:\\s*true|"retryability"\\s*:\\s*"later"`);
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function toolReportedParts(detail: unknown): { text: string; retryable: boolean; structuredCode?: string } {
-  if (typeof detail === "string") return { text: detail, retryable: RETRYABLE_TEXT.test(detail) };
-  const value = record(detail);
-  const data = record(value.data);
-  const content = Array.isArray(value.content) ? value.content : Array.isArray(data.content) ? data.content : [];
-  const structured = record(value.structuredContent ?? data.structuredContent);
-  const texts = content.flatMap((item) => typeof record(item).text === "string" ? [record(item).text as string] : []);
-  const structuredCode = [value.code, structured.code, data.code]
-    .map(explicitToolCode).find((code): code is string => code !== undefined);
-  const text = [...texts, ...(typeof value.error === "string" ? [value.error] : [])].join("\n");
-  const flagged = [value, structured, data].some((source) => source.retryable === true || source.retryability === "later");
-  return { text, retryable: flagged || RETRYABLE_TEXT.test(text), ...(structuredCode ? { structuredCode } : {}) };
-}
-
-export function toolReportedError(detail: unknown): ToolGatewayHttpError {
-  const { text, retryable, structuredCode } = toolReportedParts(detail);
-  const firstLine = text.trim().split("\n")[0] ?? "";
-  const pluginCode = PLUGIN_CODE.exec(text)?.[1];
-  const jsonCode = [...text.matchAll(JSON_CODE)].map((match) => match[1]).find((code) => explicitToolCode(code) !== undefined);
-  const prefixCode = PREFIX_CODE.exec(firstLine)?.[1];
-  const code = structuredCode ?? explicitToolCode(pluginCode) ?? explicitToolCode(jsonCode)
-    ?? (isToolCode(prefixCode) ? prefixCode : undefined) ?? "assigned_tool_error";
-  return new ToolGatewayHttpError(retryable ? 429 : 422, `${code}: The connected tool reported an error.`, "tool_error",
-    retryable ? { retryable: true } : undefined);
+export function toolReportedError(details: { toolCode?: string; retryable?: boolean }): ToolGatewayHttpError {
+  return new ToolGatewayHttpError(details.retryable ? 429 : 422, `${runnerToolCode(details.toolCode)}: The connected tool reported an error.`,
+    "tool_error", details.retryable ? { retryable: true } : undefined);
 }
 
 async function buildAssignedCatalog(identity: string, listing: readonly AssignedListingEntry[]): Promise<AssignedCatalog> {
@@ -504,7 +467,7 @@ export async function createAssignedMcpTools(input: {
         });
       } catch (error) {
         if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") {
-          throw toolReportedError({ error: error.message, code: error.details.toolCode, retryable: error.details.retryable });
+          throw toolReportedError({ toolCode: typeof error.details.toolCode === "string" ? error.details.toolCode : undefined, retryable: error.details.retryable === true });
         }
         throw error;
       }
@@ -514,7 +477,7 @@ export async function createAssignedMcpTools(input: {
       // The gateway normally throws provider errors. Keep a malformed or older
       // provider response from being reported as successful through PRP.
       if (result.result && typeof result.result === "object" && "isError" in result.result && result.result.isError === true) {
-        throw toolReportedError(result.result);
+        throw toolReportedError(toolResultErrorDetails(result.result as Record<string, unknown>));
       }
       return result.result;
     },

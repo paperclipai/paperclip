@@ -38,6 +38,10 @@ function fixture(tools: ToolGatewayDescriptor[]) {
   return { gateway, listToolsForNamedGateway, executeTool, gatewayPublicId: "gateway-fixture", bearerToken: "private-run-token-never-project" };
 }
 
+function gatewayToolError(text: string, extra: Record<string, unknown> = {}) {
+  return new ToolGatewayHttpError(502, text, "tool_error", toolResultErrorDetails({ error: text, ...extra }));
+}
+
 describe("assigned MCP runner tools", () => {
   const searchName = "paperclip_search_assigned_tools";
   const callName = "paperclip_call_assigned_tool";
@@ -704,7 +708,7 @@ describe("assigned MCP runner tools", () => {
     ["This operation is not retryable (code: validation_error)", "validation_error", 422],
   ])("reports a tool's own error with its stable code instead of a server failure: %s", async (detail, code, status) => {
     const f = fixture([descriptor("recall")]);
-    f.executeTool.mockRejectedValue(new ToolGatewayHttpError(502, detail, "tool_error"));
+    f.executeTool.mockRejectedValue(gatewayToolError(detail));
     const assigned = await createAssignedMcpTools(f);
     await expect(assigned.execute({ tool: assigned.definitions()[0]!.name as string, arguments: {} })).rejects.toMatchObject({
       status, reasonCode: "tool_error", message: `${code}: The connected tool reported an error.`,
@@ -731,10 +735,10 @@ describe("assigned MCP runner tools", () => {
     const assigned = await createAssignedMcpTools(f);
     const call = { tool: assigned.definitions()[0]!.name as string, arguments: {} };
     for (const prose of ["validation failed\nreason: missing field", "reason: missing field", "error: invalid input", "code: invalid"]) {
-      f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, prose, "tool_error"));
+      f.executeTool.mockRejectedValueOnce(gatewayToolError(prose));
       await expect(assigned.execute(call)).rejects.toMatchObject({ message: "assigned_tool_error: The connected tool reported an error." });
     }
-    f.executeTool.mockRejectedValueOnce(new ToolGatewayHttpError(502, 'error: invalid_grant\n{"code":"invalid_grant"}', "tool_error"));
+    f.executeTool.mockRejectedValueOnce(gatewayToolError('error: invalid_grant\n{"code":"invalid_grant"}'));
     await expect(assigned.execute(call)).rejects.toMatchObject({ message: "invalid_grant: The connected tool reported an error." });
     f.executeTool.mockResolvedValueOnce({ status: "completed", result: { isError: true,
       structuredContent: { code: "quota_exceeded" }, content: [{ type: "text", text: '{"code":"upstream_thing"}' }] } });
@@ -746,8 +750,8 @@ describe("assigned MCP runner tools", () => {
 
   it.each([
     [new ToolGatewayHttpError(502, "MCP tool returned an error result", "tool_error", { toolCode: "timeout" }), "tool_timeout", 422],
-    [new ToolGatewayHttpError(502, "Busy now (code: busy, retryable)", "tool_error"), "tool_busy", 429],
-    [new ToolGatewayHttpError(502, '{"object":"error","code":"conflict"}', "tool_error"), "tool_conflict", 422],
+    [gatewayToolError("Busy now (code: busy, retryable)"), "tool_busy", 429],
+    [gatewayToolError('{"object":"error","code":"conflict"}'), "tool_conflict", 422],
   ])("keeps a single-word tool code in a form the runner keeps: %#", async (error, code, status) => {
     const f = fixture([descriptor("recall")]);
     f.executeTool.mockRejectedValue(error);
