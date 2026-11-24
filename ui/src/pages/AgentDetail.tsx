@@ -146,6 +146,7 @@ import { AgentConfigSaveBar } from "./agent-detail/AgentConfigSaveBar";
 import { markdownFileName } from "./agent-detail/markdown-file-name";
 import { AgentReportingManager } from "./agent-detail/AgentReportingManager";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
+import { AgentInteractionPermissionsPanel } from "../components/agent-detail/AgentInteractionPermissionsPanel";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
 import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
 import { InlineEditor } from "../components/InlineEditor";
@@ -1836,6 +1837,8 @@ export function ConfigurationTab({
           </div>
         </div>
       </AgentPanel> : null}
+
+      {content === "permissions" ? <AgentInteractionPermissionsPanel agentId={agent.id} /> : null}
     </div>
   );
 }

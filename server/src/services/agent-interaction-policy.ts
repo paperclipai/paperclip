@@ -6,7 +6,7 @@ import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js"
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-export type AgentInteractionOperation = "assign" | "comment" | "edit" | "configure" | "mention";
+export type AgentInteractionOperation = "assign" | "comment" | "edit" | "configure" | "mention" | "ask_human";
 
 export interface AgentInteractionInput {
   companyId: string;
@@ -21,6 +21,12 @@ export interface AgentInteractionInput {
   lock?: boolean | "update";
   lockAgentIds?: readonly string[];
   delivery?: boolean;
+}
+
+const HUMAN_FACING_INTERACTION_KINDS = new Set(["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"]);
+
+export function isAgentQuestionToHumans(input: { actorType: string; kind: string; addresseeAgentId?: string | null }): boolean {
+  return input.actorType === "agent" && HUMAN_FACING_INTERACTION_KINDS.has(input.kind) && !input.addresseeAgentId;
 }
 
 export interface AgentInteractionDenial {
@@ -121,6 +127,9 @@ export async function agentInteractionDenial(
       break;
     case "mention":
       if (input.targetAgentId) result = peer(input.targetAgentId, "canMentionAgents", "canReceiveMentionsFromAgents");
+      break;
+    case "ask_human":
+      result = denied("canAskHumans", actorAgentId, "outgoing", null);
       break;
   }
   if (result) return result;

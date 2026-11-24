@@ -2,8 +2,9 @@
 
 Interaction permissions are optional restrictions on actions between agents.
 They are independent of low-trust presets and principal permission grants. They
-have no UI or bundled preset; a human permission manager configures individual
-agents through the CLI or API.
+have no bundled preset; a human permission manager configures individual agents
+in the agent's Permissions tab (Interaction permissions), or through the CLI or
+API.
 
 Every setting defaults to unrestricted when absent. Existing agents are not
 rewritten, new agents do not persist default values, and no migration or grant
@@ -17,6 +18,7 @@ checkout and execution rules still apply.
 | --- | --- | --- |
 | Assign/delegate work to an agent | `canAssignTasksToAgents` | `canReceiveAssignmentsFromAgents` |
 | Assign work to a human | `canAssignTasksToHumans` | Existing human authorization |
+| Ask a person (question or confirmation card not addressed to an agent) | `canAskHumans` | Existing human authorization |
 | Mention another agent | `canMentionAgents` | `canReceiveMentionsFromAgents` |
 | Comment on another task | `canCommentOnOtherTasks` | `canReceiveCommentsFromAgents` |
 | Edit another task | `canEditOtherTasks` | `canReceiveTaskEditsFromAgents` |
