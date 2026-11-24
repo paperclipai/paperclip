@@ -27,6 +27,8 @@ export function isPendingNativeRecovery(run: RecordValue, deadlineAt: number): b
   const execution = object(run.execution);
   const finishedAt = typeof run.finishedAt === "string" ? Date.parse(run.finishedAt) : NaN;
   const retryAt = typeof execution.retryAt === "string" ? Date.parse(execution.retryAt) : NaN;
+  // Older deployed projections omit the optional successor field when there
+  // is no successor. Both forms preserve the exact same-run retry contract.
   return run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure" &&
     typeof run.errorCode === "string" && run.errorCode.trim().length > 0 && execution.cause === run.errorCode &&
     !nativeRecoveryTerminalCauses.has(run.errorCode) &&
@@ -34,7 +36,7 @@ export function isPendingNativeRecovery(run: RecordValue, deadlineAt: number): b
     (run.issueId == null || run.issueId === run.nativeIssueId) &&
     (execution.phase === "retry_scheduled" || execution.phase === "reconnecting") && execution.recoveryOwner === "agent" &&
     Number.isInteger(execution.attempt) && Number(execution.attempt) >= 1 &&
-    execution.maxAttempts === 3 && Number(execution.attempt) < execution.maxAttempts && execution.successorRunId === null &&
+    execution.maxAttempts === 3 && Number(execution.attempt) < execution.maxAttempts && execution.successorRunId == null &&
     Number.isFinite(finishedAt) && Number.isFinite(retryAt) && Number.isFinite(deadlineAt) &&
     retryAt > finishedAt && retryAt <= deadlineAt;
 }

@@ -1973,6 +1973,18 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
+    // A task that names its own environment may run there as a low-trust
+    // review; only workspace preparation decides that, so dispatch checks then.
+    sshAuthentication: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const [task] = issueId ? await db.select({ settings: issues.executionWorkspaceSettings }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))) : [];
+      if (parseIssueExecutionWorkspaceSettings(task?.settings, { includeEnvironmentId: true })?.environmentId) return "undecided";
+      return resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId, lowTrustIssueEnvironmentId: null,
+        environmentsSvc, instanceSettings,
+      });
+    },
   });
 
   async function executeRunAttempt(
@@ -2754,12 +2766,19 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const taskEnvironmentId = parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null;
       const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
         agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
-          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review" ? taskEnvironmentId : null,
         environmentsSvc, instanceSettings,
       });
+      // A task that names its own environment left the usage-limit check
+      // undecided before workspace preparation. Its account is known now.
+      if (taskEnvironmentId && !routerHasPersistedInput && await deferRunForProviderLimit(run, agent, {
+        resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
+        conversation: isConversation(conversationIdentity),
+        sshAuthentication,
+      })) return;
       if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
         config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
       }
