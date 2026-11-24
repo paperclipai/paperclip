@@ -1427,7 +1427,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     const taskRepositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
         issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
-        agentId: agent.id, runId: run.id, responsibleUserId,
+        agentId: agent.id, runId: run.id, responsibleUserId, signal: input.signal,
         inheritRepositorySelections: createdExecutionWorkspaceThisRun && !resolvedProjectWorkspaceId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }

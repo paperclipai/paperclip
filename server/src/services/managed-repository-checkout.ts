@@ -2,7 +2,7 @@ import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
 import { isGitMountBoundaryMessage } from "./git-mount-boundary-message.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, type ExecFileOptions } from "node:child_process";
 import { promisify } from "node:util";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -13,7 +13,31 @@ import { isWorkspaceGitScanError, WorkspaceGitScanError } from "./workspace-git-
 import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-preparation-timing.js";
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
 
-const execFile = promisify(execFileCallback);
+const execFileAsync = promisify(execFileCallback);
+export async function execRepositoryGit(file: string, args: string[], options: ExecFileOptions = {}) {
+  const result = execFileAsync(file, args, { ...options, encoding: "utf8" });
+  if (!options.signal) return result;
+  const child = result.child;
+  let settle: () => void;
+  const exited = new Promise<void>(resolve => { settle = resolve; });
+  const onExit = () => settle();
+  child.once("exit", onExit);
+  child.once("close", onExit);
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await result;
+  } catch (error) {
+    if (options.signal.aborted && child.pid && child.exitCode === null && child.signalCode === null) {
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 500);
+      await exited;
+    }
+    throw error;
+  } finally {
+    clearTimeout(killTimer);
+    child.removeListener("exit", onExit);
+    child.removeListener("close", onExit);
+  }
+}
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ManagedRepositoryPreparationFailure = { code: string | number | null; timedOut: boolean };
@@ -39,12 +63,12 @@ function managedRepositoryPreparationError(message: string, error: unknown): Err
   return wrapped;
 }
 
-async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }) {
-  const git = (directory: string, args: string[]) => execFile("git", ["-C", directory, ...args], {
+async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }, signal?: AbortSignal) {
+  const git = (directory: string, args: string[]) => execRepositoryGit("git", ["-C", directory, ...args], {
     env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0" },
-    timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+    timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, signal,
   });
-  const present = (directory: string, commit: string) => git(directory, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false);
+  const present = (directory: string, commit: string) => git(directory, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => { signal?.throwIfAborted(); return false; });
   if (source.commits.some(commit => !/^[a-f0-9]{40}$/.test(commit))) throw new Error("Invalid managed Git object source");
   await git(cwd, ["init", "--quiet"]);
   await git(cwd, ["remote", "add", "origin", repoUrl]);
@@ -67,11 +91,11 @@ export class RepositoryRefNotFoundError extends Error {
  * resolve it. `rev-parse --verify --quiet` exits 1 for an unknown name; any
  * other failure (auth, corruption, timeout) is not evidence of a missing ref.
  */
-async function isMissingRef(cloneCwd: string, ref: string, checkoutError: unknown): Promise<boolean> {
+async function isMissingRef(cloneCwd: string, ref: string, checkoutError: unknown, signal?: AbortSignal): Promise<boolean> {
   const stderr = String((checkoutError as { stderr?: unknown } | null)?.stderr ?? "");
   if (!/did not match any file\(s\) known to git|invalid reference/.test(stderr)) return false;
   for (const candidate of [`${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`]) {
-    const exitCode = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000 })
+    const exitCode = await execRepositoryGit("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000, signal })
       .then(() => 0, (error: { code?: unknown }) => error.code);
     if (exitCode !== 1) return false;
   }
@@ -82,6 +106,7 @@ export async function materializeManagedProjectWorkspace(
   cwd: string,
   input: {
     repoUrl: string | null;
+    signal?: AbortSignal;
     repoRef?: string | null;
     localSource?: string | null;
     gitObjectSource?: { cwd: string; commits: readonly string[] };
@@ -92,6 +117,7 @@ export async function materializeManagedProjectWorkspace(
     objectCacheCompanyDirectory?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
+  input.signal?.throwIfAborted();
   await retainCurrentWorkspaceSource(cwd);
   if (input.localSource) await retainCurrentWorkspaceSource(input.localSource);
   if (input.gitObjectSource) await retainCurrentWorkspaceSource(input.gitObjectSource.cwd);
@@ -129,28 +155,31 @@ export async function materializeManagedProjectWorkspace(
   let auth = input.resolveGitAuth && !input.localSource && !input.gitObjectSource
     ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
     : null;
+  input.signal?.throwIfAborted();
   const cloneTmpDir = await fs.mkdtemp(input.stagingParent
     ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
     : `${cwd}.clone-`);
   const cloneSource = input.localSource ?? input.repoUrl;
-  let objectCache = input.objectCacheCompanyDirectory && !input.localSource && !input.gitObjectSource
-    ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
-      const cache = await resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth);
-      if (!cache) recordRepositoryObjectCacheDetail({ outcome: "disabled" });
-      return cache;
-    }) : null;
-  const reference = objectCache ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
-    const cached = await readRepositoryObjectCache(objectCache!);
-    recordRepositoryObjectCacheDetail({ outcome: cached ? "hit" : "miss" });
-    return cached;
-  }) : null;
   try {
+    let objectCache = input.objectCacheCompanyDirectory && !input.localSource && !input.gitObjectSource
+      ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
+        const cache = await resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth);
+        if (!cache) recordRepositoryObjectCacheDetail({ outcome: "disabled" });
+        return cache;
+      }) : null;
+    const reference = objectCache ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
+      const cached = await readRepositoryObjectCache(objectCache!);
+      recordRepositoryObjectCacheDetail({ outcome: cached ? "hit" : "miss" });
+      return cached;
+    }) : null;
+    input.signal?.throwIfAborted();
     await input.beforeCopy?.(cloneTmpDir);
+    input.signal?.throwIfAborted();
     try {
       const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", async () => {
         recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
-        if (input.gitObjectSource) return copyManagedGitObjects(cloneTmpDir, input.repoUrl!, input.gitObjectSource);
-        await execFile(
+        if (input.gitObjectSource) return copyManagedGitObjects(cloneTmpDir, input.repoUrl!, input.gitObjectSource, input.signal);
+        await execRepositoryGit(
           "git",
           [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
           {
@@ -160,11 +189,13 @@ export async function materializeManagedProjectWorkspace(
               ...(auth?.env ?? {}),
             },
             timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+            signal: input.signal,
           },
         );
       });
       try { await clone(reference); }
       catch (error) {
+        input.signal?.throwIfAborted();
         if (!reference) throw error;
         for (const name of await fs.readdir(cloneTmpDir)) await fs.rm(path.join(cloneTmpDir, name), { recursive: true, force: true });
         objectCache = null;
@@ -172,12 +203,14 @@ export async function materializeManagedProjectWorkspace(
         await clone(null);
       }
     } catch (error) {
+      input.signal?.throwIfAborted();
       const connectionFailure = !input.localSource && !input.gitObjectSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
       if (connectionFailure) throw new GitConnectionFailureError(
         error instanceof Error ? error.message : "Git clone failed", connectionFailure,
       );
       throw error;
     }
+    input.signal?.throwIfAborted();
     if (objectCache && !reference) await measureRunPhase("workspace.checkout.cache_publish", () => publishRepositoryObjectCache(objectCache!, cloneTmpDir));
     if (input.localSource) {
       const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
@@ -190,31 +223,35 @@ export async function materializeManagedProjectWorkspace(
         if (baseline) await disposeDirectorySnapshot(baseline);
         await disposeGitWorkspaceSnapshot(snapshot);
       }
-      await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
+      await execRepositoryGit("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
     } else if (input.repoRef) {
       const repoRef = input.repoRef;
       try {
-        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], {
+        await measureRunPhase("workspace.checkout.git_ref", () => execRepositoryGit("git", ["-C", cloneTmpDir, "checkout", repoRef], {
           // Untranslated Git messages keep missing-ref classification locale independent.
-          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" },
+          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, signal: input.signal, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" },
         }));
       } catch (error) {
         // Only a ref that a complete fresh clone cannot resolve is a missing ref;
         // every other checkout failure keeps its original cause.
-        if (!await isMissingRef(cloneTmpDir, repoRef, error)) throw error;
+        input.signal?.throwIfAborted();
+        if (!await isMissingRef(cloneTmpDir, repoRef, error, input.signal)) throw error;
         throw new RepositoryRefNotFoundError(
           `Requested ref "${repoRef}" does not exist in the repository. Request the repository again with an existing branch, tag, or commit.`,
           repoRef,
         );
       }
     }
-    if (input.gitObjectSource) await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
+    if (input.gitObjectSource) await execRepositoryGit("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
+    input.signal?.throwIfAborted();
     await input.beforePublish?.(cloneTmpDir);
+    input.signal?.throwIfAborted();
   } catch (error) {
     await fs
       .rm(cloneTmpDir, { recursive: true, force: true })
       .catch(() => undefined);
     const reason = error instanceof Error ? error.message : String(error);
+    input.signal?.throwIfAborted();
     const authNote = describeGitAuthFailure({
       error: reason,
       used: auth ? { source: auth.source, secretName: auth.secretName } : null,
@@ -255,7 +292,7 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   if (gitEntry.isSymbolicLink()) throw new Error("Workspace Git metadata must not be a symlink");
   let excludePath: string;
   try {
-    const result = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
+    const result = await execRepositoryGit("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
       timeout: 10_000, env: { ...process.env, LC_ALL: "C" },
     });
     excludePath = path.resolve(cwd, result.stdout.trim());
