@@ -41,26 +41,28 @@ export async function setup(
     );
   }
   const agentNames = DEFAULT_AGENT_NAMES.slice(0, options.agentCount ?? 1);
-  const agents = await Promise.all(
-    agentNames.map((name) =>
-      request
-        .post(`/api/companies/${company.id}/agents`, {
-          data: {
-            name,
-            adapterType: "process",
-            adapterConfig: {
-              command: process.execPath,
-              args: [path.resolve("tests/e2e/fixtures/agent-chat.mjs")],
-              graceSec: 1,
-            },
-            runtimeConfig: {
-              heartbeat: { enabled: false, wakeOnDemand: true },
-            },
+  const createAgent = (name: string) =>
+    request
+      .post(`/api/companies/${company.id}/agents`, {
+        data: {
+          name,
+          adapterType: "process",
+          adapterConfig: {
+            command: process.execPath,
+            args: [path.resolve("tests/e2e/fixtures/agent-chat.mjs")],
+            graceSec: 1,
           },
-        })
-        .then(json),
-    ),
-  );
+          runtimeConfig: {
+            heartbeat: { enabled: false, wakeOnDemand: true },
+          },
+        },
+      })
+      .then(json);
+  // Create the primary agent first so DB creation order and default primary-agent
+  // selection stay deterministic (`agents[0]`), then parallelize any extra agents.
+  const firstAgent = await createAgent(agentNames[0]!);
+  const remainingAgents = await Promise.all(agentNames.slice(1).map(createAgent));
+  const agents = [firstAgent, ...remainingAgents];
   const agent = agents[0];
   const chatPath = `/api/companies/${company.id}/chats/${agent.id}`;
   const route = `/${company.issuePrefix}/chats/${agent.id}`;
