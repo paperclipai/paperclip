@@ -4,7 +4,7 @@ export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
 
 export const ACPX_RELEASE_PROFILE_DIGESTS = {
-  "antigravity": "sha256:0a6ed8999c183b2412f4f4172dfc7be672be257e8cf31cc252c62bd37c9a2f18",
+  "antigravity": "sha256:4cac29164931f72356278026e4ef6dca420388d0479ee1c538c3d1081ed74050",
   "grok": "sha256:b0e507ac768a44472e9d70439f02ccf13828bfa06045330e0b0861834327d18e",
   "pi": "sha256:c3e08f17e436672da69276b664564633040257a722d51117f47d3b3d2be65666",
   "cursor": "sha256:d4fff78f5948f257addc7888d45f2b1cd7efa171991ec79705956789cbe7a3b9",
