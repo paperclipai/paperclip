@@ -103,9 +103,16 @@ test.describe("Announcement placement on a new company's first task", () => {
       ...CONNECTORS_ANNOUNCEMENT,
       title: "Give your agents the access they need to work across your connected apps",
       description: "Connect Gmail, GitHub, Notion, and more. ".repeat(10).slice(0, 400).trim(),
+      animation: { path: `assets/${"1".repeat(64)}.html`, alt: "Animated connected apps" },
       secondaryLink: { kind: "route", label: "View tasks", path: "/issues" },
     };
     await serveConnectorsAnnouncement(page, long);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    let animationRequests = 0;
+    await page.route(`**/api/announcements/${long.id}/animation`, (route) => {
+      animationRequests += 1;
+      return route.fulfill({ contentType: "text/html", body: "<p>Animated connected apps</p>" });
+    });
     const viewport = { width: 320, height: 568 };
     const taskPath = `/${company.issuePrefix}/issues/${issue.identifier}`;
     await page.setViewportSize(viewport);
@@ -114,6 +121,8 @@ test.describe("Announcement placement on a new company's first task", () => {
     const announcement = page.getByRole("complementary", { name: "Paperclip announcements" });
     await expect(announcement.getByRole("heading", { name: long.title })).toBeVisible();
     await expect(announcement.getByText(long.description, { exact: true })).toHaveCount(1);
+    await expect(announcement.getByText(long.eyebrow, { exact: true })).toHaveCount(0);
+    await expect(announcement.locator("img, iframe")).toHaveCount(0);
     expect((await box(announcement, "mobile announcement")).height).toBeLessThanOrEqual(viewport.height * 0.4 + 1);
     expect(await announcement.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(0);
 
@@ -121,15 +130,14 @@ test.describe("Announcement placement on a new company's first task", () => {
       const action = announcement.getByRole("link", { name, exact: true });
       await action.scrollIntoViewIfNeeded();
       await expect(action).toBeInViewport();
-      // Require a real hit target without activating the link, which dismisses the card.
       await action.click({ trial: true });
     }
     const dismiss = announcement.getByRole("button", { name: "Dismiss announcement" });
     await dismiss.scrollIntoViewIfNeeded();
     await dismiss.click();
     await expect(announcement).toBeHidden();
+    expect(animationRequests).toBe(0);
 
-    // Following a link dismisses the card too. Use another visit to exercise it.
     const returningPage = await browser.newPage({ baseURL, viewport });
     try {
       await serveConnectorsAnnouncement(returningPage, long);

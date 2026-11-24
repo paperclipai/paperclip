@@ -20,7 +20,6 @@ export const CONNECTORS_ANNOUNCEMENT = {
   primaryAction: { kind: "route", label: "Explore connectors", path: "/apps" },
 };
 
-// 1x1 PNG so the card renders its image band at full height.
 const PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
   "base64",
