@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { ApiException } from "@kubernetes/client-node";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -99,6 +100,26 @@ function getOrCreateUploadInterceptor(leaseId: string): FastUploadInterceptor {
     uploadInterceptorsByLease.set(leaseId, interceptor);
   }
   return interceptor;
+}
+
+function isKubernetesHttpError(error: unknown): error is ApiException<unknown> {
+  return error instanceof ApiException
+    && Number.isInteger(error.code) && error.code >= 100 && error.code <= 599;
+}
+
+function throwWithAcquireHttpStatus(error: unknown): never {
+  if (isKubernetesHttpError(error)) Object.assign(error, { statusCode: error.code });
+  throw error;
+}
+
+async function throwAfterWorkloadRelease(error: unknown, release: () => Promise<void>): Promise<never> {
+  if (!isKubernetesHttpError(error)) throw error;
+  try {
+    await release();
+  } catch (releaseError) {
+    if (!isKubernetesHttpError(releaseError) || releaseError.code !== 404) throw error;
+  }
+  throwWithAcquireHttpStatus(error);
 }
 
 // In-memory cache of sandbox CR names we've already observed reaching the
@@ -345,7 +366,7 @@ const plugin = definePlugin({
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
-    });
+    }).catch(throwWithAcquireHttpStatus);
 
     const jobName = `pc-${newRunUlidDns()}`;
     const secretName = `${jobName}-env`;
@@ -397,7 +418,11 @@ const plugin = definePlugin({
           imagePullSecrets: config.imagePullSecrets,
         });
 
-    const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
+    const releaseWorkload = () => orchestrator.release(clients, namespace, jobName);
+    const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest).catch((error: unknown) => {
+      if (isKubernetesHttpError(error) && error.code >= 500) return throwAfterWorkloadRelease(error, releaseWorkload);
+      throwWithAcquireHttpStatus(error);
+    });
     const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
     const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
       {
@@ -416,8 +441,8 @@ const plugin = definePlugin({
         },
         grant: scopedNetworkEgress,
       },
-      () => orchestrator.release(clients, namespace, jobName),
-    );
+      releaseWorkload,
+    ).catch(throwWithAcquireHttpStatus);
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
@@ -443,9 +468,10 @@ const plugin = definePlugin({
       ownerUid,
       bootstrapToken,
       adapterEnv,
-    });
+    }).catch((error: unknown) => throwAfterWorkloadRelease(error, releaseWorkload));
 
-    const podName = await orchestrator.findPod(clients, namespace, jobName);
+    const podName = await orchestrator.findPod(clients, namespace, jobName)
+      .catch((error: unknown) => throwAfterWorkloadRelease(error, releaseWorkload));
 
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
