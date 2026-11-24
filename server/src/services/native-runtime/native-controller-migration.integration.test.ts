@@ -385,10 +385,14 @@ describeEmbeddedPostgres.each(["volume_free_owner", "eligibility_unreadable", "a
         status: "queued", runtimeMode: "native" });
       return result;
     });
-    const counts = await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000) });
+    const outcomes: string[] = [];
+    const counts = await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000), onOutcome: outcome => outcomes.push(outcome) });
     if (["archive_online_owned", "archive_online_changed", "archive_online_active", "archive_online_foreign"].includes(scenario)) {
       expect(counts.archivedFailed).toBe(0);
       expect(counts.deferred[scenario === "archive_online_foreign" ? "artifact_binding" : "archive_source_unsettled"]).toBe(1);
+      const state = { archive_online_owned: "coordinator_leased", archive_online_changed: "controller_files_changed",
+        archive_online_active: "turn_active" }[scenario as "archive_online_owned"];
+      if (state) expect(outcomes).toEqual(["archive_source_unsettled", `archive_source_unsettled:${state}`]);
       if (["archive_online_owned", "archive_online_changed"].includes(scenario)) expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(true);
       const backups = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.runId, f.runId));
       expect(backups.some(backup => backup.status === "current")).toBe(false);
@@ -448,8 +452,11 @@ describeEmbeddedPostgres.each(["volume_free_owner", "eligibility_unreadable", "a
       await f.db.update(agentTaskSessions).set({ id: "00000000-0000-4000-8000-000000000001" }).where(eq(agentTaskSessions.id, f.session.id));
       const next = await fixture();
       await settle(next);
-      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) });
+      const outcomes: string[] = [];
+      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000), onOutcome: outcome => outcomes.push(outcome) });
       expect(actual).toMatchObject({ inspected: 2, imported: 1, deferred: { artifact_unproven: 1 } });
+      const [source] = await f.db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(outcomes).toContain(`artifact_unproven:${source.status}_run`);
       expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
       expect(await loadNativeRunnerCheckpoint(f.db, { companyId: next.companyId, issueId: next.issueId, runId: next.runId })).not.toBeNull();
       expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);
