@@ -1,25 +1,15 @@
-import { useState } from "react";
 import { Copy, Download } from "lucide-react";
 import type { IssueDocument } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { copyTextToClipboard } from "@/lib/clipboard";
 import { downloadDocumentFile } from "@/lib/download-document-file";
+import { useCopyAction } from "@/lib/use-copy-action";
 
 export function DocumentMarkdownActions({ document }: { document: Pick<IssueDocument, "key" | "body"> }) {
-  const [copyStatus, setCopyStatus] = useState<"Copied" | "Could not copy Markdown">();
-
-  async function copyMarkdown() {
-    try {
-      await copyTextToClipboard(document.body);
-      setCopyStatus("Copied");
-    } catch {
-      setCopyStatus("Could not copy Markdown");
-    }
-  }
+  const { copied, failed, copy } = useCopyAction();
 
   return (
     <div className="ml-auto flex flex-wrap items-center gap-1">
-      <Button variant="ghost" size="sm" onClick={copyMarkdown}>
+      <Button variant="ghost" size="sm" onClick={() => void copy(document.body)}>
         <Copy aria-hidden />
         Copy Markdown
       </Button>
@@ -27,7 +17,7 @@ export function DocumentMarkdownActions({ document }: { document: Pick<IssueDocu
         <Download aria-hidden />
         Download Markdown
       </Button>
-      <span role="status">{copyStatus}</span>
+      <span role="status">{copied ? "Copied" : failed ? "Could not copy Markdown" : null}</span>
     </div>
   );
 }

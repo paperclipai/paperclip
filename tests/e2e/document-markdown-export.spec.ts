@@ -41,6 +41,13 @@ test("copies and downloads the Markdown shown in task document viewers", async (
       await expect(panel.getByText(rendered, { exact: true })).toBeVisible();
       await panel.getByRole("button", { name: "Copy Markdown", exact: true }).click({ timeout: 5_000 });
       await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(body);
+      if (key === "plan") {
+        const copied = panel.getByText("Copied", { exact: true });
+        await expect(copied).toBeVisible();
+        await expect(copied).toBeHidden({ timeout: 3_000 });
+        await panel.getByRole("button", { name: "Copy Markdown", exact: true }).click();
+        await expect(copied).toBeVisible();
+      }
       const [download] = await Promise.all([
         page.waitForEvent("download"),
         panel.getByRole("button", { name: "Download Markdown", exact: true }).click(),
