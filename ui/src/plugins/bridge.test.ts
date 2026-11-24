@@ -215,6 +215,48 @@ describe("useHostNavigation mobile drawer behavior", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  it("prefixes internal linkProps paths with hostContext.companyPrefix when present", () => {
+    let nav: ReturnType<typeof useHostNavigation> | null = null;
+    function Probe() {
+      nav = useHostNavigation();
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const bridgeValue: PluginBridgeContextValue = {
+      ...makeBridgeValue(),
+      hostContext: {
+        ...makeBridgeValue().hostContext,
+        companyPrefix: "ACME",
+      },
+    };
+
+    act(() => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/ACME/dashboard"] },
+          React.createElement(
+            SidebarProvider,
+            null,
+            React.createElement(
+              PluginBridgeContext.Provider,
+              { value: bridgeValue },
+              React.createElement(Probe),
+            ),
+          ),
+        ),
+      );
+    });
+
+    expect(nav!.linkProps("/my-page").href).toBe("/ACME/my-page");
+
+    act(() => root.unmount());
+    container.remove();
+  });
 });
 
 describe("plugin SDK FileTree bridge", () => {

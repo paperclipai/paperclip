@@ -490,7 +490,10 @@ export function Dashboard() {
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
-            context={{ companyId: selectedCompanyId }}
+            context={{
+              companyId: selectedCompanyId,
+              companyPrefix: companies.find((company) => company.id === selectedCompanyId)?.issuePrefix ?? null,
+            }}
             className="grid gap-4 md:grid-cols-2"
             // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"

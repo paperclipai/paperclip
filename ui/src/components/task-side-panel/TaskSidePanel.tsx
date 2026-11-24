@@ -1,6 +1,7 @@
 import { CoordinatorConversationTasksPanel } from "@/components/coordinator/CoordinatorConversationTasksPanel";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { useCompany } from "@/context/CompanyContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useQueryView } from "@/components/QueryView";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
@@ -302,6 +303,7 @@ function TaskSidePanelForScope({
   onSkillOpened,
 }: TaskSidePanelProps) {
   const location = useLocation();
+  const { companies } = useCompany();
   const handleScroll = useScrollbarWhileScrolling();
   // Agent Chat: agent chats swap the conversation issue's own panels for
   // agent-scoped ones — the agent's tasks lead, and Artifacts lists the
@@ -823,7 +825,17 @@ function TaskSidePanelForScope({
   } else if (activeTab.payload.kind === "plugin-panel") {
     const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === activeTab.id);
     content = panel ? (
-      <PluginSlotMount key={taskPluginPanelId(panel)} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
+      <PluginSlotMount
+        key={taskPluginPanelId(panel)}
+        slot={panel.slot}
+        context={{
+          companyId: issue.companyId,
+          companyPrefix: companies.find((company) => company.id === issue.companyId)?.issuePrefix ?? null,
+          projectId: issue.projectId,
+          entityId: panel.entityId,
+          entityType: "agent",
+        }}
+      />
     ) : null;
   } else if (activeTab.payload.kind === "properties") {
     content = (
