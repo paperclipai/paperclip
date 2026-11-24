@@ -258,9 +258,10 @@ function asConfigRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export function isGoogleWorkspaceConnectionConfig(config: unknown, transportConfig?: unknown): boolean {
+export function isGoogleWorkspaceConnectionConfig(config: unknown, transportConfig?: unknown, applicationMetadata?: unknown): boolean {
   const record = asConfigRecord(config);
-  const key = record.sourceTemplateKey ?? asConfigRecord(transportConfig).sourceTemplateKey;
+  const metadata = asConfigRecord(applicationMetadata);
+  const key = record.sourceTemplateKey ?? asConfigRecord(transportConfig).sourceTemplateKey ?? metadata.sourceTemplateKey ?? metadata.source;
   if (isGoogleWorkspaceSourceTemplateKey(key)) return true;
   const profile = asConfigRecord(record.oauth).connectorProfile;
   return typeof profile === "string" && isGoogleWorkspaceConnectorProfileId(profile);

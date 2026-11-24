@@ -195,9 +195,7 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
   reads do not inspect storage. Compatible records share one advisory Git
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
-  The [worker tests](../../server/src/__tests__/terminal-workspace-work.test.ts)
-  cover quiet lanes and deadlines. The
-  [service tests](../../server/src/__tests__/execution-workspaces-service.test.ts)
+  The [service tests](../../server/src/__tests__/execution-workspaces-service.test.ts)
   cover real PostgreSQL signals and retained worktrees. These tests do not
   qualify an external wake alarm or a live provider deployment.
 - Organizational project, source project, task files, personal `AGENT_HOME`, and

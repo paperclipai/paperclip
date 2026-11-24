@@ -676,12 +676,12 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "instance_removed" }]);
   });
 
-  it("does not start a deletion when an organization grant the connection still uses is revoked", async () => {
+  it("starts deleting when the organization's Google identity is revoked", async () => {
     const fixture = await connectManagedGmail("organization");
 
     const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
 
     expect(response.status).toBe(200);
-    expect(await contentDeletions(fixture.connectionId)).toEqual([]);
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "access_revoked" }]);
   });
 });
