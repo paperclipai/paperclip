@@ -98,19 +98,22 @@ function ordinaryMemberUnproven(row: { cwd: string | null; providerRef: string |
   if (physical.some(cwd => cwd.startsWith(`${root}/`))) return "ordinary_member_nested";
   if (physical.some(cwd => root.startsWith(`${cwd}/`))) return "ordinary_member_encloses_root";
   if (!row.cwd || physical.some(cwd => cwd !== root)) return "ordinary_member_locator_mismatch";
-  if (row.providerType !== "local_fs" || row.repoUrl || row.branchName) return "ordinary_member_git";
+  if (row.providerType !== "local_fs") return "ordinary_member_git";
   if (!row.sourceIssueId || isolatedIssueId && row.sourceIssueId !== isolatedIssueId) return "ordinary_member_task_binding";
   if (row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)) return "ordinary_member_strategy_unsupported";
   if (!["active", "idle", "in_review", "archived"].includes(row.status)) return "member_status_unsupported";
   if (row.metadata?.remoteWorkspace) return "member_already_remote";
   if (row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return "ordinary_member_restoration_pending";
+  if (row.metadata?.gitCacheExpiration) return "member_git_expiration_pending";
   return null;
 }
 
 export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OrdinarySource | { unproven: string } | null> {
   const unproven = (code: string) => ({ unproven: code });
-  if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
+  if (!workspace.cwd || workspace.providerType !== "local_fs") return null;
   const root = await physicalPath(workspace.cwd);
+  if ((workspace.repoUrl || workspace.branchName) && await fs.lstat(path.join(root, ".git")).then(() => true,
+    (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; })) return null;
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
   const parts = path.relative(instance, root).split(path.sep);
   const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode)
@@ -130,6 +133,8 @@ export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspa
     strategyType: executionWorkspaces.strategyType, mode: executionWorkspaces.mode, status: executionWorkspaces.status,
     metadata: sql<Record<string, unknown>>`jsonb_build_object(
       'gitCacheRestoration', ${executionWorkspaces.metadata}->'gitCacheRestoration',
+      'gitCacheExpiration', case when ${executionWorkspaces.metadata}->'gitCacheExpiration'->>'schema' = 'paperclip.git-cache-expiration.v1'
+        and coalesce(${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed', 'false') <> 'true' then true end,
       'nestedCloneMigrationPending', ${executionWorkspaces.metadata}->'nestedCloneMigrationPending',
       'remoteWorkspace', ${executionWorkspaces.metadata}->'remoteWorkspace')`,
   };
