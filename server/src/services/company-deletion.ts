@@ -160,6 +160,9 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(projects).where(eq(projects.companyId, id));
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         await notifyToolConnectionHealth(tx, id);
+        await tx.select({ id: companies.id }).from(companies)
+          .where(eq(companies.id, id)).for("update");
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
