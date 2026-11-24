@@ -141,6 +141,29 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   remote: boolean;
   planning: boolean;
 }): Promise<AntigravitySwarmSelection | null> {
+  // Most runs carry no swarm request: a cheap look without the task lock lets
+  // them through. A request's record commits with its comment, so a run that
+  // sees none here was not woken by one.
+  if (!await recordedRequest(db, input)) return null;
+  // Every fact the decision depends on (which request is newest, whether it is
+  // fulfilled, running or stopped, its attempts, the user's Retry) is read again
+  // under the task lock, in the transaction that records the selection. Saving
+  // a user comment and its /swarm record takes the same lock (issues.addComment),
+  // so a newer request either committed before these reads or saves after the
+  // selection is recorded.
+  const decision = await db.transaction(async (tx) => {
+    await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+    return decideSwarm(tx as unknown as Db, input);
+  });
+  if (decision && "refusal" in decision) throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, decision.refusal);
+  return decision;
+}
+
+type SwarmDecision = AntigravitySwarmSelection | { refusal: string } | null;
+
+/** The recorded user /swarm request this run serves, if any (before any replacement). */
+async function recordedRequest(db: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1]): Promise<{ commentId: string; body: string } | null> {
   const marked = requestedAntigravitySwarmCommentId(input.context);
   const explicit = marked ?? await inheritedSwarmCommentId(db, input.companyId, input.issueId, input.runId, input.context);
   // Only an explicit request (a fresh /swarm or its retry chain) is refused for
@@ -154,20 +177,26 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
       eq(activityLog.entityId, input.issueId), eq(activityLog.actorType, "user"), eq(activityLog.actorId, issueComments.authorUserId),
       sql`${activityLog.details}->>'commentId' = ${commentId}`))
     .limit(1);
+  return requested ? { commentId, body: requested.body } : null;
+}
+
+/** Runs under the task lock. Writes made before a refusal (re-queued comments) commit with it. */
+async function decideSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1]): Promise<SwarmDecision> {
+  const requested = await recordedRequest(tx, input);
   if (!requested) return null;
-  const refuse = (message: string): never => { throw new PaperclipRunnerProviderProfileError(ANTIGRAVITY_SWARM_UNAVAILABLE, message); };
+  const { commentId } = requested;
   // A later user /swarm replaces an earlier one (queued-comment-delivery.ts
   // counts the earlier one handled). When the newest request rode into this
   // wake, this run is that swarm; otherwise this request was replaced and
   // never runs, neither as a swarm nor as ordinary work.
-  const wakeIds = await wakeCommentIds(db, input);
-  const recordedInWake = await recordedSwarmRequestIds(db, input.companyId, input.issueId, wakeIds);
-  const newest = await newestSwarmRequest(db, input.companyId, input.issueId);
+  const wakeIds = await wakeCommentIds(tx, input);
+  const recordedInWake = await recordedSwarmRequestIds(tx, input.companyId, input.issueId, wakeIds);
+  const newest = await newestSwarmRequest(tx, input.companyId, input.issueId);
   let selected = { commentId, body: requested.body };
   if (newest && newest.id !== commentId) {
     if (!wakeIds.includes(newest.id)) {
-      await queueCommentsTheSwarmDoesNotSend(db, { ...input, commentId });
-      refuse("A newer /swarm request on this task replaced this one, so this one did not run.");
+      await queueCommentsTheSwarmDoesNotSend(tx, { ...input, commentId });
+      return { refusal: "A newer /swarm request on this task replaced this one, so this one did not run." };
     }
     selected = { commentId: newest.id, body: newest.body };
   }
@@ -176,63 +205,58 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   const request = antigravitySwarmRequestFromComment(selected.body);
   // A requested swarm with nothing (or too much) to run is refused, never run as ordinary work.
   const requestRefusal = antigravitySwarmRequestRefusal(request);
-  if (requestRefusal) refuse(requestRefusal);
-  return selectSwarm(db, { ...input, commentId: selected.commentId, request, replacedCommentIds, refuse });
+  if (requestRefusal) return { refusal: requestRefusal };
+  return selectSwarm(tx, { ...input, commentId: selected.commentId, request, replacedCommentIds });
 }
 
-async function selectSwarm(db: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1] & {
-  commentId: string; request: string; replacedCommentIds: string[]; refuse: (message: string) => never;
-}): Promise<AntigravitySwarmSelection | null> {
-  const { commentId, request, refuse } = input;
-  return db.transaction(async (tx) => {
-    // One selection at a time per task, so one request starts one swarm.
-    await tx.select({ id: issues.id }).from(issues)
-      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-    const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
-      finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
-        sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
-    if (attempts.some(run => run.status === "succeeded")) return null;
-    if (attempts.some(run => ["queued", "running"].includes(run.status))) refuse("A swarm for this request is already running.");
-    // The user asked for this attempt: it is the request's first run (the
-    // fresh /swarm comment), or this run is the one the user's Retry started,
-    // clicked after the last attempt began and after any Stop. Run context and
-    // wake reasons are not proof (recoveries copy context, and an agent can
-    // name any wake reason), so Retry is read from the user's own retry
-    // request. A click that joined an attempt already running belongs to that
-    // attempt. Everything else (recovery, sweeps, continuations, automatic
-    // retries) is automatic and bounded below.
-    const latestOf = (dates: Date[]) => dates.reduce<Date | null>((latest, at) => !latest || at > latest ? at : latest, null);
-    const lastAttemptAt = latestOf(attempts.map(run => run.createdAt));
-    const stoppedAt = latestOf(attempts.filter(run => run.status === "cancelled").map(run => run.finishedAt ?? run.updatedAt));
-    const manual = lastAttemptAt === null || await userRetryStartedRun(tx as unknown as Db, {
-      companyId: input.companyId, agentId: input.agent.id, issueId: input.issueId, runId: input.runId,
-      since: stoppedAt && stoppedAt > lastAttemptAt ? stoppedAt : lastAttemptAt });
-    if (!manual && attempts.some(run => run.status === "cancelled")) {
-      refuse("The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again.");
-    }
-    if (!manual && attempts.filter(run => ["failed", "timed_out"].includes(run.status)).length >= ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS) {
-      refuse("The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one.");
-    }
-    const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx as unknown as Db), agent: input.agent, remote: input.remote, planning: input.planning });
-    if (refusal) refuse(refusal);
-    await queueCommentsTheSwarmDoesNotSend(tx as unknown as Db, { ...input, commentId });
-    // The one stored fact every later decision reads: this run serves this request.
-    await tx.update(heartbeatRuns)
-      .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId })}::jsonb` })
-      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-    await logActivity(tx as unknown as Db, {
-      companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,
-      issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
-      details: {
-        commentId,
-        ...(input.replacedCommentIds.length ? { replacedCommentIds: input.replacedCommentIds } : {}),
-        summary: (input.replacedCommentIds.length ? "Your latest /swarm request replaced the earlier one, which did not run. " : "") +
-          "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
-      },
-    });
-    return { commentId, request };
+async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySwarmRun>[1] & {
+  commentId: string; request: string; replacedCommentIds: string[];
+}): Promise<SwarmDecision> {
+  const { commentId, request } = input;
+  const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
+    finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
+      sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`));
+  if (attempts.some(run => run.status === "succeeded")) return null;
+  if (attempts.some(run => ["queued", "running"].includes(run.status))) return { refusal: "A swarm for this request is already running." };
+  // The user asked for this attempt: it is the request's first run (the
+  // fresh /swarm comment), or this run is the one the user's Retry started,
+  // clicked after the last attempt began and after any Stop. Run context and
+  // wake reasons are not proof (recoveries copy context, and an agent can
+  // name any wake reason), so Retry is read from the user's own retry
+  // request. A click that joined an attempt already running belongs to that
+  // attempt. Everything else (recovery, sweeps, continuations, automatic
+  // retries) is automatic and bounded below.
+  const latestOf = (dates: Date[]) => dates.reduce<Date | null>((latest, at) => !latest || at > latest ? at : latest, null);
+  const lastAttemptAt = latestOf(attempts.map(run => run.createdAt));
+  const stoppedAt = latestOf(attempts.filter(run => run.status === "cancelled").map(run => run.finishedAt ?? run.updatedAt));
+  const manual = lastAttemptAt === null || await userRetryStartedRun(tx, {
+    companyId: input.companyId, agentId: input.agent.id, issueId: input.issueId, runId: input.runId,
+    since: stoppedAt && stoppedAt > lastAttemptAt ? stoppedAt : lastAttemptAt });
+  if (!manual && attempts.some(run => run.status === "cancelled")) {
+    return { refusal: "The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again." };
+  }
+  if (!manual && attempts.filter(run => ["failed", "timed_out"].includes(run.status)).length >= ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS) {
+    return { refusal: "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one." };
+  }
+  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx), agent: input.agent, remote: input.remote, planning: input.planning });
+  if (refusal) return { refusal };
+  await queueCommentsTheSwarmDoesNotSend(tx, { ...input, commentId });
+  // The one stored fact every later decision reads: this run serves this request.
+  await tx.update(heartbeatRuns)
+    .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ antigravitySwarmCommentId: commentId })}::jsonb` })
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+  await logActivity(tx, {
+    companyId: input.companyId, actorType: "system", actorId: "paperclip", agentId: input.agent.id, runId: input.runId,
+    issueId: input.issueId, action: "issue.antigravity_swarm_started", entityType: "issue", entityId: input.issueId,
+    details: {
+      commentId,
+      ...(input.replacedCommentIds.length ? { replacedCommentIds: input.replacedCommentIds } : {}),
+      summary: (input.replacedCommentIds.length ? "Your latest /swarm request replaced the earlier one, which did not run. " : "") +
+        "Started a Google Antigravity swarm with helpers. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers on this computer and cannot see their shell commands, which can write outside the task folder (for example in temp directories). Usage is one total for the coordinator and its helpers.",
+    },
   });
+  return { commentId, request };
 }
 
 /**

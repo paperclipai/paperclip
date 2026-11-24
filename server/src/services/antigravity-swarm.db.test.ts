@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { issueService } from "./issues.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
 import { mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
@@ -315,6 +316,83 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
       body: "three helpers write c.txt", createdAt: new Date(Date.now() + 1000) }).returning();
     await recordAntigravitySwarmRequest(db, { companyId: f.company.id, issueId: f.issue.id, commentId: later!.id, userId: USER });
     expect(await automatic(f, (await insertRun(f, {})).id)).toEqual({ commentId: later!.id, request: "three helpers write c.txt" });
+  });
+
+  /**
+   * The comment route saves a user comment and its /swarm record in one
+   * transaction that locks the task row (issues.addComment), the same lock
+   * selection takes. This is that save, held open until `commit` is called.
+   */
+  function saveSwarmCommentHeldOpen(f: Awaited<ReturnType<typeof seed>>, body: string) {
+    let commit!: () => void;
+    const released = new Promise<void>(resolve => { commit = resolve; });
+    let lockedResolve!: (seenSelection: boolean) => void;
+    const locked = new Promise<boolean>(resolve => { lockedResolve = resolve; });
+    let commentId = "";
+    const done = db.transaction(async (tx) => {
+      const saved = await issueService(tx as unknown as typeof db).addComment(f.issue.id, body, { userId: USER }, {}, tx);
+      commentId = saved.id;
+      await recordAntigravitySwarmRequest(tx as unknown as typeof db, { companyId: f.company.id, issueId: f.issue.id, commentId: saved.id, userId: USER });
+      // Whether a selection already committed before this save took the task lock.
+      const started = await tx.select({ id: activityLog.id }).from(activityLog)
+        .where(and(eq(activityLog.entityId, f.issue.id), eq(activityLog.action, "issue.antigravity_swarm_started")));
+      lockedResolve(started.length > 0);
+      await released;
+    }).then(() => commentId);
+    return { commit, locked, done };
+  }
+
+  /** Waits until a statement on this database is blocked on a row lock. */
+  async function untilSomeoneWaitsOnALock() {
+    for (let poll = 0; poll < 400; poll++) {
+      const rows = await db.execute(sql`select count(*)::int as waiting from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'`);
+      if (Number((rows as unknown as Array<{ waiting: number }>)[0]?.waiting ?? 0) > 0) return;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    throw new Error("no statement waited on the task lock");
+  }
+
+  it("never starts an older /swarm whose newer request committed while selection waited for the task lock", async () => {
+    const f = await seed();
+    const run = await insertRun(f, { contextSnapshot: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id, wakeCommentIds: [f.comment.id] } });
+    // A second /swarm is being saved: its transaction holds the task lock.
+    const newer = saveSwarmCommentHeldOpen(f, "three helpers write c.txt");
+    expect(await newer.locked).toBe(false);
+    const selection = resolve(f, { runId: run.id, context: { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id, wakeCommentIds: [f.comment.id] } });
+    const settled = selection.then(() => null, (error: unknown) => error);
+    await untilSomeoneWaitsOnALock();
+    newer.commit();
+    await newer.done;
+    // The newer request committed first, so the older one is replaced and never runs.
+    expect(await settled).toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/newer \/swarm/) });
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issue.id), eq(activityLog.action, "issue.antigravity_swarm_started")))).toHaveLength(0);
+  });
+
+  it("runs only the newest /swarm when a second request races the selection (20 rounds)", async () => {
+    for (let round = 0; round < 20; round++) {
+      const f = await seed();
+      const wake = { issueId: f.issue.id, antigravitySwarmCommentId: f.comment.id, wakeCommentIds: [f.comment.id] };
+      const run = await insertRun(f, { contextSnapshot: wake });
+      const newer = saveSwarmCommentHeldOpen(f, `round ${round} write c.txt`);
+      const selection = (async () => {
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 4));
+        return resolve(f, { runId: run.id, context: wake });
+      })().then(value => ({ value }), (error: unknown) => ({ error }));
+      setTimeout(() => newer.commit(), Math.random() * 6);
+      const [outcome, seenSelection] = await Promise.all([selection, newer.locked, newer.done]);
+      const started = await db.select().from(activityLog)
+        .where(and(eq(activityLog.entityId, f.issue.id), eq(activityLog.action, "issue.antigravity_swarm_started")));
+      if (seenSelection) {
+        // The older request was selected before the newer one was saved: it was the newest then.
+        expect(outcome).toMatchObject({ value: { commentId: f.comment.id } });
+        expect(started).toHaveLength(1);
+      } else {
+        // The newer request was saved first: the older one is replaced and never runs.
+        expect(outcome).toMatchObject({ error: { message: expect.stringMatching(/newer \/swarm/) } });
+        expect(started).toHaveLength(0);
+      }
+    }
   });
 
   /**
