@@ -112,9 +112,15 @@ export async function githubLatestTaskResponseUrl(
   db: Db,
   input: { companyId: string; endpointId: string; issueId: string; since: Date; baseThreadId: string },
 ): Promise<string | null> {
-  const [latest] = await db.select({
-    url: sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url')`,
-  }).from(chatActions).innerJoin(chatConversations, and(
+  // An assessment published only as inline findings has no summary URL; its
+  // finding receipts on the saved review hold the published comment URLs.
+  const url = sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url',
+    (select receipt.value->>'url' from ${chatGitHubReviews} review, jsonb_each(review.publication_receipts) receipt
+      where review.company_id = ${chatActions.companyId} and review.endpoint_id = ${chatActions.endpointId}
+        and review.id::text = coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')
+        and receipt.value->>'url' like 'https://github.com/%'
+      order by receipt.key limit 1))`;
+  const [latest] = await db.select({ url }).from(chatActions).innerJoin(chatConversations, and(
     eq(chatConversations.id, chatActions.conversationId), eq(chatConversations.companyId, chatActions.companyId),
     eq(chatConversations.endpointId, chatActions.endpointId),
     sql`(${chatConversations.externalThreadId} = ${input.baseThreadId}
@@ -127,7 +133,7 @@ export async function githubLatestTaskResponseUrl(
     sql`${chatActions.payload}->'session'->>'companyId' = ${input.companyId}`,
     sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
     sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
-    sql`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url') like 'https://github.com/%'`,
+    sql`${url} like 'https://github.com/%'`,
     sql`${chatActions.updatedAt} > ${input.since.toISOString()}::timestamptz`,
   )).orderBy(desc(chatActions.updatedAt)).limit(1);
   return latest?.url ?? null;

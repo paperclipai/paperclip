@@ -3403,6 +3403,29 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).toMatch(/See the \[latest response\]\(https:\/\/github\.com\//);
     });
+    it("links a waiting GitHub thread to a later review published only as inline findings", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set(passiveWait("inline-only-wait")).where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      const reviewId = randomUUID();
+      await db.insert(chatGitHubReviews).values({ id: reviewId, companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId!, repositoryId: "42", repository: "paperclipai/paperclip", pullNumber: 418,
+        headSha: "b".repeat(40), deliveryId: "inline-only", configurationRevision: 1, policySnapshot: {}, event: {} as never,
+        state: "completed", publicationReceipts: { "finding:1": { id: "88",
+          url: "https://github.com/paperclipai/paperclip/pull/418#discussion_r88", digest: "d" } } });
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
+        kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+        payload: { operation: "assessment", reviewId, session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        result: { reviewId, summaryUrl: null } });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
+      // The outgoing-text projection drops URL fragments, so the link names the pull request.
+      expect(f.responseComments.get(firstId)?.body).toContain("See the [latest response](https://github.com/paperclipai/paperclip/pull/418)");
+      expect(f.responseComments.get(firstId)?.body).not.toContain("ended without publishing");
+    });
     it("settles a waiting GitHub thread once the task finishes without a later response", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];
