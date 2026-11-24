@@ -6,7 +6,7 @@ import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type RemoteWorkspaceRunReference } from "@paperclipai/shared";
 import { readSnapshot, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 import { immutableRemoteWorkspaceRecoveryAttachment } from "./workspace-recovery-receipt.js";
@@ -54,7 +54,8 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
       eq(workspaceOperations.phase, "workspace_recovery"), sql`${workspaceOperations.metadata}->>'storage' = 'remote_workspace'`,
     )) : [];
   const canonicalSources = new Set(canonicalReceipts.map(receipt => receipt.runId));
-  const result: Array<{ operationId: string; path: string; sourceRunId: string }> = [];
+  const candidates: Array<{ source: typeof sources[number]; remote: RemoteWorkspaceRunReference;
+    proof: NonNullable<Awaited<ReturnType<typeof immutableRemoteWorkspaceRecoveryAttachment>>> }> = [];
   for (const source of sources) {
     if (source.runnerProfileJson?.remoteWorkspace == null) {
       if (canonicalSources.has(source.id)) skipUnverifiedRecoverySource(input, source.id, "receipt_without_reference");
@@ -79,14 +80,30 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
         skipUnverifiedRecoverySource(input, source.id, "receipt_unverified");
       continue;
     }
+    candidates.push({ source, remote, proof });
+  }
+  // A run that restores a save and then fails can save the same version again,
+  // so one saved version can carry a receipt from each of several failed runs.
+  // Its files are one piece of work: attach them once, under the earliest
+  // receipt. Each extra copy filled the sandbox disk before the first save.
+  // Retiring any receipt of a version retires the version.
+  const versionOf = (candidate: typeof candidates[number]) =>
+    JSON.stringify([candidate.proof.workspaceId, candidate.proof.snapshotId, candidate.proof.sha256]);
+  const retiredVersions = new Set(candidates
+    .filter(candidate => input.retiredOperationIds?.has(candidate.proof.operationId)).map(versionOf));
+  const attachedVersions = new Set<string>();
+  candidates.sort((a, b) => a.source.createdAt.getTime() - b.source.createdAt.getTime() || a.source.id.localeCompare(b.source.id));
+  const result: Array<{ operationId: string; path: string; sourceRunId: string }> = [];
+  for (const candidate of candidates) {
+    const { source, remote, proof } = candidate, version = versionOf(candidate);
+    if (retiredVersions.has(version) || attachedVersions.has(version)) continue;
     const operationId = proof.operationId;
-    if (input.retiredOperationIds?.has(operationId)) continue;
     await assertExecutionWorkspaceRecordAccess(input.db, { type: "agent", source: "agent_jwt",
       companyId: input.companyId, agentId: writer.agentId, runId: writer.id,
       onBehalfOfUserId: writer.responsibleUserId === "local-board" ? null : writer.responsibleUserId },
     input.companyId, remote.workspaceId);
     const saved = await getWorkspaceSnapshot(input.db, { companyId: input.companyId,
-      workspaceId: remote.workspaceId, snapshotId: remote.snapshotId });
+      workspaceId: remote.workspaceId, snapshotId: proof.snapshotId });
     if (!saved || saved.sha256 !== proof.sha256 || saved.generation !== proof.generation) {
       skipUnverifiedRecoverySource(input, source.id, "receipt_snapshot_missing");
       continue;
@@ -117,6 +134,7 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
         await rename(staging, destination);
       } finally { await removeTaskDirectoryTree(staging); }
     }
+    attachedVersions.add(version);
     result.push({ operationId, path: destination, sourceRunId: source.id });
   }
   return result;

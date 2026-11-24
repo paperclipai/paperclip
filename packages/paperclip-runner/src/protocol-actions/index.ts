@@ -15,6 +15,13 @@ import { createSkillAction } from "./create-skill.js";
 import { updateSkillAction } from "./update-skill.js";
 import { createProjectAction } from "./create-project.js";
 import { listProjectRepositoriesAction } from "./list-project-repositories.js";
+import { updateRoutineAction } from "./update-routine.js";
+import { updateSkillDetailsAction } from "./update-skill-details.js";
+import {
+  createAreaAction, createResponsibilityAction, deleteAreaAction, deleteResponsibilityAction, fileUnderResponsibilityAction,
+  findResponsibilitiesForAction, getResponsibilityAction, listResponsibilitiesAction, removeFromResponsibilityAction,
+  updateAreaAction, updateResponsibilityAction,
+} from "./responsibilities.js";
 import { searchApiAction } from "./search-api.js";
 import { callApiAction } from "./call-api.js";
 import { administerCompanyAction } from "./administer-company.js";
@@ -84,6 +91,19 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   updateSkillAction,
   createProjectAction,
   listProjectRepositoriesAction,
+  listResponsibilitiesAction,
+  getResponsibilityAction,
+  findResponsibilitiesForAction,
+  createAreaAction,
+  updateAreaAction,
+  deleteAreaAction,
+  createResponsibilityAction,
+  updateResponsibilityAction,
+  deleteResponsibilityAction,
+  fileUnderResponsibilityAction,
+  removeFromResponsibilityAction,
+  updateRoutineAction,
+  updateSkillDetailsAction,
   searchApiAction,
   callApiAction,
   administerCompanyAction,

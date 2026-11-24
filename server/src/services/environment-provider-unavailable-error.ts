@@ -53,6 +53,28 @@ export function readTransientEnvironmentProviderFailure(error: unknown): Transie
   return null;
 }
 
+/**
+ * A sandbox creation that a request started directly (an interactive setup or
+ * a login sandbox), refused by the provider with a transient status. Only the
+ * worker's validated RPC envelope on the error itself counts: a wrapper means
+ * that Paperclip failed afterwards, for example while recording cleanup, and
+ * must still be reported. Ownership of a provisional allocation stays with its
+ * creation-cleanup record; this only decides the HTTP answer.
+ */
+export function readTransientSandboxCreationRefusal(error: unknown): { message: string } | null {
+  if (!(error instanceof JsonRpcCallError)) return null;
+  const acquisition = readEnvironmentAcquisitionDiagnostic(error);
+  const envelope = readEnvironmentAcquireErrorDiagnostic(error);
+  const timedOut = acquisition !== null && acquisition.elapsedMs >= acquisition.budgetMs;
+  const httpStatus = envelope?.httpStatus !== undefined && isRetryableEnvironmentHttpStatus(envelope.httpStatus) ? envelope.httpStatus : undefined;
+  const errorCode = envelope?.errorCode !== undefined && isRetryableEnvironmentErrorCode(envelope.errorCode) ? envelope.errorCode : undefined;
+  if (!timedOut && httpStatus === undefined && errorCode === undefined) return null;
+  const evidence = httpStatus !== undefined ? ` (HTTP ${httpStatus})` : errorCode !== undefined ? ` (${errorCode})` : "";
+  return { message: evidence === ""
+    ? "The sandbox provider did not finish starting the sandbox in time. Try again in a few minutes."
+    : `The sandbox provider was temporarily unavailable${evidence}. Try again in a few minutes.` };
+}
+
 /** A definite non-transient HTTP status anywhere on the chain is authoritative: retrying cannot change it. */
 function definiteNonTransientStatus(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {

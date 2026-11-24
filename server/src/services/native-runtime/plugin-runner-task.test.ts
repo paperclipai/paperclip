@@ -813,15 +813,17 @@ describe("plugin Runner relaunch as the claimant run", () => {
     const spec = launchSpec();
     return { ...spec, nativeRunner: { ...spec.nativeRunner!, identity: next, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
   };
-  async function relaunchOwner(resume: (operation: any) => unknown, options: { resumeIdentityVersion?: 1; onResumed?: () => Promise<void> } = { resumeIdentityVersion: 1 }) {
+  async function relaunchOwner(resume: (operation: any) => unknown,
+    options: { resumeIdentityVersion?: 1; onResumed?: () => Promise<void>; fresh?: true } = { resumeIdentityVersion: 1 }) {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
     task.mockImplementation(async operation => operation.kind === "resume" ? resume(operation) : perform(operation));
     const close = vi.fn(async () => {});
     ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), quiesce: vi.fn(), close });
-    const owner = createPluginRunnerTaskOwner({ ...base, task, adoptIdentity: source, authorityRunId: source.runId });
-    owner.rebind({ ...base, task, authorityRunId: next.runId, resumeRelaunchedRunnerVersion: 1,
-      resumeIdentityVersion: options.resumeIdentityVersion, relaunch: { source, runner: parked }, onResumed: options.onResumed });
+    const relaunchInput = { ...base, task, authorityRunId: next.runId, resumeRelaunchedRunnerVersion: 1 as const,
+      resumeIdentityVersion: options.resumeIdentityVersion, relaunch: { source, runner: parked }, onResumed: options.onResumed };
+    const owner = createPluginRunnerTaskOwner(options.fresh ? relaunchInput : { ...base, task, adoptIdentity: source, authorityRunId: source.runId });
+    if (!options.fresh) owner.rebind(relaunchInput);
     await prepare(owner, { ...requirements, identity: next });
     const authority = { acceptRelaunchedRunner: vi.fn() };
     const registration = await owner.registration(authority as never, next.runId, undefined, next);
@@ -853,6 +855,30 @@ describe("plugin Runner relaunch as the claimant run", () => {
         relaunch: { source: next, runner: build } });
       expect(owner.relaunchMayHaveStarted()).toBe(false);
     } finally { await registration.release("detach"); }
+  });
+
+  it("relaunches through a new owner, as after a Core restart, without submitting or adopting", async () => {
+    const { owner, task, authority, registration } = await relaunchOwner(
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
+      { resumeIdentityVersion: 1, fresh: true });
+    expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).toMatchObject({ priorIdentity: source });
+    expect(owner.driver.relaunchReleasedRunner).toEqual(source);
+    expect(owner.driver.adoptExistingRunner).toBeUndefined();
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await registration.ready();
+      expect(task.mock.calls.filter(([operation]) => operation.kind === "resume").map(([operation]) => operation.runner))
+        .toEqual([{ runId: next.runId, turnId: next.turnId, itemId: next.itemId }]);
+      expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(false);
+      expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
+    } finally { await registration.release("detach"); }
+  });
+
+  it("treats a new owner as a new task when the provider does not advertise relaunch", async () => {
+    const { owner, task } = await relaunchOwner(() => { throw new Error("unexpected resume"); }, { fresh: true });
+    expect(owner.driver.relaunchReleasedRunner).toBeUndefined();
+    expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).not.toHaveProperty("priorIdentity");
   });
 
   it("retries a lost reply with the same ticket and identity", async () => {

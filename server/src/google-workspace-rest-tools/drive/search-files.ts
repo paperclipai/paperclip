@@ -71,6 +71,7 @@ const QUERY_HELP = [
 export const searchFiles = defineTool({
   definition: {
     name: "search_files",
+    title: "Search files",
     description: "Searches the user's Drive files with a structured query and returns one page of matching files (metadata only, no content snippets). Default page size 10, at most 100; pass nextPageToken as pageToken for more. Results may repeat across pages. When incompleteSearch is true, Google did not search everywhere and matching files may be missing. To read a file, pass its id to read_file_content.",
     inputSchema: {
       type: "object",

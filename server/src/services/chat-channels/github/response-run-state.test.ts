@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, inArray, desc, eq, or, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chatMessageLinks, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
@@ -29,6 +29,36 @@ async function previousReadGitHubResponseRun(db: Db, input: Input) {
   const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
     (!!input.sourceMessageId && originMessageId === input.sourceMessageId));
   return { latestRun, ownsLatestRequest };
+}
+
+/** The request's own run when it has finished: the latest run that woke for
+ * the request (by wake comment or accepted identity context), only if finished. */
+async function referenceFinishedRequestRun(db: Db, input: Input) {
+  if (!input.issueId) return { finished: null, ownRunActive: false };
+  const [own] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`,
+    sql`exists (select 1 from ${chatMessageLinks} l where l.company_id = ${input.companyId}::uuid
+      and l.endpoint_id = ${input.endpointId}::uuid and l.delivery_id = ${input.deliveryId}::uuid and l.direction = 'inbound'
+      and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
+        or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text
+        or exists (select 1 from run_identity_contexts c where c.id = ${heartbeatRuns.activeIdentityContextId}
+          and c.run_id = ${heartbeatRuns.id} and c.company_id = ${heartbeatRuns.companyId} and c.status = 'accepted'
+          and c.message_id = l.comment_id)))`,
+  )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  const finishedStatuses = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"];
+  const done = !!own && finishedStatuses.includes(own.status);
+  // Whether an older run of the request finished while its newest one is still active.
+  const [older] = own && !done ? await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
+    inArray(heartbeatRuns.status, finishedStatuses),
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`,
+    sql`exists (select 1 from ${chatMessageLinks} l where l.company_id = ${input.companyId}::uuid
+      and l.endpoint_id = ${input.endpointId}::uuid and l.delivery_id = ${input.deliveryId}::uuid and l.direction = 'inbound'
+      and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
+        or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))`,
+  )).limit(1) : [];
+  return { finished: done ? own : null, olderFinishedWhileActive: !!older };
 }
 
 function random(seed: number) {
@@ -187,12 +217,27 @@ suite("GitHub response run state", () => {
       before.push(await previousReadGitHubResponseRun(db, input));
       after.push(await readGitHubResponseRun(db, input));
     }
-    expect(after).toEqual(before);
+    // The prior production query stays the oracle for the latest run and ownership.
+    expect(after.map(({ finishedRequestRun: _, ...state }) => state)).toEqual(before);
     expect(before.filter(result => result.ownsLatestRequest).length).toBeGreaterThan(20);
     expect(before.filter(result => result.latestRun && !result.ownsLatestRequest).length).toBeGreaterThan(20);
     expect(before.filter(result => !result.latestRun).length).toBeGreaterThan(20);
     expect(new Set(before.flatMap(result => result.latestRun ? [result.latestRun.nativeIssueId ? "native" : "legacy"] : [])))
       .toEqual(new Set(["native", "legacy"]));
+  }, 120_000);
+
+  it("returns the request's own run only once it has finished", async () => {
+    let olderFinishedWhileActive = 0, finished = 0;
+    for (const input of inputs()) {
+      const state = await readGitHubResponseRun(db, input);
+      const reference = await referenceFinishedRequestRun(db, input);
+      // An older finished run never stands in for the request's own run that is still active.
+      expect(state.finishedRequestRun?.id ?? null, JSON.stringify(input)).toBe(state.latestRun ? reference.finished?.id ?? null : null);
+      if (reference.olderFinishedWhileActive) olderFinishedWhileActive++;
+      if (state.finishedRequestRun) finished++;
+    }
+    expect(olderFinishedWhileActive).toBeGreaterThan(0);
+    expect(finished).toBeGreaterThan(20);
   }, 120_000);
 
   it("reads a page of requests in one latest-run statement with the state each single read returns", async () => {
@@ -204,7 +249,12 @@ suite("GitHub response run state", () => {
     let batch;
     try { batch = await readGitHubResponseRuns(db, all); } finally { db.$client.options.debug = prior; }
     expect(batch).toEqual(single);
-    expect(statements.filter(query => /from "heartbeat_runs"|join "heartbeat_runs"/.test(query))).toHaveLength(1);
+    // One statement for the latest runs, plus one for the earlier finished
+    // runs of the page when any request has one.
+    const runReads = statements.filter(query => /from "heartbeat_runs"|join "heartbeat_runs"/.test(query));
+    expect(runReads.filter(query => /github_response_request/.test(query))).toHaveLength(1);
+    expect(runReads.length).toBe(batch.some(state => "finishedRequestRun" in state && state.finishedRequestRun &&
+      state.finishedRequestRun.id !== state.latestRun?.id) ? 2 : 1);
   }, 120_000);
 
   it("reads a few runs of the issue, not the agent's whole run history", async () => {

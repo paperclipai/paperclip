@@ -208,6 +208,7 @@ export function IssueFiltersPopover({
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        collisionPadding={8}
         aria-label="Filters"
         align="end"
         className={refreshed ? "task-filters-popover" : streamlined

@@ -45,7 +45,7 @@ reader.on('line', line => {
  fs.writeFileSync(path.join(home,'requests.json'),JSON.stringify(requests));
  if(request.method==='initialize') {
   if(mode==='early-url') { process.stderr.write('Open the following link to authenticate the ACP server: '+${JSON.stringify(authorizationUrl())}+'\\n'); return; }
-  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[{id:'oauth-personal'}]}})+'\\n');
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.5.2'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[{id:'oauth-personal'}]}})+'\\n');
  } else if(request.method==='authenticate') {
   const url = mode.startsWith('bad-url')||mode==='late-bad-url' ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
   const message='Open the following link to authenticate the ACP server: '+url+'\\n';

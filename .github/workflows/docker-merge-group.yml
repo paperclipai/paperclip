@@ -22,7 +22,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  macos_runner_runtime:
+    uses: ./.github/workflows/macos-runner-runtime.yml
+    permissions:
+      contents: read
+      actions: read
+
   build:
+    needs: macos_runner_runtime
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event.merge_group.base_ref == 'refs/heads/master'
     strategy:
       fail-fast: false
@@ -48,6 +55,12 @@ jobs:
           # Same history as docker.yml, for `git describe` below.
           fetch-depth: 0
           filter: blob:none
+
+      - name: Download the native macOS SSH runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.macos_runner_runtime.outputs.artifact_name }}
+          path: docker/remote-runtimes/
 
       # The merge queue fast-forwards master to this exact commit, so these
       # stamps match what a master build of the same commit would carry.
@@ -133,6 +146,7 @@ jobs:
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=${{ needs.macos_runner_runtime.outputs.inputs_digest }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           platforms: ${{ matrix.platform }}
           push: false

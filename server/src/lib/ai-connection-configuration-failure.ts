@@ -22,3 +22,14 @@ export function readAiConnectionConfigurationFailure(error: unknown): AiConnecti
 export function isAiConnectionConfigurationReason(value: unknown): value is AiConnectionConfigurationReason {
   return typeof value === "string" && reasons.some((reason) => reason === value);
 }
+
+/**
+ * A run's `configurationIncomplete` result records an AI selection that an owned
+ * producer rejected, not the preparation step's broad catch wrapper. The same
+ * selection fails again on any host until its owner acts.
+ */
+export function isOwnedAiConnectionSelectionRejection(configurationIncomplete: unknown): boolean {
+  if (configurationIncomplete === null || typeof configurationIncomplete !== "object" || Array.isArray(configurationIncomplete)) return false;
+  const configuration = configurationIncomplete as Record<string, unknown>;
+  return configuration.reason === "ai_connection_unavailable" && isAiConnectionConfigurationReason(configuration.selectionFailure);
+}

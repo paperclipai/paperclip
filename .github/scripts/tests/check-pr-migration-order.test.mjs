@@ -76,14 +76,36 @@ test('fails an override that has no justification', async () => {
   assert.match(result.errors[0], /needs a justification/);
 });
 
-test('reports requires_staging as a notice without failing', async () => {
+test('fails a requires_staging migration without an override', async () => {
   const result = await checkMigrationCompatibility([
     { fileName: migration('0233_drop'), sql: 'ALTER TABLE "issues" DROP COLUMN "note";' },
   ]);
 
+  assert.equal(result.passed, false);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /0233_drop\.sql: requires_staging/);
+  assert.match(result.errors[0], /drop_column/);
+  assert.match(result.errors[0], /expand and contract migrations/);
+  assert.match(result.errors[0], /-- paperclip:migration-compat requires_staging: </);
+});
+
+test('passes a requires_staging migration with a justified in-file override', async () => {
+  const result = await checkMigrationCompatibility([{
+    fileName: migration('0233_drop'),
+    sql: '-- paperclip:migration-compat requires_staging: note is unused and ops accepts a maintenance deploy\nALTER TABLE "issues" DROP COLUMN "note";',
+  }]);
+
   assert.equal(result.passed, true);
   assert.deepEqual(result.errors, []);
-  assert.match(result.notices[0], /0233_drop\.sql: requires_staging/);
+  assert.match(result.notices[0], /0233_drop\.sql: requires_staging by override/);
+});
+
+test('passes an online_compatible migration without a notice', async () => {
+  const result = await checkMigrationCompatibility([
+    { fileName: migration('0233_add'), sql: 'ALTER TABLE "issues" ADD COLUMN "note" text;' },
+  ]);
+
+  assert.deepEqual(result, { passed: true, errors: [], notices: [] });
 });
 
 test('passes when a PR adds no migrations', async () => {
@@ -119,6 +141,7 @@ test('treats CREATE TABLE IF NOT EXISTS as new only when the target branch never
     priorMigrationSql: ['CREATE TABLE "widgets" ("id" uuid, "title" text);'],
   });
 
-  assert.deepEqual(fresh.notices, []);
-  assert.match(existing.notices[0], /0231_widgets\.sql: requires_staging/);
+  assert.equal(fresh.passed, true);
+  assert.equal(existing.passed, false);
+  assert.match(existing.errors[0], /0231_widgets\.sql: requires_staging/);
 });

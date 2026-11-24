@@ -26,12 +26,12 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
@@ -1131,6 +1131,41 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
   });
 
+  it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
+    const f = await fixture();
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "internal server error: failed to create session config directory: "
+        + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+    await f.completion.failRunSetup(f.setup(new Error("Could not reconnect to the running agent", { cause: refusal })));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it.each([
+    ["the save", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)],
+    ["the save and its read-only fallback", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL, { cause: new Error(
+      "remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=unknown") })],
+  ])("names a full sandbox disk that stopped %s of the workspace during setup", async (_name, failure) => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(failure()));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full", error: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps another failed workspace save as a setup failure", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(new Error("remote_workspace_archive_changed")));
+    expect((await read(f.run.id))?.errorCode).toBe("setup_failed");
+  });
+
+  it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })));
+    expect((await read(f.run.id))?.errorCode).not.toBe("sandbox_disk_full");
+  });
+
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {
     const f = await fixture();
     await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("missing credential", { configurationIncomplete: { reason: "missing_binding" } })));
@@ -1863,6 +1898,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it.each([
+    { name: "a rejected AI selection keeps its owner action", selectionFailure: "ai_connection_credential_not_shared", errorCode: "configuration_incomplete" },
+    { name: "an unclassified AI preparation error stays a retryable lease loss", selectionFailure: undefined, errorCode: "controller_lease_lost" },
+  ] as const)("records a lease lost during AI selection: $name", async ({ selectionFailure, errorCode }) => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+    await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("This credential is not shared with the responsible user", {
+      configurationIncomplete: { reason: "ai_connection_unavailable", ...(selectionFailure ? { selectionFailure } : {}) } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode,
+      error: "This credential is not shared with the responsible user", resultJson: {
+        configurationIncomplete: { reason: "ai_connection_unavailable" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418, renewalCount: 2 },
+        cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
   });
 
   it("does not make a lease loss retryable once provider work has started", async () => {

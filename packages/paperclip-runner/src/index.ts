@@ -1,8 +1,9 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
 export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
-export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
+export { ANTIGRAVITY_DISTRIBUTION_PINS, ANTIGRAVITY_RUNTIME_VERSION, CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
+export { COPILOT_CLOSURE_SHA256 } from "./drivers/acpx/copilot-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
@@ -21,6 +22,7 @@ export * from "./contracts/types.js";
 export * from "./backends/harness-driver-backend.js";
 export * from "./drivers/dot/dot-harness-driver.js";
 export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";
+export { nativeRunAttachReservedBytes } from "./backends/runtime-context.js";
 export { createOpenCodeNativeSessionBackend } from "./backends/opencode-native-backend.js";
 export {
   createNativeSessionBackend,
@@ -83,9 +85,10 @@ export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
-export { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
+export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
+export { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunch, type AntigravityCliLaunchOptions, type AntigravityCliRuntimeErrorCode } from "./drivers/acpx/antigravity-cli-installation.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,

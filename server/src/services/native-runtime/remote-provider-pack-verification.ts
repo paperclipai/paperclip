@@ -105,7 +105,36 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
   return structuredClone(actual);
 }
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false }: {
+/**
+ * A Node expression defining `packIdentity(root)`: a digest of the kernel
+ * identity of every entry under the pack's real root (path, mode, device,
+ * inode, size, mtime, ctime, link count, owner; a symlink's text and its
+ * target's identity), bound to the machine's boot. Content cannot change
+ * without moving a ctime, and no unprivileged process can set a ctime back,
+ * so an unchanged identity proves bytes unchanged since they were hashed.
+ */
+export const PROVIDER_PACK_IDENTITY_FUNCTION = [
+  "const packIdentity=(root)=>{const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');const h=crypto.createHash('sha256');let boot='none';try{boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()}catch{}",
+  "const real=fs.realpathSync(root);h.update('boot\\0'+boot+'\\nroot\\0'+real+'\\n');const id=(s)=>[s.mode,s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs,s.nlink,s.uid].join('\\0');h.update('.\\0'+id(fs.lstatSync(real,{bigint:true}))+'\\n');",
+  "const visit=(d,prefix)=>{for(const name of fs.readdirSync(d).sort()){const a=path.join(d,name),r=prefix?prefix+'/'+name:name,s=fs.lstatSync(a,{bigint:true});h.update(r+'\\0'+id(s)+'\\n');if(s.isSymbolicLink()){let t='missing';try{t=id(fs.statSync(a,{bigint:true}))}catch{}h.update('link\\0'+fs.readlinkSync(a)+'\\0'+t+'\\n')}else if(s.isDirectory())visit(a,r)}};visit(real,'');return h.digest('hex')}",
+].join("");
+
+type SealedPackRecord = { identity: string; manifest: ProviderPackIdentity };
+/** Fully verified packs this server process has sealed, by target and expected identity. */
+const sealedPacks = new Map<string, SealedPackRecord>();
+const MAX_SEALED_PACKS = 512;
+
+/** Test seam: forget every sealed pack record. */
+export function clearSealedProviderPacksForTest(): void { sealedPacks.clear(); }
+
+function sealKeyFor(seal: { targetKey: string } | undefined, packRoot: string, manifest: ProviderPackIdentity, acceptProvenance: boolean): string | null {
+  if (!seal?.targetKey) return null;
+  return createHash("sha256").update(canonicalProviderPackJson([seal.targetKey, packRoot, manifest, acceptProvenance])).digest("hex");
+}
+
+const reportedIdentity = (stdout: string) => /paperclip-pack-identity=([a-f0-9]{64})/.exec(stdout)?.[1] ?? null;
+
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, seal }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -115,20 +144,41 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   requireExactIdentity?: boolean;
   requireCurrentOpenCodeProxy?: boolean;
   acceptProvenance?: boolean;
+  /**
+   * The exact sandbox this pack sits on. After one full verification the
+   * server keeps the pack's kernel identity; later runs on the same sandbox
+   * re-check only that identity instead of re-hashing every byte.
+   */
+  seal?: { targetKey: string };
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
     return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
   }
-  const expected = Buffer.from(
-    canonicalProviderPackJson(manifest),
-    "utf8",
-  ).toString("base64");
   const providerNodeCommand = posix.join(
     packRoot,
     manifest.payload.artifacts.nodeCommand.path,
   );
+  const sealKey = sealKeyFor(seal, packRoot, manifest, acceptProvenance);
+  const sealed = sealKey ? sealedPacks.get(sealKey) : undefined;
+  if (sealKey && sealed) {
+    // Any failure or difference falls through to the full verification.
+    const current = await runner.execute({
+      command: providerNodeCommand,
+      args: ["-e", `${PROVIDER_PACK_IDENTITY_FUNCTION};process.stdout.write('\\npaperclip-pack-identity='+packIdentity(process.argv[1])+'\\n')`, packRoot],
+      cwd, bypassSession: true, timeoutMs: 30_000,
+    }).catch(() => null);
+    if (current && current.exitCode === 0 && !current.timedOut && reportedIdentity(current.stdout) === sealed.identity) {
+      return structuredClone(sealed.manifest) as T;
+    }
+    sealedPacks.delete(sealKey);
+  }
+  const expected = Buffer.from(
+    canonicalProviderPackJson(manifest),
+    "utf8",
+  ).toString("base64");
   const verifyScript = [
+    ...(sealKey ? [PROVIDER_PACK_IDENTITY_FUNCTION, "let identityBefore=null;try{identityBefore=packIdentity(process.argv[1])}catch{}"] : []),
     "const fs=require('node:fs')",
     "const crypto=require('node:crypto')",
     "const path=require('node:path')",
@@ -157,6 +207,8 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
     "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)fail('package_version:'+pkg,pkg+' version mismatch')",
     "if(provenance)process.stdout.write('\\npaperclip-pack-manifest='+Buffer.from(canonical(manifest)).toString('base64')+'\\n')",
+    // Seal only when no entry changed while it was being hashed.
+    ...(sealKey ? ["let identityAfter=null;try{identityAfter=packIdentity(root)}catch{}if(identityBefore&&identityBefore===identityAfter)process.stdout.write('\\npaperclip-pack-identity='+identityAfter+'\\n')"] : []),
   ].join(";");
   const verified = await withProviderPackCheck("pack", () => runRemoteProviderVerification(() => runner.execute({
     command: providerNodeCommand,
@@ -181,6 +233,11 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     opencodeVersion.stdout.trim() !== manifest.payload.pins.opencode
   ) {
     throw providerPackIncompatible("opencode_version", "OpenCode version mismatch");
+  }
+  const identity = sealKey ? reportedIdentity(verified.stdout) : null;
+  if (sealKey && identity) {
+    if (sealedPacks.size >= MAX_SEALED_PACKS) sealedPacks.delete(sealedPacks.keys().next().value!);
+    sealedPacks.set(sealKey, { identity, manifest: structuredClone(selected) });
   }
   return structuredClone(selected);
 }

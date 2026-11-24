@@ -2,6 +2,9 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
+import { assertProjectStorageEnvironment, listProjectWorkspaceProviders } from "../project-workspace-provider.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { WorkspaceBusyDeferral } from "./retries.js";
 import { remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
@@ -283,10 +286,35 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
-  if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-    adapterType: agent.adapterType,
-    environmentDriver: selectedEnvironmentForConfig?.driver,
-    pluginTaskWorkspace, remoteAuthority });
+  // A volume-free server rejects execution without durable task storage. When
+  // the source project's storage provider cannot serve the selected
+  // environment, that mismatch is the cause and only an owner can repair it.
+  const assertEphemeralExecution = async () => {
+    if (providerApiPlacement) return;
+    try {
+      assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, adapterType: agent.adapterType,
+        environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
+    } catch (error) {
+      const storagePluginId = projectExecutionWorkspacePolicy?.storageProviderPluginId;
+      const provider = storagePluginId && selectedEnvironmentForConfig
+        ? (await listProjectWorkspaceProviders(db, agent.companyId)).find(value => value.id === storagePluginId) : undefined;
+      if (provider && selectedEnvironmentForConfig) {
+        try {
+          assertProjectStorageEnvironment(provider, selectedEnvironmentForConfig);
+        } catch (mismatch) {
+          throw new ConfigurationIncompleteFailure(mismatch instanceof Error ? mismatch.message : String(mismatch), {
+            configurationIncomplete: { reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE, companyId: agent.companyId,
+              agentId: agent.id, issueId: issueId ?? null, projectId: issueRef?.projectId ?? null,
+              storageProviderPluginId: provider.id, environmentId: selectedEnvironmentForConfig.id,
+              fingerprint: `project_storage_environment:${provider.id}:${selectedEnvironmentForConfig.id}`,
+              actionUrl: `/agents/${agent.id}/runtime`, missingBindings: [] },
+          });
+        }
+      }
+      throw error;
+    }
+  };
+  await assertEphemeralExecution();
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
     db, companyId: agent.companyId, runId: run.id,
     leaseOwner: runOptions.nativeLeaseOwner ?? runOptions.nativeRestartRecovery?.leaseOwner,
@@ -370,8 +398,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           remoteAuthority = false;
           // Source resolution can retain a configured host folder. Check the
           // resolved authority before materializing it or acquiring a sandbox.
-          if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-            adapterType: agent.adapterType, environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
+          await assertEphemeralExecution();
         }
         else {
           remoteSourceState.value = sourceState;

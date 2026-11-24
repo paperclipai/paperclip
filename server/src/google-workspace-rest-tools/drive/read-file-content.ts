@@ -121,6 +121,7 @@ const threadSchema = {
 export const readFileContent = defineTool({
   definition: {
     name: "read_file_content",
+    title: "Read a file",
     description: "Returns a text version of a Drive file. Google Docs come back as Markdown, Slides as plain text, and Sheets as CSV of the first sheet only (the text says so). Text files (text/*, JSON, XML and similar) are returned as stored. Other files, such as PDFs, Office files and images, are not converted: the result has textFormattingNotSupported true and empty fileContent; use download_file_content for their bytes. The whole result has a size limit; a file too large for it is refused with an error that gives the limit, never cut short. With includeComments, the comment threads of a Google Doc, Sheet or Slides file are listed in unanchoredComments; they are not placed in the text. Get fileId from search_files or list_recent_files first.",
     inputSchema: {
       type: "object",

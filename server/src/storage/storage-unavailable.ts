@@ -9,6 +9,8 @@ export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip will retry automatically when storage is back.";
 
+export const STORAGE_TEMPORARILY_UNAVAILABLE_MESSAGE = "File storage is temporarily unavailable or is limiting requests. Try again in a moment.";
+
 export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
 
 /** For a storage failure that no storage wait owns, such as a run whose native
@@ -62,6 +64,10 @@ function recordedStorageFailure(error: unknown) {
     if (diagnostics) return { error: candidate, diagnostics };
   }
   return null;
+}
+
+export function recordedStorageFailureDiagnostics(error: unknown) {
+  return recordedStorageFailure(error)?.diagnostics ?? null;
 }
 
 export function isStorageCredentialRejection(error: unknown): boolean {
