@@ -237,11 +237,21 @@
     },
     "//#ci:canary": {
       "inputs": [
-        "scripts/**",
-        "cli/esbuild.config.mjs",
-        "server/scripts/**",
-        "packages/paperclip-runner/scripts/**",
-        "packages/paperclip-runner/release-runner-targets.json"
+        "scripts/release*",
+        "scripts/build-npm.sh",
+        "scripts/build-standalone-public-packages.mjs",
+        "scripts/cli-bundled-npm-dependencies.mjs",
+        "scripts/link-plugin-dev-sdk.mjs",
+        "scripts/prefetch-child.mjs",
+        "scripts/stage-bundled-packages.mjs",
+        "scripts/pack-staged-packages.mjs",
+        "scripts/prepare-bundled-package.mjs",
+        "scripts/prepare-server-ui-dist.sh",
+        "scripts/generate-npm-package-json.mjs",
+        "scripts/prepare-npm-readme.mjs",
+        "scripts/check-forbidden-tokens.mjs",
+        "scripts/confirm-canary-publication.sh",
+        "scripts/create-github-release.sh"
       ],
       "outputs": [],
       "cache": false

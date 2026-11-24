@@ -313,7 +313,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
     const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, async tx => {
-      if (isGoogleWorkspaceConnectionConfig(connection.config)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.googleTechnicalInformation);
+      if (isGoogleWorkspaceConnectionConfig(connection.config, connection.transportConfig)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.googleTechnicalInformation);
       return tx
       .update(toolConnections)
       .set({

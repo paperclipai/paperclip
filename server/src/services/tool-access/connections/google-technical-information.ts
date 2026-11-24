@@ -21,12 +21,15 @@ function textArray(values: readonly string[]): SQL {
   return sql`array[${sql.join(values.map((value) => sql`${value}`), sql`, `)}]::text[]`;
 }
 
-export function googleConnectionConfigSql(config: SQL): SQL {
-  return sql`(${config}->>'sourceTemplateKey' = any(${textArray(GOOGLE_WORKSPACE_APP_SLUGS)})
-    or ${config}->'oauth'->>'connectorProfile' = any(${textArray(Object.keys(GOOGLE_WORKSPACE_CONNECTOR_PROFILES))}))`;
+export function googleConnectionIdsSql(): SQL {
+  return sql`(select gc.id from tool_connections gc
+    join tool_applications ga on ga.id = gc.application_id and ga.company_id = gc.company_id
+    where coalesce(gc.config->>'sourceTemplateKey', gc.transport_config->>'sourceTemplateKey',
+        ga.metadata->>'sourceTemplateKey', ga.metadata->>'source') = any(${textArray(GOOGLE_WORKSPACE_APP_SLUGS)})
+      or gc.config->'oauth'->>'connectorProfile' = any(${textArray(Object.keys(GOOGLE_WORKSPACE_CONNECTOR_PROFILES))}))`;
 }
 
-const googleConnectionIds = () => sql`(select gc.id from tool_connections gc where ${googleConnectionConfigSql(sql`gc.config`)})`;
+const googleConnectionIds = googleConnectionIdsSql;
 
 const catalogNotStrippedSql = sql`(${toolCatalogEntries.description} is not null or ${toolCatalogEntries.title} is not null
   or ${toolCatalogEntries.inputSchema} <> '{}'::jsonb or ${toolCatalogEntries.outputSchema} is not null
@@ -47,7 +50,7 @@ function toTime(value: unknown): number | null {
 export async function nextGoogleTechnicalInformationDeadline(db: Reader, now = Date.now()): Promise<number | null> {
   const ttl = GOOGLE_TECHNICAL_INFORMATION_TTL_MS;
   const [google] = await db.select({ found: sql<number>`count(*)::int` }).from(toolConnections)
-    .where(googleConnectionConfigSql(sql`${toolConnections.config}`));
+    .where(sql`${toolConnections.id} in ${googleConnectionIds()}`);
   if (!google?.found) return null;
   const [invocationError] = await db.select({ at: sql<string | null>`min(${toolInvocations.createdAt})` }).from(toolInvocations)
     .where(sql`${toolInvocations.connectionId} in ${googleConnectionIds()} and ${toolInvocations.errorMessage} is not null`);
@@ -56,13 +59,13 @@ export async function nextGoogleTechnicalInformationDeadline(db: Reader, now = D
   const [health] = await db.select({
     archived: sql<number>`count(*) filter (where ${toolConnections.status} = 'archived')::int`,
     at: sql<string | null>`min(coalesce(${toolConnections.healthCheckedAt}, ${toolConnections.updatedAt}))`,
-  }).from(toolConnections).where(and(googleConnectionConfigSql(sql`${toolConnections.config}`), healthTextSql));
+  }).from(toolConnections).where(and(sql`${toolConnections.id} in ${googleConnectionIds()}`, healthTextSql));
   const [catalog] = await db.select({
     archived: sql<number>`count(*) filter (where ${toolConnections.status} = 'archived')::int`,
     at: sql<string | null>`min(${toolCatalogEntries.lastSeenAt})`,
   }).from(toolCatalogEntries)
     .innerJoin(toolConnections, eq(toolConnections.id, toolCatalogEntries.connectionId))
-    .where(and(googleConnectionConfigSql(sql`${toolConnections.config}`), catalogNotStrippedSql));
+    .where(and(sql`${toolConnections.id} in ${googleConnectionIds()}`, catalogNotStrippedSql));
   const [grants] = await db.select({ found: sql<number>`count(*)::int` }).from(connectionGrants)
     .where(sql`${connectionGrants.status} = 'revoked' and ${connectionGrants.providerTenant} ? 'oauth'
       and ${connectionGrants.connectionId} in ${googleConnectionIds()}`);
@@ -110,7 +113,7 @@ export function createGoogleTechnicalInformationRetention(db: Db) {
   async function clearHealthText(cutoff: string) {
     await db.update(toolConnections).set({ healthMessage: null, lastError: null })
       .where(and(
-        googleConnectionConfigSql(sql`${toolConnections.config}`),
+        sql`${toolConnections.id} in ${googleConnectionIds()}`,
         healthTextSql,
         sql`(${toolConnections.status} = 'archived'
           or coalesce(${toolConnections.healthCheckedAt}, ${toolConnections.updatedAt}) <= ${cutoff}::timestamptz)`,
@@ -122,7 +125,7 @@ export function createGoogleTechnicalInformationRetention(db: Db) {
       .set({ title: null, description: null, inputSchema: {}, outputSchema: null, annotations: {}, uiMeta: null, icons: null })
       .where(sql`${toolCatalogEntries.id} in (select e.id from tool_catalog_entries e
         join tool_connections c on c.id = e.connection_id
-        where ${googleConnectionConfigSql(sql`c.config`)}
+        where c.id in ${googleConnectionIds()}
           and (e.description is not null or e.title is not null or e.input_schema <> '{}'::jsonb or e.output_schema is not null
             or e.annotations <> '{}'::jsonb or e.ui_meta is not null or e.icons is not null)
           and (c.status = 'archived' or e.last_seen_at <= ${cutoff}::timestamptz)

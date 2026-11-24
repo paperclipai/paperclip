@@ -250,11 +250,20 @@ export const GOOGLE_WORKSPACE_APP_SLUGS: readonly string[] = Object.freeze([
   ...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug)),
 ]);
 
-export function isGoogleWorkspaceConnectionConfig(config: unknown): boolean {
-  const record = config && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : {};
-  if (typeof record.sourceTemplateKey === "string" && GOOGLE_WORKSPACE_APP_SLUGS.includes(record.sourceTemplateKey)) return true;
-  const oauth = record.oauth && typeof record.oauth === "object" && !Array.isArray(record.oauth) ? record.oauth as Record<string, unknown> : {};
-  return typeof oauth.connectorProfile === "string" && isGoogleWorkspaceConnectorProfileId(oauth.connectorProfile);
+export function isGoogleWorkspaceSourceTemplateKey(key: unknown): boolean {
+  return typeof key === "string" && GOOGLE_WORKSPACE_APP_SLUGS.includes(key);
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function isGoogleWorkspaceConnectionConfig(config: unknown, transportConfig?: unknown): boolean {
+  const record = asConfigRecord(config);
+  const key = record.sourceTemplateKey ?? asConfigRecord(transportConfig).sourceTemplateKey;
+  if (isGoogleWorkspaceSourceTemplateKey(key)) return true;
+  const profile = asConfigRecord(record.oauth).connectorProfile;
+  return typeof profile === "string" && isGoogleWorkspaceConnectorProfileId(profile);
 }
 
 function def(appSlug: string, serverUrl: string, scopes: readonly string[], writeTools: readonly string[] = []) {

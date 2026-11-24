@@ -458,8 +458,8 @@ Technical Information and closes the training and export findings below.
 
 The connection's content deletion ("Delete data") now starts on its own,
 saved in the same database transaction that ends the access, for a Google
-connection (`isGoogleWorkspaceConnectionConfig`: a Google app template or a
-Google broker profile). The job row records why (`reason`):
+connection (its app template, read with the canonical source-template
+precedence, is a Google app, or its broker profile is a Google profile). The job row records why (`reason`):
 
 | Event | `reason` | Where |
 | --- | --- | --- |
@@ -479,17 +479,24 @@ unchanged.
   every person who used the connection. Calls do not record which grant made
   them, so one person's disconnect deletes the whole connection's saved
   content. Recording the grant on each call would let this narrow later.
-- Window: starts at once. Work still running keeps its content until it
-  settles; the job then deletes it. It waits for running work up to 24 hours
-  (rechecks every 1 to 5 minutes), then runs every step once more and
-  finishes. A failed step is retried until it succeeds, across restarts
-  (the existing durable job, plus `not_before`).
+- Window: starts at once and normally finishes within minutes. Work still
+  running keeps its content until it settles; the job then deletes it. It
+  rechecks running work every 1 to 5 minutes, and hourly after the first day,
+  until none is left, then runs every step once more and finishes. A failed
+  step is retried until it succeeds, across restarts (the existing durable
+  job, plus `not_before`). A task deletion keeps its 24-hour wait limit.
 - An access end while a manual deletion is pending moves that job's cutoff to
   the access end and restarts it.
-- Reconnect: only calls made after the access end are kept. The job also
+- Reconnect: only calls made after the access end are kept. Late records of
+  a call made before the access end (a completion event, an app view, an audit
+  entry written after the result came back) are deleted too. The job also
   clears the saved harness session pointers (`agent_task_sessions`,
-  `agent_runtime_state.session_id`) of the runs it cleans, so the next run
-  starts a new harness conversation and does not replay old Google results.
+  `agent_runtime_state.session_id`) and the session ids on every run of that
+  harness session (`session_id_before`, `session_id_after`, the result's
+  `sessionId`), so neither the next run nor "resume from this run" reopens a
+  conversation that holds old Google results.
+- A refresh failure counts only if the refresh still holds the grant's
+  refresh lease; a late answer after a new sign-in deletes nothing.
 - New in the job for every app: tool error text (`tool_invocations` and
   `tool_call_events` `error_message`, the approval card's
   `toolAction.errorMessage`), and the session pointers above.

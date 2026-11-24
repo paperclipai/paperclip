@@ -1,11 +1,16 @@
 import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
-import { heartbeatRuns, toolActionRequests, toolCallEvents, toolConnections, toolInvocations, type Db } from "@paperclipai/db";
-import { isGoogleWorkspaceConnectionConfig, type ToolConnectionContentDeletionReason } from "@paperclipai/shared";
+import { heartbeatRuns, toolActionRequests, toolApplications, toolCallEvents, toolConnections, toolInvocations, type Db } from "@paperclipai/db";
+import {
+  isGoogleWorkspaceConnectorProfileId,
+  isGoogleWorkspaceSourceTemplateKey,
+  type ToolConnectionContentDeletionReason,
+} from "@paperclipai/shared";
 import { logActivity } from "../../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import type { ActorInfo } from "../types.js";
+import { toolSourceTemplateKeySql } from "../source-template-key.js";
 import { requestConnectionContentDeletion, type ContentDeletionActor } from "./content-deletion.js";
-import { googleConnectionConfigSql } from "./google-technical-information.js";
+import { googleConnectionIdsSql } from "./google-technical-information.js";
 
 export type GoogleAccessEndReason = Exclude<ToolConnectionContentDeletionReason, "requested">;
 
@@ -16,17 +21,23 @@ export function contentDeletionActor(actor: ActorInfo | undefined): ContentDelet
   return SYSTEM_ACTOR;
 }
 
-export function isGoogleWorkspaceConnection(connection: { config: unknown }): boolean {
-  return isGoogleWorkspaceConnectionConfig(connection.config);
+export async function isGoogleWorkspaceConnection(db: Pick<Db, "select">, connection: { id: string; companyId: string }): Promise<boolean> {
+  const [row] = await db
+    .select({ key: toolSourceTemplateKeySql, profile: sql<string | null>`${toolConnections.config}->'oauth'->>'connectorProfile'` })
+    .from(toolConnections)
+    .innerJoin(toolApplications, and(eq(toolApplications.id, toolConnections.applicationId), eq(toolApplications.companyId, toolConnections.companyId)))
+    .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)));
+  if (!row) return false;
+  return isGoogleWorkspaceSourceTemplateKey(row.key) || (typeof row.profile === "string" && isGoogleWorkspaceConnectorProfileId(row.profile));
 }
 
 export async function deleteGoogleContentWhenAccessEnds(
   db: Db,
-  connection: { id: string; companyId: string; config: unknown },
+  connection: { id: string; companyId: string },
   reason: GoogleAccessEndReason,
   actor: ContentDeletionActor = SYSTEM_ACTOR,
 ) {
-  if (!isGoogleWorkspaceConnection(connection)) return null;
+  if (!(await isGoogleWorkspaceConnection(db, connection))) return null;
   await notifyDeliveryWork(db, DELIVERY_QUEUES.googleTechnicalInformation);
   const { deletion } = await requestConnectionContentDeletion(db, connection, actor, reason);
   await logActivity(db, {
@@ -42,13 +53,12 @@ export async function deleteGoogleContentWhenAccessEnds(
 }
 
 async function googleRunIds(db: Pick<Db, "select">, companyId: string, runs: SQL): Promise<Set<string>> {
-  const google = googleConnectionConfigSql(sql`${toolConnections.config}`);
   const calls = await db.select({ runId: toolInvocations.runId }).from(toolInvocations)
-    .innerJoin(toolConnections, eq(toolConnections.id, toolInvocations.connectionId))
-    .where(and(eq(toolInvocations.companyId, companyId), sql`${toolInvocations.runId} in ${runs}`, google));
+    .where(and(eq(toolInvocations.companyId, companyId), sql`${toolInvocations.runId} in ${runs}`,
+      sql`${toolInvocations.connectionId} in ${googleConnectionIdsSql()}`));
   const events = await db.select({ runId: toolCallEvents.runId }).from(toolCallEvents)
-    .innerJoin(toolConnections, eq(toolConnections.id, toolCallEvents.connectionId))
-    .where(and(eq(toolCallEvents.companyId, companyId), sql`${toolCallEvents.runId} in ${runs}`, google));
+    .where(and(eq(toolCallEvents.companyId, companyId), sql`${toolCallEvents.runId} in ${runs}`,
+      sql`${toolCallEvents.connectionId} in ${googleConnectionIdsSql()}`));
   return new Set([...calls, ...events].flatMap((row) => row.runId ? [row.runId] : []));
 }
 
@@ -78,11 +88,10 @@ export async function sessionUsedGoogleWorkspace(db: Pick<Db, "select">, input: 
 export async function interactionCarriesGoogleWorkspaceAction(db: Pick<Db, "select">, companyId: string, interactionId: string): Promise<boolean> {
   const [row] = await db.select({ id: toolActionRequests.id }).from(toolActionRequests)
     .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
-    .innerJoin(toolConnections, eq(toolConnections.id, toolInvocations.connectionId))
     .where(and(
       eq(toolActionRequests.companyId, companyId),
       eq(toolActionRequests.interactionId, interactionId),
-      googleConnectionConfigSql(sql`${toolConnections.config}`),
+      sql`${toolInvocations.connectionId} in ${googleConnectionIdsSql()}`,
     ))
     .limit(1);
   return Boolean(row);

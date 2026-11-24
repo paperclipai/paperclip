@@ -26,7 +26,7 @@ When Paperclip's access to a Google account ends, Paperclip deletes what agents 
 - The person who connected their Google account leaves the company.
 - Paperclip Cloud removes your Paperclip instance.
 
-Deletion starts at once. Runs that are still working keep their data until they finish; Paperclip then deletes it too. Paperclip waits for running work for up to a day, then deletes everything once more and finishes. If a step fails, Paperclip keeps trying until it succeeds, also after a restart. The connection's activity shows when the deletion started and when it finished.
+Deletion starts at once. Runs that are still working keep their data until they finish; Paperclip then deletes it too. While work is still running, Paperclip checks again every few minutes, and every hour after the first day. If a step fails, Paperclip keeps trying until it succeeds, also after a restart. The connection's activity shows when the deletion started and when it finished.
 
 The deletion covers everything listed under "What is deleted" for that connection, for all people who used it. If you connect Google again later, Paperclip saves new data from new calls only. Data that was deleted does not come back. Agents also do not resume the conversations of those runs; their next run starts a new one.
 
