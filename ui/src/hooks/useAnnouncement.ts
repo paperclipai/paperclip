@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { announcementIdSchema, type Announcement } from "@paperclipai/shared";
+import { useReturningAnnouncementUser } from "@/context/AnnouncementVisitContext";
 import { announcementsApi } from "@/api/announcements";
 import { announcementStoragePrefix, readAnnouncementDismissals, saveAnnouncementDismissal } from "@/lib/announcement-dismissals";
 import { intentionalAbortReason } from "@/lib/intentional-abort";
 
 export const ANNOUNCEMENT_SETTLE_MS = 3000;
+const CONNECTORS_ANNOUNCEMENT_ID = "2026-09-14-connectors";
+
 interface Options {
   userId: string | null;
   companyId: string | null;
@@ -14,6 +17,7 @@ interface Options {
 
 export function useAnnouncement(options: Options) {
   const { userId, enabled } = options;
+  const returningUser = useReturningAnnouncementUser(userId);
   const latest = useRef(options);
   latest.current = options;
   const [state, setState] = useState<{ userId: string; announcement: Announcement } | null>(null);
@@ -149,5 +153,9 @@ export function useAnnouncement(options: Options) {
     check();
     return () => clearTimeout(timer);
   }, [announcement]);
-  return { announcement, dismiss: useCallback((id: string) => dismissRef.current(id), []) };
+  const waitingForSecondVisit = announcement?.id === CONNECTORS_ANNOUNCEMENT_ID && !returningUser;
+  return {
+    announcement: waitingForSecondVisit ? null : announcement,
+    dismiss: useCallback((id: string) => dismissRef.current(id), []),
+  };
 }

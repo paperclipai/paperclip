@@ -1,3 +1,4 @@
+import { AnnouncementVisitProvider } from "./context/AnnouncementVisitContext";
 import { useCoordinatorWorkspaceEnabled } from "./hooks/useCoordinatorWorkspaceEnabled";
 import { AgentChats } from "./pages/AgentChats";
 import { lazy, Suspense, useEffect, type ReactNode } from "react";
@@ -782,7 +783,7 @@ function NoCompaniesStartPage() {
 export function App() {
   const { pathname } = useLocation();
   const { enabled: classicStreamlinedUiEnabled, loaded: classicStreamlinedUiLoaded } = useStreamlinedUiEnabled();
-  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded } = useCoordinatorWorkspaceEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded, userId } = useCoordinatorWorkspaceEnabled();
   const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const streamlinedUiLoaded = classicStreamlinedUiLoaded && coordinatorWorkspaceLoaded;
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
@@ -899,11 +900,11 @@ export function App() {
   );
 
   return (
-    <>
+    <AnnouncementVisitProvider userId={userId}>
       <ConnectionStatusBanner />
       <PageLoadTracker routes={routeTree} />
       <Suspense fallback={<PaperclipLoading />}><Routes>{routeTree}</Routes></Suspense>
       <OnboardingWizardVariant />
-    </>
+    </AnnouncementVisitProvider>
   );
 }
