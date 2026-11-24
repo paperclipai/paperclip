@@ -307,6 +307,10 @@ test("selectTestPrograms skips sandbox providers and examples unless their input
   const tsconfigEdit = selectTestPrograms(["ui/tsconfig.json"]);
   assert.equal(tsconfigEdit.checkCoverage, true);
   assert.equal(tsconfigEdit.changedTestFiles, null);
+
+  const adapterUtilsEdit = selectTestPrograms(["packages/adapter-utils/src/github-launcher.ts"]);
+  assert.ok(adapterUtilsEdit.programs.some((program) => program.startsWith("packages/paperclip-runner/")));
+  assert.equal(adapterUtilsEdit.includeRunnerEval, true);
 });
 
 test("prepareTestPrograms can skip sandbox provider installs, runner eval prep, and plugin SDK", () => {

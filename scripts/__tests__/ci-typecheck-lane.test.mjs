@@ -294,6 +294,10 @@ test("PR mode fails closed for unknown build-gap packages and global typecheck i
   assert.deepEqual(selectBuildGapPackages(["@paperclipai/ui", "@paperclipai/new-pkg"], ["server/src/a.ts"]), [
     "@paperclipai/new-pkg",
   ]);
+  assert.deepEqual(
+    selectBuildGapPackages(["@paperclipai/ui"], ["packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter.ts"]),
+    ["@paperclipai/ui"],
+  );
   const globalPlan = planLane({
     buildGapPackages: ["paperclipai", "@paperclipai/paperclip-runner", "@paperclipai/ui"],
     testLayers: ["tests"],

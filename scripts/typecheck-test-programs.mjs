@@ -132,7 +132,11 @@ export function selectTestPrograms(changedFiles, programs = PROGRAMS) {
       "scripts/typecheck-sandbox-providers/",
       "scripts/link-plugin-dev-sdk.mjs",
     ]);
-  const runnerChanged = hasPrefix(changedFiles, ["packages/paperclip-runner/", "packages/paperclip-eval-kernel/"]);
+  const runnerChanged = hasPrefix(changedFiles, [
+    "packages/paperclip-runner/",
+    "packages/paperclip-eval-kernel/",
+    "packages/adapter-utils/",
+  ]);
   const cloudflareChanged = hasPrefix(changedFiles, ["packages/plugins/sandbox-providers/cloudflare/"]);
 
   const selected = programs.filter((program) => {

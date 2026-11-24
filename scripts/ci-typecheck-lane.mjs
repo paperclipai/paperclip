@@ -151,7 +151,9 @@ export function selectBuildGapPackages(buildGapPackages, changedFiles) {
         "packages/shared/",
         "packages/adapter-utils/",
         "packages/adapters/",
+        "packages/paperclip-runner/",
         "packages/plugins/sdk/",
+        "announcements/examples/animated/",
         "maps/",
       ]);
     }

@@ -114,8 +114,8 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   const e2e = workflow.split("\n  e2e_shards:\n")[1].split("\n  e2e:\n")[0];
   const releaseVerify = readFileSync(new URL(".github/workflows/release-verify.yml", root), "utf8");
   const releaseBuild = releaseVerify.split("\n  build:\n")[1].split("\n  runner_binary_targets:\n")[0];
-  const prKey = e2e.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
-  const releaseKey = releaseBuild.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
+  const prKey = e2e.match(/key: (e2e-ui-dist-v2-.+)/)?.[1];
+  const releaseKey = releaseBuild.match(/key: (e2e-ui-dist-v2-.+)/)?.[1];
   assert.ok(prKey && releaseKey, "both pr-trusted.yml and release-verify.yml must define the E2E UI dist cache key");
   assert.equal(prKey, releaseKey, "E2E UI dist reader and writer keys must match exactly");
   assert.doesNotMatch(e2e.split("Restore prebuilt UI assets")[1].split("Run e2e tests")[0], /restore-keys:/);
