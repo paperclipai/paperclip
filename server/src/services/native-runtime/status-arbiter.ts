@@ -60,7 +60,7 @@ export type NativeStatusEffect =
       owner: IssueUnblockDescriptor["owner"];
       action: string;
     }
-  | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
+  | { kind: "schedule_retry"; cause: string; summary: string; agentId: string; progressNextAction?: string }
   | {
       kind: "record_finalization_error";
       cause: string;
@@ -274,6 +274,7 @@ export function arbitrateNativeStatus(input: {
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
+  agentBlockerProgress?: boolean;
   /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
   hasQueuedChatRequest?: boolean;
   failureRetryCount?: number;
@@ -651,10 +652,13 @@ export function arbitrateNativeStatus(input: {
   // bound now.
   const blocker = input.assessment.blocker;
   const retries = input.failureRetryCount ?? 0;
+  const progressNextAction = input.agentBlockerProgress && !input.hasUnresolvedIssueBlockers
+    ? blocker?.unblockAction.trim() : undefined;
+  const agentContinuationAvailable = retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS || Boolean(progressNextAction);
   const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
     (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
     (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&
-      blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
+      blocker!.ownerKind === "agent" && agentContinuationAvailable));
   if (input.assessment.reportedDisposition === "blocked" && input.hasQueuedChatRequest && continuesAutomatically) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -696,13 +700,14 @@ export function arbitrateNativeStatus(input: {
     !input.isConversation
   ) {
     if (input.assessment.blocker.ownerKind === "agent" && !input.hasActivePauseHold &&
-        (input.failureRetryCount ?? 0) < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS) {
+        agentContinuationAvailable) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         statusAction: "preserve", toStatus: input.priorIssueStatus,
         reasonCode: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, unblockDescriptor: null,
         effects: [{ kind: "schedule_retry", cause: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
-          summary: "Continue the task once in a fresh session.", agentId: input.agentId }],
+          summary: "Continue the task in a fresh session.", agentId: input.agentId,
+          ...(progressNextAction ? { progressNextAction } : {}) }],
       };
     }
     const action = input.assessment.blocker.unblockAction;

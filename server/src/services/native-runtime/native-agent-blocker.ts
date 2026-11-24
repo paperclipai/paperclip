@@ -1,11 +1,50 @@
+import { documentRevisions, documents, issueDocuments, type Db } from "@paperclipai/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { and, eq, lt, ne, notExists, sql, type SQLWrapper } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+
 export const NATIVE_AGENT_BLOCKER_CONTINUATION_CODE = "native_agent_blocker_continuation";
 export const NATIVE_AGENT_BLOCKER_HANDOFF_CODE = "native_agent_blocker_needs_person";
 export const NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS = 1;
 export const NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS = 30_000;
 export const NATIVE_AGENT_BLOCKER_MESSAGE =
-  "The agent reported a blocker it owns. Paperclip continues the task once in a fresh session.";
+  "The agent reported a blocker it owns. Paperclip continues the task in a fresh session.";
 export const NATIVE_AGENT_BLOCKER_HINT = "The previous run stopped on a blocker that it said the agent itself owns. "
-  + "Paperclip started this fresh session once to continue. Earlier attempts may already have completed some steps: "
+  + "Paperclip started this fresh session to continue. Earlier attempts may already have completed some steps: "
   + "check the workspace files, this task's documents and its comments before repeating a step, and never post a comment or save a document that already exists. "
+  + "Save completed work in the task documents and name the exact next action if work remains. "
   + "Resolve the blocker yourself if you can, then finish the remaining work and report the real outcome. "
   + "If only a person can resolve it, report the blocker with owner kind user and the exact action that person must take.";
+
+/** Require new work saved by this run, excluding generated handoff summaries and reverted revisions. */
+export async function hasNativeAgentBlockerProgress(db: Db, input: {
+  companyId: string; issueId: string; runId: string; agentId: string;
+}): Promise<boolean> {
+  const previous = alias(documentRevisions, "previous_work_revision");
+  const normalize = (body: SQLWrapper) => sql<string>`btrim(regexp_replace(${body}, '[[:space:]]+', ' ', 'g'))`;
+  const [progress] = await db.select({ id: documentRevisions.id }).from(issueDocuments)
+    .innerJoin(documents, and(
+      eq(documents.companyId, input.companyId),
+      eq(documents.id, issueDocuments.documentId),
+    ))
+    .innerJoin(documentRevisions, and(
+      eq(documentRevisions.companyId, input.companyId),
+      eq(documentRevisions.documentId, documents.id),
+      eq(documentRevisions.id, documents.latestRevisionId),
+    ))
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+      ne(issueDocuments.key, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+      eq(documentRevisions.createdByRunId, input.runId),
+      eq(documentRevisions.createdByAgentId, input.agentId),
+      ne(normalize(documentRevisions.body), ""),
+      notExists(db.select({ id: previous.id }).from(previous).where(and(
+        eq(previous.companyId, input.companyId),
+        eq(previous.documentId, documentRevisions.documentId),
+        lt(previous.revisionNumber, documentRevisions.revisionNumber),
+        eq(normalize(previous.body), normalize(documentRevisions.body)),
+      ))),
+    )).limit(1);
+  return Boolean(progress);
+}

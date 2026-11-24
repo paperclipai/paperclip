@@ -31,6 +31,7 @@ type NativeRetryLane = {
   exhaustedError: string;
   context?: (run: typeof heartbeatRuns.$inferSelect) => Record<string, unknown>;
   refuseStopped?: boolean;
+  progressNextAction?: string;
 };
 
 /** Called under the finalizer's issue/coordinator locks, in the status-effect transaction. */
@@ -79,10 +80,11 @@ export async function materializeNativeEnvironmentBlockerRetry(input: NativeRetr
   });
 }
 
-export async function materializeNativeAgentBlockerContinuation(input: NativeRetryTarget) {
+export async function materializeNativeAgentBlockerContinuation(input: NativeRetryTarget & { progressNextAction?: string }) {
   return materializeNativeFreshSessionRetry(input, {
     reason: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
     maxRetries: NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS,
+    progressNextAction: input.progressNextAction,
     delayMs: () => NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS,
     message: NATIVE_AGENT_BLOCKER_MESSAGE,
     idempotencyPrefix: "native-agent-blocker",
@@ -91,7 +93,9 @@ export async function materializeNativeAgentBlockerContinuation(input: NativeRet
     context: run => ({
       livenessContinuationSourceRunId: run.id,
       livenessContinuationReason: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
-      livenessContinuationInstruction: NATIVE_AGENT_BLOCKER_HINT,
+      livenessContinuationInstruction: input.progressNextAction
+        ? `${NATIVE_AGENT_BLOCKER_HINT} The prior run reported this next action: ${input.progressNextAction}`
+        : NATIVE_AGENT_BLOCKER_HINT,
     }),
   });
 }
@@ -109,7 +113,7 @@ async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane
   )).limit(1);
   if (existing) return existing.id;
   const attempt = executionFailureRetryCount(run) + 1;
-  if (attempt > lane.maxRetries) throw new Error(lane.exhaustedError);
+  if (attempt > lane.maxRetries && !lane.progressNextAction) throw new Error(lane.exhaustedError);
   const now = new Date();
   const dueAt = new Date(now.getTime() + lane.delayMs(attempt));
   const retryId = randomUUID();

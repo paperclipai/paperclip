@@ -18,6 +18,7 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MESSAGE } from "./native-environment-blocker.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE, NATIVE_AGENT_BLOCKER_HINT } from "./native-agent-blocker.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
+import { documentService } from "../documents.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { heartbeatService } from "../heartbeat.js";
 import { attentionService } from "../attention.js";
@@ -275,6 +276,29 @@ describe("native run that reports a task-wide blocker it owns", () => {
     expect(await ownerWakes(issueId)).toEqual([]);
     const second = await runTurn(issueId, { done: true }, first.retries[0]!.id);
     expect(second.issue.status).toBe("done");
+  }, 120_000);
+
+  it("continues while the current run saves new work for a next step, and stops on a repeated revision", async () => {
+    const issueId = await createTask();
+    const first = await runTurn(issueId, { blocker: selfBlocker });
+    const secondRunId = first.retries[0]!.id;
+    const documents = documentService(db);
+    const saveLedger = (runId: string, baseRevisionId?: string) => documents.upsertIssueDocument({
+      issueId, key: "ledger", format: "markdown", baseRevisionId, body: "Reconciled 34 ledger rows.",
+      createdByAgentId: agentId, createdByRunId: runId,
+    });
+    const nextStep = "Compare reconciled rows against the audit log.";
+    const second = await runTurn(issueId, { blocker: { ...selfBlocker, unblockAction: nextStep } },
+      secondRunId, () => saveLedger(secondRunId));
+    expect(second.decision.reasonCode).toBe(NATIVE_AGENT_BLOCKER_CONTINUATION_CODE);
+    expect(second.retries).toHaveLength(1);
+    const thirdRunId = second.retries[0]!.id;
+    expect(second.retries[0]!.contextSnapshot?.livenessContinuationInstruction).toContain(nextStep);
+    const ledger = await documents.getIssueDocumentByKey(issueId, "ledger");
+    const third = await runTurn(issueId, { blocker: selfBlocker }, thirdRunId,
+      () => saveLedger(thirdRunId, ledger?.latestRevisionId ?? undefined));
+    expect(third.decision.reasonCode).toBe(NATIVE_AGENT_BLOCKER_HANDOFF_CODE);
+    expect(third.retries).toEqual([]);
   }, 120_000);
 
   it("continues a blocker the agent owns once, then hands a repeated one to a person instead of retrying again", async () => {

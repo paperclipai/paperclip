@@ -926,6 +926,7 @@ async function materializeDecisionEffect(input: {
       const retryId = await materialize({
         tx: input.tx as unknown as Db, companyId: input.companyId,
         issueId: input.issue.id, runId: input.runId, agentId: effect.agentId,
+        progressNextAction: effect.progressNextAction,
       });
       return { effectKind: effect.kind, targetType: "heartbeat_run", targetId: retryId,
         payload: { cause: effect.cause, summary: effect.summary } };
