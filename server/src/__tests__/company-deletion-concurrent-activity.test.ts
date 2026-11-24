@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { activityLog, companies, createDb, type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -83,18 +83,31 @@ describeEmbeddedPostgres("company deletion with a concurrent activity writer", (
   it("deletes the company when a background writer commits its activity entry during the final delete", async () => {
     const companyId = await seedCompany();
     let writer: Promise<unknown> | null = null;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
     hook.duringDelete = async () => {
       let inserted!: () => void;
       const insertedSignal = new Promise<void>((resolve) => { inserted = resolve; });
       writer = db.transaction(async (tx) => {
         await recordRecovery(tx as unknown as Db, companyId);
         inserted();
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await released;
       });
       await insertedSignal;
     };
 
-    expect(await deleteCompany(db, companyId)).toMatchObject({ id: companyId });
+    const deleted = deleteCompany(db, companyId);
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const waiting = await db.execute(sql`select 1 from pg_stat_activity
+        where wait_event_type = 'Lock' and query ilike '%"companies"%' and pid <> pg_backend_pid()`);
+      if (waiting.length > 0) break;
+      if (Date.now() > deadline) throw new Error("The company delete never waited on the writer");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release();
+
+    expect(await deleted).toMatchObject({ id: companyId });
     await writer;
     await expectGone(companyId);
   });
