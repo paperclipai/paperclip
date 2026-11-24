@@ -25,6 +25,25 @@ describe("changes outside the task folder in visible tool calls", () => {
     expect(shellWriteTargets("cat a.txt 2>/dev/null")).toEqual(["/dev/null"]);
   });
 
+  it.each<[string, string[]]>([
+    ["grep '>' /tmp/report.html", []],
+    ['echo "a > /tmp/x" | wc -c', []],
+    ["ls 2>&1 | head", []],
+    ["cat a.txt >/dev/null 2>&1", ["/dev/null"]],
+    ["wc -l <<< 'x > /tmp/y'", []],
+    ["printf A >> '/tmp/quoted target.txt'", ["/tmp/quoted target.txt"]],
+    ["cp ./a.txt /tmp/out.txt", ["/tmp/out.txt"]],
+    ["cp /etc/hosts ./in.txt", ["./in.txt"]],
+    ["echo $(date) > /tmp/sub.txt", []],
+    ["cat <<EOF > /tmp/h.txt\nx\nEOF", []],
+    ["eval 'echo x > /tmp/e'", []],
+    ["python3 -c 'open(\"/tmp/p\",\"w\")'", []],
+    ["cd /tmp && echo x > rel.txt", []],
+    ["echo x > $OUT_DIR/f", []],
+  ])("detects only visible, unambiguous write targets: %s", (command, targets) => {
+    expect(shellWriteTargets(command)).toEqual(targets);
+  });
+
   it("flags absolute, parent, home and symlink escapes, and allows the task folder", () => {
     expect(antigravityOutsideChange(shell("printf E > /tmp/agy-e.txt"), workspace, home)).toBe("/tmp/agy-e.txt");
     expect(antigravityOutsideChange(edit("../escape.txt"), workspace, home)).toBe("../escape.txt");
