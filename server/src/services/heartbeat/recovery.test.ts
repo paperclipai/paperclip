@@ -1083,7 +1083,9 @@ describePostgres("heartbeat recovery module ownership", () => {
       const controller = currentControllerProcessStamp();
       expect((await fenceState(f.lease.id) as unknown as { controller: unknown }).controller)
         .toEqual({ bootId: controller.bootId, pid: process.pid, hostHash: controller.hostHash,
-          processStartedAt: controller.processStartedAt });
+          processStartedAt: controller.processStartedAt,
+          // A host that can prove its kernel boot also records it for restart recovery.
+          ...(controller.localKernelBoot ? { localKernelBoot: controller.localKernelBoot } : {}) });
     } finally { await deleteShutdownSource(f); }
   });
 
