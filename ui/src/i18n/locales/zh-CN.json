@@ -5,5 +5,15 @@
       "description": "通过创建公司开始。",
       "newCompany": "新公司"
     }
+  },
+  "taskChat": {
+    "focus": {
+      "viewGroup": "Thread view",
+      "fullView": "All activity",
+      "focusView": "Focus view",
+      "expand": "Activity hidden, click to expand",
+      "collapse": "Hide activity",
+      "stepCount": "(steps: {{count}})"
+    }
   }
 }

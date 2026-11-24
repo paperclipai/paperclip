@@ -5,5 +5,15 @@
       "description": "התחילו ביצירת חברה.",
       "newCompany": "חברה חדשה"
     }
+  },
+  "taskChat": {
+    "focus": {
+      "viewGroup": "Thread view",
+      "fullView": "All activity",
+      "focusView": "Focus view",
+      "expand": "Activity hidden, click to expand",
+      "collapse": "Hide activity",
+      "stepCount": "(steps: {{count}})"
+    }
   }
 }
