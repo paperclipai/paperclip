@@ -1239,6 +1239,7 @@ export type {
   IssueWatchdogSummary,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
+  AiConnectionPoolWaitScope,
   IssueScheduledRetry,
   IssueScheduledRetryStatus,
   IssueRetryNowOutcome,

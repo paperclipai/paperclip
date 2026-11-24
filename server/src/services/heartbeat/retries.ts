@@ -7,7 +7,7 @@ import { notifyIssueAttentionRetentionWork } from "../retention-work-notificatio
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
-import { applyHistoricalQuotaHandoff, switchHistoricalQuotaPin, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { applyHistoricalQuotaHandoff, reselectHistoricalQuotaWaitSuccessor, switchHistoricalQuotaPin, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { poolFailureKind, switchFailedPoolPin, poolConversationHandoff } from "./pool-failover.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
@@ -50,6 +50,8 @@ import {
   asc,
   desc,
   eq,
+  gt,
+  gte,
   inArray,
   ne,
   notInArray,
@@ -2044,12 +2046,61 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     });
   }
 
+  // A backup account may recover before a saved pin's deadline. Reuse the
+  // normal dispatcher and existing stop/ownership proofs to revisit that wait.
+  const poolWaitRecheckIntervalMs = 30_000;
+  const poolWaitRecheckBatchSize = 25;
+  let nextPoolWaitRecheckAt = 0;
+  let poolWaitCursor: string | null = null;
+
+  function futurePoolWaits() {
+    return db.select({ run: heartbeatRuns }).from(heartbeatRuns)
+      .innerJoin(issues, and(eq(issues.companyId, heartbeatRuns.companyId),
+        eq(issues.id, heartbeatRuns.issueId), eq(issues.executionRunId, heartbeatRuns.id),
+        eq(issues.assigneeAgentId, heartbeatRuns.agentId)));
+  }
+
+  function futurePoolWaitCondition(cutoff: Date | null, now: Date) {
+    return and(eq(heartbeatRuns.status, "scheduled_retry"),
+      eq(heartbeatRuns.scheduledRetryReason, AI_CONNECTION_POOL_WAIT_RETRY_REASON),
+      gt(heartbeatRuns.scheduledRetryAt, now),
+      inArray(issues.status, ["todo", "in_progress", "in_review"]),
+      cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined);
+  }
+
   async function nextScheduledRetryAt() {
-    return runDispatch.nextScheduledRetryAt({ cutoff: await getWorktreeExecutionCutoff() });
+    const cutoff = await getWorktreeExecutionCutoff();
+    const dueAt = await runDispatch.nextScheduledRetryAt({ cutoff });
+    if (dueAt === null) return null;
+    const now = new Date();
+    const recheckAt = Math.max(now.getTime(), nextPoolWaitRecheckAt);
+    if (dueAt <= recheckAt) return dueAt;
+    const [waiting] = await futurePoolWaits()
+      .where(futurePoolWaitCondition(cutoff, now)).limit(1);
+    return waiting ? recheckAt : dueAt;
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
+    if (now.getTime() >= nextPoolWaitRecheckAt) {
+      nextPoolWaitRecheckAt = now.getTime() + poolWaitRecheckIntervalMs;
+      const waiting = await futurePoolWaits().where(and(
+        futurePoolWaitCondition(cutoff, now),
+        poolWaitCursor ? gt(heartbeatRuns.id, poolWaitCursor) : undefined,
+      )).orderBy(asc(heartbeatRuns.id)).limit(poolWaitRecheckBatchSize);
+      poolWaitCursor = waiting.length === poolWaitRecheckBatchSize ? waiting.at(-1)!.run.id : null;
+      for (const { run } of waiting) {
+        if (!run.responsibleUserId) continue;
+        try {
+          const gate = await runDispatch.evaluateScheduledRetryGate({
+            companyId: run.companyId, runId: run.id, retryReasonOverride: AI_CONNECTION_POOL_WAIT_RETRY_REASON, now,
+          });
+          if (gate.allowed) await reselectHistoricalQuotaWaitSuccessor(db, run, run.responsibleUserId, now);
+        } catch (err) {
+          logger.warn({ err, runId: run.id, companyId: run.companyId }, "Pool retry recheck failed");
+        }
+      }
+    }
     const result = await runDispatch.promoteDueScheduledRetries({
       now,
       cutoff,
@@ -2102,6 +2153,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       scheduledRetryAt: row.run.scheduledRetryAt,
       scheduledRetryAttempt: row.run.scheduledRetryAttempt,
       scheduledRetryReason: row.run.scheduledRetryReason,
+      ...((row.run.contextSnapshot?.poolWaitScope === "account" || row.run.contextSnapshot?.poolWaitScope === "pool")
+        ? { poolWaitScope: row.run.contextSnapshot.poolWaitScope } : {}),
       error: row.run.error,
       errorCode: row.run.errorCode,
     };

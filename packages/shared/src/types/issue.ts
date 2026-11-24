@@ -703,6 +703,8 @@ export interface SuccessfulRunHandoffState {
 
 export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
 
+export type AiConnectionPoolWaitScope = "pool" | "account";
+
 export interface IssueScheduledRetry {
   runId: string;
   status: IssueScheduledRetryStatus;
@@ -712,6 +714,7 @@ export interface IssueScheduledRetry {
   scheduledRetryAt: Date | string | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  poolWaitScope?: AiConnectionPoolWaitScope;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;

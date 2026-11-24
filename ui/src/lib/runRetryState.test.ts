@@ -26,6 +26,36 @@ describe("runRetryState", () => {
     });
   });
 
+  it.each([
+    [{ poolWaitScope: "pool" }, "Pool exhausted"],
+    [{ poolWaitScope: "account" }, "Selected AI account cooling down"],
+    [undefined, "Waiting for AI pool usage"],
+  ] as const)("uses the recorded wait scope for the run badge (%j)", (contextSnapshot, badgeLabel) => {
+    const run = {
+      status: "scheduled_retry",
+      scheduledRetryReason: "ai_connection_pool_wait",
+      scheduledRetryAt: "2026-11-24T09:15:00.000Z",
+      contextSnapshot,
+    };
+
+    expect(describeRunRetryState(run, new Date("2026-11-24T09:00:00.000Z"))).toMatchObject({
+      kind: "scheduled",
+      badgeLabel,
+      secondary: expect.stringMatching(/^Usage recheck .+/),
+    });
+  });
+
+  it("shows a neutral pool wait when the recorded quota has reached its recheck time", () => {
+    expect(describeRunRetryState({
+      status: "scheduled_retry",
+      scheduledRetryReason: "ai_connection_pool_wait",
+      scheduledRetryAt: "2026-11-24T09:15:00.000Z",
+      contextSnapshot: { poolWaitScope: "pool" },
+    }, new Date("2026-11-24T09:15:00.000Z"))).toMatchObject({
+      badgeLabel: "Waiting for AI pool usage",
+    });
+  });
+
   it("describes max-turn continuation retries distinctly", () => {
     expect(
       describeRunRetryState({

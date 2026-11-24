@@ -6,6 +6,7 @@ type RetryAwareRun = {
   scheduledRetryAt?: string | Date | null;
   scheduledRetryAttempt?: number | null;
   scheduledRetryReason?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
   retryExhaustedReason?: string | null;
 };
 
@@ -44,7 +45,18 @@ export function formatRetryReason(reason: string | null | undefined) {
   return RETRY_REASON_LABELS[normalized] ?? normalized.replace(/_/g, " ");
 }
 
-export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary | null {
+export function describePoolWait(scope: unknown, recheckAt: string | Date | null | undefined, now: string | Date = new Date()): string {
+  if (!recheckAt || !(new Date(recheckAt).getTime() > new Date(now).getTime())) {
+    return "Waiting for AI pool usage";
+  }
+  switch (scope) {
+    case "pool": return "Pool exhausted";
+    case "account": return "Selected AI account cooling down";
+    default: return "Waiting for AI pool usage";
+  }
+}
+
+export function describeRunRetryState(run: RetryAwareRun, now?: Date): RunRetryStateSummary | null {
   const attempt =
     typeof run.scheduledRetryAttempt === "number" && Number.isFinite(run.scheduledRetryAttempt) && run.scheduledRetryAttempt > 0
       ? run.scheduledRetryAttempt
@@ -65,14 +77,16 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
   if (!hasRetryMetadata) return null;
 
   if (run.status === "scheduled_retry") {
+    const isPoolWait = run.scheduledRetryReason === "ai_connection_pool_wait";
+    const nextCheckLabel = isPoolWait ? "Usage recheck" : isMaxTurnContinuation ? "Next continuation" : "Next retry";
     return {
       kind: "scheduled",
-      badgeLabel: run.scheduledRetryReason === "ai_connection_pool_wait" ? "Pool exhausted" : isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
+      badgeLabel: isPoolWait
+        ? describePoolWait(run.contextSnapshot?.poolWaitScope, run.scheduledRetryAt, now)
+        : isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
       tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-      detail: joinFragments([attemptLabel, reasonLabel]),
-      secondary: dueAt
-        ? `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} ${dueAt}`
-        : `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} pending schedule`,
+      detail: joinFragments([attemptLabel, isPoolWait ? null : reasonLabel]),
+      secondary: `${nextCheckLabel} ${dueAt ?? "pending schedule"}`,
       retryOfRunId,
     };
   }

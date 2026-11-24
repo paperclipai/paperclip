@@ -46,7 +46,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
         context: { ...handoffContext, aiRouterSelection: admitted.routerSelection, aiRouterTaskKey: admitted.taskKey, harnessPoolSelection: admitted.selection } };
     } catch (error) {
       return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: error instanceof AiConnectionPoolExhausted
-        ? { kind: "exhausted", message: error.message, poolId: error.poolId, retryAt: error.retryAt }
+        ? { kind: "exhausted", message: error.message, poolId: error.poolId, retryAt: error.retryAt, poolWaitScope: error.poolWaitScope }
         : { kind: "configuration", message: error instanceof Error ? error.message : "Pool harness preparation failed",
           ...(error instanceof HttpError ? { code: parseObject(error.details).code } : {}) } }, context: {} };
     }
@@ -88,7 +88,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
       context: { ...handoffContext, aiRouterSelection: selection, aiRouterTaskKey: taskKey } };
   } catch (error) {
     const failure = error instanceof AiConnectionPoolExhausted
-      ? { kind: "exhausted", message: error.message, retryAt: error.retryAt, poolId: error.poolId }
+      ? { kind: "exhausted", message: error.message, retryAt: error.retryAt, poolId: error.poolId, poolWaitScope: error.poolWaitScope }
       : { kind: error instanceof HttpError ? "configuration" : "unexpected", message: error instanceof Error ? error.message : "Connection pool preparation failed",
         ...(error instanceof HttpError ? { status: error.status, code: parseObject(error.details).code } : {}) };
     return pin ? {

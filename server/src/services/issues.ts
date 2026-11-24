@@ -1974,6 +1974,7 @@ type IssueScheduledRetryRow = {
   scheduledRetryAt: Date | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  poolWaitScope?: import("@paperclipai/shared").AiConnectionPoolWaitScope;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
@@ -7277,6 +7278,7 @@ export function issueService(db: Db) {
         scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
         scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        poolWaitScope: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'poolWaitScope'`,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
       })
@@ -7315,7 +7317,9 @@ export function issueService(db: Db) {
         status !== "running"
       )
         continue;
-      currentByIssueId.set(row.issueId, { ...row, status });
+      const { poolWaitScope, ...retry } = row;
+      currentByIssueId.set(row.issueId, { ...retry, status,
+        ...(poolWaitScope === "account" || poolWaitScope === "pool" ? { poolWaitScope } : {}) });
     }
     return currentByIssueId;
   }

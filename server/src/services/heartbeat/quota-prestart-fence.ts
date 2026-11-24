@@ -295,6 +295,7 @@ export function applyHistoricalQuotaHandoff(context: Record<string, unknown>, ha
   delete context.resumeSessionDisplayId;
   delete context.resumeSessionParams;
   delete context.aiPoolFailover;
+  delete context.poolWaitScope;
   delete context.harnessPoolSelection;
 }
 

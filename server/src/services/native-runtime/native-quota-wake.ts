@@ -22,7 +22,7 @@ export async function reopenNativeQuotaPoolWaits(
       and coalesce(f.failure_detail->>'replacementDenied', '') = '' and f.next_attempt_at is not null
       and ${pool} returning f.run_id`);
   const waiting = await tx.execute<{ id: string }>(sql`update heartbeat_runs r set scheduled_retry_at = now(),
-      context_snapshot = r.context_snapshot #- '{aiPoolFailover,waitingUntil}', updated_at = now()
+      context_snapshot = (r.context_snapshot #- '{aiPoolFailover,waitingUntil}') - 'poolWaitScope', updated_at = now()
     where r.company_id = ${input.companyId} and r.status = 'scheduled_retry'
       and ((r.runtime_mode = 'legacy' and r.context_snapshot->'aiPoolFailover'->>'waitingUntil' is not null)
         or (r.scheduled_retry_reason = 'ai_connection_pool_wait' and r.started_at is null

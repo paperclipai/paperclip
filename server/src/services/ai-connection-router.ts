@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionPoolWaitScope, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
@@ -133,7 +133,17 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
 }
 export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
-  constructor(readonly retryAt: string, readonly poolId: string) { super("All eligible pool members are temporarily unavailable. Waiting for the earliest retry or an account update."); }
+  constructor(
+    readonly retryAt: string,
+    readonly poolId: string,
+    readonly poolWaitScope?: AiConnectionPoolWaitScope,
+  ) {
+    super(poolWaitScope === "pool"
+      ? "All eligible pool members are temporarily unavailable. Waiting for the earliest retry or an account update."
+      : poolWaitScope === "account"
+        ? "The selected pool account is temporarily unavailable. Waiting for a safe handoff or a usage recheck."
+        : "Waiting for an available pool account.");
+  }
 }
 
 export const LOCAL_POOL_ADAPTERS = ["claude_local", "codex_local", "grok_local", "opencode_local"];
@@ -531,7 +541,8 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           break;
         }
         if (available.length === 0 && cooling.length > 0) {
-          throw new AiConnectionPoolExhausted(new Date(Math.min(...cooling.map((date) => date.getTime()))).toISOString(), pool.id);
+          throw new AiConnectionPoolExhausted(new Date(Math.min(...cooling.map((date) => date.getTime()))).toISOString(), pool.id,
+            pin || input.requireExisting ? "account" : "pool");
         }
         candidates.splice(0, candidates.length, ...available.slice(0, 1));
       }
@@ -543,7 +554,8 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const result = builtin ? (candidates[0] ? { kind: "selected" as const, memberId: candidates[0].member.id } : { kind: "unavailable" as const }) : await workerManager!.call(plugin!.id, "routeAiConnection", { companyId: input.companyId, pool: authorizedPool, memberOrder: pool.members.map((member) => member.id), agentId: input.agentId, taskKey: input.taskKey, lastMemberId: cursor.lastMemberId, cursorVersion: cursor.version, ...(pin ? { pinnedMemberId: pin.member.id } : {}), candidates, now: new Date().toISOString() }, 5000);
       if (result.kind === "exhausted") {
         const retry = Date.parse(result.retryAt);
-        throw new AiConnectionPoolExhausted(new Date(Number.isFinite(retry) ? Math.max(Date.now() + 1000, retry) : Date.now() + 60_000).toISOString(), pool.id);
+        throw new AiConnectionPoolExhausted(new Date(Number.isFinite(retry) ? Math.max(Date.now() + 1000, retry) : Date.now() + 60_000).toISOString(), pool.id,
+          pin || input.requireExisting ? "account" : candidates.length > 0 ? "pool" : undefined);
       }
       if (result.kind !== "selected") throw unprocessable("No pool account is permitted and compatible for this task");
       const candidate = candidates.find((v) => v.member.id === result.memberId);
@@ -745,7 +757,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     if (!identity) throw unprocessable("The task account identity changed before provider start");
     const retryAt = await accountCooldown(input.companyId, pin.member.binding.connectionId, identity,
       input.selection.runnerScope ? { adapterType, config: input.selection.runtimeConfig, scope: input.selection.runnerScope } : undefined);
-    if (retryAt) throw new AiConnectionPoolExhausted(retryAt.toISOString(), row.id);
+    if (retryAt) throw new AiConnectionPoolExhausted(retryAt.toISOString(), row.id, "account");
   }
   return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, currentMemberCooldown, transitionQuotaPin, recheckPinnedPoolAccount };
 }

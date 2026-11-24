@@ -2786,7 +2786,9 @@ export function heartbeatService(
           context.aiRouterTaskKey = routerTaskKey;
           const poolPreparationFailure = parseObject(parseObject(parseObject(run.runnerProfileJson).adapterDispatch).poolPreparationFailure);
           if (poolPreparationFailure.kind === "exhausted" && typeof poolPreparationFailure.retryAt === "string" && typeof poolPreparationFailure.poolId === "string") {
-            throw new AiConnectionPoolExhausted(poolPreparationFailure.retryAt, poolPreparationFailure.poolId);
+            const waitScope = poolPreparationFailure.poolWaitScope;
+            throw new AiConnectionPoolExhausted(poolPreparationFailure.retryAt, poolPreparationFailure.poolId,
+              waitScope === "account" || waitScope === "pool" ? waitScope : undefined);
           }
           if (typeof poolPreparationFailure.message === "string") throw new Error(poolPreparationFailure.message);
           const savedIdentity = taskSession?.sessionParamsJson?.paperclipAiCredentialIdentity;
@@ -2822,6 +2824,8 @@ export function heartbeatService(
         } catch (error) {
           if (error instanceof AiConnectionPoolExhausted && Object.keys(savedRouterInput).length === 0) {
             context.aiRouterPoolId = error.poolId;
+            if (error.poolWaitScope) context.poolWaitScope = error.poolWaitScope;
+            else delete context.poolWaitScope;
             const now = new Date();
             context.aiConnectionBusyDeferredWhileAssignee = issueContext?.assigneeAgentId === agent.id;
             const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {

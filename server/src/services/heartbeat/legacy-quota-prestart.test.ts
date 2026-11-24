@@ -19,7 +19,7 @@ import { aiConnectionService } from "../ai-connections.js";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
-import { fenceLegacyQuotaPrestartStop, reselectHistoricalQuotaWaitSuccessor, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { fenceLegacyQuotaPrestartStop, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { preparePoolAdapterClaim } from "./effective-run-adapter.js";
 import { recordVerifiedRouterQuotaCooldown, recoverLegacyPoolAttribution } from "./run-completion.js";
 import { reopenNativeQuotaPoolWaits } from "../native-runtime/native-quota-wake.js";
@@ -106,7 +106,7 @@ describe("legacy quota prestart retry", () => {
     const schedule = () => retries.scheduleBoundedRetryForRun(source!, updatedAgent!, postStart
       ? { maxAttempts: 5, delayMs: 3_600_000 }
       : { retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: 5, delayMs: 3_600_000 });
-    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
+    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router, retries,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
   it.each([429, 403])("continues a typed Claude quota failure without an account-wide cooldown when usage returns %s", async status => {
@@ -644,7 +644,9 @@ describe("legacy quota prestart retry", () => {
       ]);
       expect(claims).toMatchObject([{ context: handoff }, { context: handoff }]);
     } else {
-      expect(await reselectHistoricalQuotaWaitSuccessor(db, candidate, f.userId)).toMatchObject(handoff);
+      await f.retries.promoteDueScheduledRetries();
+      const [rechecked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.id));
+      expect(rechecked.contextSnapshot).toMatchObject(handoff);
     }
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.id));
     expect(successor.sessionIdBefore).toBeNull();

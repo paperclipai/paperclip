@@ -1006,9 +1006,26 @@ describe("durable, authorized connection routing", () => {
     try {
       const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
       await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(first!.id), new Date(Date.now() + 60_000));
-      await expect(resolve(pool.id, randomUUID())).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+      await expect(resolve(pool.id, randomUUID())).rejects.toMatchObject({ poolWaitScope: "pool" });
     } finally {
       await db.update(connectionGrants).set({ credentialSecretRefs: second!.credentialSecretRefs }).where(eq(connectionGrants.id, second!.id));
+      await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    }
+  });
+  it("distinguishes a cooling task pin from an exhausted pool", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, {
+      companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members },
+    }, "alice");
+    const taskKey = randomUUID();
+    const pinned = await resolve(pool.id, taskKey);
+    expect(pinned.memberId).toBe(members[0]!.id);
+    try {
+      await service().recordQuotaCooldown(companyId, pinned.binding.connectionId,
+        await identityFor(pinned.binding.grantId), new Date(Date.now() + 60_000));
+      await expect(resolve(pool.id, taskKey)).rejects.toMatchObject({ poolWaitScope: "account" });
+      await expect(resolve(pool.id, randomUUID())).resolves.toMatchObject({ memberId: members[1]!.id });
+    } finally {
       await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     }
   });
@@ -1493,6 +1510,8 @@ describe("durable, authorized connection routing", () => {
       const [retry] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agent!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_pool_wait")));
       await waitForPendingRunFailureReports();
       expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
+      expect(cancelled?.contextSnapshot?.poolWaitScope).toBe("account");
+      expect(retry?.contextSnapshot?.poolWaitScope).toBe("account");
       expect(retry?.resultJson?.cancellation).toBeUndefined();
       expect(retry?.contextSnapshot?.aiRouterTaskKey).toBe(issue!.id); expect(retry?.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0 }); expect(execute).not.toHaveBeenCalled();
       const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.agentId, agent!.id))); expect(pin?.selection).toEqual(pinned);
