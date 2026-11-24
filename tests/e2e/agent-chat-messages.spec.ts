@@ -31,7 +31,7 @@ test("answering questions in chat and inbox updates both open surfaces", async (
 });
 
 test("a routine delivers a first digest, unread state, source link and replyable history", async ({ page, request }) => {
-  const f = await setup(request);
+  const f = await setup(request, { agentCount: 2 });
   try {
     await page.goto(`/${f.company.issuePrefix}/chats/${f.agents[1].id}`);
     await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });

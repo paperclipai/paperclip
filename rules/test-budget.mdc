@@ -1,0 +1,42 @@
+---
+description: Keep PR tests fast and high-signal: avoid unbudgeted real-clock sleeps >1s, historical SQL migration replay sprawl, brittle static prose-grep tests, and tiny standalone embedded-Postgres files.
+alwaysApply: false
+globs: packages/db/src/**/*.test.ts, server/src/**/*.test.ts, ui/src/**/*.test.ts, ui/src/**/*.test.tsx, tests/e2e/**/*.spec.ts
+---
+
+# CI test budget
+
+This rule applies to Vitest and Playwright test files across `packages/db`, `server`, `ui`, and `tests/e2e`.
+
+## Required behavior
+
+1. **No unbudgeted real-clock sleeps over 1 second in PR tests.**
+   - Use fake timers (`vi.useFakeTimers()`), deterministic event/condition waits, or direct service calls instead of `setTimeout(..., >1000)`, `delay(>1000)`, or `page.waitForTimeout(>1000)`.
+   - True real-clock soak, lease-expiry, restart, crash-recovery, retention-sweep, and load/benchmark suites must be registered in `scripts/ci/nightly-only-suites.json` so they run on `master`, `release-verify`, `cloud-readiness`, local `pnpm test:run`, and `PAPERCLIP_CI_FULL=1` without blocking ordinary PRs.
+   - If a PR test genuinely requires a real-clock wait over 1s (for example testing a real idle-timeout or socket deadline), annotate the line with `// test-budget:allow-sleep: <reason>`.
+
+2. **No historical one-time SQL migration replay sprawl.**
+   - Do not add standalone `*-migration.test.ts` files that tear down schema and replay already-shipped SQL migrations against embedded Postgres.
+   - Test ongoing migration-runner invariants, safety rules, and schema/snapshot integrity in the core owner suites: `packages/db/src/client.test.ts`, `packages/db/src/check-migration-safety.test.ts`, `packages/db/src/migration-compatibility.test.ts`, and `packages/db/src/migration-snapshot-drift.test.ts`.
+   - Active runtime migration services (not historical SQL replay) are exempt, and long-running migration soaks belong in `scripts/ci/nightly-only-suites.json`.
+
+3. **No brittle static prose-grep tests.**
+   - Do not add `*-guidance.test.ts` suites that `readFileSync` / `readFile` markdown docs, skill prose, or `ui/src/*.tsx` solely to assert exact wording or copy strings.
+   - Security, authz, and safety static guards (such as `cli-invocation-safety.test.ts`, `authz-existence-oracle-guard.test.ts`, and `app-private-hostname-gate.test.ts`) are explicit exceptions.
+
+4. **Extend existing owner suites instead of adding tiny standalone embedded-Postgres files.**
+   - Each standalone server/DB test file pays isolated Vitest worker import, transform, and disposable-database setup cost.
+   - Do not create a new `<= 80` LOC test file that boots embedded Postgres (`startEmbeddedPostgresTestDatabase` / `createTestPostgres`) for one narrow regression case; add the test case to the owning service or route suite instead.
+   - If a standalone file is required for process or environment isolation, annotate the file with `// test-budget:allow-standalone-db: <reason>`.
+
+5. **Preserve core control-plane invariants on every PR.**
+   - Never demote suites covering company isolation, board/agent authz, atomic checkout, single-assignee rules, approval gates, budget hard-stops, mutation activity logging, secrets/CSRF/redaction/privacy, or telemetry/Sentry contracts into `scripts/ci/nightly-only-suites.json`.
+
+## Automated guardrail
+
+Run `node scripts/check-test-budget.mjs` (or `--base <ref>` / `--files <paths...>`) to validate `scripts/ci/nightly-only-suites.json` integrity and enforce the budget rules on new or changed test files.
+
+## Review criteria
+
+- Flag new PR test files with unannotated sleeps `> 1000ms`, historical SQL migration replay files, static prose-grep guidance tests, or tiny `<= 80` LOC embedded-Postgres files that belong in an existing owner suite.
+- Flag any edit to `scripts/ci/nightly-only-suites.json` that adds missing/duplicate paths or demotes a core control-plane or security/privacy invariant suite.
