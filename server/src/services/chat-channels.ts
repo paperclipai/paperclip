@@ -1497,7 +1497,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // One provider message can match both a mention handler and the catch-all
     // new-message handler. The trigger is policy metadata, not provider event
     // identity, so it must not defeat durable deduplication.
-    const { githubAutomatic, githubIssue, githubManual, providerEventId, surfaceKind, addressed, eventKind, endpointRuntime, nativeInboundAttachments, unavailableTeamsReferences, providerSentAt, providerUrl, normalized, redactedDestinationNormalized } = await prepareInboundEnvelope({ endpoint, thread, message, trigger, receiptReactionSupported, recoveredProviderUrl, runtimeContext, providerUpdateId, admittedDeliveryId, suppressSetupDestinationActivation, slackSlashControl });
+    const { githubAutomatic, githubIssue, githubManual, providerEventId, surfaceKind, addressed, eventKind, endpointRuntime, nativeInboundAttachments, unavailableTeamsReferences, providerSentAt, providerUrl, normalized, redactedDestinationNormalized, requestText } = await prepareInboundEnvelope({ endpoint, thread, message, trigger, receiptReactionSupported, recoveredProviderUrl, runtimeContext, providerUpdateId, admittedDeliveryId, suppressSetupDestinationActivation, slackSlashControl });
     const reorderWindow = INGRESS_REORDER_WINDOW_MS[endpoint.provider];
     const scheduledAt =
       ingressOnly && reorderWindow
@@ -2286,7 +2286,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           );
         }
         const body =
-          githubInboundCommentText({ manual: githubManual, repository: resource.providerResourceId, thread: thread.id, sender: { id: principalResolution.principal.externalId, login: principalResolution.principal.handle }, message: message.text }) ||
+          githubInboundCommentText({ manual: githubManual, repository: resource.providerResourceId, thread: thread.id, sender: { id: principalResolution.principal.externalId, login: principalResolution.principal.handle }, message: requestText }) ||
           (message.attachments.length > 0
             ? taskEndpoint.provider === "microsoft-teams" &&
               !thread.isDM &&

@@ -459,6 +459,12 @@ takes the reader to the owning task's detail page with its task breadcrumb.
 The breadcrumb uses the short UUID for conversation-backed tasks without a
 task number.
 
+### Slack task requests
+
+Slack requests retain full hyperlink destinations beside their display labels.
+This also applies to thread replies and message edits, so agents can use links
+whose Slack labels show shortened paths. Bare URLs remain unchanged.
+
 ### Slack task progress
 
 Slack threads reuse one editable progress message for each active run. Native
