@@ -8,6 +8,7 @@ import {
   approvals,
   caseHandoffs,
   companies,
+  executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
   issueRecoveryActions,
@@ -17,6 +18,7 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { evaluateAgentInvokability } from "../agent-invokability.js";
@@ -42,6 +44,8 @@ import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomati
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
 import { wakeBecameFreshContinuation } from "./wake-became-fresh-continuation.js";
 import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
+import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE,
+  remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -327,6 +331,22 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
+    const writerHeldIssueIds = [...actionMap.entries()].filter(([, action]) => {
+      const run = strandedRuns.get(String(action.evidence?.latestRunId ?? ""));
+      return run?.errorCode === "setup_failed" && run.error === REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE;
+    }).map(([issueId]) => issueId);
+    const writerRefusedIssueIds = new Set<string>();
+    if (writerHeldIssueIds.length) {
+      const bound = await database.select({ issueId: issues.id, metadata: executionWorkspaces.metadata }).from(issues)
+        .innerJoin(executionWorkspaces, and(eq(executionWorkspaces.companyId, issues.companyId),
+          eq(executionWorkspaces.id, issues.executionWorkspaceId)))
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, writerHeldIssueIds)));
+      for (const row of bound) {
+        const authority = readRemoteWorkspaceAuthority(row.metadata);
+        if (authority && remoteWorkspaceHoldRefusesStart(
+          await readRemoteWorkspaceWriterHold(database, { companyId, authority }), at.getTime())) writerRefusedIssueIds.add(row.issueId);
+      }
+    }
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
     const companyAgents = agentRows.length ? await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
       reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId)) : [];
@@ -457,7 +477,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         reviewPending: executionState.status === "pending" || Boolean(executionState.reviewRequest),
         activeRecoveryAction: action ? { id: action.id, cause: action.cause, ownerType: action.ownerType,
           resumeAt: PROVIDER_LIMIT_CAUSES.includes(action.cause) && interruption?.nextRetryAt ? new Date(interruption.nextRetryAt) : null,
-          continuedBySweep: strandedHoldContinuesAutomatically(action,
+          continuedBySweep: !writerRefusedIssueIds.has(issue.id) && strandedHoldContinuesAutomatically(action,
             strandedRuns.get(String(action.evidence?.latestRunId ?? "")) ?? null, issue.assigneeAgentId, at) } : null,
         agent: agent ? { status: agent.status, invokable: agent.invokable, updatedAt: agent.updatedAt } : null,
         companyPaused: company?.status === "paused",
