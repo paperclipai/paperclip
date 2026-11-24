@@ -45,6 +45,7 @@ import {
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
@@ -372,7 +373,7 @@ function TaskChatBubbleContent({
                     onClick={video ? () => openImage(ref.url) : undefined}
                     render={video ? <button type="button" /> :
                       <a
-                        href={ref.openPath ?? ref.url}
+                        href={safeNavigableUrl(ref.openPath ?? ref.url) ?? undefined}
                         onClick={(event) => {
                           if (openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
                             event.preventDefault(); openText(ref.id, ref.name);

@@ -22,6 +22,7 @@ import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { cn } from "@/lib/utils";
+import { connectionTransportLabel } from "@/lib/connection-transport-label";
 import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
@@ -628,8 +629,4 @@ export function connectionAddress(connection: ToolConnection): string {
   return "Not set";
 }
 
-export function connectionTransportLabel(transport: ToolConnection["transport"]): string {
-  if (transport === "mcp_remote") return "Remote HTTP";
-  if (transport === "local_stdio") return "Local command";
-  return "Unknown";
-}
+export { connectionTransportLabel };

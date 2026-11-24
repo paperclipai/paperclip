@@ -21,6 +21,7 @@ export const TASK_VIEW_KEYS = [
   "blocked",
   "recent",
   "everything",
+  "archived",
   "needs_attention",
   "all",
   "active",
@@ -58,6 +59,7 @@ export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
       { key: "blocked", label: "Blocked", surface: "inbox", inboxTab: "blocked", hint: "Blocked tasks, grouped by blocker" },
       { key: "recent", label: "Recent", surface: "inbox", inboxTab: "recent", hint: "Everything you touched lately" },
       { key: "everything", label: "Everything", surface: "inbox", inboxTab: "all", hint: "Tasks, approvals, failed runs and join requests" },
+      { key: "archived", label: "Archived", surface: "issues", statuses: [], hint: "Tasks archived for you" },
     ],
   },
   {

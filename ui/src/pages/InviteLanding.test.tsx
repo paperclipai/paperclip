@@ -178,6 +178,52 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it.each([
+    { availableHarnesses: ["gemini_local"] },
+    { availableHarnesses: [] },
+    { availableHarnesses: ["gemini_local"], nextHarnesses: ["codex_local"] },
+    { availableHarnesses: ["gemini_local"], nextHarnesses: [] },
+  ])("submits only the displayed allowed invite adapter (policy=$availableHarnesses, next=$nextHarnesses)", async ({ availableHarnesses, nextHarnesses }) => {
+    let policy = availableHarnesses;
+    getInviteMock.mockResolvedValue({ id: "invite-1", companyId: "company-1", companyName: "Example",
+      inviteType: "company_join", allowedJoinTypes: "agent" });
+    const health = { status: "ok", deploymentMode: "authenticated", cloud: { managed: true, availableHarnesses: policy } };
+    healthGetMock.mockResolvedValue(health);
+    acceptInviteMock.mockResolvedValue({ id: "request-1", requestType: "agent", status: "pending_approval" });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, health);
+    try {
+      await act(async () => renderInviteLanding(root, queryClient));
+      await flushReact();
+      await flushReact();
+      const input = container.querySelector("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Example agent");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      if (nextHarnesses !== undefined) {
+        policy = nextHarnesses;
+        const updatedHealth = { ...health, cloud: { managed: true, availableHarnesses: policy } };
+        healthGetMock.mockResolvedValue(updatedHealth);
+        await act(async () => { queryClient.setQueryData(queryKeys.health, updatedHealth); });
+        await flushReact();
+      }
+      const select = container.querySelector("select")!;
+      expect(select.value).toBe(policy[0] ?? "");
+      const submit = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Submit"))!;
+      expect(submit).toBeTruthy();
+      expect(submit.disabled).toBe(policy.length === 0);
+      await act(async () => submit.click());
+      await flushReact();
+      if (policy.length) expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", expect.objectContaining({ adapterType: policy[0] }));
+      else expect(acceptInviteMock).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("defaults invite auth to account creation and guides existing users back to sign in", async () => {
     signUpEmailMock.mockRejectedValue(
       Object.assign(new Error("User already exists. Use another email."), {

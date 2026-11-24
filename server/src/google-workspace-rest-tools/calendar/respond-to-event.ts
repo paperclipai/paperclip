@@ -56,6 +56,7 @@ export function respondToEventResult(event: RestEvent): CallToolResult {
 export const respondToEvent = defineTool({
   definition: {
     name: "respond_to_event",
+    title: "Respond to an event",
     description: "Sets the signed-in user's response (accepted, tentative or declined) to an event they are invited to, with an optional comment, and returns the event. Passing a recurring series' ID responds for the whole series; passing one occurrence's ID (from list_events) responds for that occurrence only. The result shows which: a series has recurrence and no recurringEventId; one occurrence has recurringEventId. By default only attendees outside the organizer's domain are emailed (notificationLevel EXTERNAL_ONLY).",
     inputSchema: {
       type: "object",

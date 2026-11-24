@@ -38,6 +38,7 @@ export function searchEventsResult(list: RestEventList): CallToolResult {
 export const searchEvents = defineTool({
   definition: {
     name: "search_events",
+    title: "Search events",
     description: "Searches events on the signed-in user's primary calendar by keywords, across all dates. Matches title, description, location, attendees and organizer; every term must match. A recurring series is returned once, as the series, not as each occurrence; use list_events to see occurrences in a time range.",
     inputSchema: {
       type: "object",

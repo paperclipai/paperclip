@@ -1,10 +1,11 @@
+import { fillRoutineCreateForm, enableRoutineScheduleTrigger, setRoutineScheduleEnabled } from "./routine-schedule-ui.js";
 import { createObservedReader } from "./observation-read.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, type Page } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { ConnectionFailure } from "../connection-config.js";
-import { fillTaskPrompt, withBrowserEvent } from "../user-actions.js";
+import { withBrowserEvent } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { scheduledInvocationMatches, schedulePauseMatches, schedulePauseObservationMs, type ScheduledInvocation, type ScheduledTask } from "./routine-schedule-evidence.js";
@@ -12,7 +13,7 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 
 type Row = Record<string, any>;
 const journeyId = "routine-scheduled-run" as const;
-type RoutineUiStep = "open_composer" | "select_responsible" | "select_project" | "fill_instructions" | "submit" | "enable_trigger" | "pause_trigger" | "open_history" | "reopen_result";
+type RoutineUiStep = "open_composer" | "fill_form" | "submit" | "enable_trigger" | "pause_trigger" | "open_history" | "reopen_result";
 export async function routineUiStep<T>(step: RoutineUiStep, action: () => Promise<T>): Promise<T> {
   try { return await action(); }
   catch (error) {
@@ -20,15 +21,6 @@ export async function routineUiStep<T>(step: RoutineUiStep, action: () => Promis
     // Browser failures can contain form values and URLs. Retain only this closed step code.
     throw new JourneyError("failed", `routine_${step}_failed`);
   }
-}
-export async function enableRoutineScheduleTrigger(page: Pick<Page, "getByRole" | "waitForResponse">, triggerRoute: string) {
-  const schedule = page.getByRole("region", { name: "Schedule trigger", exact: true });
-  // The enable/pause controls are children of the collapsed schedule editor.
-  await schedule.getByRole("button", { name: "Edit schedule", exact: true }).click();
-  return withBrowserEvent(
-    () => page.waitForResponse(response => response.request().method() === "PATCH"
-      && new URL(response.url()).pathname === triggerRoute),
-    () => schedule.getByRole("button", { name: "Enable trigger", exact: true }).click());
 }
 export async function withRoutineTriggerCleanup<T>(input: {
   api: Pick<JourneyContext["api"], "patch">; triggerRoute: string; directory: string; run(): Promise<T>;
@@ -86,21 +78,9 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       await page.getByRole("button", { name: "New routine", exact: true }).first().click();
     });
     const dialog = page.getByRole("dialog");
-    await routineUiStep("select_responsible", async () => {
-      await dialog.getByPlaceholder("Routine title", { exact: true }).fill(title);
-      await dialog.getByRole("button", { name: "Responsible", exact: true }).click();
-      await page.getByPlaceholder("Search responsible...", { exact: true }).fill(agent.name);
-      await page.getByRole("button", { name: agent.name, exact: true }).click();
-    });
-    await routineUiStep("select_project", async () => {
-      // Selecting Responsible focuses Project and opens its picker. Clicking
-      // its trigger again closes the picker before the search field can fill.
-      const projectSearch = page.getByPlaceholder("Search projects...", { exact: true });
-      await expect(projectSearch).toBeVisible();
-      await projectSearch.fill(projectName);
-      await page.getByRole("button", { name: projectName, exact: true }).click();
-    });
-    await routineUiStep("fill_instructions", () => fillTaskPrompt(dialog.locator('[contenteditable="true"]'), prompt));
+    await routineUiStep("fill_form", () => fillRoutineCreateForm(page, {
+      title, agentName: agent.name, projectName, prompt,
+    }));
     await session.own({ kind: "routine", name: title, journeyId });
     const response = await routineUiStep("submit", () => withBrowserEvent(
       () => page.waitForResponse(response => response.request().method() === "POST"
@@ -149,7 +129,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     let pausedAt = 0;
     await withRoutineTriggerCleanup({ api, triggerRoute, directory: options.directory, run: async () => {
       const enabledResponse = await routineUiStep("enable_trigger", async () => {
-        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
+        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}`, { waitUntil: "domcontentloaded" });
         return enableRoutineScheduleTrigger(page, triggerRoute);
       });
       if (enabledResponse.status() !== 200) throw new JourneyError("failed", "routine_schedule_enable_failed");
@@ -159,7 +139,8 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
         || enabledTrigger.enabled !== true || !Number.isFinite(enabledAt)) throw new JourneyError("failed", "routine_schedule_enable_receipt_missing");
       await expect.poll(async () => (await readTrigger()).enabled).toBe(true);
       const first = await waitFor(options.deadlineAt, runs, rows => rows.length > 0 && Boolean(rows[0]?.linkedIssueId), "scheduled_invocation_missing");
-      await routineUiStep("pause_trigger", () => page.getByRole("button", { name: "Pause trigger", exact: true }).click());
+      const pausedResponse = await routineUiStep("pause_trigger", () => setRoutineScheduleEnabled(page, triggerRoute, false));
+      if (pausedResponse.status() !== 200) throw new JourneyError("failed", "routine_schedule_pause_failed");
       await expect.poll(async () => (await readTrigger()).enabled).toBe(false);
       pausedAt = performance.now();
       const task = await readObserved<ScheduledTask & { title: string }>(`/api/issues/${first[0]!.linkedIssueId}`);
@@ -205,7 +186,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       check("routine-result-attributed", Object.values(matches).every(Boolean));
       if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
       await routineUiStep("open_history", async () => {
-        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
+        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}`, { waitUntil: "domcontentloaded" });
         await page.reload();
         await expect(page.getByRole("link", { name: state.currentIssue.identifier, exact: false }).first()).toBeVisible();
       });

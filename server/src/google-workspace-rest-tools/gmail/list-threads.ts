@@ -4,6 +4,7 @@ import { defineTool } from "../tool.js";
 import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  queryWithExclusions,
   readThreads,
   searchThreadsResult,
   THREAD_VIEWS,
@@ -17,6 +18,7 @@ export const MAX_LABEL_FILTERS = 20;
 const args = z.object({
   pageSize: z.number().int().positive().optional(),
   pageToken: z.string().max(2048).optional(),
+  query: z.string().max(4096).optional(),
   labelIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,256}$/, "Must be a Gmail label ID")).max(MAX_LABEL_FILTERS).optional(),
   includeTrash: z.boolean().optional(),
   view: z.enum(THREAD_VIEWS).optional(),
@@ -26,10 +28,8 @@ export type ListThreadsArgs = z.infer<typeof args>;
 export function listThreadsQuery(input: ListThreadsArgs): { q?: string; includeSpamTrash?: true } {
   const labels = new Set(input.labelIds ?? []);
   const includeSpamTrash = Boolean(input.includeTrash) || labels.has("SPAM") || labels.has("TRASH");
-  const excluded: string[] = [];
-  if (!labels.has("DRAFT")) excluded.push("-in:draft");
-  if (includeSpamTrash && !labels.has("SPAM")) excluded.push("-in:spam");
-  return { q: excluded.join(" ") || undefined, includeSpamTrash: includeSpamTrash ? true : undefined };
+  const q = queryWithExclusions(input.query, { drafts: !labels.has("DRAFT"), spam: includeSpamTrash && !labels.has("SPAM") });
+  return { q: q || undefined, includeSpamTrash: includeSpamTrash ? true : undefined };
 }
 
 export function listThreadsToolRequest(input: ListThreadsArgs): GoogleRequest {
@@ -49,12 +49,17 @@ export function listThreadsToolRequest(input: ListThreadsArgs): GoogleRequest {
 export const listThreads = defineTool({
   definition: {
     name: "list_threads",
-    description: "Lists the signed-in user's Gmail threads, newest first, one page at a time, optionally only threads that have every given label. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. To filter by words, senders or dates, use search_threads.",
+    title: "List threads",
+    description: "Lists the signed-in user's Gmail threads, newest first, one page at a time, optionally only threads that match a Gmail search query and have every given label. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. A thread matches the query when any of its messages matches.",
     inputSchema: {
       type: "object",
       properties: {
         pageSize: { type: "integer", description: "Optional. Most threads to return. Default 20, maximum 50." },
         pageToken: { type: "string", description: "Optional. The nextPageToken from a previous call. Leave empty for the first page." },
+        query: {
+          type: "string",
+          description: "Optional. A Gmail search query, the same as search_threads takes (for example `from:user@example.com newer_than:7d`). `label:` takes a label name with spaces written as hyphens (for example `label:client-work`), not a label ID. Without a query, threads are filtered only by labelIds. Drafts are excluded unless the query includes in:draft or DRAFT is in labelIds.",
+        },
         labelIds: {
           type: "array",
           items: { type: "string" },

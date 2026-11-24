@@ -29,6 +29,7 @@ Shell variables take precedence over the local file. The recognized names are:
 - `DAYTONA_API_KEY`
 - `CURSOR_AUTH_TOKEN` (extended Cursor candidate)
 - `COPILOT_GITHUB_TOKEN` (extended Copilot candidate)
+- `GEMINI_API_KEY` (Google Antigravity API-key profile `runner-acpx-antigravity`)
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
 - `PAPERCLIP_E2E_DAYTONA_NODE_SHA256` and `PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256` (native Cursor/Pi/Copilot Daytona fixtures; exact `sha256:...` executable digests from that image)
 

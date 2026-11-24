@@ -487,6 +487,29 @@ saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
 
+The scheduled-routine browser actions use the current routine form's Title,
+Default agent, Project and Instructions controls. Each picker opens explicitly;
+agent selection does not imply project focus. The schedule's normal popover
+owns Resume and Pause, and both actions wait for the exact trigger PATCH.
+The task-history read returns to the routine page's History field; the separate
+/history route contains configuration revisions. The existing scheduled-run,
+output attribution, duplicate-run and pause-window checks remain independent.
+
+A credential-free control renders the production form, entity pickers and
+routine page in Chromium. It resolves React from the UI workspace, as required
+by an isolated pnpm install. It checks exact owner/project selection, refusal of a
+missing agent or project, and one Resume/Pause mutation for the owned trigger. Its unrelated
+editor/display boundaries are stubbed: AgentAvatar, Identity initials, style
+joining, router Link, MarkdownBody, RunButton, TaskSummaryList, MarkdownEditor,
+RoutineVariablesEditor, EnvironmentVariablesEditor, and ScheduleEditor (including
+its schedule-description formatter). The stub map is next to the browser fixture.
+The real Markdown serialization, task-history content and schedule-expression
+editor are outside this control's scope. It is not full-stack or QA qualification:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/product-journeys/routine-schedule-ui.browser.mjs
+```
+
 The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
 time after both pause acknowledgement and work completion. Its enable receipt
 uses the server's timestamp; client and server wall clocks are never compared.

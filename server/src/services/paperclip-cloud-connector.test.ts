@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 
 import {
   appWithPaperclipCloudConnectorAvailability,
@@ -316,18 +317,55 @@ describe("Paperclip Cloud connector", () => {
     expect(managedGoogle.filter(({ method }) => (method.defaults?.scopesHint ?? []).some((value) => !submitted.has(value)))
       .map(({ id }) => id)).toEqual(savedConnectionsOnly);
     for (const app of APP_DEFINITIONS) {
-      const offered = appWithPaperclipCloudConnectorAvailability(app, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+      const offered = appWithPaperclipCloudConnectorAvailability(app, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS], true);
       for (const method of offered.methods.filter((candidate) => candidate.oauthStrategy === "paperclip_cloud_connector")) {
         expect(savedConnectionsOnly).not.toContain(`${app.slug}/${method.key}`);
         for (const value of method.defaults?.scopesHint ?? []) expect(submitted, `${app.slug}/${method.key}`).toContain(value);
       }
     }
-    const gmail = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "gmail")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+    const gmail = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "gmail")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS], true);
     expect(gmail.methods.map((method) => method.key)).toEqual([
       "paperclip-read", "customer-read-oauth", "paperclip-draft", "customer-draft-oauth", "customer-archive-oauth",
     ]);
-    const chat = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "google-chat")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+    const chat = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "google-chat")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS], true);
     expect(chat.ownershipAvailability?.platform_shared).toBe(false);
+  });
+
+  it("offers Paperclip's Google sign-in only on Paperclip Cloud and keeps other managed methods", () => {
+    const workspace = APP_DEFINITIONS.find((app) => app.slug === "google-workspace")!;
+    const asana = APP_DEFINITIONS.find((app) => app.methods.some((method) => method.connectorProfile === "asana.mcp"))!;
+    const advertised = [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, "asana.mcp"];
+    const cloud = appWithPaperclipCloudConnectorAvailability(workspace, advertised, true);
+    expect(cloud.methods.map((method) => method.key)).toEqual(["paperclip-workspace", "customer-workspace-oauth"]);
+    expect(cloud.ownershipAvailability?.platform_shared).toBe(true);
+    const selfHosted = appWithPaperclipCloudConnectorAvailability(workspace, advertised, false);
+    expect(selfHosted.methods.map((method) => method.key)).toEqual(["customer-workspace-oauth"]);
+    expect(selfHosted.ownershipAvailability?.platform_shared).toBe(false);
+    expect(appWithPaperclipCloudConnectorAvailability(asana, advertised, false).methods)
+      .toEqual(appWithPaperclipCloudConnectorAvailability(asana, advertised, true).methods);
+  });
+
+  it("decides Cloud or self-hosted from the instance's Cloud markers", () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "");
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+    try {
+      expect(paperclipGoogleSignInAvailable()).toBe(false);
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token-fixture");
+      expect(paperclipGoogleSignInAvailable()).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps the broker's cloud-only refusal as a known reason", async () => {
+    const connector = createPaperclipCloudConnector({
+      config: config().config,
+      request: vi.fn(async () => Response.json({ error: "PROVIDER_CLOUD_ONLY" }, { status: 409 })) as typeof fetch,
+    });
+    await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "refresh-fixture" }))
+      .rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED", brokerReason: "PROVIDER_CLOUD_ONLY" });
+    expect(await rejection(Response.json({ error: "PROVIDER_CLOUD_ONLY" }, { status: 403 })))
+      .toMatchObject({ code: "CONNECTOR_REQUEST_FAILED", status: 403, brokerReason: "PROVIDER_CLOUD_ONLY" });
   });
 
   it("signs selected Workspace scopes without substituting the full profile", async () => {
@@ -718,6 +756,17 @@ describe("Paperclip Cloud connector", () => {
     });
 
     await expect(connector.getInstanceStatus()).resolves.toBe("removed");
+    await expect(connector.getConfirmedInstanceStatus()).resolves.toBe("unknown_instance");
+  });
+
+  it("confirms a removal only when Cloud answers that the instance is removed", async () => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({ active: false, status: "removed" })) as typeof fetch,
+    });
+
+    await expect(connector.getConfirmedInstanceStatus()).resolves.toBe("removed");
   });
 
   it("does not expose a broker response body when a request fails", async () => {

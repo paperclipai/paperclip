@@ -41,6 +41,7 @@ import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentR
 import { accountRunCost } from "../run-cost-accounting.js";
 import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
 import { agentProviderLimitCooldown } from "./native-startup-retry.js";
+import { projectTaskInterruption } from "../task-interruption-presentation.js";
 import { resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../../runtime-api.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
@@ -901,6 +902,24 @@ describe("native provider startup retry", () => {
     })).toEqual([]);
   });
 
+  it("settles a startup billing refusal without scheduling another provider attempt", async () => {
+    const seeded = await seedRun(await createAgent());
+    const failure = Object.defineProperty(sessionOpenFailure({ providerFailure: limitFailure({
+      phase: "startup", category: "quota_exhausted", retryability: "requires_action",
+      message: "Check your plan and billing details.",
+    }) }), "runnerExitConfirmed", { value: true });
+    await failStartup(seeded, failure);
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({ phase: "terminal_failure", recoveryState: "blocked", nextAttemptAt: null });
+    expect(state.run.status).toBe("failed");
+    expect(state.issue).toMatchObject({ status: "blocked", executionRunId: null });
+    expect(projectTaskInterruption(state.issue, { run: state.run, action: state.action ?? undefined,
+      agent: { status: "idle", pauseReason: null }, paused: false, approval: false }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "provider_billing", nextRetryAt: null });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "startup-retry-test", runIds: [seeded.runId],
+      now: new Date(Date.now() + 10 * 60_000), deferIneligible: false })).toEqual([]);
+  });
+
   it("waits for the cooldown of a recent provider usage limit before retrying", async () => {
     const agentId = await createAgent();
     const limitedAt = new Date(Date.now() - 5 * 60_000);
@@ -1020,7 +1039,7 @@ describe("native provider startup retry", () => {
     await failStartup(seeded, sessionOpenFailure());
     const state = await read(seeded);
     expect(state.coordinator.failureDetail).toMatchObject({ providerCooldownAt: expected.toISOString() });
-    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, credential: { kind: "host" }, now: new Date() }))
       .toMatchObject({ resetAt: expected, resetReported: true });
   });
 

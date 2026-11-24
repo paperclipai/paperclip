@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -19,11 +20,7 @@ import { assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActo
 const NOT_FOUND = "Area not found";
 
 /**
- * Responsibility areas (experimental, `enableResponsibilities`). Areas have no
- * owner: any board user with write access to the company manages them. An
- * agent acting for a member of the company may do the same, each change saved
- * as a version of that person's Dashboard they can undo (a delete only after
- * the person accepts a confirmation card); other agents can only propose one.
+ * An owner or a run they directed can manage their areas. Agent changes are versioned.
  */
 export function responsibilityAreaRoutes(db: Db) {
   const router = Router();
@@ -55,6 +52,8 @@ export function responsibilityAreaRoutes(db: Db) {
   async function loadForBoardWrite(req: Request, res: Response) {
     const row = await getAccessibleResource(req, res, svc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
+    await assertCompanyRead(req, row.companyId);
+    await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     return row;
   }
 
@@ -90,7 +89,7 @@ export function responsibilityAreaRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = listResponsibilityAreasQuerySchema.parse(req.query);
-    res.json(await svc.list(companyId, { includeArchived: query.includeArchived }));
+    res.json(await svc.list(companyId, await dashboardOwner(db, req, companyId), { includeArchived: query.includeArchived }));
   });
 
   router.post("/companies/:companyId/responsibility-areas", validate(createResponsibilityAreaSchema), async (req, res) => {
@@ -99,8 +98,9 @@ export function responsibilityAreaRoutes(db: Db) {
     await assertCompanyRead(req, companyId);
     const actor = getActorInfo(req);
     const person = await agentPersonInCompany(db, req, companyId);
+    const ownerUserId = await dashboardOwner(db, req, companyId);
     const create = (tx: Db) => responsibilityAreaService(tx).create(
-      companyId,
+      companyId, ownerUserId,
       req.body,
       req.actor.type !== "agent" ? { type: "board" }
         : person ? { type: "board", viaAgentId: actor.actorId }
@@ -131,20 +131,9 @@ export function responsibilityAreaRoutes(db: Db) {
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
-    // On an area other people's proposed or active responsibilities share (the same test restore
-    // uses), Undo never changes the name, description or order, and of status changes only brings
-    // an archived area back. A change it cannot reverse saves no version, so no Dashboard offers an
-    // Undo that would do nothing; it stays in the activity log.
-    const sharedChange = Boolean(writer)
-      && (await svc.ownersInArea(row.companyId, row.id, ["proposed", "active"])).some((owner) => owner !== writer!.personUserId)
-      && ((req.body.title !== undefined && req.body.title !== row.title)
-        || (req.body.description !== undefined && req.body.description !== row.description)
-        || (req.body.sortOrder !== undefined && req.body.sortOrder !== row.sortOrder)
-        || (req.body.status !== undefined && req.body.status !== row.status && !(row.status === "active" && req.body.status === "archived")));
-    // Otherwise everyone whose Dashboard shows the area gets a version.
-    const updated = writer && !sharedChange
+    const updated = writer
       ? await agentChanges.record({
-        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
+        companyId: row.companyId, ownerUserIds: [writer.personUserId],
         agentId: writer.agentId, touchedAreaIds: [row.id],
         onVersion: reportVersionOf(res, writer.personUserId),
       }, (tx) => responsibilityAreaService(tx).update(row, req.body))
@@ -172,6 +161,7 @@ export function responsibilityAreaRoutes(db: Db) {
         agentId: writer.agentId,
         interactionId: query.confirmationId,
         key: responsibilityDeletionKey("area", row.id),
+        ownerUserId: writer.personUserId,
       });
       confirmationId = card.id;
     }
@@ -179,7 +169,7 @@ export function responsibilityAreaRoutes(db: Db) {
     // Moving its responsibilities changes their owners' Dashboards too.
     const removed = writer
       ? await agentChanges.record({
-        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
+        companyId: row.companyId, ownerUserIds: [writer.personUserId],
         agentId: writer.agentId,
         touchedAreaIds: [row.id, ...(query.moveResponsibilitiesTo ? [query.moveResponsibilitiesTo] : [])],
         onVersion: reportVersionOf(res, writer.personUserId),
