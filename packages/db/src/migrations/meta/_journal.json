@@ -3522,6 +3522,13 @@
       "when": 1795469468402,
       "tag": "0504_lucky_pepper_potts",
       "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1795471352401,
+      "tag": "0505_thin_drax",
+      "breakpoints": true
     }
   ]
 }

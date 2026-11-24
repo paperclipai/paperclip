@@ -351,6 +351,76 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(await db.select().from(activityLog)).toEqual([]);
   }, 20_000);
 
+  it("pages every routine run despite tied timestamps and newer arrivals", async () => {
+    const { companyId, agentId } = await seedFixture();
+    const routineId = randomUUID();
+    await db.insert(routines).values({ id: routineId, companyId, assigneeAgentId: agentId, title: "History" });
+    const createdAt = new Date("2026-01-01T00:00:00.000Z");
+    const inserted = await db.insert(routineRuns).values(
+      Array.from({ length: 205 }, () => ({ companyId, routineId, source: "manual", createdAt })),
+    ).returning({ id: routineRuns.id });
+    const app = await createApp({ type: "agent", agentId, companyId });
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < 3; page++) {
+      const response = await request(app).get(`/api/routines/${routineId}/runs`)
+        .query({ limit: 75, ...(before ? { before } : {}) });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const ids = response.body.map((run: { id: string }) => run.id);
+      expect(ids).toHaveLength(page < 2 ? 75 : 55);
+      seen.push(...ids);
+      before = ids.at(-1);
+      if (page === 0) {
+        await db.insert(routineRuns).values({
+          companyId, routineId, source: "schedule", createdAt: new Date("2026-01-02T00:00:00.000Z"),
+        });
+      }
+    }
+    expect(new Set(seen).size).toBe(205);
+    expect(new Set(seen)).toEqual(new Set(inserted.map((run) => run.id)));
+    const end = await request(app).get(`/api/routines/${routineId}/runs`).query({ limit: 75, before });
+    expect(end.status).toBe(200);
+    expect(end.body).toEqual([]);
+  }, 20_000);
+
+  it("rejects invalid or foreign history cursors without exposing another company", async () => {
+    const { companyId, agentId } = await seedFixture();
+    const routineId = randomUUID();
+    const otherRoutineId = randomUUID();
+    await db.insert(routines).values([
+      { id: routineId, companyId, assigneeAgentId: agentId, title: "History" },
+      { id: otherRoutineId, companyId, assigneeAgentId: agentId, title: "Other history" },
+    ]);
+    const [foreignRun] = await db.insert(routineRuns)
+      .values({ companyId, routineId: otherRoutineId, source: "manual" }).returning();
+    const owner = await createApp({ type: "agent", agentId, companyId });
+    for (const before of ["not-a-uuid", randomUUID(), foreignRun!.id]) {
+      const response = await request(owner).get(`/api/routines/${routineId}/runs`).query({ before });
+      expect(response.status, JSON.stringify(response.body)).toBe(400);
+    }
+    const outsider = await createApp({ type: "agent", agentId: randomUUID(), companyId: randomUUID() });
+    const response = await request(outsider).get(`/api/routines/${routineId}/runs`).query({ before: foreignRun!.id });
+    expect(response.status).toBe(404);
+  }, 20_000);
+
+  it("reads a cursor and its page from one consistent snapshot", async () => {
+    const { companyId, agentId } = await seedFixture();
+    const routineId = randomUUID();
+    await db.insert(routines).values({ id: routineId, companyId, assigneeAgentId: agentId, title: "History" });
+    const [run] = await db.insert(routineRuns).values({ companyId, routineId, source: "manual" }).returning();
+    const app = await createApp({ type: "agent", agentId, companyId });
+    const transaction = vi.spyOn(db, "transaction");
+    try {
+      const response = await request(app).get(`/api/routines/${routineId}/runs`).query({ before: run!.id });
+      expect(response.status).toBe(200);
+      expect(transaction).toHaveBeenCalledWith(
+        expect.any(Function), { isolationLevel: "repeatable read", accessMode: "read only" },
+      );
+    } finally {
+      transaction.mockRestore();
+    }
+  }, 20_000);
+
   it("preserves UUID routine reads and assignee-only mutations", async () => {
     const { companyId, agentId, userId } = await seedFixture();
     const routineId = randomUUID();

@@ -3478,80 +3478,100 @@ export function routineService(
       });
     },
 
-    listRuns: async (routineId: string, limit = 50): Promise<RoutineRunSummary[]> => {
+    listRuns: async (routineId: string, limit = 50, before?: string): Promise<RoutineRunSummary[]> => {
       const cappedLimit = Math.max(1, Math.min(limit, 200));
-      const rows = await db
-        .select({
-          id: routineRuns.id,
-          companyId: routineRuns.companyId,
-          routineId: routineRuns.routineId,
-          triggerId: routineRuns.triggerId,
-          source: routineRuns.source,
-          status: routineRuns.status,
-          triggeredAt: routineRuns.triggeredAt,
-          idempotencyKey: routineRuns.idempotencyKey,
-          triggerPayload: routineRuns.triggerPayload,
-          createdByRunId: routineRuns.createdByRunId,
-          dispatchFingerprint: routineRuns.dispatchFingerprint,
-          routineRevisionId: routineRuns.routineRevisionId,
-          linkedIssueId: routineRuns.linkedIssueId,
-          coalescedIntoRunId: routineRuns.coalescedIntoRunId,
-          failureReason: routineRuns.failureReason,
-          completedAt: routineRuns.completedAt,
-          createdAt: routineRuns.createdAt,
-          updatedAt: routineRuns.updatedAt,
-          triggerKind: routineTriggers.kind,
-          triggerLabel: routineTriggers.label,
-          issueIdentifier: issues.identifier,
-          issueTitle: issues.title,
-          issueStatus: issues.status,
-          issuePriority: issues.priority,
-          issueUpdatedAt: issues.updatedAt,
-        })
-        .from(routineRuns)
-        .leftJoin(routineTriggers, eq(routineRuns.triggerId, routineTriggers.id))
-        .leftJoin(issues, eq(routineRuns.linkedIssueId, issues.id))
-        .where(eq(routineRuns.routineId, routineId))
-        .orderBy(desc(routineRuns.createdAt))
-        .limit(cappedLimit);
+      const readPage = async (reader: Db): Promise<RoutineRunSummary[]> => {
+        if (before !== undefined) {
+          if (!isRoutineUuidInput(before)) throw badRequest("Invalid routine run cursor");
+          const cursor = await reader.select({ id: routineRuns.id }).from(routineRuns)
+            .where(and(eq(routineRuns.routineId, routineId), eq(routineRuns.id, before)))
+            .then((rows) => rows[0] ?? null);
+          if (!cursor) throw badRequest("Invalid routine run cursor");
+        }
+        const rows = await reader
+          .select({
+            id: routineRuns.id,
+            companyId: routineRuns.companyId,
+            routineId: routineRuns.routineId,
+            triggerId: routineRuns.triggerId,
+            source: routineRuns.source,
+            status: routineRuns.status,
+            triggeredAt: routineRuns.triggeredAt,
+            idempotencyKey: routineRuns.idempotencyKey,
+            triggerPayload: routineRuns.triggerPayload,
+            createdByRunId: routineRuns.createdByRunId,
+            dispatchFingerprint: routineRuns.dispatchFingerprint,
+            routineRevisionId: routineRuns.routineRevisionId,
+            linkedIssueId: routineRuns.linkedIssueId,
+            coalescedIntoRunId: routineRuns.coalescedIntoRunId,
+            failureReason: routineRuns.failureReason,
+            completedAt: routineRuns.completedAt,
+            createdAt: routineRuns.createdAt,
+            updatedAt: routineRuns.updatedAt,
+            triggerKind: routineTriggers.kind,
+            triggerLabel: routineTriggers.label,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            issueStatus: issues.status,
+            issuePriority: issues.priority,
+            issueUpdatedAt: issues.updatedAt,
+          })
+          .from(routineRuns)
+          .leftJoin(routineTriggers, eq(routineRuns.triggerId, routineTriggers.id))
+          .leftJoin(issues, eq(routineRuns.linkedIssueId, issues.id))
+          .where(and(
+            eq(routineRuns.routineId, routineId),
+            before !== undefined ? sql`(${routineRuns.createdAt}, ${routineRuns.id}) < (
+              select cursor.created_at, cursor.id from ${routineRuns} as cursor
+              where cursor.routine_id = ${routineId}::uuid and cursor.id = ${before}::uuid
+            )` : undefined,
+          ))
+          .orderBy(desc(routineRuns.createdAt), desc(routineRuns.id))
+          .limit(cappedLimit);
 
-      return rows.map((row) => ({
-        id: row.id,
-        companyId: row.companyId,
-        routineId: row.routineId,
-        triggerId: row.triggerId,
-        source: row.source as RoutineRunSummary["source"],
-        status: row.status as RoutineRunSummary["status"],
-        triggeredAt: row.triggeredAt,
-        idempotencyKey: row.idempotencyKey,
-        triggerPayload: row.triggerPayload as Record<string, unknown> | null,
-        createdByRunId: row.createdByRunId,
-        dispatchFingerprint: row.dispatchFingerprint,
-        routineRevisionId: row.routineRevisionId,
-        linkedIssueId: row.linkedIssueId,
-        coalescedIntoRunId: row.coalescedIntoRunId,
-        failureReason: row.failureReason,
-        completedAt: row.completedAt,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        linkedIssue: row.linkedIssueId
-          ? {
-            id: row.linkedIssueId,
-            identifier: row.issueIdentifier,
-            title: row.issueTitle ?? "Routine execution",
-            status: row.issueStatus ?? "todo",
-            priority: row.issuePriority ?? "medium",
-            updatedAt: row.issueUpdatedAt ?? row.updatedAt,
-          }
-          : null,
-        trigger: row.triggerId
-          ? {
-            id: row.triggerId,
-            kind: row.triggerKind as NonNullable<RoutineRunSummary["trigger"]>["kind"],
-            label: row.triggerLabel,
-          }
-          : null,
-      }));
+        return rows.map((row) => ({
+          id: row.id,
+          companyId: row.companyId,
+          routineId: row.routineId,
+          triggerId: row.triggerId,
+          source: row.source as RoutineRunSummary["source"],
+          status: row.status as RoutineRunSummary["status"],
+          triggeredAt: row.triggeredAt,
+          idempotencyKey: row.idempotencyKey,
+          triggerPayload: row.triggerPayload as Record<string, unknown> | null,
+          createdByRunId: row.createdByRunId,
+          dispatchFingerprint: row.dispatchFingerprint,
+          routineRevisionId: row.routineRevisionId,
+          linkedIssueId: row.linkedIssueId,
+          coalescedIntoRunId: row.coalescedIntoRunId,
+          failureReason: row.failureReason,
+          completedAt: row.completedAt,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          linkedIssue: row.linkedIssueId
+            ? {
+              id: row.linkedIssueId,
+              identifier: row.issueIdentifier,
+              title: row.issueTitle ?? "Routine execution",
+              status: row.issueStatus ?? "todo",
+              priority: row.issuePriority ?? "medium",
+              updatedAt: row.issueUpdatedAt ?? row.updatedAt,
+            }
+            : null,
+          trigger: row.triggerId
+            ? {
+              id: row.triggerId,
+              kind: row.triggerKind as NonNullable<RoutineRunSummary["trigger"]>["kind"],
+              label: row.triggerLabel,
+            }
+            : null,
+        }));
+      };
+      return before !== undefined
+        ? db.transaction((tx) => readPage(tx as unknown as Db), {
+          isolationLevel: "repeatable read", accessMode: "read only",
+        })
+        : readPage(db);
     },
 
     nextScheduledTriggerAt: async (): Promise<number | null> => {

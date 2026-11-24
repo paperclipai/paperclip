@@ -311,7 +311,9 @@ For a worked example that uses the normal webhook with Sentry, see
 GET /api/routines/{routineId}/runs?limit=50
 ```
 
-Returns recent run history for the routine. Defaults to 50 most recent runs.
+Returns run history newest first, defaulting to 50 runs and capped at 200. To read
+older runs, pass the last run's ID as `before`. Repeat until a page is empty.
+The cursor must belong to the same routine.
 
 ## Agent Access Rules
 
