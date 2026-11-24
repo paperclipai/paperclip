@@ -17,7 +17,11 @@
 //   hang-helpers   the follow-up wait never ends
 //   mode-flip      the CLI switches back to default mode right after the model is set
 //   mode-flip-idle the CLI switches back to default mode after the session opened, between turns
-//   outside-edit   the coordinator edits a file outside the workspace
+//   outside-edit   the coordinator edits a file outside the workspace (absolute path)
+//   dotdot-edit    the coordinator edits ../escape.txt through its path argument
+//   symlink-edit   the coordinator edits link/x.txt where link points outside the workspace
+//   shell-escape   the coordinator runs `printf E > /tmp/...` (the CLI's shell sandbox allows temp dirs)
+//   shell-read     the coordinator reads outside the workspace and copies into it (allowed)
 //   cautious-brief a helper brief says "Do not create debug.log"; the run is correct
 // FAKE_AGY_LOG (optional) appends every client message, one JSON per line.
 import { spawn } from "node:child_process";
@@ -52,7 +56,7 @@ const addWriters = async () => {
   await tool("swarm", { action: "add", name: "writer-a", workspace: "inherit", brief: "Write a.txt containing exactly 'A' in the current workspace directory. Once done, post to the board: '@verifier [done] a.txt written'." });
   await tool("swarm", { action: "add", name: "writer-b", workspace: "inherit", brief: "Write b.txt containing exactly 'B' in the current workspace directory. Once done, post to the board: '@verifier [done] b.txt written'." });
   await tool("swarm", { action: "add", name: "verifier", workspace: "inherit", brief: scenario === "cautious-brief"
-    ? "Wait for writer-a and writer-b, then read a.txt and b.txt. Do not create debug.log or any other file." : "Wait for writer-a and writer-b, then read a.txt and b.txt and report." });
+    ? "Wait for writer-a and writer-b, then read a.txt and b.txt. Do not create debug.log or any other file. Write docs.google.com links only if v1.2 asks." : "Wait for writer-a and writer-b, then read a.txt and b.txt and report." });
   await tool("swarm", { action: "add", name: "monitor", workspace: "inherit", brief: "You are this swarm's stall monitor. Load the swarm_monitor skill and follow it." });
 };
 const writeFiles = () => {
@@ -75,8 +79,18 @@ async function prompt(id, params) {
   update(state.sessionId, { sessionUpdate: "session_info_update", title: "Swarm" });
   if (scenario === "refusal") { say("\n⚠ agent executor error: Error 402 Your prepayment credits are depleted. Status: RESOURCE_EXHAUSTED\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   if (scenario === "quota") { say("\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
-  if (scenario === "outside-edit") {
-    update(state.sessionId, { sessionUpdate: "tool_call", toolCallId: "call_out", name: "write_file", kind: "edit", status: "in_progress", title: "Write /etc/elsewhere.txt", locations: [{ path: "/etc/elsewhere.txt" }] });
+  const outside = {
+    "outside-edit": { name: "write_file", kind: "edit", title: "Write /etc/elsewhere.txt", locations: [{ path: "/etc/elsewhere.txt" }] },
+    "dotdot-edit": { name: "write_file", kind: "edit", title: "Write file", args: { TargetFile: `${state.cwd}/../escape.txt` } },
+    "symlink-edit": { name: "write_file", kind: "edit", title: "Write file", locations: [{ path: `${state.cwd}/link/x.txt` }] },
+    "shell-escape": { name: "run_command", kind: "execute", title: "Run command", args: { CommandLine: "printf E > /tmp/agy-escape-e.txt" } },
+  }[scenario];
+  if (scenario === "symlink-edit") (await import("node:fs")).symlinkSync("/etc", `${state.cwd}/link`);
+  if (scenario === "shell-read") {
+    await tool("run_command", { CommandLine: "cat /etc/hosts > ./hosts-copy.txt && cp /etc/hosts ./hosts2.txt" });
+  }
+  if (outside) {
+    update(state.sessionId, { sessionUpdate: "tool_call", toolCallId: "call_out", status: "in_progress", rawInput: outside.args, ...outside });
     if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
     return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }

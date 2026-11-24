@@ -1,8 +1,11 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { lstat, readdir } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
+import { userInfo } from "node:os";
+import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { retireAntigravityProcess } from "./antigravity-process.js";
+import { antigravityOutsideChange } from "./antigravity-swarm-paths.js";
 import {
   ANTIGRAVITY_CLI_SESSION_MODE, ANTIGRAVITY_SWARM_MCP_SERVER, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError,
   antigravitySwarmWorkspaceEscape, classifyAntigravityRefusalText, createAntigravitySwarmGuard,
@@ -43,11 +46,15 @@ const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".venv", "__pycache
 const BLOCKED_TEXT = /timed out waiting for user response|permission check failed/i;
 export const ANTIGRAVITY_SWARM_PROCESS_LOST = "ACPX_PROVIDER_PROCESS_LOST";
 
+export type AntigravitySwarmStage = "spawned" | "initialized" | "session" | "mode" | "model" | "snapshot" | "helpers";
+
 export interface AntigravitySwarmRuntimeDependencies {
   helperWaitTimeoutMs?: number;
   requestTimeoutMs?: number;
   cancelGraceMs?: number;
   readbackTimeoutMs?: number;
+  /** Test seam: runs at every await point between launch and settle. */
+  onStage?: (stage: AntigravitySwarmStage) => void | Promise<void>;
   awaitProviderOwnership?: (child: ChildProcess) => Promise<void>;
 }
 
@@ -211,23 +218,6 @@ function changedFiles(before: Map<string, string>, after: Map<string, string>): 
   return [...changed, ...removed].sort();
 }
 
-/**
- * A visible edit, delete or move whose location is outside the task folder.
- * Only the coordinator's calls reach the client; helper calls are confined by
- * the CLI's auto mode and are not visible here.
- */
-function outsideEdit(update: Json, workspace: string): string | null {
-  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return null;
-  if (!["edit", "delete", "move"].includes(String(update.kind))) return null;
-  const locations = Array.isArray(update.locations) ? update.locations.map(record) : [];
-  for (const location of locations) {
-    if (typeof location.path !== "string" || !isAbsolute(location.path)) continue;
-    const inside = relative(workspace, location.path);
-    if (inside.startsWith("..") || isAbsolute(inside)) return location.path;
-  }
-  return null;
-}
-
 function addUsage(total: Json | null, usage: unknown): Json | null {
   const value = record(usage);
   if (Object.keys(value).length === 0) return total;
@@ -258,7 +248,9 @@ export async function openAntigravitySwarmRuntime(
     throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm is not available while planning: helpers change files, and a planning run must not. Approve the plan first, then send /swarm.");
   }
   if (options.restoringSession === true) {
-    throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "A swarm cannot be resumed after an interruption. Retry starts a fresh swarm in the same task folder.");
+    // Typed so the server starts a fresh conversation instead of showing Retry:
+    // a swarm's helpers are gone after an interruption and reload resets mode and model.
+    throw new AntigravitySavedStateIncompatibleError("a swarm always starts in a fresh session");
   }
   if (options.mcpServers.some(server => !(server.runnerOwned && server.name === ANTIGRAVITY_SWARM_MCP_SERVER))) {
     throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm is not available for this agent: it has other tool servers assigned, and a swarm uses only Paperclip's own tools.");
@@ -268,6 +260,7 @@ export async function openAntigravitySwarmRuntime(
   const bridge = options.mcpServers.find((server): server is Extract<typeof server, { url: string }> =>
     "url" in server && server.runnerOwned && server.name === ANTIGRAVITY_SWARM_MCP_SERVER);
   if (!bridge) throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", "Swarm needs Paperclip's own tools, which are not available for this run.");
+  const home = options.launchEnvironment.HOME ?? userInfo().homedir;
   const instructions = [options.systemInstructions, ANTIGRAVITY_SWARM_INSTRUCTIONS].filter(Boolean).join("\n\n");
   const guard = createAntigravitySwarmGuard({ model, instructions, workspace: options.cwd });
 
@@ -313,13 +306,22 @@ export async function openAntigravitySwarmRuntime(
 
   let sessionId: string;
   let receipt: AntigravitySwarmReceipt;
+  // A Stop during admission retires the CLI at once; every await re-checks it.
+  const abortAdmission = () => { void retire().catch(() => undefined); };
+  options.signal?.addEventListener("abort", abortAdmission, { once: true });
+  const stage = async (name: AntigravitySwarmStage) => {
+    await dependencies.onStage?.(name);
+    options.signal?.throwIfAborted();
+  };
   try {
     await (dependencies.awaitProviderOwnership ?? awaitVerifiedAcpxProviderOwnership)(child);
+    await stage("spawned");
     const initialized = await connection.request("initialize", {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: "paperclip-runner", version: "1" },
     }, requestTimeoutMs);
+    await stage("initialized");
     guard.initialize(initialized);
     const sessionParams: Json = {
       cwd: options.cwd,
@@ -335,43 +337,54 @@ export async function openAntigravitySwarmRuntime(
       }
       throw error;
     }
+    await stage("session");
     sessionId = guard.sessionResult(opened);
     await connection.request("session/set_mode", { sessionId, modeId: ANTIGRAVITY_CLI_SESSION_MODE }, requestTimeoutMs);
     await waitForReadback(() => guard.bindMode());
+    await stage("mode");
     await connection.request("session/set_model", { sessionId, modelId: model }, requestTimeoutMs);
     await waitForReadback(() => guard.bindModel());
+    await stage("model");
     await connection.drain();
     guard.assertSwarmCommand();
     receipt = guard.receipt();
     if (protocolFailure) throw protocolFailure;
     options.signal?.throwIfAborted();
   } catch (error) {
+    options.signal?.removeEventListener("abort", abortAdmission);
     const cleanup = retire();
     options.retainFailedAdmissionCleanup(cleanup);
     await cleanup.catch(() => undefined);
     throw error;
   }
 
+  options.signal?.removeEventListener("abort", abortAdmission);
   const status: Json = { antigravitySwarmReceipt: receipt };
   let turns = 0;
   let active: { cancel(reason?: string): Promise<void>; result: Promise<AcpRuntimeTurnResult> } | null = null;
   let closed = false;
 
   const runTurn = async (input: AcpxRuntimeTurnInput, events: EventQueue, started: () => void): Promise<AcpRuntimeTurnResult> => {
+    // Stop is installed before the first await, so no later await can miss it.
+    const listing = new AbortController();
+    let cancelled = false;
+    let wake: (() => void) | null = null;
+    active!.cancel = async () => { cancelled = true; listing.abort(); connection.notify("session/cancel", { sessionId }); wake?.(); };
+    const stopped = (): AcpRuntimeTurnResult => ({ status: "cancelled", stopReason: "cancelled" });
     if (protocolFailure) { started(); return failed(protocolFailure.code, protocolFailure.message); }
     if (turns++ > 0) {
       started();
       return failed("ANTIGRAVITY_SWARM_UNAVAILABLE", "At most one swarm runs per task run. Send another /swarm message to start a new one.");
     }
     const workspace = options.cwd;
-    const listing = new AbortController();
     const before = await snapshotWorkspace(workspace, listing.signal);
+    await dependencies.onStage?.("snapshot");
+    if (cancelled) { started(); return stopped(); }
     const helpers = new Map<string, string>();
     let blocked = 0;
     let waitedAfterLastAdd = false;
     let transcript = "";
     let stop: AntigravitySwarmError | null = null;
-    let wake: (() => void) | null = null;
     const halt = (error: AntigravitySwarmError) => { stop ??= error; connection.notify("session/cancel", { sessionId }); wake?.(); };
     events.push(line("setup", `Swarm started in the task folder with ${receipt.model}. Helper changes inside the task folder are approved automatically; anything else is blocked.`));
 
@@ -388,7 +401,7 @@ export async function openAntigravitySwarmRuntime(
           `Swarm stopped: helper ${escaped} was asked to work on its own copy of the task folder, which Paperclip does not allow.`));
         return;
       }
-      const outside = outsideEdit(update, workspace);
+      const outside = antigravityOutsideChange(update, workspace, home);
       if (outside) {
         halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
           `Swarm stopped: it tried to change ${outside}, which is outside the task folder.`));
@@ -430,8 +443,8 @@ export async function openAntigravitySwarmRuntime(
     };
 
     let usage: Json | null = null;
-    let cancelled = false;
     const prompt = async (text: string, timeoutMs: number | null): Promise<string> => {
+      if (cancelled || stop) return "cancelled";
       const response = connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text }] }, null);
       started();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -462,8 +475,6 @@ export async function openAntigravitySwarmRuntime(
         wake = null;
       }
     };
-    active!.cancel = async () => { cancelled = true; listing.abort(); connection.notify("session/cancel", { sessionId }); wake?.(); };
-
     const dispatch = input.dispatchJournal?.markReceived() ? input.dispatchJournal : null;
     try {
       dispatch?.markDispatched();
@@ -471,11 +482,12 @@ export async function openAntigravitySwarmRuntime(
       if (stopReason === "end_turn" && !stop && !cancelled && helpers.size > 0 && !waitedAfterLastAdd && !classifyAntigravityRefusalText(transcript)) {
         events.push(line("wait", "Waiting for the helpers to finish"));
         transcript += "\n";
+        await dependencies.onStage?.("helpers");
         stopReason = await prompt(HELPER_WAIT_PROMPT, dependencies.helperWaitTimeoutMs ?? DEFAULT_HELPER_WAIT_TIMEOUT_MS);
       }
       const halted = stop as AntigravitySwarmError | null;
       if (halted) return failed(halted.code, halted.message);
-      if (cancelled || stopReason === "cancelled") return { status: "cancelled", stopReason: "cancelled" };
+      if (cancelled || stopReason === "cancelled") return stopped();
       const refusal = classifyAntigravityRefusalText(transcript);
       if (refusal) {
         input.onTerminalSessionFailure?.({ category: refusal.kind === "authentication" ? "access" : "limit", title: refusal.message,

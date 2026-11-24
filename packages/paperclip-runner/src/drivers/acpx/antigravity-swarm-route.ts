@@ -1,5 +1,6 @@
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
 import { resolveAntigravityCliLaunch, type AntigravityCliLaunchOptions } from "./antigravity-cli-installation.js";
 import { ANTIGRAVITY_CLI_STABLE_ENDPOINT, ANTIGRAVITY_SWARM_MODE, AntigravitySwarmError } from "./antigravity-swarm-guard.js";
@@ -71,4 +72,16 @@ export function antigravitySwarmLaunchEnvironment(
   for (const name of ["GEMINI_HOME", "AGY_ACP_FORCE_FILE_STORAGE", "GEMINI_API_KEY", "GOOGLE_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"]) delete environment[name];
   if ((input.platform ?? process.platform) === "darwin") environment.HOME = input.realHome ?? userInfo().homedir;
   return { ...environment, ...ANTIGRAVITY_CLI_DISTRIBUTION.environment };
+}
+
+/**
+ * A saved conversation from the other Antigravity route (swarm on the CLI, or
+ * an ordinary turn on the registry server) cannot be reopened by this one. The
+ * typed refusal makes the server start a fresh conversation, so the task keeps
+ * accepting messages after a swarm and a later /swarm starts cleanly.
+ */
+export function antigravityRouteChangeRefusal(agent: string, savedMode: string | undefined, requestedMode: string | undefined): AntigravitySavedStateIncompatibleError | null {
+  if (agent !== "antigravity") return null;
+  if (isAntigravitySwarmRoute(agent, savedMode) === isAntigravitySwarmRoute(agent, requestedMode)) return null;
+  return new AntigravitySavedStateIncompatibleError("the saved conversation belongs to a different Antigravity route");
 }

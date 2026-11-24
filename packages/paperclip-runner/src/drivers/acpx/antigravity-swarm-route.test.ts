@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
-import { antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmArguments, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, isAntigravitySwarmRoute } from "./antigravity-swarm-route.js";
 import { createAcpxModeBinding, resolveAcpxProviderMode } from "./provider-mode.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -41,6 +41,13 @@ describe("Antigravity swarm route selection", () => {
       { agentHomeDirectory: "/private", platform: "linux" });
     expect(environment).toEqual({ HOME: "/private/home", PATH: "/usr/bin", AGY_CLI_DISABLE_AUTO_UPDATE: "1" });
     expect(antigravitySwarmLaunchEnvironment({ HOME: "/private/home" }, { agentHomeDirectory: "/private", platform: "darwin", realHome: "/Users/owner" }).HOME).toBe("/Users/owner");
+  });
+
+  it("lets the server open a fresh conversation when a saved one belongs to the other route", () => {
+    expect(antigravityRouteChangeRefusal("antigravity", "swarm", undefined)).toMatchObject({ code: "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" });
+    expect(antigravityRouteChangeRefusal("antigravity", undefined, "swarm")).toMatchObject({ code: "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" });
+    expect(antigravityRouteChangeRefusal("antigravity", undefined, undefined)).toBeNull();
+    expect(antigravityRouteChangeRefusal("cursor", "plan", undefined)).toBeNull();
   });
 
   it("routes a swarm turn to the CLI runtime instead of ACPX", async () => {

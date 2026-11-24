@@ -23,7 +23,7 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
 
 import type {
   AcpRuntimeOptions,
@@ -435,6 +435,8 @@ export class AcpxRuntimeHost {
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
+      const routeChange = antigravityRouteChangeRefusal(options.agent, options.expectedIdentity.mode, binding.mode);
+      if (routeChange) throw routeChange;
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
     options.assertWorkspaceHeld?.();
