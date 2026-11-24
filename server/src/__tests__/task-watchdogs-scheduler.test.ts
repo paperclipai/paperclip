@@ -27,6 +27,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
+import { issueService } from "../services/issues.ts";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
@@ -573,6 +574,41 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .where(eq(issueComments.issueId, watchdogIssueId));
     expect(comments.some((comment) => comment.body.includes("Stopped fingerprint"))).toBe(true);
     expect(wakes.length).toBe(2);
+  });
+
+  it("records the reviewed fingerprint when a watchdog review card reaches done without a following round", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-DONE", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [triggeredWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const observedFingerprint = triggeredWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = triggeredWatchdog!.watchdogIssueId!;
+    expect(triggeredWatchdog?.lastReviewedFingerprint).toBeNull();
+    expect(wakes).toHaveLength(1);
+
+    await issueService(db).update(watchdogIssueId, { status: "done" });
+
+    const [afterDone] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(afterDone?.lastReviewedFingerprint).toBe(observedFingerprint);
+    expect(afterDone?.lastCompletedAt).not.toBeNull();
+
+    const reviewActivities = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, sourceId), eq(activityLog.action, "issue.task_watchdog_fingerprint_reviewed")));
+    expect(reviewActivities).toHaveLength(1);
+    expect(reviewActivities[0]?.details).toMatchObject({
+      reviewedFingerprint: observedFingerprint,
+      watchdogIssueId,
+    });
+
+    const damped = await service.reconcileTaskWatchdogs({ companyId });
+    expect(damped).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
