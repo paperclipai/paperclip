@@ -112,7 +112,13 @@ export async function explainOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     }
   } catch { return unproven("git_identity_unreadable"); }
   const captureRoot = await physicalPath(cwd), gitSources = selected.git ? [selected.git] : nestedGit;
-  if (!gitSources.length) return unproven(ordinaryUnproven ?? "not_git_source");
+  if (!gitSources.length) {
+    if (ordinaryUnproven) return unproven(ordinaryUnproven);
+    const marker = await fs.lstat(path.join(captureRoot, ".git")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error; return null;
+    });
+    return unproven(marker ? "git_marker_not_repository" : "git_checkout_missing");
+  }
   if (selected.git && selected.git.root !== captureRoot) return unproven("git_root_mismatch");
   if (selected.unownedPaths.length) return unproven("unowned_path");
   if (!workspace.sourceIssueId) return unproven("task_binding_missing");

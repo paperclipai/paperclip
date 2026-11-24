@@ -162,10 +162,22 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     await fs.writeFile(path.join(info, "exclude"), "/.paperclip-repositories/\n");
     if (objects) await fs.mkdir(path.join(f.cwd, ".git", "objects"));
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
-      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]) });
+      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]), sourceScopeUnproven: objects ? "git_head_missing" : "git_marker_not_repository" });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
     expect(await db.select().from(workspaceOperations)).toEqual([]);
     expect(await fs.readFile(path.join(info, "exclude"), "utf8")).toBe("/.paperclip-repositories/\n");
+  });
+  it("names a Git record whose unmanaged directory holds no repository", async () => {
+    const f = await fixture(), cwd = path.join(home, "declared-git-without-checkout");
+    await fs.mkdir(cwd); await fs.writeFile(path.join(cwd, "saved.txt"), "kept\n");
+    for (const alias of f.aliases.slice(1)) await db.update(executionWorkspaces).set({ providerType: "plugin" })
+      .where(eq(executionWorkspaces.id, alias.workspace.id));
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd, repoUrl: "https://example.invalid/declared.git", branchName: "main" })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: ["online_workspace_source_scope_unproven"], sourceScopeUnproven: "git_checkout_missing" });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("kept\n");
   });
   it("preserves unmanaged Git import in genuine offline mode while retaining online and drain guards", async () => {
     const f = await fixture(), cwd = path.join(home, "self-hosted-repository"), repoUrl = "https://example.invalid/self-hosted.git";

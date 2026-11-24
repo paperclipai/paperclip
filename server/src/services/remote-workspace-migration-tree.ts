@@ -246,8 +246,13 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
 
 /** Only the maintenance entry point can acknowledge that every old deployment
  * has stopped. A task-level migration hold cannot fence other path aliases. */
-export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false, onlineSource?: WorkspaceSourceScope) {
-  if (writersStopped) return offlineWorkspaceMigrationBlockers(db);
+export type WorkspaceLayoutBlocker = { reason: string; state?: string };
+const overlapState = (root: string, physical: string) =>
+  physical === root ? "same_directory" : physical.startsWith(`${root}/`) ? "nested_workspace" : "enclosing_workspace";
+
+export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false,
+  onlineSource?: WorkspaceSourceScope): Promise<WorkspaceLayoutBlocker[]> {
+  if (writersStopped) return (await offlineWorkspaceMigrationBlockers(db)).map(reason => ({ reason }));
   const cwd = rootOf(workspace);
   if (!cwd) return [];
   const local = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd,
@@ -261,9 +266,10 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
       const physical = await physicalPath(cwd);
       if (onlineSource?.gitSourceRoots && physical.startsWith(`${root}/.paperclip/worktrees/`)) {
         const entry = await fs.lstat(physical).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
-        if (entry) return ["nested_workspace_import_required"];
+        if (entry) return [{ reason: "nested_workspace_import_required" }];
       }
-      if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
+      if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical))
+        return [{ reason: "overlapping_workspace_requires_maintenance", state: overlapState(root, physical) }];
     }
   }
   const migrated = await db.select({ id: workspaceOperations.id, cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
@@ -275,7 +281,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
     const sourcePath = await physicalPath(row.cwd);
     if (sourcePath.startsWith(`${root}/.paperclip/worktrees/`)
       && !(onlineSource?.gitSourceRoots && onlineSource.importedChildren?.some(child => child.operationId === row.id && child.sourcePath === sourcePath)))
-      return ["overlapping_workspace_requires_maintenance"];
+      return [{ reason: "overlapping_workspace_requires_maintenance", state: "imported_child_unrecorded" }];
   }
   return [];
 }
