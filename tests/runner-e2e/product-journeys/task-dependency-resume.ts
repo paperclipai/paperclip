@@ -189,27 +189,25 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
     await setStatus(context, "Done");
     await expect.poll(async () => (await read.get<Row>(`/api/issues/${blocker.issueId}`)).status).toBe("done");
     observations.released = await observe();
+    const settled = (point: DependencyPoint | undefined): point is DependencyPoint => Boolean(point
+      && point.dependent.status === "done" && point.dependentRuns.length === 1
+      && point.dependentRuns[0]?.status === "succeeded" && point.dependentRuns[0]?.nativePhase === "committed"
+      && point.document && point.revision && dependencyRunProjectionsAgree(point, startingRuns)
+      && !point.dependent.executionRunId && !point.dependent.checkoutRunId);
     stage = "await_automatic_resume";
     while (Date.now() < options.deadlineAt) {
       const point = await observe(); observations.finished = point;
-      if (point.dependent.status === "done" && point.dependentRuns.length === 1 && point.dependentRuns[0]?.status === "succeeded"
-        && point.dependentRuns[0]?.nativePhase === "committed" && point.document && point.revision
-        && dependencyRunProjectionsAgree(point, startingRuns)
-        && !point.dependent.executionRunId && !point.dependent.checkoutRunId) break;
+      if (settled(point)) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    if (!observations.finished || observations.finished.dependent.status !== "done" || observations.finished.dependentRuns[0]?.status !== "succeeded"
-      || observations.finished.dependentRuns[0]?.nativePhase !== "committed" || !observations.finished.document || !observations.finished.revision
-      || !dependencyRunProjectionsAgree(observations.finished, startingRuns)) {
-      throw new JourneyError("failed", "dependency_resume_deadline");
-    }
+    if (!settled(observations.finished)) throw new JourneyError("failed", "dependency_resume_deadline");
     stage = "reopen_result";
     await page.goto(url(dependentSaved.identifier ?? dependent.issueId), { waitUntil: "domcontentloaded" });
     await page.reload(); await openDocumentAuthoring(context);
     const document = page.locator(`#document-${documentKey}`);
     await expect(document).toContainText(reference);
     observations.reopened = await observe();
-    while (!dependencyRunProjectionsAgree(observations.reopened, startingRuns)) {
+    while (!settled(observations.reopened)) {
       const remaining = options.deadlineAt - Date.now();
       if (remaining <= 0) throw new JourneyError("failed", "dependency_reopen_deadline");
       await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));

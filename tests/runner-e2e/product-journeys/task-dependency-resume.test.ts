@@ -21,7 +21,7 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
 interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean;
-  laggingAgentReads?: number; reopenedLaggingAgentReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
+  laggingAgentReads?: number; reopenedLaggingAgentReads?: number; reopenedStale?: "task-run" | "both-runs" | "task-status" | "document" | "locks" | "native-phase"; reopenedStaleReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
 async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
@@ -31,6 +31,8 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
   const agentReads = { finished: 0, reopened: 0 };
   const detailReads: Array<{ projection: string; stage: string; status: string }> = [];
   let reopened = false;
+  const staleReads: Record<string, number> = {};
+  const stale = (key: string) => reopened && (staleReads[key] = (staleReads[key] ?? 0) + 1) <= (options.reopenedStaleReads ?? 0);
   // Carry the list's projection through both summary normalization and detail mapping.
   // The concurrent detail requests use the same URL; call order must not identify them.
   const projectedRows = (rows: any[], source: "task" | "agent"): any[] => {
@@ -106,7 +108,12 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
   const api: any = { origin: "https://qa.example.test", async get(route: string) {
     reads.push(route);
     if (route === `/api/issues/${s.blockerId}`) return structuredClone(blocker);
-    if (route === `/api/issues/${s.dependentId}`) return structuredClone(dependent);
+    if (route === `/api/issues/${s.dependentId}`) {
+      const task = structuredClone(dependent);
+      if (options.reopenedStale === "task-status" && stale("task-status")) task.status = "in_progress";
+      if (options.reopenedStale === "locks" && stale("locks")) task.executionRunId = "run";
+      return task;
+    }
     if (route === `/api/issues/${s.blockerId}/runs`) return [];
     if (route === `/api/issues/${s.dependentId}/runs`) return projectedRows(runs().map(r => ({ runId: r.id })), "task");
     if (route.includes("/heartbeat-runs?")) return projectedRows([...runs(), ...structuredClone(priorRuns)], "agent");
@@ -118,6 +125,9 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
         const lag = reopened ? options.reopenedLaggingAgentReads : options.laggingAgentReads;
         if (agentReads[stage] <= (lag ?? 0)) run.status = "running";
       }
+      if ((options.reopenedStale === "both-runs" || options.reopenedStale === "task-run" && source === "task")
+        && stale(source)) run.status = "running";
+      if (options.reopenedStale === "native-phase" && stale(source)) run.nativePhase = "running";
       detailReads.push({ projection: source, stage, status: run.status });
       return run;
     }
@@ -127,7 +137,10 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
       return options.missingActivity ? undefined : activity(options.agentActivity ?? 0, "prior-task", s.agentId);
     }
     if (route === `/api/companies/${s.companyId}/activity?limit=500`) return activity(options.unrelatedActivity ?? 0, "unrelated-task").slice(0, 500);
-    if (route === `/api/issues/${s.dependentId}/documents`) return completed ? [taskDocument()] : [];
+    if (route === `/api/issues/${s.dependentId}/documents`) {
+      if (options.reopenedStale === "document" && stale("document")) return [];
+      return completed ? [taskDocument()] : [];
+    }
     if (route.endsWith("/documents/dependency-proof")) return taskDocument();
     if (route.endsWith("/revisions/revision")) return revision();
     throw new Error(`unexpected_read:${route}`);
@@ -137,7 +150,7 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
     capabilities: ["company", "board-user", "task-write", "agent"], agent: { id: s.agentId, name: "Fixture agent", provider: s.provider, model: s.model, runtimeMode: "native" } } as JourneyContext;
   const session = { own: vi.fn(async resource => { owned.push(resource); }) } as unknown as TargetSession;
   const evidence = { checks: [] } as unknown as JourneyEvidence;
-  return { directory, context, session, evidence, actions, owned, writes, reads, detailReads };
+  return { directory, context, session, evidence, actions, owned, writes, reads, detailReads, staleReads };
 }
 afterEach(() => { vi.useRealTimers(); controls.create.mockReset(); });
 describe("dependency browser flow orchestration", () => {
@@ -284,6 +297,29 @@ describe("dependency browser flow orchestration", () => {
       expect(f.writes).toEqual([]);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
+  it.each((["task-run", "both-runs", "task-status", "document", "locks", "native-phase"] as const)
+    .flatMap(stale => [2, Infinity].map(lag => ({ stale, lag }))))(
+    "waits for reopened $stale staleness ($lag reads) within the original deadline", async ({ stale, lag }) => {
+      const f = await fixture(false, { reopenedStale: stale, reopenedStaleReads: lag });
+      vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+      try {
+        const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+          { deadlineAt: Date.now() + 13_000, directory: f.directory });
+        const outcome = lag === Infinity
+          ? expect(operation).rejects.toMatchObject({ code: "dependency_reopen_deadline" })
+          : expect(operation).resolves.toBeUndefined();
+        await vi.advanceTimersByTimeAsync(13_000); await outcome;
+        const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
+        expect(saved.finished.dependentRuns[0].status).toBe("succeeded");
+        expect(saved.finished.agentRuns[0].status).toBe("succeeded");
+        expect(Object.values(f.staleReads)).not.toHaveLength(0);
+        expect(Object.values(f.staleReads).every(count => count === 3)).toBe(true);
+        expect(f.evidence.checks).toHaveLength(lag === Infinity ? 0 : 8);
+        expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+        expect(saved.stage).toBe(lag === Infinity ? "reopen_result" : "complete");
+        expect(f.writes).toEqual([]);
+      } finally { await rm(f.directory, { recursive: true, force: true }); }
+    });
   it("keeps a permanently conflicting agent projection failed at the original deadline", async () => {
     const f = await fixture(false, { laggingAgentReads: Infinity });
     vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
