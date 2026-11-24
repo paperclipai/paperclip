@@ -188,16 +188,38 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-const TOOL_REPORTED_CODE = /^[a-z][a-z0-9_]{2,79}$/;
+const TOOL_CODE = "[a-z][a-z0-9_]{2,79}";
+const PLUGIN_CODE = new RegExp(`\\(code: (${TOOL_CODE})[,)]`);
+const JSON_CODE = new RegExp(`"code"\\s*:\\s*"(${TOOL_CODE})"`);
+const PREFIX_CODE = new RegExp(`^(${TOOL_CODE}):`);
+const RETRYABLE = /\bretryable\b|"retryability"\s*:\s*"later"/;
 
-export function toolReportedError(detail: string): ToolGatewayHttpError {
-  const candidates = [
-    /\(code: ([a-z][a-z0-9_]{2,79})[,)]/.exec(detail)?.[1],
-    /"code"\s*:\s*"([a-z][a-z0-9_]{2,79})"/.exec(detail)?.[1],
-    /^([a-z][a-z0-9_]{2,79}):/.exec(detail.trim())?.[1],
-  ];
-  const code = candidates.find((candidate): candidate is string => !!candidate && TOOL_REPORTED_CODE.test(candidate)) ?? "assigned_tool_error";
-  return new ToolGatewayHttpError(422, `${code}: The connected tool reported an error.`, "tool_error");
+function toolReportedText(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (!detail || typeof detail !== "object") return "";
+  const value = detail as { content?: unknown; structuredContent?: unknown; error?: unknown; code?: unknown };
+  const texts = Array.isArray(value.content)
+    ? value.content.flatMap((item) => (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+      ? [(item as { text: string }).text] : []))
+    : [];
+  const structured = value.structuredContent && typeof value.structuredContent === "object"
+    ? (value.structuredContent as { code?: unknown }).code : undefined;
+  return [
+    ...(typeof value.code === "string" ? [`${value.code}:`] : []),
+    ...(typeof structured === "string" ? [`${structured}:`] : []),
+    ...texts,
+    ...(typeof value.error === "string" ? [value.error] : []),
+  ].join("\n");
+}
+
+export function toolReportedError(detail: unknown): ToolGatewayHttpError {
+  const text = toolReportedText(detail);
+  const firstLine = text.trim().split("\n")[0] ?? "";
+  const code = PLUGIN_CODE.exec(text)?.[1] ?? JSON_CODE.exec(text)?.[1] ?? PREFIX_CODE.exec(firstLine)?.[1]
+    ?? text.split("\n").map((line) => PREFIX_CODE.exec(line.trim())?.[1]).find(Boolean) ?? "assigned_tool_error";
+  const retryable = RETRYABLE.test(text);
+  return new ToolGatewayHttpError(retryable ? 429 : 422, `${code}: The connected tool reported an error.`, "tool_error",
+    retryable ? { retryable: true } : undefined);
 }
 
 async function buildAssignedCatalog(identity: string, listing: readonly AssignedListingEntry[]): Promise<AssignedCatalog> {
@@ -477,7 +499,7 @@ export async function createAssignedMcpTools(input: {
       // The gateway normally throws provider errors. Keep a malformed or older
       // provider response from being reported as successful through PRP.
       if (result.result && typeof result.result === "object" && "isError" in result.result && result.result.isError === true) {
-        throw toolReportedError(JSON.stringify(result.result));
+        throw toolReportedError(result.result);
       }
       return result.result;
     },
