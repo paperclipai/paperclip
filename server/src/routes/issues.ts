@@ -16,6 +16,7 @@ import { taskInterruptionPresentation, taskInterruptionPresentations, taskRetryR
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
@@ -11388,7 +11389,7 @@ export function issueRoutes(
           documentKey: keyParsed.data,
           threadId: comment.threadId,
           commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          bodySnippet: toWellFormedSnippet(comment.body),
           ...summarizeIssueReferenceActivityDetails({
             addedReferencedIssues: referenceDiff.addedReferencedIssues.map(
               summarizeIssueRelationForActivity,
@@ -16473,7 +16474,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             commentId: comment.id,
-            bodySnippet: comment.body.slice(0, 120),
+            bodySnippet: toWellFormedSnippet(comment.body),
             identifier: issue.identifier,
             issueTitle: issue.title,
             authorizationReason: issueMutationAuthorizationReason,
@@ -19063,7 +19064,7 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           commentId: removed.id,
-          bodySnippet: removed.body.slice(0, 120),
+          bodySnippet: toWellFormedSnippet(removed.body),
           identifier: issue.identifier,
           issueTitle: issue.title,
           source: "queue_cancel",
@@ -19413,7 +19414,7 @@ export function issueRoutes(
               responsibleUserIdOverride: receipt.onBehalfOfUserId ?? userId,
               action: "issue.comment_added", entityType: "issue", entityId: issue.id,
               details: {
-                commentId: receipt.id, bodySnippet: receipt.body.slice(0, 120),
+                commentId: receipt.id, bodySnippet: toWellFormedSnippet(receipt.body),
                 identifier: issue.identifier, issueTitle: issue.title,
                 authorizationReason: commentAuthorizationReason, source: "comment_receipt_recovery",
                 ...summarizeIssueReferenceActivityDetails({
@@ -19939,7 +19940,7 @@ export function issueRoutes(
         entityId: currentIssue.id,
         details: {
           commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          bodySnippet: toWellFormedSnippet(comment.body),
           identifier: currentIssue.identifier,
           issueTitle: currentIssue.title,
           authorizationReason: commentAuthorizationReason,

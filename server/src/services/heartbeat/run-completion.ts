@@ -9,6 +9,7 @@ import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fall
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { isSandboxProviderDiskFullError, NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -947,7 +948,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             entityId: issueId,
             details: {
               commentId: comment.id,
-              bodySnippet: comment.body.slice(0, 120),
+              bodySnippet: toWellFormedSnippet(comment.body),
               identifier: issueRef?.identifier ?? null,
               issueTitle: issueRef?.title ?? null,
               authorizationReason: presentationAuthorizationReason,

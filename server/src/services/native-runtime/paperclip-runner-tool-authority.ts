@@ -19,6 +19,7 @@ import { caseIdForApiCapture, createNativeCaseSchema, executeNativeCaseTool, NAT
 import { executeNativeWorkflowTool } from "./native-workflow-tools.js";
 import { assertNoCaseHandoffMutation } from "../heartbeat/case-handoff-lifecycle.js";
 import { handoffCaseSchema } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
@@ -2024,7 +2025,7 @@ export class PaperclipRunnerToolAuthority {
           entityId: this.binding.issueId,
           details: {
             commentId: comment.id,
-            bodySnippet: comment.body.slice(0, 120),
+            bodySnippet: toWellFormedSnippet(comment.body),
             identifier: context.issue.identifier,
             issueTitle: context.issue.title,
             authorizationReason: "paperclip_runner_protocol",

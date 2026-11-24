@@ -15,6 +15,7 @@ import {
   updateRoutineSchema,
   updateRoutineTriggerSchema,
 } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
@@ -374,7 +375,7 @@ export function routineRoutes(
           documentKey: routineDocumentKey,
           threadId: comment.threadId,
           commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          bodySnippet: toWellFormedSnippet(comment.body),
         },
       });
       res.status(201).json(comment);
