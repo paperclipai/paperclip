@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { githubRunReplyState } from "../../chat-run-publications.js";
+import { githubLatestTaskResponseUrl, githubRunReplyState } from "../../chat-run-publications.js";
 import { FINISHED_RUN_STATUSES, readGitHubResponseRun, type GitHubResponseRunRead, type GitHubResponseRunState } from "./response-run-state.js";
 export { responseRunColumns as githubResponseRunColumns } from "./response-run-state.js";
 
@@ -12,6 +12,8 @@ export type GitHubResponseExecutionInput = {
   sourceMessageId: string | null;
   issueStatus: string;
   deliveryCreatedAt: Date;
+  /** The request shares the pull request's main comment. */
+  mainPullResponse?: boolean;
 };
 
 const finished = (status: string | undefined) => (FINISHED_RUN_STATUSES as readonly string[]).includes(status ?? "");
@@ -43,8 +45,16 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
     : input.issueStatus === "blocked" && latestRun?.status !== "running";
   const presentationPending = !!run && answersRequest && run.nativePresentationPending && reply === "none";
   const passiveResponseWait = !!run && answersRequest && run.passiveResponseWait && reply === "none";
+  const latestResponse = run && !presentationPending && reply === "none" && !paused
+    ? await githubLatestTaskResponseUrl(db, { companyId: input.companyId, endpointId: input.endpointId,
+      issueId: input.issueId, since: input.deliveryCreatedAt })
+    : null;
+  const taskFinished = ["done", "cancelled"].includes(input.issueStatus);
   const body = presentationPending ? undefined : run ? reply === "confirmed" ? "This request has been handled. See the response in this conversation."
     : paused ? "Work is paused. Your request is saved. See the Paperclip task for details."
+    : latestResponse ? `See the [latest response](${latestResponse}).`
+    : run.passiveResponseWait && !input.mainPullResponse && !taskFinished ? undefined
+    : run.responsePublicationFailed ? "This turn's reply could not be published. See the Paperclip task for details."
     : run.status === "succeeded" ? "This turn ended without publishing a final response. See the Paperclip task for details."
     : "This turn stopped before completing. See the Paperclip task for details."
     : paused ? "Work is paused. Your request is saved. See the Paperclip task for details." : undefined;

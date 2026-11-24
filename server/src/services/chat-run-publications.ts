@@ -4,19 +4,7 @@ import { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
 export { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
 import type { ChatRunMilestoneScope } from "./chat-run-milestone-notifications.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
-import {
-  and,
-  asc,
-  eq,
-  gt,
-  gte,
-  inArray,
-  isNull,
-  ne,
-  notExists,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, ne, notExists, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -115,6 +103,27 @@ export async function resolveChatRunPresentationAuthorizationReason(
     return "internal_agent_write";
   }
   return CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+}
+
+/** The latest response the agent published on GitHub for the task after `since`. */
+export async function githubLatestTaskResponseUrl(
+  db: Db,
+  input: { companyId: string; endpointId: string; issueId: string; since: Date },
+): Promise<string | null> {
+  const [latest] = await db.select({
+    url: sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url')`,
+  }).from(chatActions).where(and(
+    eq(chatActions.companyId, input.companyId),
+    eq(chatActions.endpointId, input.endpointId),
+    eq(chatActions.kind, "github_review_publication"),
+    eq(chatActions.status, "processed"),
+    sql`${chatActions.payload}->'session'->>'companyId' = ${input.companyId}`,
+    sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
+    sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
+    sql`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url') like 'https://github.com/%'`,
+    sql`${chatActions.createdAt} > ${input.since.toISOString()}::timestamptz`,
+  )).orderBy(desc(chatActions.createdAt)).limit(1);
+  return latest?.url ?? null;
 }
 
 /** A missing receipt is not proof that a provider write never arrived. */

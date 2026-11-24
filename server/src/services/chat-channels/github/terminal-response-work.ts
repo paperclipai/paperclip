@@ -8,7 +8,7 @@ import { githubResponseExecution } from "./response-execution.js";
 import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 import { HttpError } from "../../../errors.js";
-export const GITHUB_TERMINAL_RESPONSE_DECISION_VERSION = "v2";
+export const GITHUB_TERMINAL_RESPONSE_DECISION_VERSION = "v3";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string; conversationId: string; repositoryId: string | null; number: number | null; dueAt: number };
 
@@ -56,7 +56,8 @@ export function registerGitHubTerminalResponseWork(
       id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,
       deliveryId: chatActions.deliveryId, conversationId: chatConversations.id, issueId: issues.id,
       agentId: chatEndpoints.assignedAgentId, issueStatus: issues.status,
-      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number, result: chatActions.result, actionVersion, waitKey,
+      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number,
+      mainPullResponse: sql<boolean>`${chatConversations.externalThreadId} ~ '^github:[^:]+:[1-9][0-9]*$'`, result: chatActions.result, actionVersion, waitKey,
       sourceMessageId: sql<string | null>`(select l.comment_id from ${chatMessageLinks} l
         where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
           and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound' limit 1)`,
@@ -92,7 +93,8 @@ export function registerGitHubTerminalResponseWork(
    * restart can lose the hint that its lease release sends. */
   async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | { parkable: boolean }> {
     try {
-      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
+      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId!,
+        mainPullResponse: row.mainPullResponse }, read);
       if (execution.body === undefined || execution.reply === "unsettled" ||
           (execution.paused && row.result?.pausedVersion === execution.version))
         return { parkable: !execution.presentationPending && execution.reply === "none" };
