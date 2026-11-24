@@ -3529,6 +3529,13 @@
       "when": 1795544784796,
       "tag": "0505_nice_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 516,
+      "version": "7",
+      "when": 1795552863224,
+      "tag": "0516_pool_failover",
+      "breakpoints": true
     }
   ]
 }
