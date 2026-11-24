@@ -1019,10 +1019,11 @@ describe("durable, authorized connection routing", () => {
     }, "alice");
     const taskKey = randomUUID();
     const pinned = await resolve(pool.id, taskKey);
-    expect(pinned.memberId).toBe(members[0]!.id);
+    const first = members[0]!;
+    expect(pinned.memberId).toBe(first.id);
     try {
-      await service().recordQuotaCooldown(companyId, pinned.binding.connectionId,
-        await identityFor(pinned.binding.grantId), new Date(Date.now() + 60_000));
+      await service().recordQuotaCooldown(companyId, first.binding.connectionId,
+        await identityFor(first.binding.grantId), new Date(Date.now() + 60_000));
       await expect(resolve(pool.id, taskKey)).rejects.toMatchObject({ poolWaitScope: "account" });
       await expect(resolve(pool.id, randomUUID())).resolves.toMatchObject({ memberId: members[1]!.id });
     } finally {
