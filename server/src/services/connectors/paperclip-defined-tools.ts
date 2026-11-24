@@ -7,15 +7,19 @@ type Connection = { config: Record<string, unknown> };
 
 const PAPERCLIP_DEFINED_TOOL_SOURCES: ReadonlyArray<{
   matches: (connection: Connection) => boolean;
-  definition: (toolName: string, connection: Connection) => PaperclipDefinedTool | null;
+  definition: (toolName: string) => PaperclipDefinedTool | null;
 }> = [
   { matches: (connection) => connection.config.sourceTemplateKey === "google-workspace", definition: googleWorkspaceRestToolDefinition },
-  {
-    matches: (connection) => pluginConnectionMethod(connection)?.method.tools?.kind === "static",
-    definition: (toolName, connection) => pluginConnectionToolDefinition(connection, toolName),
-  },
 ];
 
 export function paperclipDefinedTool(connection: Connection, toolName: string): PaperclipDefinedTool | null {
-  return PAPERCLIP_DEFINED_TOOL_SOURCES.find((source) => source.matches(connection))?.definition(toolName, connection) ?? null;
+  return PAPERCLIP_DEFINED_TOOL_SOURCES.find((source) => source.matches(connection))?.definition(toolName) ?? null;
+}
+
+export function currentConnectionToolDefinition(connection: Connection, toolName: string): PaperclipDefinedTool | null {
+  const trusted = paperclipDefinedTool(connection, toolName);
+  if (trusted) return trusted;
+  if (connection.config.quarantineNewEntries === true) return null;
+  if (pluginConnectionMethod(connection)?.method.tools?.kind !== "static") return null;
+  return pluginConnectionToolDefinition(connection, toolName);
 }

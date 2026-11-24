@@ -34,7 +34,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
-import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
+import { currentConnectionToolDefinition } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -2075,7 +2075,7 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
-        const currentDefinition = paperclipDefinedTool(connection, catalogEntry.toolName);
+        const currentDefinition = currentConnectionToolDefinition(connection, catalogEntry.toolName);
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
           currentDefinition?.inputSchema ?? catalogEntry.inputSchema ?? {},
