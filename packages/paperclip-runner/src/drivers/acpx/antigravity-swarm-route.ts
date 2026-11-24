@@ -17,6 +17,25 @@ export function isAntigravitySwarmRoute(agent: string, mode: string | undefined)
   return agent === "antigravity" && mode === ANTIGRAVITY_SWARM_MODE;
 }
 
+const HAND_IN_VALUE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+
+/**
+ * A swarm's only prompt is the user's request, so the hand-in values that the
+ * first message's `completionContract` gives an ordinary turn reach the
+ * coordinator through Paperclip's own instructions instead. Only the
+ * server-written contract revision and criterion IDs are rendered, never a
+ * criterion's requirement (which quotes task and comment text), and a value
+ * outside the closed identifier shape is never rendered at all.
+ */
+export function antigravitySwarmHandInInstructions(contract: { revision: string; criteria: readonly { id: string }[] }): string | null {
+  const criterionIds = contract.criteria.map(criterion => criterion.id);
+  if (!HAND_IN_VALUE.test(contract.revision) || !criterionIds.every(id => HAND_IN_VALUE.test(id))) return null;
+  return [
+    "## Paperclip hand-in",
+    `When you call paperclip_finish or paperclip_block, set completionClaim.contractRevision to ${JSON.stringify(contract.revision)} and list each of these criterion IDs exactly once in completionClaim.criteria: ${JSON.stringify(criterionIds)}.`,
+  ].join("\n");
+}
+
 /** Private CLI state (settings, skills, conversations) under the run's credential home. */
 export function antigravitySwarmStateDirectory(agentHomeDirectory: string): string {
   return join(agentHomeDirectory, "antigravity-cli");

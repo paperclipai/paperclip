@@ -2,6 +2,7 @@ import { explicitTaskSkillNames } from "../contracts/runtime-context.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { CODEX_SKILLLESS_BASE_INSTRUCTIONS } from "../contracts/codex.js";
+import { antigravitySwarmHandInInstructions, isAntigravitySwarmRoute } from "../drivers/acpx/antigravity-swarm-route.js";
 import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V8, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, type NativeExecutionInput } from "../contracts/native-execution.js";
 import {
   type NativeRuntimeContextSnapshot,
@@ -50,7 +51,12 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
       "When you receive a Paperclip assignment or message, use your own available tools, apps, plugins, skills, and capabilities to complete the requested work, then return the result to Paperclip. For example, use your existing Slack connection when the task calls for Slack. Paperclip's app catalog describes what this connection exposes; it is not a list of everything you can use in your own runtime. A missing Paperclip app connection does not make your own connection unavailable. Respect each tool's existing permissions, approvals, and the user's current instructions. Keep Paperclip data and actions within this connection's authorized company, agent, and task. Never use another Paperclip connection or identity to bypass a denial. Setup or test restrictions apply only to their stated scope; do not carry them into later requests unless the user explicitly says they continue.\n\nUse the assignment catalog through paperclip_dot_tool for Paperclip operations. Use your native tools directly for the rest of the work; they do not need to appear in that catalog. Record useful results and deliverables on the task and follow the Paperclip completion instructions.".replaceAll("paperclip_dot_", grok ? "paperclip_grok_" : "paperclip_dot_"),
       `Assigned Paperclip skills: ${input.runtimeContext.skills.map(skill => skill.runtimeName).join(", ") || "none"}.`].join("\n\n");
   }
-  return composeNativeSystemInstructions(input.runtimeContext, entry);
+  // A /swarm turn's prompt is only the user's request, so its hand-in values travel
+  // here. They follow the entry, inside the composer's framing, so retargeting
+  // the instruction paths for another host still recognizes the block.
+  const handIn = input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)
+    ? antigravitySwarmHandInInstructions(input.completionContract.contract) : null;
+  return composeNativeSystemInstructions(input.runtimeContext, handIn ? `${entry.trim()}\n\n${handIn}` : entry);
 }
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {

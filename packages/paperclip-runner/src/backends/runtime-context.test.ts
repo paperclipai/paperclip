@@ -24,6 +24,7 @@ import {
   nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
+import { retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { authorizedToolSetForProvider, runnerCodexDynamicToolsFit } from "../live/runnerd-codex-transport.js";
 
 const temporaryRoots: string[] = [];
@@ -60,6 +61,29 @@ describe("native runtime context files", () => {
     expect(
       nativeSystemInstructions(runtimeInput(bundleRoot, "AGENTS.md")),
     ).toContain("Stay inside the bundle.");
+  });
+
+  it("adds the swarm hand-in values only for a /swarm run, inside the block retargeting recognizes", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "paperclip-runtime-context-"));
+    temporaryRoots.push(temporaryRoot);
+    const bundleRoot = join(temporaryRoot, "bundle");
+    mkdirSync(bundleRoot);
+    writeFileSync(join(bundleRoot, "AGENTS.md"), "Agent instructions.\n");
+    const contract = { revision: "2", objective: "Write", criteria: [{ id: "objective", requirement: "Quoted comment text" }] };
+    const execution = (mode?: string) => ({
+      ...runtimeInput(bundleRoot, "AGENTS.md"),
+      provider: { kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low", ...(mode ? { mode } : {}) },
+      completionContract: { contract },
+    }) as unknown as NativeExecutionInput;
+    expect(nativeSystemInstructions(execution())).not.toContain("Paperclip hand-in");
+    const swarm = nativeSystemInstructions(execution("swarm"));
+    expect(swarm).toContain("set completionClaim.contractRevision to \"2\"");
+    expect(swarm).not.toContain("Quoted comment text");
+    const prior = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: bundleRoot } } };
+    const current = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: "/remote/bundle" } } };
+    const retargeted = retargetNativeSystemInstructions(swarm, prior as never, current as never);
+    expect(retargeted).toContain("Paperclip hand-in");
+    expect(retargeted.endsWith("/remote/bundle")).toBe(true);
   });
 
   it("requires semantic completion before the final assistant response", () => {
