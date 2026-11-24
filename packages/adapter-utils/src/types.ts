@@ -45,6 +45,7 @@ export interface AdapterUsageCheckpoint {
   usage?: UsageSummary;
   usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
   usageBasis?: "per_run" | "session_cumulative" | null;
+  usageSessionId?: string | null;
   provider?: string | null;
   biller?: string | null;
   model?: string | null;
