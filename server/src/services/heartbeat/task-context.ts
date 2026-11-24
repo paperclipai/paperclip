@@ -548,3 +548,33 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     ? { key: pinnedSkillTestContext.skillKey, versionId: pinnedSkillTestContext.skillVersionId } : null;
   return { continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext, pinnedSkillTest };
 }
+
+/**
+ * Appends a line of guidance to every task-markdown field the adapter may render, so a note added after
+ * context preparation reaches the agent whichever variant its adapter picks. The compact variants are only
+ * touched when they exist.
+ */
+export function appendTaskMarkdownNote(context: Record<string, unknown>, note: string): void {
+  const append = (value: unknown) => {
+    const existing = typeof value === "string" ? value.trimEnd() : "";
+    return existing ? `${existing}\n${note}` : note;
+  };
+  context.paperclipTaskMarkdown = append(context.paperclipTaskMarkdown);
+  context.paperclipTaskMarkdownAssignment = append(context.paperclipTaskMarkdownAssignment);
+  if (typeof context.paperclipTaskMarkdownCompact === "string") {
+    context.paperclipTaskMarkdownCompact = append(context.paperclipTaskMarkdownCompact);
+  }
+  if (typeof context.paperclipTaskMarkdownAssignmentCompact === "string") {
+    context.paperclipTaskMarkdownAssignmentCompact = append(context.paperclipTaskMarkdownAssignmentCompact);
+  }
+}
+
+/**
+ * Like `appendTaskMarkdownNote`, but only for a run that has task markdown. A run without an issue has
+ * none, and adapters read a non-empty `paperclipTaskMarkdown` as "a task is assigned", so the note must
+ * not create the field.
+ */
+export function appendTaskMarkdownNoteWhenPresent(context: Record<string, unknown>, note: string): void {
+  if (typeof context.paperclipTaskMarkdown !== "string") return;
+  appendTaskMarkdownNote(context, note);
+}
