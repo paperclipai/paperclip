@@ -6,7 +6,8 @@
 // privacy policy and the Google API Limited Use rules say no person may read
 // that content in a replay. Every unknown state (analytics off, no company,
 // a query loading or failing, no permission to list connections) keeps it
-// masked.
+// masked, and a new connection or chat channel masks it again until the
+// check reruns.
 
 import { useLayoutEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -45,6 +46,9 @@ export function connectionCarriesConnectedAccountData(
     stringValue(transport.serverUrl),
     stringValue(transport.sourceTemplateKey),
     stringValue(connection.config?.sourceTemplateKey),
+    // Chat channel connections (Slack and others) store their provider here,
+    // with no template key or URL, and keep a custom name.
+    stringValue(connection.config?.provider),
   ].join(" ");
   return CONNECTED_ACCOUNT_PATTERN.test(haystack);
 }
@@ -70,6 +74,40 @@ function setReplayWorkContent(visible: boolean) {
 }
 
 /**
+ * Query keys for this check, kept apart from the Apps page's keys so a reset
+ * masks replays without touching other screens.
+ */
+export const replayWorkContentQueryKeys = {
+  all: ["replay-work-content"] as const,
+  connections: (companyId: string) => ["replay-work-content", companyId, "connections"] as const,
+  chatEndpoints: (companyId: string) => ["replay-work-content", companyId, "chat-endpoints"] as const,
+};
+
+/**
+ * Activity that can add a Google or Slack source: a new or edited tool
+ * connection, an app linked through an aggregator, or a new or edited chat
+ * channel. `LiveUpdatesProvider` resets this check on these, so work content
+ * stays masked until the new source lists load.
+ */
+const SOURCE_CHANGE_ACTIONS = new Set([
+  "tool_connection.created",
+  "tool_connection.updated",
+  "tool_connection.app_connected",
+  "connection.app_linked",
+  "connection_installs.changed",
+  "chat_endpoint.created",
+  "chat_endpoint.updated",
+  "chat_endpoint.reconnected",
+]);
+
+export function isReplayWorkContentSourceChange(action: string | null | undefined): boolean {
+  return !!action && SOURCE_CHANGE_ACTIONS.has(action);
+}
+
+/** Backstop refresh, in case a live update is missed (a dropped socket). */
+const RECHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
  * Sets `REPLAY_WORK_CONTENT_ATTRIBUTE` on `<html>` for the active company.
  * Renders nothing. Mount it under `CompanyProvider`. It runs its queries only
  * when session replay is on (hosted Cloud), so self-hosted installs make no
@@ -84,21 +122,23 @@ export function ReplayWorkContentVisibility() {
   const replayEnabled = session?.browserAnalytics?.replayEnabled === true;
   const companyId = replayEnabled ? selectedCompanyId : null;
   const connections = useQuery({
-    queryKey: queryKeys.tools.connections(companyId ?? ""),
+    queryKey: replayWorkContentQueryKeys.connections(companyId ?? ""),
     queryFn: () => toolsApi.listConnections(companyId!),
     enabled: !!companyId,
-    retry: false,
+    refetchInterval: RECHECK_INTERVAL_MS,
   });
   const chatEndpoints = useQuery({
-    queryKey: queryKeys.chatEndpoints.list(companyId ?? ""),
+    queryKey: replayWorkContentQueryKeys.chatEndpoints(companyId ?? ""),
     queryFn: () => chatEndpointsApi.list(companyId!),
     enabled: !!companyId,
-    retry: false,
+    refetchInterval: RECHECK_INTERVAL_MS,
   });
+  // Only a successful answer counts: while loading, after a reset, and when the
+  // latest fetch failed (even with older data cached), work content stays masked.
   const visible = !!companyId
-    && !connections.isError
-    && !chatEndpoints.isError
-    && companyAllowsReplayWorkContent(connections.data?.connections, chatEndpoints.data);
+    && connections.status === "success"
+    && chatEndpoints.status === "success"
+    && companyAllowsReplayWorkContent(connections.data.connections, chatEndpoints.data);
 
   const wasVisible = useRef(false);
   // Layout effect: it runs before rrweb's mutation observer reads a company

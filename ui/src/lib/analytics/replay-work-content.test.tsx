@@ -26,6 +26,8 @@ import {
   ReplayWorkContentVisibility,
   companyAllowsReplayWorkContent,
   connectionCarriesConnectedAccountData,
+  isReplayWorkContentSourceChange,
+  replayWorkContentQueryKeys,
 } from "./replay-work-content";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -45,6 +47,13 @@ describe("connectionCarriesConnectedAccountData", () => {
     expect(connectionCarriesConnectedAccountData(connection({ transportConfig: { url: "https://gmail.mcp.example.com/mcp" } }))).toBe(true);
   });
 
+  it("flags a custom-named Slack chat channel by its provider", () => {
+    // Removing a Slack channel archives its endpoint (gone from the endpoint
+    // list) but keeps this connection row, named however the person chose.
+    expect(connectionCarriesConnectedAccountData(connection({ name: "Support", config: { provider: "slack" } }))).toBe(true);
+    expect(connectionCarriesConnectedAccountData(connection({ name: "Support", config: { provider: "telegram" } }))).toBe(false);
+  });
+
   it("leaves other connections alone", () => {
     expect(connectionCarriesConnectedAccountData(connection({ config: { sourceTemplateKey: "linear" } }))).toBe(false);
     expect(connectionCarriesConnectedAccountData(connection({ name: "GitHub", transportConfig: { url: "https://api.githubcopilot.com/mcp" } }))).toBe(false);
@@ -62,6 +71,20 @@ describe("companyAllowsReplayWorkContent", () => {
   });
 });
 
+describe("isReplayWorkContentSourceChange", () => {
+  it("matches activity that can add a Google or Slack source", () => {
+    for (const action of ["tool_connection.created", "tool_connection.updated", "tool_connection.app_connected", "connection.app_linked", "chat_endpoint.created", "chat_endpoint.reconnected"]) {
+      expect(isReplayWorkContentSourceChange(action)).toBe(true);
+    }
+  });
+
+  it("ignores frequent activity that adds no source", () => {
+    for (const action of ["tool_connection.health_check", "tool_connection.catalog_refresh", "chat_endpoint.webhook_verified", "issue.updated", null, undefined]) {
+      expect(isReplayWorkContentSourceChange(action)).toBe(false);
+    }
+  });
+});
+
 describe("ReplayWorkContentVisibility", () => {
   let host: HTMLDivElement;
   let root: Root;
@@ -75,7 +98,11 @@ describe("ReplayWorkContentVisibility", () => {
         </QueryClientProvider>,
       );
     });
-    // Let the queries settle.
+    await settle();
+  }
+
+  // Let the queries settle and React render the result.
+  async function settle() {
     for (let i = 0; i < 10; i += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
@@ -132,6 +159,33 @@ describe("ReplayWorkContentVisibility", () => {
     expect(visible()).toBeNull();
     expect(mocks.connections).not.toHaveBeenCalled();
     expect(mocks.chatEndpoints).not.toHaveBeenCalled();
+  });
+
+  it("masks again as soon as a source change resets the check, and stays masked for a new Google connection", async () => {
+    await render();
+    expect(visible()).toBe("visible");
+    let finishReload: (value: unknown) => void = () => {};
+    mocks.connections.mockImplementation(() => new Promise((resolve) => { finishReload = resolve; }));
+    await act(async () => {
+      void queryClient.resetQueries({ queryKey: replayWorkContentQueryKeys.connections("co-1") });
+    });
+    await settle();
+    expect(visible()).toBeNull();
+    finishReload({ connections: [connection({ config: { sourceTemplateKey: "gmail" } })] });
+    await settle();
+    expect(visible()).toBeNull();
+    expect(mocks.connections).toHaveBeenCalledTimes(2);
+  });
+
+  it("masks when a refresh fails, even with an earlier answer cached", async () => {
+    await render();
+    expect(visible()).toBe("visible");
+    mocks.connections.mockRejectedValue(new Error("403"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: replayWorkContentQueryKeys.connections("co-1") });
+    });
+    await settle();
+    expect(visible()).toBeNull();
   });
 
   it("clears the attribute on unmount", async () => {

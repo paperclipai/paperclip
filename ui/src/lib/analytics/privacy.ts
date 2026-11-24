@@ -31,8 +31,9 @@ export const ANALYTICS_NO_CAPTURE_CLASS = "ph-no-capture";
 
 /**
  * Work content: task descriptions, document bodies and artifact contents.
- * Session replay masks it unless the page says the active company holds no
- * Google or Slack data (`REPLAY_WORK_CONTENT_ATTRIBUTE` on `<html>`, set by
+ * Secrets inside it stay masked (`redactReplaySecrets`). Session replay masks
+ * all of it unless the page says the active company holds no Google or Slack
+ * data (`REPLAY_WORK_CONTENT_ATTRIBUTE` on `<html>`, set by
  * `ReplayWorkContentVisibility`). Agents copy connected-account content into
  * these surfaces, and our privacy policy and the Google API Limited Use rules
  * say no person may read that content in a replay.
@@ -62,11 +63,79 @@ export function replayWorkContentVisible(doc: Document | null | undefined = glob
   return doc?.documentElement?.getAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE) === "visible";
 }
 
+function maskCharacters(text: string): string {
+  return text.replace(/\S/g, "*");
+}
+
+/**
+ * Field names that hold a secret, as in `API_KEY=...` or `"password": "..."`.
+ * Quantifiers are bounded: rrweb runs this on every recorded text node, so a
+ * long file must not backtrack.
+ */
+const SECRET_NAME = String.raw`(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,40}(?:api[-_]?key|access[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|token|secret|passw(?:or)?d|passwd|pwd|credentials?|private[-_]?key|client[-_]?secret|session[-_]?id|cookie|connection[-_]?string|dsn|jwt|bearer)[A-Za-z0-9_.-]{0,40}`;
+
+/** `name: value` / `name=value` / `"name": "value"`: the value is masked. */
+const SECRET_ASSIGNMENT = new RegExp(
+  String.raw`(${SECRET_NAME}["']?[ \t]{0,8}(?::=|=>|[:=])[ \t]{0,8}["'\x60]?)([^\s"'\x60,;]+)`,
+  "gi",
+);
+
+/** `Authorization: Bearer x`, `Basic x`, `Token x`: the credential is masked. */
+const AUTH_SCHEME = /(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{8,})/g;
+
+/** Credentials inside a URL (`scheme://user:password@host`). */
+const URL_USERINFO = /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:]{1,256}:[^\s/@]{1,256})(@)/gi;
+
+/** Well-known credential formats, masked wherever they appear. */
+const KNOWN_TOKEN = new RegExp(
+  [
+    String.raw`\b(?:sk|rk|pk)[-_](?:live|test|ant|proj|or)?[-_]?[A-Za-z0-9_-]{16,}`,
+    String.raw`\bgh[pousr]_[A-Za-z0-9]{20,}`,
+    String.raw`\bgithub_pat_[A-Za-z0-9_]{20,}`,
+    String.raw`\bglpat-[A-Za-z0-9_-]{16,}`,
+    String.raw`\bxox[abposr]-[A-Za-z0-9-]{10,}`,
+    String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`,
+    String.raw`\bAIza[0-9A-Za-z_-]{30,}`,
+    String.raw`\bya29\.[0-9A-Za-z_-]{20,}`,
+    String.raw`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`,
+    String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`,
+  ].join("|"),
+  "g",
+);
+
+/**
+ * A long run of mixed-case letters and digits, such as a pasted API key in an
+ * unknown format. Hex hashes and UUIDs have no uppercase letters, so they show.
+ */
+const RANDOM_TOKEN = /[A-Za-z0-9+/_=-]{32,}/g;
+
+function looksRandom(token: string): boolean {
+  return /[a-z]/.test(token) && /[A-Z]/.test(token) && /[0-9]/.test(token);
+}
+
+/**
+ * Masks secrets inside text that is otherwise shown in replays: known key and
+ * token formats, `name=value` assignments whose name says secret, auth header
+ * credentials, URL passwords, private key blocks and long random-looking
+ * tokens. Work content can hold a pasted key (a config file, a task
+ * description), and the board's no-capture marker only covers fields it
+ * renders as secrets.
+ */
+export function redactReplaySecrets(text: string): string {
+  return text
+    .replace(KNOWN_TOKEN, maskCharacters)
+    .replace(SECRET_ASSIGNMENT, (_match, name: string, value: string) => `${name}${maskCharacters(value)}`)
+    .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
+    .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
+    .replace(RANDOM_TOKEN, (token) => (looksRandom(token) ? maskCharacters(token) : token));
+}
+
 /**
  * Session replay `maskTextFn`. rrweb calls it only for text inside
  * `ANALYTICS_MASK_TEXT_SELECTOR`. The nearest marker decides: work content
- * shows when the page allows it, and every other marker masks. Whitespace
- * stays, so the layout stays readable.
+ * shows when the page allows it, with secrets inside it still masked
+ * (`redactReplaySecrets`), and every other marker masks. Whitespace stays, so
+ * the layout stays readable.
  */
 export function maskReplayText(text: string, element?: HTMLElement | null): string {
   const nearest = element?.closest?.(ANALYTICS_MASK_TEXT_SELECTOR);
@@ -76,9 +145,9 @@ export function maskReplayText(text: string, element?: HTMLElement | null): stri
     && !nearest.matches(STRICT_MASK_SELECTOR)
     && replayWorkContentVisible(nearest.ownerDocument)
   ) {
-    return text;
+    return redactReplaySecrets(text);
   }
-  return text.replace(/\S/g, "*");
+  return maskCharacters(text);
 }
 
 /**

@@ -455,7 +455,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
           tabIndex={0}
           className="flex-1 overflow-auto bg-background p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         >
-          <WorkspaceFileMarkdownBody softBreaks={false}>
+          <WorkspaceFileMarkdownBody softBreaks={false} replayContent="work">
             {content.content.data}
           </WorkspaceFileMarkdownBody>
         </div>

@@ -21,10 +21,13 @@ import {
   ANALYTICS_WORK_CONTENT_CLASS,
   REPLAY_WORK_CONTENT_ATTRIBUTE,
   maskReplayText,
+  redactReplaySecrets,
 } from "./privacy";
 import { isBlockedFromReplay, replayLeaks } from "./replay-recording.test-utils";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+const stars = (text: string) => text.replace(/\S/g, "*");
 
 const UI_SRC = join(import.meta.dirname, "../..");
 
@@ -310,6 +313,61 @@ describe("session replay text masking", () => {
     }
   });
 
+  it("masks secrets inside visible work content", () => {
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const work = (text: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><pre>${text}</pre></div>`;
+      expect(recordedTextOf(work("OPENAI_API_KEY=sk-proj-abcdefghijklmnop1234"), "OPENAI_API_KEY="))
+        .toBe(`OPENAI_API_KEY=${stars("sk-proj-abcdefghijklmnop1234")}`);
+      expect(recordedTextOf(work("Deploy the Q3 plan"), "Deploy the Q3 plan")).toBe("Deploy the Q3 plan");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it.each([
+    ["an OpenAI key", "key sk-proj-abcdefghijklmnop1234 here", "sk-proj-abcdefghijklmnop1234"],
+    ["an Anthropic key", "sk-ant-api03-AbCdEfGhIjKlMnOpQr", "sk-ant-api03-AbCdEfGhIjKlMnOpQr"],
+    ["a GitHub token", "ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghijklmnopqrstuvwxyz0123"],
+    ["a Slack token", "xoxb-123456789012-abcdefABCDEF", "xoxb-123456789012-abcdefABCDEF"],
+    ["an AWS key id", "id AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"],
+    ["a Google API key", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"],
+    ["a JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh1234", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh1234"],
+    ["an env assignment", "DATABASE_PASSWORD=hunter2", "hunter2"],
+    ["a JSON field", "\"apiKey\": \"abc123secret\"", "abc123secret"],
+    ["a YAML field", "client_secret: s3cr3t-value", "s3cr3t-value"],
+    ["a bearer header", "Authorization: Bearer abcdef123456", "abcdef123456"],
+    ["URL credentials", "postgres://admin:pa55word@db.internal:5432/app", "admin:pa55word"],
+    ["a random token", "value Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC", "Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC"],
+    ["a private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----"],
+  ])("redactReplaySecrets masks %s", (_label, input, secret) => {
+    expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
+  });
+
+  it("redacts a large text node quickly", () => {
+    // rrweb calls this for every recorded text node, so it must stay linear.
+    const inputs = [
+      "tokentoken".repeat(20_000),
+      "a".repeat(200_000),
+      "password_".repeat(20_000) + "=x",
+      "https://" + "a:".repeat(50_000),
+      ("const value = computeTotal(lineItems); // TODO token budget\n").repeat(3_000),
+    ];
+    const started = performance.now();
+    for (const input of inputs) redactReplaySecrets(input);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it.each([
+    "Ship the Q3 launch plan by Friday",
+    "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+    "id 123e4567-e89b-12d3-a456-426614174000",
+    "The token budget was 4k per run.",
+    "See https://github.com/paperclipai/paperclip/pull/22820",
+  ])("redactReplaySecrets leaves ordinary text alone: %s", (input) => {
+    expect(redactReplaySecrets(input)).toBe(input);
+  });
+
   it("sends the marker selector and the work content mask function to session replay", () => {
     expect(options.session_recording.maskTextSelector).toBe(ANALYTICS_MASK_TEXT_SELECTOR);
     expect(options.session_recording.maskTextFn).toBe(maskReplayText);
@@ -421,6 +479,17 @@ describe("session replay text masking", () => {
     const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
     const elements = [...openElementsAt(source, index), contentTag];
     expect(elements.some((tag) => tag.includes("ANALYTICS_MASK_CLASS"))).toBe(true);
+  });
+
+  it.each([
+    { file: "components/FileViewerSheet.tsx", content: "<WorkspaceFileMarkdownBody" },
+  ])("renders Markdown work content with the work marker at $content in $file", ({ file, content }) => {
+    // An inner MarkdownBody without replayContent="work" carries the strict
+    // mask, which wins over a work marker on its wrapper.
+    const source = readFileSync(join(UI_SRC, file), "utf8");
+    const index = source.indexOf(content);
+    expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);
+    expect(source.slice(index, tagEnd(source, index + 1) + 1)).toContain("replayContent=\"work\"");
   });
 
   it.each(WORK_CONTENT_SURFACES)("keeps the work content mask on $content in $file", ({ file, content }) => {

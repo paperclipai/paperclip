@@ -291,12 +291,26 @@ always masked.
   `data-replay-work-content="visible"` on `<html>` only when the company's
   tool connections and chat endpoints both load and none of them, in any
   status, is Google (Gmail, Drive, Calendar, Docs and the other Workspace
-  services), Slack or an aggregator (Composio, Arcade, Executor). Loading,
-  errors (including no permission to list connections), no company and
-  replay off all keep work content masked. `maskReplayText` (the rrweb
-  `maskTextFn`) shows work content text only when the nearest marker around
-  it is the work content marker, so customer content, secrets and editors
-  inside work content stay masked. rrweb decides masking when it records a
+  services), Slack or an aggregator (Composio, Arcade, Executor). Slack chat
+  channels are found by `config.provider`, because a removed channel's
+  endpoint is archived (and leaves the endpoint list) while its connection
+  row stays with a custom name. Loading, a failed latest fetch (including no
+  permission to list connections, even with an older answer cached), no
+  company and replay off all keep work content masked. The check keeps its
+  own query keys (`replayWorkContentQueryKeys`). `LiveUpdatesProvider` resets
+  them on activity that can add a source (a new or edited connection, a
+  linked aggregator app, a new or edited chat channel), so work content masks
+  at once and stays masked until the lists reload. A five-minute refetch
+  covers a missed live update. `maskReplayText` (the rrweb `maskTextFn`)
+  shows work content text only when the nearest marker around it is the work
+  content marker, so customer content, secrets and editors inside work
+  content stay masked. Shown work content still passes through
+  `redactReplaySecrets`, which masks known key and token formats (OpenAI,
+  Anthropic, GitHub, Slack, AWS, Google, JWTs, private key blocks),
+  `name=value` assignments whose name says secret, auth header credentials,
+  URL passwords and long mixed-case random tokens. It reads one text node
+  at a time, so a name and value split across syntax-highlight spans are
+  caught only by the token-format and random-token rules. rrweb decides masking when it records a
   node, so the page calls `refreshSessionReplay` (a new full snapshot) when
   work content becomes visible. Task titles, artifact titles and file names
   were already recorded as they are. Comments, chat messages, run output and
