@@ -696,6 +696,11 @@ export function nativeHarnessBackupExpirationService(
     return true;
   }
 
+  /** Skill homes and staging a launch prepared become removable a day later (grace and staging age). */
+  function noteSkillStorage(preparedAt: number) {
+    evidenceDueAt = Math.min(evidenceDueAt, preparedAt + DAY_MS + 1);
+  }
+
   function noteEvidence(writtenAt: number) {
     evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs() + (defaults.duty === "evidence" ? 1 : 0));
   }
@@ -977,6 +982,6 @@ export function nativeHarnessBackupExpirationService(
     return result;
   }
 
-  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
+  return { tick, noteEvidence, noteSkillStorage, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
     reconcileBackup, backupScopes, expireBackup, resolveBackupScope };
 }

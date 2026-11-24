@@ -10,7 +10,7 @@ import { issueService } from "../services/issues.js";
 import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerNativeRunnerEvidenceRetentionWork } from "../services/native-runtime/native-runner-evidence-retention-work.js";
-import { noteNativeRunnerEvidence } from "../services/native-runtime/native-runner-evidence-signal.js";
+import { noteNativeRunnerEvidence, noteNativeRunnerSkillStorage } from "../services/native-runtime/native-runner-evidence-signal.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -1210,6 +1210,21 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     await startEvidence(); await settled(); expect(await exists(session.current)).toBe(true);
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
     reads.mockRestore(); writes.mockRestore(); await quiet();
+  });
+
+  it("wakes an idle evidence worker for skill storage a launch prepared and removes its abandoned staging a day later", async () => {
+    const scope = await emptyStateBase();
+    await startEvidence({ skillHomeStoreRoot: path.join(stateBase, "skill-homes"), skillStagingRoots: [stateBase] });
+    await settled(); await quiet();
+    const launchedAt = Date.now();
+    const staging = path.join(stateBase, scope, "codex-home", ".paperclip-skills-staging-interrupted");
+    await fs.mkdir(path.join(staging, "skill"), { recursive: true });
+    await fs.utimes(staging, new Date(launchedAt), new Date(launchedAt));
+    noteNativeRunnerSkillStorage(launchedAt);
+    const deadline = launchedAt + DAY_MS + 1;
+    await settled(deadline);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await settled();
+    expect(await exists(staging)).toBe(false); await quiet();
   });
 
   it("reconstructs and replaces the saved evidence deadline after a publication signal", async () => {
