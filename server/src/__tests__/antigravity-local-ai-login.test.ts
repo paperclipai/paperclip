@@ -9,7 +9,10 @@ import { PgDialect } from "drizzle-orm/pg-core";
 const mocks = vi.hoisted(() => ({ root: vi.fn(), browser: vi.fn(), credential: vi.fn(), save: vi.fn(), notify: vi.fn(), activity: vi.fn() }));
 vi.mock("../home-paths.js", () => ({ resolvePaperclipInstanceRoot: mocks.root }));
 vi.mock("../services/local-ai-browser-login.js", () => ({ startLocalBrowserLogin: mocks.browser }));
-vi.mock("../services/local-ai-credentials.js", () => ({ readVerifiedLocalAiCredentialDetails: mocks.credential }));
+vi.mock("../services/local-ai-credentials.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/local-ai-credentials.js")>(),
+  readVerifiedLocalAiCredentialDetails: mocks.credential,
+}));
 vi.mock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ save: mocks.save }) }));
 vi.mock("../services/delivery-work-notifications.js", () => ({ DELIVERY_QUEUES: { localLoginCleanup: "localLoginCleanup" }, notifyDeliveryWork: mocks.notify }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: mocks.activity }));

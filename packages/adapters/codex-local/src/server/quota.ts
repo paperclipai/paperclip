@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CodexQuotaRequestError, fetchQuotaResponse } from "./quota-http.js";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
 import {
   classifyCodexAuthRefreshFailure,
@@ -194,12 +195,12 @@ interface WhamUsageResponse {
   credits?: WhamCredits | null;
 }
 
-class CodexQuotaAuthError extends Error {
+class CodexQuotaAuthError extends CodexQuotaRequestError {
   constructor(
     message: string,
     readonly errorFamily: CodexAuthRefreshFailureClass,
   ) {
-    super(message);
+    super("rejected", message);
     this.name = "CodexQuotaAuthError";
   }
 }
@@ -289,7 +290,7 @@ export async function fetchCodexQuota(
   };
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
 
-  const resp = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers, signal });
+  const resp = await fetchQuotaResponse("https://chatgpt.com/backend-api/wham/usage", headers, signal);
   if (!resp.ok) {
     const message = `chatgpt wham api returned ${resp.status}`;
     const responseText = await readResponseTextPrefix(resp);
@@ -297,9 +298,15 @@ export async function fetchCodexQuota(
       errorMessage: [message, responseText].filter(Boolean).join("\n"),
     });
     if (authFailure) throw new CodexQuotaAuthError(message, authFailure);
-    throw new Error(message);
+    throw new CodexQuotaRequestError(resp.status === 401 || resp.status === 403 ? "rejected" : "unavailable", message);
   }
-  const body = (await resp.json()) as WhamUsageResponse;
+  let body: WhamUsageResponse;
+  try {
+    body = await resp.json() as WhamUsageResponse;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid quota response");
+  } catch {
+    throw new CodexQuotaRequestError("unavailable", "OpenAI returned an invalid verification response.");
+  }
   const windows: QuotaWindow[] = [];
 
   const rateLimit = body.rate_limit;

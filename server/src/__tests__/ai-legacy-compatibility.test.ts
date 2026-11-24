@@ -13,6 +13,11 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
+vi.mock("../../../packages/adapters/codex-local/src/server/quota-http.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../packages/adapters/codex-local/src/server/quota-http.js")>(),
+  fetchQuotaResponse: (url: string, headers: Record<string, string>, signal?: AbortSignal) => fetch(url, { headers, signal }),
+}));
+
 const browserLogin = vi.hoisted(() => ({ submitCode: vi.fn(), abort: vi.fn() }));
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({
