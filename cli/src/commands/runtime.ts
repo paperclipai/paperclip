@@ -130,6 +130,49 @@ export async function setupAntigravityRuntime(): Promise<void> {
 }
 
 
+/** Resolve a vendored provisioner inside the installed server, without importing it. */
+async function resolveVendoredProvisioner(serverUrl: string, file: string, label: string): Promise<string> {
+  const url = new URL(serverUrl);
+  if (url.protocol !== "file:" || url.search || url.hash) throw new Error(`${label} setup requires an installed Paperclip server`);
+  const entry = await realpath(fileURLToPath(url));
+  if (!entry.endsWith("/dist/index.js")) throw new Error(`${label} setup requires the published server layout`);
+  const root = resolve(dirname(entry), "..");
+  const manifest = join(root, "package.json");
+  const info = await lstat(manifest);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 65536 || JSON.parse(await readFile(manifest, "utf8")).name !== "@paperclipai/server") throw new Error(`${label} setup server package identity is invalid`);
+  const provisioner = join(root, "dist/vendor/paperclip-runner/cli", file);
+  if (await realpath(provisioner) !== provisioner || !(await lstat(provisioner)).isFile()) throw new Error(`${label} setup entrypoint escapes its server package`);
+  return provisioner;
+}
+
+/** Run a provisioner with only public-download network settings. */
+async function runProvisioner(provisioner: string, label: string): Promise<void> {
+  const child = spawn(process.execPath, ["--use-env-proxy", provisioner], { stdio: "inherit", env: buildPiSetupEnvironment() });
+  const cancel = () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); };
+  process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
+  try {
+    await new Promise<void>((accept, reject) => {
+      let spawnError: Error | undefined;
+      child.on("error", error => { spawnError = error; });
+      child.once("close", (code, signal) => {
+        if (spawnError) reject(spawnError);
+        else if (code !== 0 || signal) reject(new Error(`${label} setup did not finish. Review its error above; nothing unverified was installed.`));
+        else accept();
+      });
+    });
+  } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
+}
+
+/** The experimental Antigravity CLI route (`agy`), fetched from Google at setup time. */
+export function resolveAntigravityCliProvisioner(serverUrl: string): Promise<string> {
+  return resolveVendoredProvisioner(serverUrl, "provision-antigravity-cli.cjs", "Antigravity CLI");
+}
+
+export async function setupAntigravityCliRuntime(): Promise<void> {
+  await runProvisioner(await resolveAntigravityCliProvisioner(import.meta.resolve("@paperclipai/server")), "Antigravity CLI");
+}
+
+
 export async function resolveKimiProvisioner(serverUrl: string): Promise<string> {
   const url = new URL(serverUrl);
   if (url.protocol !== "file:" || url.search || url.hash) throw new Error("Kimi setup requires an installed Paperclip server");
@@ -183,12 +226,13 @@ export function registerRuntimeCommands(program: Command): void {
       } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
     });
   runtime.command("setup <provider>")
-    .description("Install and verify the pinned Pi, Cursor, Kimi Code, or Antigravity runtime for this host (public downloads; no model calls)")
+    .description("Install and verify the pinned Pi, Cursor, Kimi Code, Antigravity, or experimental Antigravity CLI runtime for this host (public downloads; no model calls)")
     .action(async (provider: string) => {
       if (provider === "pi") await setupPiRuntime();
       else if (provider === "cursor") await setupCursorRuntime();
       else if (provider === "kimi") await setupKimiRuntime();
       else if (provider === "antigravity") await setupAntigravityRuntime();
-      else throw new Error("Supported runtime setup: paperclipai runtime setup pi, cursor, kimi, or antigravity");
+      else if (provider === "antigravity-cli") await setupAntigravityCliRuntime();
+      else throw new Error("Supported runtime setup: paperclipai runtime setup pi, cursor, kimi, antigravity, or antigravity-cli");
     });
 }

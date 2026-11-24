@@ -72,6 +72,32 @@ These are two different features. The pinned 1.5.2 ACP server offers neither.
   after five successful runs across four agents (about 270k input tokens);
   one verifier run failed with a provider error and its retry passed.
 
+### Antigravity CLI route: distribution only (experimental, 2026-11-23)
+
+A second distribution, Google's Antigravity CLI (`agy`) 1.5.15, build
+`1.5.15-5514532022517760`, is pinned for darwin-arm64, linux-x64 and
+linux-arm64 in `packages/paperclip-runner/antigravity-cli-distributions.json`.
+It is the planned route for native `/swarm`. This step adds only the pin,
+`paperclipai runtime setup antigravity-cli` and a launch resolver. No route
+selection, driver or command detection exists yet, so nothing runs the CLI.
+
+- **Experimental.** It is not part of the registry-server profile above and
+  changes none of its pins, its admission patch or its qualification state.
+- **Fetched at setup time.** Setup downloads the archive from Google's
+  versioned URL and checks it against the pinned size, SHA-512 and SHA-256. It
+  then checks the extracted executable's SHA-256 and SHA-512. It installs into
+  `~/.paperclip/runtimes/antigravity-cli/`, beside the registry-server runtime.
+  Any mismatch installs nothing. The provider pack and Docker images do not
+  carry the binary. The reasons are that Google publishes no redistribution
+  licence for the CLI and that the bucket's object immutability cannot be
+  checked anonymously.
+- **Integrity without a patch.** The CLI is one signed Go binary with no patch
+  point, so the owned admission patch cannot apply. Integrity is the pinned
+  archive plus the pinned executable. Each launch runs the sealed-store copy
+  and re-hashes the executable it spawns. Self-update is off through the pinned
+  environment `AGY_CLI_DISABLE_AUTO_UPDATE=1`. The endpoint, `--gemini-dir`,
+  modes and other flags are driver policy and are not pinned here.
+
 ## Routes to Neon
 
 State as of the end of 2026-11-22. "Admitted" means the patched server returned
