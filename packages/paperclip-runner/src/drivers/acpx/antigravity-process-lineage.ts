@@ -156,15 +156,22 @@ function assertCompleteRead(read: ProcessTableRead): ProcessTableRead {
   return read;
 }
 
-/** The current start time of one PID, or null when it is gone or cannot be read. */
-async function currentStart(pid: number): Promise<number | null> {
+/** The current start time of each PID still alive and readable (one `ps` for all of them on macOS). */
+async function currentStarts(pids: readonly number[]): Promise<Map<number, number>> {
+  const starts = new Map<number, number>();
+  if (pids.length === 0) return starts;
   if (process.platform === "linux") {
-    const row = await readLinuxEntry(pid);
-    return typeof row === "object" && !row.zombie ? row.started : null;
+    for (const pid of pids) {
+      const row = await readLinuxEntry(pid);
+      if (typeof row === "object" && !row.zombie) starts.set(pid, row.started);
+    }
+    return starts;
   }
-  const output = await runPs(["-o", "pid=,ppid=,pgid=,stat=,lstart=", "-p", String(pid)]).catch(() => "");
-  const entry = parsePsTable(output).entries.find(item => item.pid === pid);
-  return entry && !entry.zombie ? entry.started : null;
+  const output = await runPs(["-o", "pid=,ppid=,pgid=,stat=,lstart=", "-p", pids.join(",")]).catch(() => "");
+  let read: ProcessTableRead = { entries: [], unreadable: [] };
+  try { read = parsePsTable(output); } catch { /* nothing is signalled */ }
+  for (const entry of read.entries) if (!entry.zombie) starts.set(entry.pid, entry.started);
+  return starts;
 }
 
 export interface AntigravityProcessLineage {
@@ -216,9 +223,11 @@ export function trackAntigravityProcessLineage(rootPid: number | undefined, opti
         if (observed && observed.live.length === 0 && observed.unresolved.length === 0) return;
         // The first round signals what it found even when that read was slow; later rounds keep the deadline.
         if (round > 0 && Date.now() >= deadline) throw new Error("Antigravity helper processes could not be stopped");
-        for (const entry of observed?.live ?? []) {
-          // Re-read the identity just before the signal: a PID reused since the read is never signalled.
-          if (await currentStart(entry.pid) !== entry.started) continue;
+        // Re-read the identities just before the signals: a PID reused since the read is never signalled.
+        const live = observed?.live ?? [];
+        const starts = await currentStarts(live.map(entry => entry.pid));
+        for (const entry of live) {
+          if (starts.get(entry.pid) !== entry.started) continue;
           try { process.kill(entry.pid, "SIGKILL"); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
         }
