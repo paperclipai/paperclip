@@ -72,10 +72,12 @@ If stdout stays open or the buffer lacks room for one maximum-size frame,
 runnerd reports uncertainty and keeps the events already committed to disk.
 
 Executors retain polled events until runnerd acknowledges each event after its
-outbox commit. Batches commit one event at a time, so a later oversized event or
-capacity failure cannot roll back the accepted prefix or discard the
-unacknowledged suffix. Each retained executor event has a stable identity that
-runnerd derives into its PRP `sourceEventId`. If the process stops after the
+outbox commit. Runnerd commits each polled batch of up to 128 events with one
+save, and only then acknowledges the batch to the executor. If an event is
+oversized or exceeds capacity, runnerd still saves and acknowledges the events
+before it, and the executor keeps the rejected event and everything after it.
+If the save fails, the executor keeps the whole batch. Each retained executor
+event has a stable identity that runnerd derives into its PRP `sourceEventId`. If the process stops after the
 outbox commit but before the executor acknowledgement, a bounded durable
 receipt journal recognizes and byte-validates the retained copy without
 appending a second event. Receipts outlive transport ACK removal; because the
