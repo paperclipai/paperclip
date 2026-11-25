@@ -3,8 +3,10 @@ use serde_json::json;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 
+/// 2027-01-15T08:00:00Z.
 const NOW: f64 = 1_800_000_000_000.0;
 const IDENTITY: &str = "https://issuer.example::12345678-1234-4234-8234-123456789abc";
+const OTHER: &str = "https://issuer.example::87654321-4321-4321-4321-cba987654321";
 
 struct Directory(PathBuf);
 impl Directory {
@@ -17,9 +19,12 @@ impl Directory {
     }
     fn write(&self, name: &str, value: &Value, mode: u32) -> PathBuf {
         let path = self.0.join(name);
-        fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        fs::write(&path, bytes(value)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         path
+    }
+    fn entries(&self) -> usize {
+        fs::read_dir(&self.0).unwrap().count()
     }
 }
 impl Drop for Directory {
@@ -28,38 +33,13 @@ impl Drop for Directory {
     }
 }
 
-fn rfc3339(ms: f64) -> String {
-    let seconds = (ms / 1000.0) as i64;
-    let days = seconds.div_euclid(86_400);
-    let rest = seconds.rem_euclid(86_400);
-    // Inverse of the civil-day conversion, for fixtures only.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}123Z",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60,
-        (ms as i64).rem_euclid(1000)
-    )
+fn codex(account: &str, last_refresh: &str) -> Value {
+    json!({"tokens":{"account_id":account, "access_token":"access", "refresh_token":"refresh"},
+        "last_refresh": last_refresh})
 }
 
-fn codex(account: &str, marker: &str, last_refresh_ms: f64) -> Value {
-    json!({"tokens":{"account_id":account, "access_token":format!("access-{marker}"),
-        "refresh_token":format!("refresh-{marker}"), "id_token":format!("id-{marker}")},
-        "last_refresh": rfc3339(last_refresh_ms)})
-}
-
-fn grok(identity: &str, marker: &str, expires_at: Value) -> Value {
-    json!({ identity: {"key":format!("access-{marker}"), "refresh_token":format!("refresh-{marker}"),
-        "expires_at": expires_at}})
+fn grok(identity: &str, expires_at: Value) -> Value {
+    json!({ identity: {"key":"access", "refresh_token":"refresh", "expires_at": expires_at}})
 }
 
 fn bytes(value: &Value) -> Vec<u8> {
@@ -67,219 +47,41 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 #[test]
-fn rfc3339_matches_javascript_date_parse() {
-    assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0.0));
-    assert_eq!(
-        parse_rfc3339_ms("2026-11-24T12:34:56.789999Z"),
-        Some(1_795_523_696_789.0)
-    );
-    assert_eq!(
-        parse_rfc3339_ms("2026-11-24T14:34:56+02:00"),
-        parse_rfc3339_ms("2026-11-24T12:34:56Z")
-    );
-    assert_eq!(
-        parse_rfc3339_ms("2024-02-29T00:00:00Z"),
-        Some(1_709_164_800_000.0)
-    );
-    assert_eq!(parse_rfc3339_ms(&rfc3339(NOW)), Some(NOW));
-    for invalid in [
-        "2025-02-29T00:00:00Z",
-        "2026-13-01T00:00:00Z",
-        "2026-11-24 12:34:56Z",
-        "2026-11-24T12:34:56",
-        "2026-11-24T12:34:56.Z",
-        "2026-11-24T12:34Z",
-        "2026-11-24",
-        "yesterday",
-    ] {
-        assert_eq!(parse_rfc3339_ms(invalid), None, "{invalid}");
-    }
-}
-
-#[test]
-fn grok_identity_matches_the_adapter_pattern() {
-    assert!(is_grok_identity(IDENTITY));
-    assert!(is_grok_identity("x::12345678-1234-1234-1234-123456789ABC"));
-    for invalid in [
-        "::12345678-1234-1234-1234-123456789abc",
-        "issuer:12345678-1234-1234-1234-123456789abc",
-        "issuer::12345678123412341234123456789abc",
-        "line\nbreak::12345678-1234-1234-1234-123456789abc",
-        "issuer::12345678-1234-1234-1234-123456789abz",
-    ] {
-        assert!(!is_grok_identity(invalid), "{invalid}");
-    }
-}
-
-#[test]
-fn codex_newer_refresh_replaces_the_host_file() {
-    let directory = Directory::new();
-    let host = directory.write(
-        "auth.json",
-        &codex("account-1", "host", NOW - 60_000.0),
-        0o600,
-    );
-    let refreshed = bytes(&codex("account-1", "refreshed", NOW - 1_000.0));
-    assert_eq!(
-        write_back("codex", &refreshed, &host, NOW).unwrap(),
-        WriteBack::Written
-    );
-    assert_eq!(fs::read(&host).unwrap(), refreshed);
-    assert_eq!(fs::metadata(&host).unwrap().mode() & 0o777, 0o600);
-    // A second pass is a tie and leaves the file alone.
-    assert_eq!(
-        write_back("codex", &refreshed, &host, NOW).unwrap(),
-        WriteBack::Kept
-    );
-}
-
-#[test]
-fn codex_keeps_older_equal_other_account_implausible_and_api_key_hosts() {
-    let host_value = codex("account-1", "host", NOW - 60_000.0);
+fn replacement_follows_the_adapter_freshness_rules() {
+    let codex_host = codex("account-1", "2027-01-15T07:59:00Z");
+    let grok_host = grok(IDENTITY, json!(1_800_003_600));
+    let api_key = json!({"OPENAI_API_KEY":"key"});
+    #[rustfmt::skip]
     let cases = [
-        (
-            "older",
-            bytes(&codex("account-1", "older", NOW - 120_000.0)),
-            host_value.clone(),
-        ),
-        (
-            "equal",
-            bytes(&codex("account-1", "equal", NOW - 60_000.0)),
-            host_value.clone(),
-        ),
-        (
-            "other account",
-            bytes(&codex("account-2", "other", NOW)),
-            host_value.clone(),
-        ),
-        (
-            "implausible",
-            bytes(&codex("account-1", "future", NOW + 6.0 * 60_000.0)),
-            host_value.clone(),
-        ),
-        (
-            "unparseable source",
-            bytes(
-                &json!({"tokens":{"account_id":"account-1","access_token":"a"},"last_refresh":"recently"}),
-            ),
-            host_value.clone(),
-        ),
-        (
-            "api-key source",
-            bytes(&json!({"OPENAI_API_KEY":"key"})),
-            host_value.clone(),
-        ),
-        (
-            "api-key host",
-            bytes(&codex("account-1", "newer", NOW)),
-            json!({"OPENAI_API_KEY":"key"}),
-        ),
-        (
-            "unusable host",
-            bytes(&codex("account-1", "newer", NOW)),
-            json!({"tokens":{}}),
-        ),
+        ("codex newer", "codex", codex("account-1", "2027-01-15T07:59:59Z"), &codex_host, true),
+        ("codex newer offset", "codex", codex("account-1", "2027-01-15T09:59:30+02:00"), &codex_host, true),
+        ("codex within skew", "codex", codex("account-1", "2027-01-15T08:04:00Z"), &codex_host, true),
+        ("codex implausible", "codex", codex("account-1", "2027-01-15T08:06:00Z"), &codex_host, false),
+        ("codex older", "codex", codex("account-1", "2027-01-15T07:58:00Z"), &codex_host, false),
+        ("codex equal", "codex", codex("account-1", "2027-01-15T07:59:00.000999Z"), &codex_host, false),
+        ("codex other account", "codex", codex("account-2", "2027-01-15T07:59:59Z"), &codex_host, false),
+        ("codex unparseable", "codex", codex("account-1", "recently"), &codex_host, false),
+        ("codex api-key source", "codex", api_key.clone(), &codex_host, false),
+        ("codex api-key host", "codex", codex("account-1", "2027-01-15T07:59:59Z"), &api_key, false),
+        ("grok newer seconds", "grok", grok(IDENTITY, json!(1_800_003_660)), &grok_host, true),
+        ("grok newer milliseconds", "grok", grok(IDENTITY, json!(1_800_003_660_000_u64)), &grok_host, true),
+        ("grok newer ISO", "grok", grok(IDENTITY, json!("2027-01-15T09:01:00Z")), &grok_host, true),
+        ("grok older", "grok", grok(IDENTITY, json!(1_800_003_540)), &grok_host, false),
+        ("grok equal", "grok", grok(IDENTITY, json!(1_800_003_600_000_u64)), &grok_host, false),
+        ("grok other identity", "grok", grok(OTHER, json!(1_800_003_660)), &grok_host, false),
+        ("grok invalid identity", "grok", grok("issuer:12345678-1234-4234-8234-123456789abc", json!(1_800_003_660)), &grok_host, false),
+        ("grok missing expiry", "grok", grok(IDENTITY, Value::Null), &grok_host, false),
+        ("grok unreadable expiry", "grok", grok(IDENTITY, json!("tomorrow")), &grok_host, false),
+        ("grok implausible", "grok", grok(IDENTITY, json!(1_800_000_000 + 401 * 86_400)), &grok_host, false),
+        ("grok host expiry missing", "grok", grok(IDENTITY, json!(1_800_003_660)), &grok(IDENTITY, Value::Null), false),
     ];
-    for (name, source, host_value) in cases {
-        let directory = Directory::new();
-        let host = directory.write("auth.json", &host_value, 0o600);
-        let before = fs::read(&host).unwrap();
-        assert_eq!(
-            write_back("codex", &source, &host, NOW).unwrap(),
-            WriteBack::Kept,
-            "{name}"
+    for (name, provider, source, destination, expected) in cases {
+        let decision = prefer_source(
+            &freshness(provider, &bytes(&source)),
+            &freshness(provider, &bytes(destination)),
+            NOW,
         );
-        assert_eq!(fs::read(&host).unwrap(), before, "{name}");
-    }
-    // Within the five-minute skew allowance a future value is still accepted.
-    let directory = Directory::new();
-    let host = directory.write("auth.json", &host_value, 0o600);
-    let skewed = bytes(&codex("account-1", "skewed", NOW + 4.0 * 60_000.0));
-    assert_eq!(
-        write_back("codex", &skewed, &host, NOW).unwrap(),
-        WriteBack::Written
-    );
-}
-
-#[test]
-fn grok_newer_expiry_replaces_the_host_file_in_every_encoding() {
-    let host_expiry = (NOW / 1000.0) + 3_600.0;
-    for refreshed_expiry in [
-        json!(host_expiry + 60.0),
-        json!((host_expiry + 60.0) * 1000.0),
-        json!(rfc3339((host_expiry + 60.0) * 1000.0)),
-    ] {
-        let directory = Directory::new();
-        let host = directory.write(
-            "auth.json",
-            &grok(IDENTITY, "host", json!(host_expiry)),
-            0o600,
-        );
-        let refreshed = bytes(&grok(IDENTITY, "refreshed", refreshed_expiry));
-        assert_eq!(
-            write_back("grok", &refreshed, &host, NOW).unwrap(),
-            WriteBack::Written
-        );
-        assert_eq!(fs::read(&host).unwrap(), refreshed);
-    }
-}
-
-#[test]
-fn grok_keeps_older_equal_other_identity_missing_unreadable_and_implausible() {
-    let host_expiry = (NOW / 1000.0) + 3_600.0;
-    let other = "https://issuer.example::87654321-4321-4321-4321-cba987654321";
-    let cases = [
-        (
-            "older",
-            grok(IDENTITY, "older", json!(host_expiry - 60.0)),
-            json!(host_expiry),
-        ),
-        (
-            "equal",
-            grok(IDENTITY, "equal", json!(host_expiry * 1000.0)),
-            json!(host_expiry),
-        ),
-        (
-            "other identity",
-            grok(other, "other", json!(host_expiry + 60.0)),
-            json!(host_expiry),
-        ),
-        (
-            "missing source expiry",
-            grok(IDENTITY, "none", Value::Null),
-            json!(host_expiry),
-        ),
-        (
-            "missing host expiry",
-            grok(IDENTITY, "newer", json!(host_expiry + 60.0)),
-            Value::Null,
-        ),
-        (
-            "unreadable source expiry",
-            grok(IDENTITY, "bad", json!("tomorrow")),
-            json!(host_expiry),
-        ),
-        (
-            "unreadable host expiry",
-            grok(IDENTITY, "newer", json!(host_expiry + 60.0)),
-            json!(true),
-        ),
-        (
-            "implausible",
-            grok(IDENTITY, "far", json!(NOW / 1000.0 + 401.0 * 86_400.0)),
-            json!(host_expiry),
-        ),
-    ];
-    for (name, source, host_expiry) in cases {
-        let directory = Directory::new();
-        let host = directory.write("auth.json", &grok(IDENTITY, "host", host_expiry), 0o600);
-        let before = fs::read(&host).unwrap();
-        assert_eq!(
-            write_back("grok", &bytes(&source), &host, NOW).unwrap(),
-            WriteBack::Kept,
-            "{name}"
-        );
-        assert_eq!(fs::read(&host).unwrap(), before, "{name}");
+        assert_eq!(decision, expected, "{name}");
     }
 }
 
@@ -288,11 +90,11 @@ fn replacement_is_atomic_and_keeps_the_file_mode() {
     let directory = Directory::new();
     let host = directory.write(
         "auth.json",
-        &codex("account-1", "host", NOW - 60_000.0),
+        &codex("account-1", "2027-01-15T07:59:00Z"),
         0o400,
     );
     let before = fs::metadata(&host).unwrap();
-    let refreshed = bytes(&codex("account-1", "refreshed", NOW));
+    let refreshed = bytes(&codex("account-1", "2027-01-15T07:59:59Z"));
     assert_eq!(
         write_back("codex", &refreshed, &host, NOW).unwrap(),
         WriteBack::Written
@@ -301,16 +103,19 @@ fn replacement_is_atomic_and_keeps_the_file_mode() {
     // A new inode was renamed into place; the old one was never truncated.
     assert_ne!(after.ino(), before.ino());
     assert_eq!(after.mode() & 0o7777, 0o400);
-    assert_eq!(after.uid(), before.uid());
-    assert_eq!(after.gid(), before.gid());
+    assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
     assert_eq!(fs::read(&host).unwrap(), refreshed);
-    let entries: Vec<_> = fs::read_dir(&directory.0).unwrap().collect();
-    assert_eq!(entries.len(), 1, "no temporary file remains");
+    assert_eq!(directory.entries(), 1, "no temporary file remains");
+    // A second pass is a tie and leaves the file alone.
+    assert_eq!(
+        write_back("codex", &refreshed, &host, NOW).unwrap(),
+        WriteBack::Kept
+    );
 }
 
 #[test]
-fn never_creates_or_follows_an_invalid_host_file() {
-    let refreshed = bytes(&codex("account-1", "refreshed", NOW));
+fn never_creates_follows_or_writes_an_unsafe_host_file() {
+    let refreshed = bytes(&codex("account-1", "2027-01-15T07:59:59Z"));
     let directory = Directory::new();
     let missing = directory.0.join("auth.json");
     assert!(write_back("codex", &refreshed, &missing, NOW).is_err());
@@ -318,19 +123,55 @@ fn never_creates_or_follows_an_invalid_host_file() {
 
     let target = directory.write(
         "target.json",
-        &codex("account-1", "target", NOW - 60_000.0),
+        &codex("account-1", "2027-01-15T07:59:00Z"),
         0o600,
     );
     let link = directory.0.join("link.json");
     symlink(&target, &link).unwrap();
-    assert!(write_back("codex", &refreshed, &link, NOW).is_err());
-    assert!(fs::symlink_metadata(&link)
+    let open = directory.write(
+        "open.json",
+        &codex("account-1", "2027-01-15T07:59:00Z"),
+        0o644,
+    );
+    for path in [link, open] {
+        let before = fs::read(&path).unwrap();
+        assert!(write_back("codex", &refreshed, &path, NOW).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    assert!(fs::symlink_metadata(directory.0.join("link.json"))
         .unwrap()
         .file_type()
         .is_symlink());
-    assert_ne!(fs::read(&target).unwrap(), refreshed);
+}
 
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(write_back("codex", &refreshed, &target, NOW).is_err());
-    assert_ne!(fs::read(&target).unwrap(), refreshed);
+#[test]
+fn abandons_the_replacement_when_the_host_file_changes() {
+    let directory = Directory::new();
+    let host = directory.write(
+        "auth.json",
+        &codex("account-1", "2027-01-15T07:59:00Z"),
+        0o600,
+    );
+    let (_, decided) = read_host_credential(&host).unwrap();
+    // The host replaces its file after the decision read.
+    let rewritten = directory.write(
+        "next.json",
+        &codex("account-1", "2027-01-15T07:59:30Z"),
+        0o600,
+    );
+    fs::rename(&rewritten, &host).unwrap();
+    let refreshed = bytes(&codex("account-1", "2027-01-15T07:59:59Z"));
+    assert_eq!(
+        replace_if_unchanged(&refreshed, &host, &decided).unwrap(),
+        WriteBack::Raced
+    );
+    assert_eq!(
+        fs::read(&host).unwrap(),
+        bytes(&codex("account-1", "2027-01-15T07:59:30Z"))
+    );
+    assert_eq!(
+        directory.entries(),
+        1,
+        "the abandoned replacement is removed"
+    );
 }

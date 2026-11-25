@@ -3630,28 +3630,21 @@ it.each([
 );
 
 it.each([
-  ["codex", "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET"], ["codex", "OPENAI_API_KEY"], ["codex", "CODEX_API_KEY"],
-  ["grok", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"], ["grok", "XAI_API_KEY"],
-] as const)("rejects a %s host credential file combined with %s before filtering", (agent, conflicting) => {
-  expect(() => createCapabilityRunnerdProviderEnvironment({
-    provider: "acpx",
-    options: { provider: "acpx", acpxAgent: agent, environment: { PATH: "/bin", PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json", [conflicting]: "conflicting-canary" } },
-    identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
-    codexHome: "/isolated/codex-home", runtimeContextPath: "/isolated/runtime-context.json", hasRuntimeContext: false,
-    acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
-  })).toThrow("Managed credential file source is ambiguous");
-});
-
-it.each(["codex", "grok", "claude", "cursor"] as const)("forwards a host credential file only to a %s sidecar with a file credential", agent => {
+  ["codex", undefined, null], ["grok", undefined, null], ["claude", undefined, "require the Codex or Grok ACPX profile"],
+  ["codex", "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET", "ambiguous"], ["codex", "OPENAI_API_KEY", "ambiguous"],
+  ["codex", "CODEX_API_KEY", "ambiguous"], ["grok", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", "ambiguous"], ["grok", "XAI_API_KEY", "ambiguous"],
+] as const)("checks a %s host credential file beside %s before filtering", (agent, conflicting, error) => {
   const prepare = () => createCapabilityRunnerdProviderEnvironment({
     provider: "acpx",
-    options: { provider: "acpx", acpxAgent: agent, environment: { PATH: "/bin", PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json" } },
+    options: { provider: "acpx", acpxAgent: agent, environment: {
+      PATH: "/bin", PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json", ...(conflicting ? { [conflicting]: "conflicting-canary" } : {}),
+    } },
     identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
     codexHome: "/isolated/codex-home", runtimeContextPath: "/isolated/runtime-context.json", hasRuntimeContext: false,
     acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
   });
-  if (agent === "codex" || agent === "grok") expect(prepare().PAPERCLIP_ACPX_AUTH_JSON_FILE).toBe("/host/auth.json");
-  else expect(prepare).toThrow("Managed credential files require the Codex or Grok ACPX profile");
+  if (error) expect(prepare).toThrow(error);
+  else expect(prepare().PAPERCLIP_ACPX_AUTH_JSON_FILE).toBe("/host/auth.json");
 });
 
 it("does not bind ambient candidate credentials from an inherited or caller-supplied marker", () => {

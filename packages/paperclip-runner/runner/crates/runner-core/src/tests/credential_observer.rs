@@ -296,6 +296,10 @@ fn codex_at(marker: &str, last_refresh: &str) -> Value {
     value
 }
 
+fn bytes(value: &Value) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap()
+}
+
 fn with_host_file(f: &mut Fixture, silent: bool) -> PathBuf {
     let host = f.root.join("host").join("auth.json");
     fs::create_dir(host.parent().unwrap()).unwrap();
@@ -308,121 +312,37 @@ fn with_host_file(f: &mut Fixture, silent: bool) -> PathBuf {
 }
 
 #[test]
-fn host_file_receives_a_newer_refresh_during_the_session_before_the_event() {
-    let seed = codex_at("seed", "2026-01-01T00:00:00Z");
-    let mut f = Fixture::new("codex", &seed);
-    let host = with_host_file(&mut f, false);
-    f.write("host/auth.json", &seed);
-    f.write("auth.json", &seed);
-    f.observer.activate().unwrap();
-    assert!(f.observer.pending().is_none());
-    assert_eq!(fs::read(&host).unwrap(), serde_json::to_vec(&seed).unwrap());
-
-    let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
-    f.write("auth.json", &refreshed);
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&refreshed).unwrap()
-    );
-    assert_eq!(f.observer.pending(), Some(update_event("codex", 1)));
-    let persisted = fs::read_to_string(f.root.join(STATE_FILE)).unwrap();
-    assert!(!persisted.contains("access-refreshed"));
-
-    // A later refresh is written back while the event awaits acknowledgement.
-    let later = codex_at("later", "2026-03-01T00:00:00Z");
-    f.write("auth.json", &later);
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&later).unwrap()
-    );
-    assert_eq!(f.observer.pending(), Some(update_event("codex", 1)));
-    f.observer.acknowledge(1).unwrap();
-    f.observer.poll(true).unwrap();
-    assert_eq!(f.observer.pending(), Some(update_event("codex", 2)));
-
-    // Recovery keeps the host file binding the Runner still names.
-    let mut recovered = CredentialObserver::new(&f.root, "session");
-    recovered
-        .restore_with_host_file(|| Ok(Some(host.clone())))
-        .unwrap();
-    assert_eq!(recovered.state.as_ref().unwrap().host_file, Some(host));
+fn host_file_receives_refreshes_during_the_session_and_at_close() {
+    for silent in [false, true] {
+        let seed = codex_at("seed", "2026-01-01T00:00:00Z");
+        let mut f = Fixture::new("codex", &seed);
+        let host = with_host_file(&mut f, silent);
+        f.write("host/auth.json", &seed);
+        f.write("auth.json", &seed);
+        f.observer.activate().unwrap();
+        assert!(f.observer.pending().is_none());
+        for (marker, at) in [
+            ("refreshed", "2026-02-01T00:00:00Z"),
+            ("later", "2026-03-01T00:00:00Z"),
+        ] {
+            f.write("auth.json", &codex_at(marker, at));
+            f.observer.poll(true).unwrap();
+            assert_eq!(fs::read(&host).unwrap(), bytes(&codex_at(marker, at)));
+            // Write-back does not wait for the first event's acknowledgement,
+            // and a write-back-only binding emits no events.
+            let expected = (!silent).then(|| update_event("codex", 1));
+            assert_eq!(f.observer.pending(), expected, "silent={silent}");
+        }
+        let closed = codex_at("closed", "2026-04-01T00:00:00Z");
+        f.write("auth-refresh.json", &closed);
+        fs::remove_file(f.root.join("auth.json")).unwrap();
+        f.observer.poll(true).unwrap();
+        assert_eq!(fs::read(&host).unwrap(), bytes(&closed));
+    }
 }
 
 #[test]
-fn host_file_keeps_a_newer_or_different_account_credential() {
-    let mut f = Fixture::new("grok", &grok("seed"));
-    let host = with_host_file(&mut f, false);
-    let mut newer = grok("host-newer");
-    newer.as_object_mut().unwrap().values_mut().next().unwrap()["expires_at"] = json!(9999);
-    f.write("host/auth.json", &newer);
-    f.write("auth.json", &grok("seed"));
-    f.observer.activate().unwrap();
-    let mut refreshed = grok("refreshed");
-    refreshed
-        .as_object_mut()
-        .unwrap()
-        .values_mut()
-        .next()
-        .unwrap()["expires_at"] = json!(5000);
-    f.write("auth.json", &refreshed);
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&newer).unwrap()
-    );
-    // The provider still refreshed, so the opted-in consumer is told.
-    assert_eq!(f.observer.pending(), Some(update_event("grok", 1)));
-    f.observer.acknowledge(1).unwrap();
-
-    let other = json!({"https://issuer.example::87654321-4321-4321-4321-cba987654321":
-        {"key":"access-other", "refresh_token":"refresh-other", "expires_at": 99999}});
-    f.write("auth.json", &other);
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&newer).unwrap()
-    );
-}
-
-#[test]
-fn silent_host_file_binding_writes_back_without_events() {
-    let mut f = Fixture::new("grok", &grok("seed"));
-    let host = with_host_file(&mut f, true);
-    f.write("host/auth.json", &grok("seed"));
-    f.write("auth.json", &grok("seed"));
-    f.observer.activate().unwrap();
-    let mut refreshed = grok("refreshed");
-    refreshed
-        .as_object_mut()
-        .unwrap()
-        .values_mut()
-        .next()
-        .unwrap()["expires_at"] = json!(5000);
-    f.write("auth.json", &refreshed);
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&refreshed).unwrap()
-    );
-    assert!(f.observer.pending().is_none());
-
-    // The close handoff is written back too.
-    let mut closed = grok("closed");
-    closed.as_object_mut().unwrap().values_mut().next().unwrap()["expires_at"] = json!(6000);
-    f.write("auth-refresh.json", &closed);
-    fs::remove_file(f.root.join("auth.json")).unwrap();
-    f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&closed).unwrap()
-    );
-    assert!(f.observer.pending().is_none());
-}
-
-#[test]
-fn host_file_write_back_failure_keeps_the_session_running_and_retries() {
+fn a_failed_write_back_keeps_the_session_running_and_retries() {
     let seed = codex_at("seed", "2026-01-01T00:00:00Z");
     let mut f = Fixture::new("codex", &seed);
     let host = with_host_file(&mut f, true);
@@ -435,70 +355,48 @@ fn host_file_write_back_failure_keeps_the_session_running_and_retries() {
     assert!(!host.exists());
     f.write("host/auth.json", &seed);
     f.observer.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&refreshed).unwrap()
-    );
+    assert_eq!(fs::read(&host).unwrap(), bytes(&refreshed));
 }
 
 #[test]
-fn host_file_configuration_requires_an_absolute_path_and_a_file_credential_agent() {
+fn host_file_binding_seeds_the_baseline_and_needs_an_acpx_file_session() {
     assert!(parse_host_credential_file(Some("relative/auth.json".into())).is_err());
     assert_eq!(parse_host_credential_file(Some("".into())).unwrap(), None);
-    assert_eq!(parse_host_credential_file(None).unwrap(), None);
-
     let f = Fixture::new("codex", &codex("seed"));
+    let seed = codex_at("seed", "2026-01-01T00:00:00Z");
     let host = f.root.join("host-auth.json");
-    for provider in [
-        json!({"kind":"codex"}),
-        json!({"kind":"acpx", "agent":"claude", "runtimeDirectory":f.root, "normalizedSessionId":"session"}),
-        json!({"kind":"opencode"}),
+    f.write("host-auth.json", &seed);
+    let runtime = f.root.join("runtime");
+    for (provider, accepted) in [
+        (json!({"kind":"codex"}), false),
+        (
+            json!({"kind":"acpx", "agent":"claude", "runtimeDirectory":runtime, "normalizedSessionId":"session"}),
+            false,
+        ),
+        (
+            json!({"kind":"acpx", "agent":"codex", "runtimeDirectory":runtime, "normalizedSessionId":"session"}),
+            true,
+        ),
     ] {
         let state_dir = f.root.join(format!("state-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&state_dir).unwrap();
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
         let mut observer = CredentialObserver::new(&state_dir, "session");
         observer.loaded = true;
-        let error = observer
-            .configure_with_host_file(&json!({"provider":provider}), Some(host.clone()))
-            .unwrap_err();
-        assert!(error.to_string().contains("Codex or Grok ACPX"), "{error}");
-        assert!(observer.state.is_none());
-    }
-}
-
-#[test]
-fn host_file_binding_does_not_require_the_event_opt_in() {
-    let f = Fixture::new("codex", &codex("seed"));
-    for (agent, credential) in [
-        ("codex", codex_at("seed", "2026-01-01T00:00:00Z")),
-        ("grok", grok("seed")),
-    ] {
-        let state_dir = f.root.join(agent);
-        fs::create_dir(&state_dir).unwrap();
-        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
-        let host = state_dir.join("host-auth.json");
-        fs::write(&host, serde_json::to_vec(&credential).unwrap()).unwrap();
-        fs::set_permissions(&host, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut observer = CredentialObserver::new(&state_dir, "session");
-        observer
-            .configure_with_host_file(
-                &json!({"provider":{"kind":"acpx", "agent":agent,
-                    "runtimeDirectory":state_dir.join("runtime"), "normalizedSessionId":"session"}}),
-                Some(host.clone()),
-            )
-            .unwrap();
+        // No event opt-in: the binding alone configures write-back.
+        let result =
+            observer.configure_with_host_file(&json!({"provider":provider}), Some(host.clone()));
+        if !accepted {
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("Codex or Grok ACPX"), "{error}");
+            assert!(observer.state.is_none());
+            continue;
+        }
+        result.unwrap();
         let state = observer.state.as_ref().unwrap();
         assert!(state.silent);
-        assert_eq!(state.host_file, Some(host));
-        assert_eq!(
-            state.snapshot,
-            parse_snapshot(agent, &serde_json::to_vec(&credential).unwrap())
-        );
-        let mut recovered = CredentialObserver::new(&state_dir, "session");
-        recovered
-            .restore_with_host_file(|| Ok(state.host_file.clone()))
-            .unwrap();
-        assert!(recovered.state.as_ref().unwrap().silent);
+        assert_eq!(state.host_file, Some(host.clone()));
+        assert_eq!(state.snapshot, parse_snapshot("codex", &bytes(&seed)));
     }
 }
 
@@ -549,68 +447,41 @@ fn write_host(path: &Path, value: &Value) {
 }
 
 #[test]
-fn recovery_adopts_a_newly_supplied_host_file_without_losing_events() {
-    let f = Fixture::new("codex", &codex("seed"));
-    // State saved before this Runner was given a credential file.
-    acpx_recovery_fixture(&f, None);
-    let host = f.root.join("host-a/auth.json");
-    write_host(&host, &codex_at("seed", "2026-01-01T00:00:00Z"));
-    let mut recovered = CredentialObserver::new(&f.root, "session");
-    recovered
-        .restore_with_host_file(|| Ok(Some(host.clone())))
-        .unwrap();
-    let state = recovered.state.clone().unwrap();
-    assert_eq!(state.host_file, Some(host.clone()));
-    assert_eq!(state.revision, 1);
-    assert_eq!(recovered.pending(), Some(update_event("codex", 1)));
-    // The binding is durable, and the pending event does not hold back write-back.
-    let mut again = CredentialObserver::new(&f.root, "session");
-    again
-        .restore_with_host_file(|| Ok(Some(host.clone())))
-        .unwrap();
-    assert_eq!(again.state.as_ref().unwrap().host_file, Some(host.clone()));
-    recovered.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&host).unwrap(),
-        serde_json::to_vec(&codex_at("refreshed", "2026-02-01T00:00:00Z")).unwrap()
-    );
-    assert_eq!(recovered.pending(), Some(update_event("codex", 1)));
-}
-
-#[test]
-fn recovery_follows_a_changed_host_file_and_drops_a_removed_one() {
-    let f = Fixture::new("codex", &codex("seed"));
-    let previous = f.root.join("host-a/auth.json");
-    let current = f.root.join("host-b/auth.json");
+fn recovery_follows_the_host_file_the_runner_names() {
     let seed = codex_at("seed", "2026-01-01T00:00:00Z");
-    write_host(&previous, &seed);
-    write_host(&current, &seed);
-    acpx_recovery_fixture(&f, Some(previous.clone()));
-    let mut recovered = CredentialObserver::new(&f.root, "session");
-    recovered
-        .restore_with_host_file(|| Ok(Some(current.clone())))
-        .unwrap();
-    assert_eq!(
-        recovered.state.as_ref().unwrap().host_file,
-        Some(current.clone())
-    );
-    recovered.poll(true).unwrap();
-    assert_eq!(
-        fs::read(&current).unwrap(),
-        serde_json::to_vec(&codex_at("refreshed", "2026-02-01T00:00:00Z")).unwrap()
-    );
-    assert_eq!(
-        fs::read(&previous).unwrap(),
-        serde_json::to_vec(&seed).unwrap()
-    );
-    assert_eq!(recovered.pending(), Some(update_event("codex", 1)));
-
-    let mut unbound = CredentialObserver::new(&f.root, "session");
-    unbound.restore_with_host_file(|| Ok(None)).unwrap();
-    let state = unbound.state.as_ref().unwrap();
-    assert_eq!(state.host_file, None);
-    assert_eq!(state.revision, 1);
-    assert_eq!(unbound.pending(), Some(update_event("codex", 1)));
+    let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
+    // Adopt a newly supplied file, switch to a changed one, drop a removed one.
+    for (saved, current) in [
+        (None, Some("host-a")),
+        (Some("host-a"), Some("host-b")),
+        (Some("host-a"), None),
+    ] {
+        let f = Fixture::new("codex", &codex("seed"));
+        let path = |name: &str| f.root.join(name).join("auth.json");
+        for name in ["host-a", "host-b"] {
+            write_host(&path(name), &seed);
+        }
+        acpx_recovery_fixture(&f, saved.map(path));
+        let current = current.map(path);
+        let mut recovered = CredentialObserver::new(&f.root, "session");
+        recovered
+            .restore_with_host_file(|| Ok(current.clone()))
+            .unwrap();
+        let persisted: State =
+            serde_json::from_slice(&fs::read(f.root.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(persisted.host_file, current);
+        assert_eq!(persisted.revision, 1);
+        recovered.poll(true).unwrap();
+        for name in ["host-a", "host-b"] {
+            let expected = if current == Some(path(name)) {
+                &refreshed
+            } else {
+                &seed
+            };
+            assert_eq!(fs::read(path(name)).unwrap(), bytes(expected), "{name}");
+        }
+        assert_eq!(recovered.pending(), Some(update_event("codex", 1)));
+    }
 }
 
 #[test]

@@ -37,5 +37,6 @@ rustix = { version = "1.1", features = ["fs", "net", "process"] }
 sha1 = "0.10"
 tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 toml_edit = "0.22"
+time = { version = "0.3.55", default-features = false, features = ["parsing"] }
 tokio = { version = "1.50", features = ["rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.22", features = ["v4"] }

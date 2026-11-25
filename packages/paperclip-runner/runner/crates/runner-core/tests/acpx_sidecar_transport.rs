@@ -673,11 +673,8 @@ fn host_credential_file_reaches_only_file_credential_sidecars() {
             ("codex", None),
             ("grok", None),
             ("claude", None),
-            ("cursor", None),
+            // An inline secret the allowlist would drop still conflicts.
             ("codex", Some("PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET")),
-            ("codex", Some("OPENAI_API_KEY")),
-            ("codex", Some("CODEX_API_KEY")),
-            ("grok", Some("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET")),
             ("grok", Some("XAI_API_KEY")),
         ] {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());

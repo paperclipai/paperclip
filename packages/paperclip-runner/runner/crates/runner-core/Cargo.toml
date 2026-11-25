@@ -32,6 +32,7 @@ rustix.workspace = true
 sha1.workspace = true
 tungstenite.workspace = true
 toml_edit.workspace = true
+time.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

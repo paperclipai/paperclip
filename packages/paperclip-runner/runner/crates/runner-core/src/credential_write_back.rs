@@ -182,88 +182,12 @@ fn prefer_source(source: &Freshness, destination: &Freshness, now_ms: f64) -> bo
     }
 }
 
-/// Parse `YYYY-MM-DDTHH:MM:SS[.fraction](Z|+HH:MM|-HH:MM)` to epoch
-/// milliseconds, truncating the fraction to milliseconds like `Date.parse`.
+/// RFC 3339 to epoch milliseconds, truncated like `Date.parse`. Anything the
+/// parser rejects is unparseable, which keeps the host file.
 fn parse_rfc3339_ms(value: &str) -> Option<f64> {
-    let bytes = value.as_bytes();
-    let number = |start: usize, end: usize| -> Option<i64> {
-        let digits = bytes.get(start..end)?;
-        if !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        Some(
-            digits
-                .iter()
-                .fold(0_i64, |total, digit| total * 10 + i64::from(digit - b'0')),
-        )
-    };
-    let separator = |index: usize, expected: u8| bytes.get(index) == Some(&expected);
-    if !(separator(4, b'-')
-        && separator(7, b'-')
-        && separator(10, b'T')
-        && separator(13, b':')
-        && separator(16, b':'))
-    {
-        return None;
-    }
-    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
-    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
-    let mut index = 19;
-    let mut millis = 0_i64;
-    if separator(index, b'.') {
-        index += 1;
-        let start = index;
-        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
-            index += 1;
-        }
-        if index == start {
-            return None;
-        }
-        for position in 0..3 {
-            let digit = if start + position < index {
-                i64::from(bytes[start + position] - b'0')
-            } else {
-                0
-            };
-            millis = millis * 10 + digit;
-        }
-    }
-    let offset_minutes = match bytes.get(index) {
-        Some(b'Z') if index + 1 == bytes.len() => 0,
-        Some(sign @ (b'+' | b'-')) if index + 6 == bytes.len() && separator(index + 3, b':') => {
-            let (hours, minutes) = (number(index + 1, index + 3)?, number(index + 4, index + 6)?);
-            if hours > 23 || minutes > 59 {
-                return None;
-            }
-            let total = hours * 60 + minutes;
-            if *sign == b'-' {
-                -total
-            } else {
-                total
-            }
-        }
-        _ => return None,
-    };
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return None,
-    };
-    if day < 1 || day > days_in_month || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    // Days since 1970-01-01 in the proleptic Gregorian calendar.
-    let shifted = if month <= 2 { year - 1 } else { year };
-    let era = shifted.div_euclid(400);
-    let year_of_era = shifted - era * 400;
-    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    let seconds = ((days * 24 + hour) * 60 + minute - offset_minutes) * 60 + second;
-    Some((seconds * 1000 + millis) as f64)
+    let instant =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()?;
+    Some(instant.unix_timestamp_nanos().div_euclid(1_000_000) as f64)
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -330,9 +254,6 @@ pub(crate) fn write_back(
     destination: &Path,
     now_ms: f64,
 ) -> io::Result<WriteBack> {
-    use std::io::Write;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-
     let source_freshness = freshness(provider, source);
     if matches!(source_freshness, Freshness::Unusable | Freshness::ApiKey) {
         return Ok(WriteBack::Kept);
@@ -343,6 +264,21 @@ pub(crate) fn write_back(
     if !replace {
         return Ok(WriteBack::Kept);
     }
+    replace_if_unchanged(source, destination, &metadata)
+}
+
+/// Rename a synced copy of `source` over `destination`, unless the host file
+/// no longer matches `metadata` from the decision read. Then the next scan
+/// decides again against the new contents.
+#[cfg(unix)]
+fn replace_if_unchanged(
+    source: &[u8],
+    destination: &Path,
+    metadata: &fs::Metadata,
+) -> io::Result<WriteBack> {
+    use std::io::Write;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
     let parent = destination
         .parent()
         .ok_or_else(|| invalid("credential file has no parent directory"))?;
@@ -371,8 +307,6 @@ pub(crate) fn write_back(
         file.write_all(source)?;
         file.sync_all()?;
         drop(file);
-        // Fail closed if the host replaced or rewrote its file meanwhile; the
-        // next scan decides again against the new contents.
         let latest = fs::symlink_metadata(destination)?;
         if latest.dev() != metadata.dev()
             || latest.ino() != metadata.ino()
