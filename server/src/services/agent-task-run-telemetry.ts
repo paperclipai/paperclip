@@ -7,12 +7,13 @@ import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { resolveTelemetryPerson, withTelemetryActor } from "../telemetry-company-scope.js";
+import { reportFinalizedRunDiagnostics } from "./run-platform-diagnostics.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type TelemetryRun = Pick<HeartbeatRun,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot"
   | "errorCode" | "resultJson">
-  & Partial<Pick<HeartbeatRun, "responsibleUserId">>;
+  & Partial<Pick<HeartbeatRun, "responsibleUserId" | "error" | "stderrExcerpt" | "driverKind" | "runtimeMode">>;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -203,6 +204,7 @@ function resolveDurationSeconds(
  * remove the delay.
  */
 export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void> {
+  void reportFinalizedRunDiagnostics(db, run);
   try {
     const client = getTelemetryClient();
     if (!client) return;
@@ -308,6 +310,10 @@ export async function emitAgentTaskRunById(
         responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')`,
         errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        driverKind: heartbeatRuns.driverKind,
+        runtimeMode: heartbeatRuns.runtimeMode,
         resultJson: sql<Record<string, unknown> | null>`jsonb_build_object('providerFailure', jsonb_build_object('category', ${heartbeatRuns.resultJson}->'providerFailure'->'category'))`,
       })
       .from(heartbeatRuns)

@@ -32,6 +32,11 @@ export function nativeRunLogSourceWhere(companyId: string, runId: string) {
           sql`${heartbeatRunEvents.sourceEventId} like 'provider-trace-reproject:%'`,
           sql`${heartbeatRunEvents.sourceInstanceId} like 'provider-trace-reproject:%'`,
         ),
+        and(
+          eq(heartbeatRunEvents.eventType, "platform.diagnostic"),
+          sql`${heartbeatRunEvents.sourceEventId} like 'platform-diagnostic:%'`,
+          sql`${heartbeatRunEvents.sourceInstanceId} like '%:platform-diagnostic'`,
+        ),
       )}), false)`,
     ),
   );

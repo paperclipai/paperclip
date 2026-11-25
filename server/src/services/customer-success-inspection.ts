@@ -26,6 +26,8 @@ import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
 import { createSavedWorkspaceArchiveOpener } from "./saved-workspace-archive.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { searchCustomerSuccessRuns } from "./customer-success-run-search.js";
+import { listRunPlatformDiagnostics } from "./run-platform-diagnostics.js";
 
 export interface CustomerSuccessInspectionOptions {
   pluginWorkerManager?: PluginWorkerManager;
@@ -190,6 +192,11 @@ export async function readCustomerSuccessResource(
   q: InspectionQuery,
   options: CustomerSuccessInspectionOptions = {},
 ): Promise<unknown> {
+  // runs.search manages its own read-only repeatable-read DB transaction so
+  // fallback RunLogStore reads happen cleanly outside any open DB transaction.
+  if (q.operation === "runs.search") {
+    return searchCustomerSuccessRuns(db, q);
+  }
   return db.transaction(
     async (rawTx) => {
       const tx = rawTx as unknown as Db;
@@ -211,15 +218,12 @@ export async function readCustomerSuccessResource(
           if (q.companyId) predicates.push(eq(all.id, q.companyId));
         } else if (q.resource === "users") {
           // Directory only, never the authentication account/session tables.
+          const membershipPredicates = [eq(schema.companyMemberships.principalType, "user")];
+          if (q.companyId) membershipPredicates.push(eq(schema.companyMemberships.companyId, q.companyId));
           const memberships = await tx
-            .select({ userId: schema.companyMemberships.principalId })
+            .selectDistinct({ userId: schema.companyMemberships.principalId })
             .from(schema.companyMemberships)
-            .where(
-              and(
-                eq(schema.companyMemberships.companyId, q.companyId!),
-                eq(schema.companyMemberships.principalType, "user"),
-              ),
-            );
+            .where(and(...membershipPredicates));
           const { inArray } = await import("drizzle-orm");
           if (!memberships.length) {
             if (q.operation === "get") throw notFound("Inspection resource not found");
@@ -234,7 +238,7 @@ export async function readCustomerSuccessResource(
           );
         } else {
           if (!all.companyId) throw unprocessable("Reader has no company boundary");
-          predicates.push(eq(all.companyId, q.companyId!));
+          if (q.companyId) predicates.push(eq(all.companyId, q.companyId));
         }
         if (q.operation === "get" && !all[reader.id ?? "id"])
           throw unprocessable("This resource supports listing only");
@@ -327,7 +331,15 @@ export async function readCustomerSuccessResource(
             q.companyId!,
             rows as Array<{ id: string }>,
           );
-        if (q.view === "summary") rows = rows.map((r) => ({ ...r, durationMs: durationMs(r) }));
+        if (q.view === "summary") {
+          const summaryRunIds = rows.map((r) => String(r.id));
+          const diagnosticsByRun = await listRunPlatformDiagnostics(tx, summaryRunIds, q.companyId);
+          rows = rows.map((r) => ({
+            ...r,
+            durationMs: durationMs(r),
+            diagnostics: diagnosticsByRun.get(String(r.id)) ?? [],
+          }));
+        }
         // Match the existing structured event/config redaction, without scanning
         // prose, documents, instructions, skill contents, or workspace files.
         if (

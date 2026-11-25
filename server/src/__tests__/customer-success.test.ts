@@ -775,8 +775,9 @@ describe("customer-success read authority", () => {
     })) as { items: Array<Record<string, unknown>>; nextOffset: number | null };
     expect(latest.items.map((r) => r.id)).toEqual([runs[2].id]);
     expect(latest.nextOffset).toEqual(1);
-    expect(Object.keys(latest.items[0]).sort()).toEqual([...RUN_SUMMARY_COLUMNS, "durationMs"].sort());
+    expect(Object.keys(latest.items[0]).sort()).toEqual([...RUN_SUMMARY_COLUMNS, "diagnostics", "durationMs"].sort());
     expect(latest.items[0].durationMs).toBeNull();
+    expect(latest.items[0].diagnostics).toEqual([]);
     expect(JSON.stringify(latest).length).toBeLessThan(2_000);
 
     const page = (await readCustomerSuccessResource(db, storage, {
@@ -845,7 +846,7 @@ describe("customer-success read authority", () => {
       expect(seen.sort()).toEqual(labels.map((label) => label.id).sort());
     }
   });
-  it("count, order and view are bounded and take the extended read path", () => {
+  it("count, order, view, and runs.search are bounded and take their versioned read paths", () => {
     expect(inspectionReadPath(parseInspectionQuery({ operation: "list", resource: "runs", companyId }))).toEqual("/read");
     for (const value of [
       { operation: "count", resource: "runs", companyId },
@@ -854,14 +855,32 @@ describe("customer-success read authority", () => {
     ])
       expect(inspectionReadPath(parseInspectionQuery(value))).toEqual("/read-v2");
     for (const value of [
-      { operation: "count", companyId },
       { operation: "count", resource: "runs" },
+      { operation: "runs.search", patterns: ["paperclip_git_storage_limit"] },
+      { operation: "runs.search", companyId, patterns: ["paperclip_git_storage_limit"], includeExcerpts: true },
+    ])
+      expect(inspectionReadPath(parseInspectionQuery(value))).toEqual("/read-v3");
+    for (const value of [
+      { operation: "count", companyId },
+      { operation: "list", resource: "runs" },
       { operation: "count", resource: "runs", companyId, resourceId: agentId },
       { operation: "get", resource: "runs", companyId, resourceId: agentId, order: "newest" },
       { operation: "list", resource: "runs", companyId, order: "random" },
       { operation: "list", resource: "tasks", companyId, view: "summary" },
       { operation: "list", resource: "runs", companyId, view: "full" },
       { operation: "runs.log", companyId, resourceId: agentId, view: "summary" },
+      { operation: "runs.search", patterns: [] },
+      { operation: "runs.search", patterns: ["a", "b", "c", "d", "e", "f"] },
+      { operation: "runs.search", patterns: ["dup", "DUP"] },
+      { operation: "runs.search", patterns: ["paperclip_git_storage_limit"], includeExcerpts: true },
+      { operation: "runs.search", patterns: ["ok"], resource: "runs" },
+      {
+        operation: "runs.search",
+        patterns: ["ok"],
+        createdAfter: "2026-11-25T00:00:00Z",
+        createdBefore: "2026-11-24T00:00:00Z",
+      },
+      { operation: "list", resource: "runs", companyId, patterns: ["nope"] },
     ])
       expect(() => parseInspectionQuery(value)).toThrow();
   });

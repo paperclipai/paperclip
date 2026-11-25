@@ -1,7 +1,7 @@
 # Cloud customer-success inspection support
 
 Paperclip exposes `/api/customer-success/v1/run-authority`, `/run-liveness`,
-`/read` and `/read-v2` for the coordinated Cloud inspection broker. This foundation supports one registered
+`/read`, `/read-v2` and `/read-v3` for the coordinated Cloud inspection broker. This foundation supports one registered
 Paperclip agent; bot creation, scheduling, scoring and reporting are separate.
 
 The authority endpoint is disabled unless
@@ -76,12 +76,24 @@ Summary reads keep a fleet-wide refresh cheap:
   primary key as tie-breaker so offset pages never repeat or skip rows. Without it, lists keep their original id order.
 - `view: "summary"` (`list`/`get` on `runs` only) returns an allowlist of ids,
   status, error code, retry counters and timestamps plus a computed
-  `durationMs`, and leaves out the large JSON columns (result, usage, context
-  snapshot, runner profile). `RUN_SUMMARY_COLUMNS` is the allowlist.
+  `durationMs` and recorded platform `diagnostics` codes, and leaves out the
+  large JSON columns (result, usage, context snapshot, runner profile).
+  `RUN_SUMMARY_COLUMNS` is the allowlist.
+- `runs.search` (served on `/read-v3`) performs a bounded, read-only literal
+  substring search (1 to 5 plain patterns, no regex) over `heartbeat_runs`,
+  `heartbeat_run_events`, and (for non-native runs or runs without stored
+  events) `RunLogStore`. It returns counts, breakdowns by status/driver/diagnostic,
+  pattern co-occurrence, and sample run pointers without returning raw customer
+  prose. Setting `includeExcerpts: true` requires `companyId` and redacts every
+  short excerpt through the run's secret redaction registry.
+- Stack-wide `count` (omitting `companyId`) is also served on `/read-v3` so
+  Cloud fleet queries can aggregate totals across all companies on a stack in
+  one request.
 
-Queries that use `count`, `order` or `view` are served only on `/read-v2`
-(`inspectionReadPath` picks the path); `/read` refuses them. A tenant that
-predates them answers 404 on `/read-v2`, so Cloud fails closed with
+Queries that use `count` (with `companyId`), `order` or `view` are served on
+`/read-v2`, and `runs.search` or stack-wide `count` on `/read-v3`
+(`inspectionReadPath` picks the path); older endpoints refuse newer queries. A
+tenant that predates a path answers 404 there, so Cloud fails closed with
 `tenant_inspection_version_unsupported` instead of misreading the query.
 
 Existing config/event/run redactions and path/symlink/secret-file/size restrictions

@@ -12,6 +12,7 @@ import {
   agents,
   companies,
   heartbeatRuns,
+  heartbeatRunEvents,
   issues,
   projects,
   projectWorkspaces,
@@ -117,6 +118,52 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         .insert(issues)
         .values({ companyId: customer.id, projectId: project.id, title: "First successful task" })
         .returning();
+      const [tenantAgent] = await tenantDb
+        .insert(agents)
+        .values({ companyId: customer.id, name: "Tenant Codex", adapterType: "codex_local" })
+        .returning();
+      const [tenantRun] = await tenantDb
+        .insert(heartbeatRuns)
+        .values({
+          companyId: customer.id,
+          agentId: tenantAgent.id,
+          status: "succeeded",
+          exitCode: 0,
+          runtimeMode: "native",
+          driverKind: "codex",
+          startedAt: new Date(Date.now() - 60_000),
+          finishedAt: new Date(),
+        })
+        .returning();
+      await tenantDb.insert(heartbeatRunEvents).values([
+        {
+          companyId: customer.id,
+          runId: tenantRun.id,
+          agentId: tenantAgent.id,
+          seq: 1,
+          eventType: "item.completed",
+          stream: "system",
+          payload: {
+            prpEvent: {
+              payload: {
+                kind: "commandExecution",
+                aggregatedOutput:
+                  "paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured; Git did not complete.",
+              },
+            },
+          },
+        },
+        {
+          companyId: customer.id,
+          runId: tenantRun.id,
+          agentId: tenantAgent.id,
+          seq: 2,
+          eventType: "platform.diagnostic",
+          stream: "system",
+          message: "git_storage_guard_unavailable",
+          payload: { code: "git_storage_guard_unavailable" },
+        },
+      ]);
       const storage = { provider: "local_disk" } as StorageService;
       const start = async (handler: RequestListener) => {
         const server = createServer(handler);
@@ -138,6 +185,12 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
       await pool.query(
         await readFile(
           resolve(cloudDist!, "../migrations/0058_customer_success_inspection.sql"),
+          "utf8",
+        ),
+      );
+      await pool.query(
+        await readFile(
+          resolve(cloudDist!, "../migrations/0096_customer_success_fleet_queries.sql"),
           "utf8",
         ),
       );
@@ -280,13 +333,20 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
       const program = `
         const {inspectionAgentClient}=await import(${JSON.stringify(pathToFileURL(resolve(cloudDist!, "customer-success/client.js")).href)});
         const call=inspectionAgentClient();
-        const discovery=await call('discover',{});
+        const discovery=await call('discover',{order:'newest'});
+        // Default fleet query MUST NOT wake the sleeping qualification-stack.
+        const fleetDefault=await call('fleet.query.start',{cohort:{stackIds:['qualification-stack']},query:{operation:'runs.search',patterns:['paperclip_git_storage_limit']}});
         const grant=await call('grant',{stackId:'qualification-stack'});
         const tasks=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'list',resource:'tasks',companyId:${JSON.stringify(customer.id)}}});
         const file=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'files.download',companyId:${JSON.stringify(customer.id)},resourceId:${JSON.stringify(task.id)},context:{projectId:${JSON.stringify(project.id)},workspaceId:${JSON.stringify(workspace.id)}},path:'result.bin',range:{start:2,end:5}}});
         const taskCount=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'count',resource:'tasks',companyId:${JSON.stringify(customer.id)}}});
         const latestRuns=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'list',resource:'runs',companyId:${JSON.stringify(customer.id)},order:'newest',view:'summary',limit:1}});
-        console.log(JSON.stringify({stackCount:discovery.items.length,titles:tasks.items.map(t=>t.title),fileBytes:[...Buffer.from(file.content,'base64')],taskCount,latestRuns}));
+        // Now qualification-stack is awake: run a fleet query across /read-v3!
+        const fleetAwake=await call('fleet.query.start',{cohort:{stackIds:['qualification-stack']},query:{operation:'runs.search',patterns:['paperclip_git_storage_limit']}});
+        let fleetDone=fleetAwake;
+        for(let i=0;i<50&&fleetDone.status==='running';i++){await new Promise(r=>setTimeout(r,20));fleetDone=await call('fleet.query.status',{queryId:fleetAwake.id});}
+        const fleetDiag=await call('fleet.diagnostics',{stackIds:['qualification-stack']});
+        console.log(JSON.stringify({stackCount:discovery.items.length,fleetDefault,fleetDone,fleetDiag,titles:tasks.items.map(t=>t.title),fileBytes:[...Buffer.from(file.content,'base64')],taskCount,latestRuns}));
       `;
       const programFile = join(directory, "qualify.mjs");
       await writeFile(programFile, program);
@@ -310,11 +370,26 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         onMeta: async () => {},
       });
       expect(result.exitCode, [...output, ...serverErrors].join("\n")).toBe(0);
-      expect(output.join("")).toContain("First successful task");
-      expect(output.join("")).toContain('"fileBytes":[2,3,4,5]');
-      // Count and newest-first summary reads travel the extended tenant path.
-      expect(output.join("")).toContain('"taskCount":{"total":1,"byStatus":{');
-      expect(output.join("")).toContain('"latestRuns":{"items":[],"nextOffset":null}');
+      const parsedOut = JSON.parse(output.join("").trim());
+      expect(parsedOut.titles).toContain("First successful task");
+      expect(parsedOut.fileBytes).toEqual([2, 3, 4, 5]);
+      // Count and newest-first summary reads travel the extended tenant path and include diagnostics.
+      expect(parsedOut.taskCount).toMatchObject({ total: 1 });
+      expect(parsedOut.latestRuns.items).toHaveLength(1);
+      expect(parsedOut.latestRuns.items[0].diagnostics).toEqual(["git_storage_guard_unavailable"]);
+      // Default fleet query did NOT wake the sleeping stack and reported skippedSleeping: 1.
+      expect(parsedOut.fleetDefault.wakeSleeping).toBe(false);
+      expect(parsedOut.fleetDefault.status).toBe("completed");
+      expect(parsedOut.fleetDefault.coverage.skippedSleeping).toBe(1);
+      expect(parsedOut.fleetDefault.coverage.scanned).toBe(0);
+      // Fleet query against the awake stack over /read-v3 caught paperclip_git_storage_limit on a succeeded run!
+      expect(parsedOut.fleetDone.status).toBe("completed");
+      expect(parsedOut.fleetDone.coverage.scanned).toBe(1);
+      expect(parsedOut.fleetDone.summary.patterns[0].matchedStacks).toBe(1);
+      expect(parsedOut.fleetDone.summary.patterns[0].matchedRuns).toBe(1);
+      expect(parsedOut.fleetDone.summary.byDiagnostic).toEqual({ git_storage_guard_unavailable: 1 });
+      // PostgreSQL-backed zero-wake fleet diagnostics query ran cleanly.
+      expect(parsedOut.fleetDiag.totalEligibleStacks).toBe(1);
       expect((await stat(filePath)).mtimeMs).toBe(fileBefore.mtimeMs);
       expect(await readFile(filePath)).toEqual(Buffer.from([0, 1, 2, 3, 4, 5]));
       const audit = await pool.query(
@@ -400,6 +475,52 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         await client.query("RESET ROLE");
         client.release();
       }
+      // Exercise PostgresInspectionStore.recordDiagnostics + SQL aggregateDiagnostics end-to-end.
+      await store.recordDiagnostics([
+        {
+          stackId: "qualification-stack",
+          runId: "diag-run-1",
+          diagnosticCode: "git_storage_guard_unavailable",
+          runStatus: "succeeded",
+          driverKind: "codex",
+          runtimeMode: "native",
+          appVersion: "v2026.1125.0",
+          sandboxSnapshot: "snap-qual",
+          occurredAt: new Date(now.getTime() - 60_000).toISOString(),
+        },
+        {
+          stackId: "qualification-stack",
+          runId: "diag-run-1",
+          diagnosticCode: "github_capability_missing",
+          runStatus: "succeeded",
+          driverKind: "codex",
+          runtimeMode: "native",
+          appVersion: "v2026.1125.0",
+          sandboxSnapshot: "snap-qual",
+          occurredAt: new Date(now.getTime() - 60_000).toISOString(),
+        },
+      ]);
+      const pgDiagSummary = await store.aggregateDiagnostics(
+        [
+          {
+            stackId: "qualification-stack",
+            host: "fixture.example.test",
+            createdAt: now.toISOString(),
+          },
+        ],
+        {},
+      );
+      expect(pgDiagSummary.matchedStacks).toBe(1);
+      expect(pgDiagSummary.matchedRuns).toBe(1);
+      expect(pgDiagSummary.diagnostics).toHaveLength(2);
+      expect(pgDiagSummary.coOccurrence).toEqual([
+        {
+          diagnosticCodes: ["git_storage_guard_unavailable", "github_capability_missing"],
+          matchedStacks: 1,
+          matchedRuns: 1,
+        },
+      ]);
+
       const { applyInspectionRetention } = await load("customer-success/retention.js");
       await expect(applyInspectionRetention(pool, 364)).rejects.toThrow("at least one year");
       await pool.query(
