@@ -544,7 +544,7 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       expect(JSON.stringify(rows[0].normalizedEvent)).not.toContain("Secret");
       const target = event === "pull_request" ? { pullNumber: 82, headSha: "b".repeat(40), event: "synchronize" } : { issueNumber: 83, event: "issue_opened" };
       const activity = (await f.service.listActivity(f.endpoint.id)).find(row => row.id === rows[0].id);
-      expect(activity?.github).toEqual({ deliveryId, repository: "paperclipai/paperclip", reason: "mentions_only", ...target });
+      expect(activity).toEqual(expect.objectContaining({ kind: "delivery", github: { deliveryId, repository: "paperclipai/paperclip", reason: "mentions_only", ...target } }));
     });
 
     it("admits a GitHub request explicitly addressed to both connected bots", async () => {
