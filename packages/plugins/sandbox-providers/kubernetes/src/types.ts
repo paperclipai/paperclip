@@ -105,4 +105,5 @@ export interface KubernetesLeaseMetadata {
    * sync may be used when the worker advertises the verbs.
    */
   nativeFileSyncUnsupported?: boolean;
+  agentWorkspaceDir?: string;
 }

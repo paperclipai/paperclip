@@ -16,6 +16,8 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+export const AGENT_WORKSPACE_DIR = "/workspace/paperclip-workspace";
+
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -94,7 +96,7 @@ export function buildSandboxCrManifest(
                 "--",
                 "/bin/sh",
                 "-c",
-                "sleep infinity",
+                `mkdir -p ${AGENT_WORKSPACE_DIR} && exec sleep infinity`,
               ],
               // HOME must point at a writable mount; the image's default
                // HOME=/home/node is inside the readOnly root filesystem.

@@ -27,7 +27,7 @@ import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
-import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
+import { AGENT_WORKSPACE_DIR, buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
@@ -199,45 +199,6 @@ async function resolveSyncPodExec(
       timeoutMs: io.timeoutMs ?? timeoutMs,
     });
   return { exec, timeoutMs };
-}
-
-// The default working directory of a Sandbox lease: created by the agent user
-// (uid 1000) inside the /workspace volume, so the agent owns its repository.
-const AGENT_WORKSPACE_DIR = "/workspace/paperclip-workspace";
-
-// How long realizing a workspace waits for a Sandbox pod not yet known Ready
-// (scheduling, image pull, container start) before it creates the directory.
-const WORKSPACE_POD_READY_TIMEOUT_MS = 300_000;
-
-async function createAgentWorkspaceDir(
-  config: ReturnType<typeof kubernetesProviderConfigSchema.parse>,
-  companyId: string,
-  lease: PluginEnvironmentRealizeWorkspaceParams["lease"],
-  dir: string,
-): Promise<void> {
-  const namespace =
-    typeof lease.metadata?.namespace === "string"
-      ? lease.metadata.namespace
-      : deriveTenantNamespace(config, companyId);
-  const kc = createKubeConfig({ inCluster: config.inCluster, kubeconfig: config.kubeconfig });
-  const clients = makeKubeClients(kc);
-  const providerLeaseId = lease.providerLeaseId!;
-  if (!readySandboxesByLease.has(providerLeaseId)) {
-    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, providerLeaseId, {
-      timeoutMs: WORKSPACE_POD_READY_TIMEOUT_MS,
-      pollMs: 1000,
-    });
-    readySandboxesByLease.add(providerLeaseId);
-  }
-  const podName =
-    typeof lease.metadata?.podName === "string" && lease.metadata.podName
-      ? lease.metadata.podName
-      : await sandboxCrOrchestrator.findPod(clients, namespace, providerLeaseId);
-  if (!podName) throw new Error("Kubernetes workspace setup could not resolve the Sandbox pod name.");
-  const result = await execInPod(kc, namespace, podName, "agent", ["mkdir", "-p", dir], undefined, 30_000);
-  if (result.exitCode !== 0) {
-    throw new Error(`Kubernetes workspace setup could not create ${dir}: ${result.stderr.trim().slice(0, 500)}`);
-  }
 }
 
 const plugin = definePlugin({
@@ -499,6 +460,7 @@ const plugin = definePlugin({
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
       nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+      ...(config.backend === "sandbox-cr" ? { agentWorkspaceDir: AGENT_WORKSPACE_DIR } : {}),
     };
 
     return {
@@ -578,6 +540,9 @@ const plugin = definePlugin({
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+      ...(typeof params.leaseMetadata?.agentWorkspaceDir === "string"
+        ? { agentWorkspaceDir: params.leaseMetadata.agentWorkspaceDir }
+        : {}),
     };
 
     return {
@@ -592,22 +557,9 @@ const plugin = definePlugin({
   async onEnvironmentRealizeWorkspace(
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
-    // Honor a caller-supplied remotePath. Otherwise a Sandbox lease works in
-    // a directory the agent user creates inside the /workspace emptyDir: the
-    // kubelet creates the volume root owned by root (group fsGroup), and Git
-    // refuses a repository whose root another user owns ("detected dubious
-    // ownership"). The run's Git launchers ignore system and global config,
-    // so a safe.directory exception can't fix that; ownership does.
     const supplied = params.workspace.remotePath?.trim();
-    const config = kubernetesProviderConfigSchema.parse(params.config);
-    const leaseBackend =
-      typeof params.lease.metadata?.backend === "string"
-        ? (params.lease.metadata.backend as "sandbox-cr" | "job")
-        : config.backend;
-    const cwd = supplied || (leaseBackend === "sandbox-cr" ? AGENT_WORKSPACE_DIR : "/workspace");
-    if (!supplied && leaseBackend === "sandbox-cr" && params.lease.providerLeaseId) {
-      await createAgentWorkspaceDir(config, params.companyId, params.lease, cwd);
-    }
+    const agentWorkspaceDir = params.lease.metadata?.agentWorkspaceDir;
+    const cwd = supplied || (typeof agentWorkspaceDir === "string" && agentWorkspaceDir ? agentWorkspaceDir : "/workspace");
     return {
       cwd,
       metadata: {

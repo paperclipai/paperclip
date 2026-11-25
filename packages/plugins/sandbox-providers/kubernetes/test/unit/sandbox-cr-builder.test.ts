@@ -43,7 +43,7 @@ describe("buildSandboxCrManifest", () => {
     expect(cr.spec.podTemplate.spec.restartPolicy).toBe("Always");
   });
 
-  it("uses sleep-infinity entrypoint via Tini for multi-command exec", () => {
+  it("creates the agent-owned workspace directory, then idles via Tini for multi-command exec", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const container = cr.spec.podTemplate.spec.containers[0];
     expect(container.command).toEqual([
@@ -51,7 +51,7 @@ describe("buildSandboxCrManifest", () => {
       "--",
       "/bin/sh",
       "-c",
-      "sleep infinity",
+      "mkdir -p /workspace/paperclip-workspace && exec sleep infinity",
     ]);
   });
 
