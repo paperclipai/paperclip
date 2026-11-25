@@ -8,6 +8,7 @@ import { createNativeRunTrace } from "./native-runtime/native-run-trace.js";
 import {
   beginRunStartupStages,
   clearAllRunStartupStages,
+  endRunStartup,
   finishRunStartupStages,
   getRunStartupStage,
   MAX_TRACKED_RUN_STARTUPS,
@@ -86,6 +87,10 @@ describe("run startup stages", () => {
       beginRunStartupStages(run);
       noteRunStartupStep(run.id, "agent.turn");
       noteRunStartupStep(run.id, "runner.session.startup");
+      noteRunStartupStep(run.id, "agent.turn");
+      expect(recorder.stages()).toEqual(["getting_ready", null]);
+      expect(getRunStartupStage(run.id)).toEqual({ stage: null, sessionResumed: false });
+      finishRunStartupStages(run.id);
       expect(recorder.stages()).toEqual(["getting_ready", null]);
       expect(getRunStartupStage(run.id)).toBeNull();
     } finally {
@@ -154,7 +159,7 @@ describe("run startup stages", () => {
     trace.start("runner.session.startup");
     expect(getRunStartupStage(run.id)?.stage).toBe("starting_agent");
     trace.start("agent.turn");
-    expect(getRunStartupStage(run.id)).toBeNull();
+    expect(getRunStartupStage(run.id)?.stage).toBeNull();
   });
 
   it("ends startup on recorded first agent activity when no turn span starts", async () => {
@@ -164,6 +169,17 @@ describe("run startup stages", () => {
     const now = Date.now();
     await trace.record({ name: "task.time_to_first_agent_activity", parentName: "task.provider_session",
       startedAtMs: now - 1_000, endedAtMs: now });
+    expect(getRunStartupStage(run.id)?.stage).toBeNull();
+  });
+
+  it("keeps a confirmed resume for the attempt after its turn starts", () => {
+    beginRunStartupStages(run);
+    noteRunStartupStep(run.id, "runner.session.startup");
+    noteRunStartupSessionResumed(run.id);
+    endRunStartup(run.id);
+    const later = new Date(Date.now() + RUN_STARTUP_STAGE_TTL_MS + 1);
+    expect(getRunStartupStage(run.id, { now: later })).toEqual({ stage: null, sessionResumed: true });
+    finishRunStartupStages(run.id);
     expect(getRunStartupStage(run.id)).toBeNull();
   });
 

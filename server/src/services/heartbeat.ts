@@ -48,7 +48,7 @@ import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } 
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
-import { beginRunStartupStages, finishRunStartupStages } from "./run-startup-stage.js";
+import { beginRunStartupStages, endRunStartup, finishRunStartupStages } from "./run-startup-stage.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
@@ -3839,6 +3839,8 @@ export function heartbeatService(
             onNativeDispatchStarted: () => { nativeDispatchStarted = true; },
             onLegacyAdapterEntered: () => {
               legacyAdapterEntered = true;
+              // A direct adapter reports its own progress from here on.
+              try { endRunStartup(run.id); } catch { /* Status display never blocks dispatch. */ }
               legacyLocalAdapterEntered = legacyAdapterNeedsLocalProcessSettlement({
                 adapterType: adapter.type, executionTargetKind: executionTarget?.kind,
               });

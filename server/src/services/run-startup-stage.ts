@@ -39,7 +39,8 @@ interface RunStartupEntry {
   companyId: string;
   agentId: string;
   issueId: string | null;
-  stage: RunStartupStage;
+  /** Null once the agent's turn has started; the attempt keeps its resume flag. */
+  stage: RunStartupStage | null;
   sessionResumed: boolean;
   updatedAt: Date;
 }
@@ -84,11 +85,11 @@ export function beginRunStartupStages(run: { id: string; companyId: string; agen
 /** Records that a timed step began. Unknown runs and earlier stages are ignored. */
 export function noteRunStartupStep(runId: string, stepName: string) {
   const entry = entriesByRunId.get(runId);
-  if (!entry) return;
+  if (!entry || entry.stage === null) return;
   const next = runStartupStageForStep(stepName);
   if (next === null) return;
   if (next === "started") {
-    finishRunStartupStages(runId);
+    endRunStartup(runId);
     return;
   }
   if ((STAGE_ORDER.get(next) ?? -1) <= (STAGE_ORDER.get(entry.stage) ?? -1)) return;
@@ -106,22 +107,37 @@ export function noteRunStartupSessionResumed(runId: string) {
   publish(runId, entry, entry.stage, true, entry.updatedAt);
 }
 
-/** Ends startup tracking once the agent turn starts or the attempt ends. */
+/**
+ * Ends startup because the agent is working: its turn started (native), or a
+ * direct adapter took over the execution. The attempt keeps its resume flag,
+ * so a later read still reports a confirmed resumed session.
+ */
+export function endRunStartup(runId: string) {
+  const entry = entriesByRunId.get(runId);
+  if (!entry || entry.stage === null) return;
+  entry.stage = null;
+  entry.updatedAt = new Date();
+  publish(runId, entry, null, entry.sessionResumed, entry.updatedAt);
+}
+
+/** Forgets the execution attempt once it ends. */
 export function finishRunStartupStages(runId: string) {
   const entry = entriesByRunId.get(runId);
   if (!entry) return;
   entriesByRunId.delete(runId);
-  publish(runId, entry, null, entry.sessionResumed, new Date());
+  if (entry.stage !== null) publish(runId, entry, null, entry.sessionResumed, new Date());
 }
 
 export function getRunStartupStage(
   runId: string,
   expected: { companyId?: string | null; agentId?: string | null; now?: Date } = {},
-): { stage: RunStartupStage; sessionResumed: boolean } | null {
+): { stage: RunStartupStage | null; sessionResumed: boolean } | null {
   const entry = entriesByRunId.get(runId);
   if (!entry) return null;
   const now = expected.now ?? new Date();
-  if (now.getTime() - entry.updatedAt.getTime() > RUN_STARTUP_STAGE_TTL_MS) {
+  // Only a shown stage can go stale; a started attempt keeps its resume flag
+  // until the attempt ends (or the store's size bound evicts it).
+  if (entry.stage !== null && now.getTime() - entry.updatedAt.getTime() > RUN_STARTUP_STAGE_TTL_MS) {
     entriesByRunId.delete(runId);
     return null;
   }
