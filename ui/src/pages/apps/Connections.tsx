@@ -1,6 +1,6 @@
-import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
+import { connectionRemovalToast, GOOGLE_CONTENT_DELETION_NOTICE } from "@/features/connections/googleAccessRemoval";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
-import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
+import { isGoogleWorkspaceConnectionConfig, isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppWindow, Cloud, Loader2, ShieldAlert, ShieldCheck, ShieldQuestion, Trash2 } from "lucide-react";
@@ -127,7 +127,7 @@ export function Connections() {
     id: string;
     appName: string;
     remainingConnectionCount: number;
-
+    googleWorkspace: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -525,6 +525,7 @@ export function Connections() {
                                   id: connection.id,
                                   appName: application.name,
                                   remainingConnectionCount: row.remainingAgentAvailableConnectionCount,
+                                  googleWorkspace: isGoogleWorkspaceConnectionConfig(connection.config, connection.transportConfig, application.metadata),
 
                                 });
                               }}
@@ -564,6 +565,7 @@ export function Connections() {
               {connectionToDelete && connectionToDelete.remainingConnectionCount > 0
                 ? `This connection's saved credentials are deleted and agents lose access through it immediately. Agents can still use ${connectionToDelete.appName} through ${connectionToDelete.remainingConnectionCount} other active ${connectionToDelete.remainingConnectionCount === 1 ? "connection" : "connections"}.`
                 : "The saved credentials are deleted and agents lose access immediately. Connecting it again later needs a new sign-in or key."}
+              {connectionToDelete?.googleWorkspace ? ` ${GOOGLE_CONTENT_DELETION_NOTICE}` : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
