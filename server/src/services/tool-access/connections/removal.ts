@@ -677,6 +677,7 @@ async function removeConnection(
           and(
             eq(connectionGrants.companyId, connection.companyId),
             eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.status, "revoked"),
             ...(retainedGrantIds.length > 0 ? [notInArray(connectionGrants.id, retainedGrantIds)] : []),
           ),
         );

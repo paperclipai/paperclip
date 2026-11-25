@@ -256,6 +256,32 @@ describeEmbeddedPostgres("deleting a saved Google Antigravity sign-in on disconn
     expect(await vault.resolveSecretValue(companyId, account.secretId, "latest")).toBe(credential("faye-new-refresh-do-not-log"));
   });
 
+  it("keeps the reference of a reconnect that lands while the connection is being removed", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "hana@example.test" });
+    const replacement = await secretService(db).create(companyId, { name: `replacement-${randomUUID()}`, provider: "local_encrypted", value: credential("hana-new-refresh-do-not-log") }, { userId });
+    const ref = { secretId: replacement.id, configPath: "ai.credential", required: true, versionSelector: "latest" };
+    await db.execute(sql.raw(`create or replace function test_reconnect_on_delete() returns trigger language plpgsql as $$
+      begin
+        if old.id = '${account.secretId}'::uuid then
+          update connection_grants set status = 'active', revoked_at = null, credential_secret_refs = '${JSON.stringify([ref])}'::jsonb
+            where id = '${account.grantId}'::uuid;
+        end if;
+        return old;
+      end $$`));
+    await db.execute(sql.raw("create trigger test_reconnect_on_delete after delete on company_secrets for each row execute function test_reconnect_on_delete()"));
+    try {
+      await toolAccessService(db).archiveConnection(account.connectionId, companyId, { actorType: "user", actorId: userId });
+    } finally {
+      await db.execute(sql.raw("drop trigger if exists test_reconnect_on_delete on company_secrets"));
+    }
+
+    const grant = await grantRow(account.grantId);
+    expect(grant.status).toBe("active");
+    expect(grant.credentialSecretRefs).toEqual([ref]);
+    expect(await liveSecret(companyId, account.secretId)).toBe(false);
+  });
+
   it("leaves every grant active and the sign-in saved when releasing held work fails during removal", async () => {
     const { companyId, userId } = await company();
     const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "gail@example.test" });
