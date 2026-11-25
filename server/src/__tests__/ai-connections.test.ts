@@ -1246,6 +1246,57 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("Branch-2 remote probe on SSH target: fixture HOME isolation prevents finding user's real .codex/config.toml", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    // Simulate an SSH target where remoteCwd is under the fixture home directory.
+    // The fixture sets HOME to its own directory (via SetEnv HOME=<homeDir> in sshd_config),
+    // so the upward walk from remoteCwd stays within the fixture root and never reaches
+    // the developer's real ~/.codex/config.toml.
+    const fixtureHome = "/tmp/ssh-fixture-home";
+    const sshTarget = {
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: `${fixtureHome}/workspace/project`,
+      spec: {
+        host: "127.0.0.1",
+        port: 22222,
+        username: "fixture-user",
+        remoteWorkspacePath: `${fixtureHome}/workspace`,
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+        remoteCwd: `${fixtureHome}/workspace/project`,
+      },
+    } as Parameters<typeof assertManagedAiProjectAuth>[2];
+
+    // Case 1: No .codex/config.toml in fixture HOME → probe exits 0, no conflict.
+    // This is the happy path after the fix: the upward walk is bounded by the
+    // fixture HOME and never finds the developer's real config.
+    execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
+    await expect(assertManagedAiProjectAuth({}, "openai", sshTarget)).resolves.toBeUndefined();
+
+    // Verify the remote probe script was invoked with the correct remoteCwd and pattern
+    const [runId, targetArg, cmd, args, opts] = execute.mock.calls[0];
+    expect(cmd).toBe("sh");
+    expect(args[0]).toBe("-c");
+    // The script is args[1], followed by the positional arguments
+    expect(args).toContain(fixtureHome + "/workspace/project");
+    expect(args).toContain(".codex/config.toml");
+    // Verify env is passed as empty object (the script handles its own environment)
+    expect(opts.env).toEqual({});
+
+    // Case 2: .codex/config.toml EXISTS in the fixture HOME with model_provider = pattern
+    // → probe exits 42, function throws conflict error.
+    execute.mockResolvedValue({ exitCode: 42, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
+    await expect(assertManagedAiProjectAuth({}, "openai", sshTarget)).rejects.toThrow("project authentication settings");
+
+    // Case 3: grep error (exit 43) → also throws (indeterminate state treated as conflict)
+    execute.mockResolvedValue({ exitCode: 43, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
+    await expect(assertManagedAiProjectAuth({}, "openai", sshTarget)).rejects.toThrow("project authentication settings");
+
+    execute.mockRestore();
+  });
+
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");
