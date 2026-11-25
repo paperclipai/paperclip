@@ -1,4 +1,5 @@
 import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitMessage } from "./environment-provider-wait.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "./antigravity-swarm-refusal.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
@@ -424,6 +425,12 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   }
   if (run.status === "failed" && isProviderQuotaActionRequired(run, new Date(now)))
     return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "provider_billing", canRetry: true };
+  // A /swarm the swarm route refused for a reason the person must change (the
+  // model, a planning run, extra tool servers): Retry would meet the same
+  // refusal, so the plain message says what to do and no Retry is offered.
+  if (run.status === "failed" && run.errorCode === ANTIGRAVITY_SWARM_UNAVAILABLE
+      && providerFailure?.provider === "antigravity" && providerFailure.retryability === "requires_action")
+    return { ...base, state: "failed", canRetry: false };
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
 }
 

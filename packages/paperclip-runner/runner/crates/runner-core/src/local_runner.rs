@@ -22,7 +22,12 @@ const HARNESS_MESSAGE_SCHEMA: &str = "paperclip.fake_harness.message.v1";
 const CONTROLLER_COMMAND_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalRunnerError(String, Option<Value>, Option<CommandRejection>);
+pub struct LocalRunnerError(
+    String,
+    Option<Value>,
+    Option<CommandRejection>,
+    Option<Value>,
+);
 
 /// A provider process rejected a named command with a closed failure class.
 /// Callers branch on this data, never on the error message.
@@ -34,7 +39,7 @@ pub struct CommandRejection {
 
 impl LocalRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into(), None, None)
+        Self(message.into(), None, None, None)
     }
 
     pub fn with_provider_failure(mut self, value: Option<Value>) -> Self {
@@ -53,6 +58,17 @@ impl LocalRunnerError {
 
     pub fn command_rejection(&self) -> Option<CommandRejection> {
         self.2
+    }
+
+    /// The provider process's own rejection, as `{command, code, message?}`:
+    /// an operator diagnosis kept out of the error text, which stays closed.
+    pub fn with_sidecar_rejection(mut self, detail: Option<Value>) -> Self {
+        self.3 = detail;
+        self
+    }
+
+    pub fn sidecar_rejection(&self) -> Option<Value> {
+        self.3.clone()
     }
 }
 

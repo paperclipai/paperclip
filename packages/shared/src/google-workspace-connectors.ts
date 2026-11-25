@@ -246,6 +246,27 @@ export function isGoogleWorkspaceConnectorProfileId(value: string): value is Goo
   return Object.prototype.hasOwnProperty.call(GOOGLE_WORKSPACE_CONNECTOR_PROFILES, value);
 }
 
+export const GOOGLE_WORKSPACE_APP_SLUGS: readonly string[] = Object.freeze([
+  ...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug)),
+]);
+
+export function isGoogleWorkspaceSourceTemplateKey(key: unknown): boolean {
+  return typeof key === "string" && GOOGLE_WORKSPACE_APP_SLUGS.includes(key);
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function isGoogleWorkspaceConnectionConfig(config: unknown, transportConfig?: unknown, applicationMetadata?: unknown): boolean {
+  const record = asConfigRecord(config);
+  const metadata = asConfigRecord(applicationMetadata);
+  const key = record.sourceTemplateKey ?? asConfigRecord(transportConfig).sourceTemplateKey ?? metadata.sourceTemplateKey ?? metadata.source;
+  if (isGoogleWorkspaceSourceTemplateKey(key)) return true;
+  const profile = asConfigRecord(record.oauth).connectorProfile;
+  return typeof profile === "string" && isGoogleWorkspaceConnectorProfileId(profile);
+}
+
 function def(appSlug: string, serverUrl: string, scopes: readonly string[], writeTools: readonly string[] = []) {
   return { appSlug, serverUrl, scopes, writeTools };
 }

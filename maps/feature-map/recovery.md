@@ -104,7 +104,7 @@ stopped-run recovery checks.
 
 ### `operator-retry`
 
-The [connected-task regression](../../server/src/__tests__/chat-channels.integration.test.ts)
+The [connected-task regression](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
 uses HTTP Retry after an accepted board message fails before provider startup.
 It checks the canonical intent, same-user identity and actual queue dispatch,
 then repeats Retry after another contained preparation failure with the same
@@ -122,9 +122,10 @@ needs containment. Observe a saved wait with no new executor. After verified
 containment, the same chat receipt must admit one successor with the original
 source batch. Reload and repeat reconciliation. Check that a paused endpoint,
 changed source, superseded request or revoked access cannot start that work.
-The connected-chat database regression in
-[chat channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-exercises admission and queue continuation. It does not establish hosted
+The connected-chat database regressions in
+[GitHub retry and recovery](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
+and [board and shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)
+exercise admission and queue continuation. They do not establish hosted
 provider recovery or successful delivery.
 
 For GitHub, save a follow-up behind a failed run, then reconnect the same App.

@@ -2487,6 +2487,9 @@ fn process_command<E: CommandExecutor>(
             if let Some(provider_failure) = error.provider_failure() {
                 failure["providerFailure"] = provider_failure;
             }
+            if let Some(rejection) = error.sidecar_rejection() {
+                failure["sidecarRejection"] = rejection;
+            }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
             return Ok((result, CommandLifecycle::after_failure(command)));

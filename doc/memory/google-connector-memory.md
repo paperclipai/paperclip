@@ -52,6 +52,7 @@ Last updated: November 24, 2026.
 | Nov 24 | **Back to Google's MCP servers for all six services, before the demo video and the submission** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `google_mcp` again. Reason: Google's Workspace AI Tools Addendum (published Nov 24, see "Google AI Tools Addendum") says a tool that is, or is driven by, an AI agent must use a Google MCP and not the REST APIs, and forbids hiding that classification. Google made its Workspace MCP servers generally available the same day. |
 | Nov 24 | **The REST tool set stays as the fallback** | `server/src/google-workspace-rest-tools/` and the `GOOGLE_WORKSPACE_TOOL_TRANSPORT` switch stay in the code. Do not delete them. The REST argument checks that need no request to Google also run before each call to Google's MCP servers. |
 | Nov 24 | **Every OAuth client that calls Google's MCP servers is an agent client** | Google's MCP servers reject an OAuth client that is not marked "Use this client for an AI-powered agent" in the Google Console. The coordinator changes the Console setting; there is no code for it. |
+| Nov 24 | **Comply with Google's AI Tools Addendum: delete on disconnect or revocation, keep Google Technical Information at most 30 days** | Owner: "please make sure we abide by google's terms." Every way a Google connection ends now starts the durable content deletion on its own (first PR). The 30-day limit and the no-training check follow in a second PR. See "Retention under the AI Tools Addendum". |
 | Nov 24 | **The service picker shows no explanatory text, only the privacy policy link** | Owner decision. This removes the in-product data-use disclosure added on Nov 17 ([#21998](https://github.com/paperclipai/paperclip/pull/21998)). Risk noted by the coordinator: Google's user data policy may expect an in-product disclosure before consent; if a reviewer asks, restore a short statement above the link. |
 
 ## What has shipped
@@ -298,11 +299,15 @@ Workspace MCP servers: <https://workspace.google.com/terms/ai-tools>.
 - **April 1, 2027:** paid tier for the Gmail, Drive and Calendar MCP servers,
   billed from the first request.
 - **Free tier:** 5,000 requests per day per project per product.
-- **Open, owner decision needed:** the addendum forbids keeping Google user
-  data after the user disconnects. Paperclip keeps task and run content
-  (see "Where Google content is kept") until the user runs "Delete data" or
-  deletes the task or company. Disconnect alone does not delete it. Do not
-  change this until the owner decides.
+- Retention (owner decided Nov 24 to comply): user data only for active,
+  user-authorized tasks; nothing kept after a disconnect or revocation, user
+  data or Google Technical Information; Google Technical Information kept at
+  most 30 days; no training, fine-tuning, evaluation datasets or distillation;
+  no scraping or probing beyond the user's tasks. Google Technical Information
+  means information obtained or derived from Google's access points, for
+  example embeddings, memory indexes, user profiles, organizational graphs and
+  failure patterns, and never user data. Status and inventory: "Retention
+  under the AI Tools Addendum".
 
 ## Scopes
 
@@ -387,6 +392,10 @@ from app versions that still sign 21 scopes fails.
 
 ## Where Google content is kept
 
+Since November 24, a Google connection's content is also deleted on its own
+when access ends; see "Retention under the AI Tools Addendum" for the
+triggers and the newer inventory.
+
 From #22010's store inventory. The earlier audit understated it: it missed the
 second audit table, approval cards, results passed to later runs, app views,
 nested run answers and migrated log originals.
@@ -430,7 +439,7 @@ agent, outcome, size, fingerprint), and activity entries with counts only.
 Limits:
 
 - Runs still in progress are skipped and counted; delete again after they
-  finish.
+  finish. A deletion started because access ended waits for them instead.
 - A local log file on another server's disk stays until that server is
   replaced; its S3 mirror is deleted.
 - On versioned buckets, earlier object versions stay until the bucket's
@@ -438,6 +447,169 @@ Limits:
 
 The deletion is a durable request. It resumes after a restart and retries a
 failed step until every step succeeds.
+
+## Retention under the AI Tools Addendum
+
+Owner decision, November 24: comply. Two PRs. The first (delete when access
+ends) is described here. The second adds the 30-day limit for Google
+Technical Information and closes the training and export findings below.
+
+### When access ends, the content is deleted
+
+The connection's content deletion ("Delete data") now starts on its own,
+saved in the same database transaction that ends the access, for a Google
+connection (its app template, read with the canonical source-template
+precedence, is a Google app, or its broker profile is a Google profile). The job row records why (`reason`):
+
+| Event | `reason` | Where |
+| --- | --- | --- |
+| Connection removed | `connection_removed` | `connections/removal.ts` |
+| A grant revoked (personal, agent or organization) | `access_revoked` | `connections/grants.ts` |
+| Refresh shows Google ended the access: broker `409 PROVIDER_REAUTHORIZATION_REQUIRED`, or `invalid_grant` from Google's token endpoint | `provider_access_ended` | `oauth/grant-refresh.ts`, `oauth/connection-refresh.ts` |
+| The grant's owner leaves the company or loses membership | `member_removed` | `services/access.ts` |
+| Paperclip Cloud removed the instance | `instance_removed` | `google-pending-revocation.ts` |
+| Company deleted | rows deleted with the company | `company-deletion.ts` (unchanged) |
+
+Not a trigger: a network failure, a broker outage, Google `5xx`, a scope
+mismatch, the Cloud-only sign-in refusal, and a refresh answer that arrives
+after a new sign-in. Non-Google apps are unchanged. Revoking an organization
+grant starts the deletion even when the connection keeps its own credential:
+the person chose to disconnect that identity.
+
+- Scope: everything the connection saved up to the moment access ended, for
+  every person who used the connection. Calls do not record which grant made
+  them, so one person's disconnect deletes the whole connection's saved
+  content. Recording the grant on each call would let this narrow later.
+- Window: starts at once and normally finishes within minutes. Work still
+  running keeps its content until it settles; the job then deletes it. It
+  rechecks running work every 1 to 5 minutes, and hourly after the first day,
+  until none is left, then runs every step once more and finishes. A failed
+  step is retried until it succeeds, across restarts (the existing durable
+  job, plus `not_before`). A task deletion keeps its 24-hour wait limit.
+- An access end while any deletion is pending moves that job's cutoff to the
+  access end and restarts it (a later access end must also cover calls other
+  grants made in between). "Delete data" while an automatic deletion is
+  pending moves its cutoff to now and keeps it waiting for running work.
+- Reconnect: only calls made after the access end are kept. Late records of
+  a call made before the access end (a completion event, an app view, an audit
+  entry written after the result came back) are deleted too. The job also
+  clears the saved harness session pointers (`agent_task_sessions`,
+  `agent_runtime_state.session_id`) and the session ids on every run of that
+  harness session (`session_id_before`, `session_id_after`, the result's
+  `sessionId`), so neither the next run nor "resume from this run" reopens a
+  conversation that holds old Google results. The run's result gets a
+  `contentDeletedAt` mark; run completion checks it after saving session
+  pointers and clears them again. Before resuming, Paperclip also refuses a
+  saved task session or runtime session whose last run carries the mark, and
+  refuses "resume from this run" for a marked run. So a session restored by a
+  crash between saving and clearing is never resumed.
+- A refresh failure counts only if the refresh still holds the grant's
+  refresh lease; a late answer after a new sign-in deletes nothing.
+- New in the job for every app: tool error text (`tool_invocations` and
+  `tool_call_events` `error_message`, the approval card's
+  `toolAction.errorMessage`), and the session pointers above.
+- Activity: `tool_connection.content_deletion_started` (reason) and the
+  existing `tool_connection.content_deleted` (counts).
+- UI: the Google remove dialog, the app's "Remove this app" row and the revoke
+  identity dialog say the data is deleted; the remove dialog does not offer
+  the "also delete data" option for Google. The "Delete data" dialog says when
+  a deletion started because access ended.
+
+### Inventory (November 24)
+
+User data obtained from Google:
+
+| Place | Delete data before | When access ends (first PR) | Second PR |
+| --- | --- | --- | --- |
+| Tool-call records: request and result previews | Yes | Yes | |
+| Tool-call error text (invocations, call events, approval card) | No | Yes | |
+| Connection audit history (argument preview) | Yes | Yes | |
+| Approval requests and cards | Yes | Yes | |
+| Results passed to a later run (run context, wake payload) | Yes | Yes | |
+| App views | Yes | Yes | |
+| Run transcripts: run log in every copy, run events, excerpts, answer text | Yes | Yes, also for runs that were still working | |
+| Saved large results (`runner-api` files) | Yes | Yes | |
+| Saved harness session pointers | No | Yes | |
+| The harness's own transcript files on the agent's machine or sandbox (Codex `sessions`, Claude `projects`, ACP) | No | No; no longer resumed | Not yet. Open: delete the session files where Paperclip owns the folder (local adapters) and the sandbox copy |
+| `paperclip_runner` harness backups and runner checkpoints (encrypted) | No | No; removed 7 days after the task closes | Not yet. Open: remove the backups of a cleaned run's task at once |
+| Task document `continuation-summary` and its revisions (system copy of the run summary and run error) | No | No | Yes: revisions the cleaned run wrote are emptied, and the document body if that revision is the latest. Later revisions can keep paths or a next action carried over from it |
+| Handoff copy of the last run summary in the next run's context | No | No | Yes: removed from later settled runs of the same task, and from a run still working when it finishes; never included in training or feedback exports |
+| `native_run_results.result_json`, `heartbeat_runs.error` | No | No | Yes: every free-text value in the native result cleared (structural keys stay), and the run error cleared |
+| Decision training examples (manual snapshots of runs and cards; JSONL export) | No | No | Yes: a new snapshot stores only id, status and times for runs that called Google, received an approved Google result, or share a harness session with such a run, and drops the Google action from the card; the JSONL export applies the same rule to examples saved earlier; a cleaned run is replaced the same way in stored snapshots |
+| Feedback exports (local payload; bundle sent to Paperclip Labs when sharing is on) | No | No | Yes: a shared trace whose run, or any run of its harness session, called Google carries only run id, status and times; no events, log or harness files |
+| Customer observability export (OTLP or Braintrust, tool content on by default) | Outside Paperclip | Outside Paperclip | Not changed. Owner question below |
+| Raw provider traces | Expire in 24 hours | Expire in 24 hours | |
+| Comments, documents, descriptions, work products, agent memory files and attachments that agents wrote | No, by design | No | Owner question below |
+| Text search indexes | Follow their rows | Follow their rows | |
+| Embeddings, vector stores | None exist | | |
+
+Google Technical Information (derived, not user data):
+
+| Place | Second PR |
+| --- | --- |
+| Tool catalog from Google's `tools/list` (title, description, schemas, annotations, app view, icons) | Stripped 30 days after Google last listed the tool, and at once when the connection is removed. Name, risk and status stay. An active connection's catalog is marked stale, so the next read lists the tools again |
+| Connection health message and last error (Google failure text) | Cleared 30 days after the last check, and at once when the connection is removed |
+| Tool-call error messages (invocations, call events, approval card) | Cleared 30 days after the call, and at once when access ends (first PR). Status and error code stay |
+| Scope evidence on a revoked grant (`providerTenant.oauth`) | Removed at once. A live grant keeps it: it is the record of the user's current consent, needed to run the grant |
+| Prompt-injection screening findings (labels, no content) | Kept: Paperclip's own classification of a result, not information from Google's access points |
+| `google_pending_revocations` | Already: 30-day hard stop |
+| Activity rows for tool calls (IDs and status only) | Kept: activity log invariant |
+
+The sweep (`google-technical-information.ts`, worker
+`google-technical-information-work.ts`) follows the sleep-aware rule: its next
+deadline is the oldest item plus 30 days. While a Google connection that is
+not removed exists, it is never later than the start of today (UTC) plus 30
+days, a value that stays the same all day. Any item created later is due later
+than that, so no deadline is missed without hooking every gateway path that
+writes an error. With no live Google connection and nothing left to clear it
+schedules nothing. Removing a connection, ending access and a catalog refresh wake it
+through a transaction-aware notification. The idle deadline proof includes the
+same deadline, so a sleeping instance wakes for it. Two partial indexes
+(`tool_invocations` and `tool_call_events` on `connection_id, created_at`
+where `error_message` is set, migration 0507, built concurrently) keep the
+deadline query cheap.
+
+Google tools create no attachments: Drive downloads come back inside the tool
+result (covered above), so there is no byte-copy attachment to delete.
+
+### No training or scraping (checked November 24)
+
+- Product analytics (connector telemetry and browser PostHog) carry no tool
+  arguments or results: connector events send only the app key, domain,
+  transport, status, origin and duration; browser text is masked.
+- Server OpenTelemetry runs only when configured and adds no content.
+- Decision training examples and Feedback exports to Paperclip Labs could
+  carry Google results. Both now leave them out (second PR).
+- No embeddings, vector stores, evaluation datasets or model training use
+  Paperclip data. Tool calls happen only in an agent's task; the catalog is
+  listed when a connection is set up or its cache expires on use.
+
+### Owner question: customer observability export
+
+A company admin can send agent traces to their own OTLP endpoint or to
+Braintrust. Tool content is on by default, so Google results go there too.
+This is the customer's own processing, not Paperclip's, but Braintrust is an
+evaluation platform. Options: keep it (customer's choice; say so in the
+policy), turn tool content off by default for Google tools, or refuse
+Google tool content in that export.
+
+### Owner question: content agents wrote from Google data
+
+Comments, documents, issue descriptions, work products, agent memory files
+and attachments that an agent wrote while using Google tools stay after a
+disconnect. Options:
+
+1. **Keep, and say so** (today). Simple and no surprise loss of work. Risk:
+   an agent that pasted an email verbatim leaves Google user data behind, which
+   the addendum forbids after disconnect.
+2. **Record and delete.** Record on each comment, document, work product and
+   attachment that its run used Google tools; when access ends, delete or
+   redact them with the rest. Strongest compliance. Deletes the user's own
+   work product, needs provenance tracking in several write paths, and cannot
+   catch text an agent carried into a later run without Google.
+3. **Record and ask.** Record provenance as in 2; when access ends, show the
+   owner the list and delete it after 30 days unless kept. Balanced, but needs
+   new UI and leaves a 30-day window.
 
 ## Google review history
 

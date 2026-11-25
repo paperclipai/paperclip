@@ -21,6 +21,8 @@ import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
+import { isGoogleWorkspaceConnection } from "../connections/google-content-retention.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { HttpError, unprocessable } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { mcpSkillsService } from "../../mcp-skills.js";
@@ -311,7 +313,9 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       : refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
-    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, tx => tx
+    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      if (await isGoogleWorkspaceConnection(tx, connection)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.googleTechnicalInformation);
+      return tx
       .update(toolConnections)
       .set({
         config: normalizedConfig,
@@ -329,7 +333,8 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         updatedAt: refreshedAt,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning());
+      .returning();
+    });
 
     if (connection.transport === "local_stdio") {
       await ensureRuntimeSlot(updatedConnection);
