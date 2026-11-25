@@ -7,6 +7,8 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 
+const ANTIGRAVITY_SIGN_IN_ENV = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
+
 interface PreparedPluginRunnerCredentials {
   githubBroker?: { url: string; token: string };
   accountIdentity?: string;
@@ -51,11 +53,14 @@ export async function preparePluginRunnerCredentials(input: {
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
     return { ...github, accountIdentity, credential: environmentTaskCredentialSchema.parse({ type: "claude-env", environment }) };
   }
-  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode") {
+  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode" || input.provider === "antigravity") {
     const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
     if (provider === "grok") {
       if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
       if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
+    }
+    if (provider === "antigravity" && (input.environment[ANTIGRAVITY_SIGN_IN_ENV] || !input.environment.GEMINI_API_KEY?.trim())) {
+      throw new Error("Plugin Runner supports Google Antigravity only with a Gemini API key. Google sign-in is not supported.");
     }
     const names = new Set(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
     const environment = Object.fromEntries([...names]

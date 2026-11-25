@@ -77,7 +77,7 @@ The `credential` field has one of these types:
 | --- | --- | --- |
 | `codex-auth-json` | `authJson`: the selected Codex `auth.json` | `codex` |
 | `claude-env` | `environment`: exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | `claude` |
-| `provider-env` | `provider` and `environment`: one complete variable set for that provider | `grok`, `copilot` or `opencode` |
+| `provider-env` | `provider` and `environment`: one complete variable set for that provider | `grok`, `copilot`, `opencode` or `antigravity` |
 
 A `provider-env` credential contains exactly one of these variable sets and no
 other variable:
@@ -87,6 +87,7 @@ other variable:
 | `grok` | `XAI_API_KEY` |
 | `copilot` | `COPILOT_GITHUB_TOKEN` |
 | `opencode` | `OPENROUTER_API_KEY`, or `PAPERCLIP_AI_PROVIDER_URL` with `PAPERCLIP_AI_PROVIDER_KEY` |
+| `antigravity` | `GEMINI_API_KEY` |
 
 `ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. A server test
 checks every set against the names that the Runner forwards to each provider. Every value
@@ -94,17 +95,22 @@ is non-empty and contains no NUL byte. The `provider` always matches the
 Runner harness of the task. Set the variables in the environment of the Runner
 process. The Runner gives each variable only to its provider.
 
-For `copilot`, also set `PAPERCLIP_ACPX_CREDENTIAL_BINDING` in the Runner
-environment. Its value is this JSON object, with the normalized session ID of
-the task's PRP identity:
+For `copilot` and `antigravity`, also set `PAPERCLIP_ACPX_CREDENTIAL_BINDING`
+in the Runner environment. Its value is this JSON object, with the provider as
+`agent`, its variable names as `names`, and the normalized session ID of the
+task's PRP identity:
 
 ```json
 {"schema":"paperclip.acpx_credential_binding.v1","agent":"copilot","sessionId":"<normalizedSessionId>","names":["COPILOT_GITHUB_TOKEN"]}
 ```
 
-The Runner refuses a Copilot token without a matching binding.
+The Runner refuses a Copilot token or a Gemini API key without a matching
+binding. For `antigravity`, the Runner also removes every other `GOOGLE_*` and
+`GEMINI_*` variable before it starts the provider, so a configured variable
+cannot redirect the key.
 Core does not send a Grok subscription login. A Grok agent must use an xAI API
-key in a plugin environment.
+key in a plugin environment. Core does not send a Google sign-in yet. A Google
+Antigravity agent must use a Gemini API key in a plugin environment.
 
 ## Configured environment
 
