@@ -1,10 +1,14 @@
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const setup = vi.hoisted(() => ({ assets: "", verify: vi.fn() }));
-vi.mock("./provider-assets-root.js", () => ({ resolveRunnerProviderAssetsRoot: () => setup.assets }));
+vi.mock("./provider-assets-root.js", async original => {
+  const actual = await original<typeof import("./provider-assets-root.js")>();
+  return { ...actual, resolveRunnerProviderAssetsRoot: (...args: Parameters<typeof actual.resolveRunnerProviderAssetsRoot>) =>
+    args[2]?.providerPackageRoot === undefined ? setup.assets : actual.resolveRunnerProviderAssetsRoot(...args) };
+});
 vi.mock("./installation-integrity.js", async original => ({
   ...await original<typeof import("./installation-integrity.js")>(), verifyNativeAcpxInstallation: setup.verify,
 }));
@@ -28,6 +32,8 @@ async function layout() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-antigravity-installation-"))); roots.push(root);
   setup.assets = join(root, "server-vendor", "provider-assets", "antigravity");
   const pack = join(root, "provider-pack");
+  await mkdir(pack);
+  await writeFile(join(pack, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
   return { root, pack, packed: (key: string) => join(pack, "provider-assets", "antigravity", key) };
 }
 
@@ -52,7 +58,6 @@ describe("Antigravity runtime resolution", () => {
 
   it("falls back to the account runtime cache when no provider pack carries this target", async () => {
     const { pack } = await layout();
-    await mkdir(pack, { recursive: true });
     const cache = antigravityRuntimeCachePath(ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256, "linux", "x64", userInfo().homedir);
     vi.stubEnv(PACK_ENV, pack);
     expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot).toBe(cache);
@@ -66,8 +71,10 @@ describe("Antigravity runtime resolution", () => {
     await mkdir(join(pack, "provider-assets"), { recursive: true });
     await symlink(join(root, "elsewhere"), join(pack, "provider-assets", "antigravity"));
     vi.stubEnv(PACK_ENV, pack);
-    expect(() => antigravityNativeDistributionSpec("linux", "x64")).toThrow(/real directories/);
-    expect(() => antigravityProviderPackRoot({ [PACK_ENV]: "provider-pack" })).toThrow(/absolute path/);
+    expect(() => antigravityNativeDistributionSpec("linux", "x64")).toThrow(/not contained by its package/);
+    expect(() => antigravityProviderPackRoot({ [PACK_ENV]: "provider-pack" })).toThrow(/normalized absolute path/);
+    expect(() => antigravityProviderPackRoot({ [PACK_ENV]: "/opt/paperclip-runner/../etc" })).toThrow(/normalized absolute path/);
+    expect(antigravityProviderPackRoot({ [PACK_ENV]: " /opt/paperclip-runner/provider-pack/ " })).toBe("/opt/paperclip-runner/provider-pack");
     expect(antigravityProviderPackRoot({})).toBeUndefined();
   });
 

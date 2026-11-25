@@ -49,7 +49,7 @@ test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of
   const full = plan(["package.json"], { forceReason: "Full suite requested by label" });
   const awsJobs = Object.values(full.jobs).reduce((sum, lane) => sum + lane.total, 0);
   const hostedJobs = Object.values(full.jobs).reduce((sum, lane) => sum + (lane.hosted_total ?? lane.total), 0);
-  assert.equal(awsJobs, 70);
+  assert.equal(awsJobs, 72);
   assert.equal(hostedJobs, 33);
   assert.ok(Buffer.byteLength(JSON.stringify(full)) < 32_768, "dual-profile plan stays compact for GITHUB_OUTPUT/env");
 
@@ -104,7 +104,7 @@ test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of
   assert.equal(futureCompact[4].shard_label, "5/5");
 
   const summary = planSummary(full);
-  assert.match(summary, /27\/27 \(hosted: 12\/12\)/);
+  assert.match(summary, /28\/28 \(hosted: 12\/12\)/);
   assert.match(summary, /16\/16 \(hosted: 4\/4\)/);
 });
 
@@ -553,7 +553,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 27 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 28 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }

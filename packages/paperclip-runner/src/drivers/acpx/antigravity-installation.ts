@@ -32,17 +32,15 @@ const ANTIGRAVITY_PROVIDER_PACK_ENV = "PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PAT
 export function antigravityProviderPackRoot(environment: NodeJS.ProcessEnv = process.env): string | undefined {
   const configured = environment[ANTIGRAVITY_PROVIDER_PACK_ENV]?.trim();
   if (!configured) return undefined;
-  if (!isAbsolute(configured) || configured.includes("\0")) throw new Error("Antigravity provider pack root must be an absolute path");
-  return resolve(configured);
+  const root = configured.replace(/\/+$/, "") || "/";
+  if (!isAbsolute(root) || root.includes("\0") || resolve(root) !== root) throw new Error("Antigravity provider pack root must be a normalized absolute path");
+  return root;
 }
 
 function providerPackDistribution(pack: string, key: string): string | undefined {
-  let directory = pack;
-  for (const part of ["", "provider-assets", "antigravity", key]) {
-    directory = join(directory, part);
-    if (!realDirectoryExists(directory, "Antigravity provider pack runtime must contain real directories")) return undefined;
-  }
-  return directory;
+  if (!realDirectoryExists(pack, "Antigravity provider pack must be a real directory")) return undefined;
+  const directory = join(resolveRunnerProviderAssetsRoot(import.meta.url, "antigravity", { providerPackageRoot: pack }), key);
+  return realDirectoryExists(directory, "Antigravity provider pack runtime must be a real directory") ? directory : undefined;
 }
 
 export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch): NativeAcpxDistributionInput {
