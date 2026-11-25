@@ -1070,6 +1070,63 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         tool: toolName,
         parameters: { owner: "external-org", repo: "public-repo", title: "Bug report" },
       })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+      // 6. A suspended installation owner (one active + one suspended) is NOT treated as outside installations
+      //    and delivers unsuspend guidance on runtime 403.
+      await db.delete(toolPolicies).where(eq(toolPolicies.companyId, company.id));
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9"],
+            installationOwnerLogins: ["acme"],
+            suspendedInstallationOwnerLogins: ["suspended-org"],
+            repositories: [{ id: "10", fullName: "acme/site", installationId: "9" }],
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      const suspendedFailure = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "suspended-org", repo: "app", title: "Suspended write" },
+      }).catch((err) => err);
+      expect(suspendedFailure).toMatchObject({ reasonCode: "github_access_denied" });
+      expect(suspendedFailure.message).toMatch(/unsuspend/i);
+      expect(suspendedFailure.message).toContain("suspended-org");
+      expect(suspendedFailure.message).toContain("Refresh access");
+
+      // 7. A webhook-invalidated snapshot (bindingSync present) skips the stale pre-check so a newly
+      //    installed org is not blocked before Refresh access.
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review GitHub writes after webhook",
+        policyType: "require_approval",
+        selectors: { connectionId: connection.id },
+        priority: 10,
+      });
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 2,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9", "11"],
+            installationOwnerLogins: ["acme"],
+            bindingSync: { id: "00000000-0000-4000-8000-000000000001", removeInstallationIds: [] },
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "newly-installed-org", repo: "public-repo", title: "Post-install bug" },
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
     } finally { await remote.close(); }
   });
 

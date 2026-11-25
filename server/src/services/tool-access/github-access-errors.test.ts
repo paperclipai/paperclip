@@ -215,6 +215,91 @@ describe("GitHub tool access failures", () => {
     expect(text).toMatch(/Do not retry/);
     expect(text).toMatch(/not installed/i);
     expect(text).toMatch(/directly on GitHub|personal access token/i);
+    expect(text).toMatch(/install the Paperclip GitHub App.*refresh access.*retry/i);
     expect(text).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+  });
+
+  it("preserves suspended installations as repairable access with unsuspend guidance instead of install advice", () => {
+    const githubGrant = {
+      login: "octocat",
+      installationIds: ["102"],
+      installationOwnerLogins: ["octocat"],
+      suspendedInstallationOwnerLogins: ["paperclipai"],
+      repositories: [{ id: "2", fullName: "octocat/b", installationId: "102" }],
+    };
+    // Pre-check must NOT classify a suspended owner as outside installations.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "paperclipai", repo: "a", title: "Bug" },
+    })).toBeNull();
+    // Runtime 403 on suspended owner classifies as github_access_denied (not outside installations).
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/paperclipai/a/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "paperclipai", repo: "a", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
+    // Unsuspend guidance points operators to unsuspend and then Refresh access.
+    const guidance = githubAccessErrorInstructions(
+      "github_access_denied",
+      "mcp.github:create_issue",
+      "managed",
+      null,
+      undefined,
+      { suspendedOwner: "paperclipai" },
+    );
+    expect(guidance).toMatch(/suspended/i);
+    expect(guidance).toMatch(/unsuspend/i);
+    expect(guidance).toContain("paperclipai");
+    expect(guidance).toContain("Refresh access");
+  });
+
+  it("handles create_repository omitted organization and skips pre-check on webhook-invalidated snapshots", () => {
+    const singleOrg = { login: "octocat", installationOwnerLogins: ["acme"] };
+    const multiOrg = { login: "octocat", installationOwnerLogins: ["acme", "globex"] };
+    // Omitted organization (personal fallback) and injected single-org default both stay reachable.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant: singleOrg,
+      toolName: "mcp.github:create_repository",
+      parameters: { name: "site", organization: "acme" },
+    })).toBeNull();
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant: multiOrg,
+      toolName: "mcp.github:create_repository",
+      parameters: { name: "site" },
+    })).toBeNull();
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant: singleOrg,
+      toolName: "mcp.github:create_repository",
+      parameters: { name: "site", organization: "external-org" },
+    })).toMatchObject({ owner: "external-org" });
+
+    // Webhook-invalidated snapshot (bindingSync present / repositories cleared) skips pre-check.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant: {
+        login: "octocat",
+        installationIds: ["9", "11"],
+        installationOwnerLogins: ["acme"],
+        repositories: undefined,
+        bindingSync: { id: "sync-1", removeInstallationIds: [] },
+      },
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "external-org", repo: "public-repo" },
+    })).toBeNull();
   });
 });

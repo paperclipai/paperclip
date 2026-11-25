@@ -14,7 +14,11 @@ export function isGitHubAccessErrorCode(code: unknown): code is GitHubAccessErro
 
 export interface GitHubAccessSnapshot {
   login?: unknown;
+  installationIds?: unknown;
   installationOwnerLogins?: unknown;
+  suspendedInstallationOwnerLogins?: unknown;
+  repositories?: unknown;
+  bindingSync?: unknown;
 }
 
 export interface GitHubTarget {
@@ -56,6 +60,21 @@ function parseFullName(value: unknown): GitHubTarget | null {
   const owner = validOwner(parts[0]);
   const repo = validRepo(parts[1]);
   return owner && repo ? { owner, repo } : null;
+}
+
+function collectValidOwners(values: unknown): { list: string[]; set: Set<string> } {
+  const list: string[] = [];
+  const set = new Set<string>();
+  if (!Array.isArray(values)) return { list, set };
+  for (const entry of values) {
+    const owner = validOwner(entry);
+    if (!owner) continue;
+    const key = owner.toLowerCase();
+    if (set.has(key)) continue;
+    set.add(key);
+    list.push(owner);
+  }
+  return { list, set };
 }
 
 /** Extract the write target owner (and repository when known) from structured
@@ -114,28 +133,52 @@ function normalizedInstalledOwners(githubGrant: GitHubAccessSnapshot | null | un
   login: string;
   installedOwners: string[];
   installedOwnerSet: Set<string>;
+  suspendedOwnerSet: Set<string>;
+  incomplete: boolean;
 } | null {
   if (!githubGrant) return null;
   const login = validOwner(githubGrant.login);
-  if (!login || !Array.isArray(githubGrant.installationOwnerLogins)) return null;
-  const seen = new Set<string>();
-  const installedOwners: string[] = [];
-  for (const entry of githubGrant.installationOwnerLogins) {
-    const owner = validOwner(entry);
-    if (!owner) continue;
-    const key = owner.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    installedOwners.push(owner);
-  }
-  if (installedOwners.length === 0) return null;
-  return { login, installedOwners, installedOwnerSet: seen };
+  if (!login) return null;
+  const active = collectValidOwners(githubGrant.installationOwnerLogins);
+  if (active.list.length === 0) return null;
+  const suspended = collectValidOwners(githubGrant.suspendedInstallationOwnerLogins);
+  // Installation webhooks add installationIds and clear repositories without
+  // refreshing installationOwnerLogins. Mark such snapshots incomplete so
+  // pre-checks do not block newly installed organizations before Refresh access.
+  const incomplete = Boolean(githubGrant.bindingSync)
+    || (Array.isArray(githubGrant.installationIds)
+      && githubGrant.installationIds.length > active.list.length
+      && githubGrant.repositories === undefined);
+  return {
+    login,
+    installedOwners: active.list,
+    installedOwnerSet: active.set,
+    suspendedOwnerSet: suspended.set,
+    incomplete,
+  };
+}
+
+/** Return the canonical suspended installation owner login when the target
+ * owner has a suspended Paperclip GitHub App installation (and no active
+ * installation), so repair requires unsuspending rather than installing the App. */
+export function suspendedManagedGitHubOwner(
+  githubGrant: GitHubAccessSnapshot | null | undefined,
+  target: GitHubTarget | null | undefined,
+): string | null {
+  if (!githubGrant || !target) return null;
+  const owner = validOwner(target.owner);
+  if (!owner) return null;
+  const key = owner.toLowerCase();
+  const active = collectValidOwners(githubGrant.installationOwnerLogins);
+  if (active.set.has(key)) return null;
+  const suspended = collectValidOwners(githubGrant.suspendedInstallationOwnerLogins);
+  return suspended.list.find((entry) => entry.toLowerCase() === key) ?? null;
 }
 
 /** Check whether a managed GitHub App call targets an account/organization
  * outside the Paperclip GitHub App's installed accounts (and not the user's
- * own personal account). Refreshing access cannot grant write access to
- * third-party orgs where the App is not installed. */
+ * own personal account or a suspended installation). Refreshing access alone
+ * cannot grant write access before the App is installed on that organization. */
 export function findUnreachableManagedGitHubTarget(input: {
   sourceTemplateKey: unknown;
   connectionMethodKey: unknown;
@@ -143,14 +186,21 @@ export function findUnreachableManagedGitHubTarget(input: {
   toolName: string;
   parameters?: unknown;
   providerMessage?: unknown;
+  /** Skip pre-check when webhooks have invalidated the owner snapshot. */
+  allowIncompleteSnapshot?: boolean;
 }): { owner: string; repo?: string; installedOwners: string[]; message: string } | null {
   if (input.sourceTemplateKey !== "github" || input.connectionMethodKey !== "managed") return null;
   const snapshot = normalizedInstalledOwners(input.githubGrant);
   if (!snapshot) return null;
+  if (snapshot.incomplete && !input.allowIncompleteSnapshot) return null;
   const target = extractGitHubTarget(input.toolName, input.parameters, input.providerMessage);
   if (!target) return null;
   const targetOwnerLower = target.owner.toLowerCase();
-  if (targetOwnerLower === snapshot.login.toLowerCase() || snapshot.installedOwnerSet.has(targetOwnerLower)) {
+  if (
+    targetOwnerLower === snapshot.login.toLowerCase()
+    || snapshot.installedOwnerSet.has(targetOwnerLower)
+    || snapshot.suspendedOwnerSet.has(targetOwnerLower)
+  ) {
     return null;
   }
   return {
@@ -182,6 +232,7 @@ export function githubAccessError(
     toolName: context.toolName ?? "",
     parameters: context.parameters,
     providerMessage: message,
+    allowIncompleteSnapshot: true,
   })) {
     return { errorCode: GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE };
   }
@@ -213,13 +264,17 @@ export function githubOutsideAppInstallationsInstructions(
   const installedPhrase = safeInstalled.length > 0
     ? ` (currently installed on: ${safeInstalled.join(", ")})`
     : "";
-  return `GitHub cannot run this action${targetPhrase} because the Paperclip GitHub App is not installed on that organization or account${installedPhrase}. Do not retry or request approval for the same call on this managed GitHub App connection. Never automatically replay an approved write. Refreshing access cannot grant write permission to repositories outside the Paperclip GitHub App's installations. Explain this to the user and offer the drafted content so they can post directly on GitHub, note that a personal access token (PAT) GitHub connection is required to write to external repositories where the App cannot be installed, or—only if they administer that organization—ask an organization admin to install the Paperclip GitHub App there first.`;
+  return `GitHub cannot run this action${targetPhrase} because the Paperclip GitHub App is not installed on that organization or account${installedPhrase}. Do not retry or request approval for the same call on this managed GitHub App connection unless an administrator installs the Paperclip GitHub App on that organization and access is refreshed. Never automatically replay an approved write. Refreshing access alone cannot grant write permission before the Paperclip GitHub App is installed on that organization. Explain this to the user and offer the drafted content so they can post directly on GitHub, note that a personal access token (PAT) GitHub connection is required to write to external repositories where the App cannot be installed, or—only if they administer that organization—ask an organization admin to install the Paperclip GitHub App there, open the GitHub connection's Permissions page to refresh access, and then retry the same call.`;
 }
 
 /** Trusted, server-authored next steps for the agent after GitHub denied an
  * approved action. Access must be repaired before another attempt. The
  * provider text stays in the untrusted result, never in these instructions. */
-export function githubAccessDeniedInstructions(toolName: string, connectionMethodKey: unknown = null): string {
+export function githubAccessDeniedInstructions(
+  toolName: string,
+  connectionMethodKey: unknown = null,
+  options?: { suspendedOwner?: string | null },
+): string {
   const operation = (toolName.split(":").pop() ?? "").trim().toLowerCase().replace(/-/g, "_");
   const base = "GitHub denied this action because the Paperclip GitHub connection cannot access the requested account or repository. Do not retry or request approval for the same call until GitHub access is repaired. Never automatically replay an approved write.";
   if (connectionMethodKey === "mcp-key") {
@@ -227,6 +282,10 @@ export function githubAccessDeniedInstructions(toolName: string, connectionMetho
   }
   if (connectionMethodKey !== "managed") {
     return `${base} Ask the user to open the GitHub connection's Permissions page and check its connected account, authentication method and requested repository access. Continue after they repair that connection.`;
+  }
+  const suspendedOwner = validOwner(options?.suspendedOwner);
+  if (suspendedOwner) {
+    return `${base} The Paperclip GitHub App installation for ${suspendedOwner} is currently suspended. Ask an owner or administrator of ${suspendedOwner} to unsuspend the Paperclip GitHub App on GitHub, then open the GitHub connection's Permissions page and select Refresh access. Continue after they confirm.`;
   }
   if (operation === "create_repository") {
     return `${base} Check the repository owner. Connecting a GitHub user does not by itself grant App access to their personal account. For a personal repository, the Paperclip GitHub App needs access to that personal account. For an organization repository, it needs access to that organization; use the tool's organization argument only for an owner the user requested. Open the GitHub connection's Permissions page, select Add More Repos on GitHub, choose the intended account, then Refresh access. If creation remains unavailable, ask the user to create it at https://github.com/new and grant the App access before continuing.`;
@@ -240,9 +299,10 @@ export function githubAccessErrorInstructions(
   connectionMethodKey: unknown = null,
   target?: GitHubTarget | null,
   installedOwners?: string[],
+  options?: { suspendedOwner?: string | null },
 ): string {
   if (errorCode === GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE) {
     return githubOutsideAppInstallationsInstructions(target, installedOwners);
   }
-  return githubAccessDeniedInstructions(toolName, connectionMethodKey);
+  return githubAccessDeniedInstructions(toolName, connectionMethodKey, options);
 }
