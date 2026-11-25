@@ -1,4 +1,5 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { sessionUsedGoogleWorkspace } from "./tool-access/connections/google-content-retention.js";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
@@ -47,8 +48,11 @@ import {
   sanitizeFeedbackValue,
   sha256Digest,
 } from "./feedback-redaction.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { isObjectJournalBusyError } from "./object-byte-journal.js";
+import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { announceInstanceSettingsChange } from "./instance-settings-cache.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -318,20 +322,24 @@ async function findMatchingFile(
   return search(rootDir, 0);
 }
 
-async function readFullRunLog(run: {
+async function readFullRunLog(db: Db, run: {
   logStore: string | null;
   logRef: string | null;
 }) {
-  if (run.logStore !== "local_file" || !run.logRef) return null;
+  if (!isRunLogStoreType(run.logStore) || !run.logRef) return null;
   const store = getRunLogStore();
+  if (run.logStore === "s3_segments") await recoverSettledNativeRunLog(db, store, run.logRef).catch(() => undefined);
   let offset = 0;
   let combined = "";
 
   while (true) {
-    const result = await store.read({ store: "local_file", logRef: run.logRef }, {
+    const result = await store.read({ store: run.logStore, logRef: run.logRef }, {
       offset,
       limitBytes: 512_000,
-    }).catch(() => null);
+    }).catch((error) => {
+      if (isObjectJournalBusyError(error)) throw error;
+      return null;
+    });
     if (!result) return combined || null;
     combined += result.content;
     if (result.nextOffset == null) break;
@@ -1519,6 +1527,27 @@ async function buildFeedbackTraceBundleFromRow(
 
     if (!run || run.companyId !== row.companyId) {
       appendNote(notes, "source_run_unavailable");
+    } else if (await sessionUsedGoogleWorkspace(db, {
+      companyId: run.companyId, agentId: run.agentId, runId: run.id, sessionIds: [run.sessionIdBefore, run.sessionIdAfter],
+    })) {
+      adapterType = run.adapterType;
+      appendNote(notes, "google_workspace_content_excluded");
+      paperclipRun = {
+        id: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        adapterType: run.adapterType,
+        status: run.status,
+        startedAt: run.startedAt?.toISOString() ?? null,
+        finishedAt: run.finishedAt?.toISOString() ?? null,
+        googleWorkspaceContentExcluded: true,
+      };
+      files.push(makeBundleFile({
+        path: "paperclip/run.json",
+        contentType: "application/json",
+        source: "paperclip_run",
+        contents: `${JSON.stringify(paperclipRun, null, 2)}\n`,
+      }));
     } else {
       adapterType = run.adapterType;
       const events = await db
@@ -1526,7 +1555,7 @@ async function buildFeedbackTraceBundleFromRow(
         .from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, run.id))
         .orderBy(asc(heartbeatRunEvents.seq));
-      const logText = await readFullRunLog(run);
+      const logText = await readFullRunLog(db, run);
       const logEntries = parseRunLogEntries(logText);
       const stdoutText = logEntries
         .filter((entry) => entry.stream === "stdout")
@@ -1555,7 +1584,7 @@ async function buildFeedbackTraceBundleFromRow(
           sessionIdBefore: run.sessionIdBefore,
           sessionIdAfter: run.sessionIdAfter,
           externalRunId: run.externalRunId,
-          contextSnapshot: asRecord(run.contextSnapshot),
+          contextSnapshot: (({ paperclipSessionHandoffMarkdown: _handoff, ...context }) => context)(asRecord(run.contextSnapshot) ?? {}),
           logStore: run.logStore,
           logRef: run.logRef,
           logBytes: run.logBytes,
@@ -2021,6 +2050,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           getOperatorSettingDefaults(),
         );
         if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+          await announceInstanceSettingsChange(tx);
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
           await tx

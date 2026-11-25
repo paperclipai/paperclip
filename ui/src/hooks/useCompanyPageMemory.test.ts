@@ -79,6 +79,23 @@ describe("sanitizeRememberedPathForCompany", () => {
     ).toBe("/dashboard");
   });
 
+  it("falls back to the company home when one is given", () => {
+    expect(
+      sanitizeRememberedPathForCompany({
+        path: null,
+        companyPrefix: "PAP",
+        homePath: "/responsibilities",
+      }),
+    ).toBe("/responsibilities");
+    expect(
+      sanitizeRememberedPathForCompany({
+        path: "/issues/FOR-1",
+        companyPrefix: "PAP",
+        homePath: "/responsibilities",
+      }),
+    ).toBe("/responsibilities");
+  });
+
   it("keeps remembered skills paths intact for the target company", () => {
     expect(
       sanitizeRememberedPathForCompany({

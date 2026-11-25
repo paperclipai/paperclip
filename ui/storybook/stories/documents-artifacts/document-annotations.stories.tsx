@@ -514,6 +514,13 @@ const meta = {
           "Document annotation surface for issue documents. Stories under 'Integrated' render the real IssueDocumentsSection chrome (count chip in header, panel + body in their actual layout). Stories under 'States' isolate the panel/layer for unit-level visual debugging.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/annotations"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof StatesShowcase>;
 

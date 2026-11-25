@@ -1,3 +1,4 @@
+import { workspaceProviderBindingSchema } from "@paperclipai/shared";
 import type {
   Environment,
   EnvironmentLease,
@@ -87,6 +88,7 @@ export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealiz
           ? source.kind
           : "project_primary",
       localPath,
+      ...(source.providerBinding ? { providerBinding: workspaceProviderBindingSchema.parse(source.providerBinding) } : {}),
       projectId: readString(source.projectId),
       projectWorkspaceId: readString(source.projectWorkspaceId),
       repoUrl: readString(source.repoUrl),
@@ -129,6 +131,7 @@ export function buildWorkspaceRealizationRequest(input: {
     heartbeatRunId: input.heartbeatRunId,
     requestedMode: input.requestedMode,
     source: {
+      ...(input.workspace.providerBinding ? { providerBinding: input.workspace.providerBinding } : {}),
       kind: input.workspace.source,
       localPath: input.workspace.cwd,
       projectId: input.workspace.projectId,

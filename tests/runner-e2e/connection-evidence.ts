@@ -4,6 +4,18 @@ import type { RunnerE2EResult } from "./types.js";
 export const connectionCheckpoints = ["target", "connection_created", "connection_reloaded", "agent_created", "binding", "setup_probe", "first_run", "artifact", "tool_receipt", "followup", "visible_result"] as const;
 export type ConnectionCheckpoint = typeof connectionCheckpoints[number];
 export const connectionRunSignals = ["provider_overloaded", "provider_quota", "missing_file_conversion", "unsupported_session_configuration", "command_substitution_denied"] as const;
+export const connectionVerificationFailureCodes = [
+  "ai_connection_api_key_rejected",
+  "ai_connection_billing_required",
+  "ai_connection_rate_limited",
+  "ai_connection_provider_unavailable",
+  "ai_connection_verification_timeout",
+  "ai_connection_provider_unreachable",
+  "ai_connection_verification_failed",
+] as const;
+export const connectionCreationFailureCodes = [...connectionVerificationFailureCodes, "connection_request_rejected"] as const;
+export type ConnectionCreationFailureCode = (typeof connectionCreationFailureCodes)[number];
+
 export interface ConnectionRunDiagnostic {
   runId: string;
   status: "succeeded" | "failed" | "cancelled" | "interrupted" | "timed_out" | "unknown";
@@ -28,7 +40,7 @@ export interface ConnectionEvidence {
   model?: string;
   inputTransport?: "prompt_base64";
   setupChecks?: Array<{ code: string; level: "info" | "warn" | "error" }>;
-  creationFailure?: { status: number; code: "ai_connection_api_key_rejected" | "ai_connection_verification_failed" | "connection_request_rejected" };
+  creationFailure?: { status: number; code: ConnectionCreationFailureCode };
   cleanupRetained?: boolean;
   companyArchived?: boolean;
   artifactChecks?: Array<{ filename: string; runId: string; sha256: string; fields: Record<string, boolean>; exactFields: boolean }>;

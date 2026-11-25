@@ -187,7 +187,15 @@ function FormContext({ triggerClassName }: { triggerClassName?: string }) {
 const meta = {
   id: "components-searchableselect-workspace-picker",
   title: "Projects and execution/Workspaces, services, and files/Components/SearchableSelect/Workspace picker",
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "workspaces/binding"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta;
 
 export default meta;

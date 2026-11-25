@@ -8,7 +8,17 @@ const meta = {
   title: "Projects and execution/Projects and repositories/Proposals/Project repos/Configuration",
   component: ProjectConfigurationPrototype,
   tags: ["!autodocs"],
-  parameters: { layout: "fullscreen", viewport: { options: reviewViewports }, docs: { description: { component: "Full Onboarding configuration page, based on the Bull staging reference: sidebar, header, tabs, actual ProjectProperties, and the proposed source repo editor in the Codebase slot. Add/remove repos, save or discard, connect another GitHub account, and preserve existing text URLs. All writes and provider sign-in are simulated in Storybook." } } },
+  parameters: { layout: "fullscreen", viewport: { options: reviewViewports }, docs: { description: { component: "Full Onboarding configuration page, based on the Bull staging reference: sidebar, header, tabs, actual ProjectProperties, and the proposed source repo editor in the Codebase slot. Add/remove repos, save or discard, connect another GitHub account, and preserve existing text URLs. All writes and provider sign-in are simulated in Storybook." } },
+    paperclip: {
+      "capabilities": [
+        "projects/repositories"
+      ],
+      "status": "proposed",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Production properties plus local configuration page composition; repository interaction is simulated."
+    },
+  },
 } satisfies Meta<typeof ProjectConfigurationPrototype>;
 export default meta;
 type Story = StoryObj<typeof meta>;

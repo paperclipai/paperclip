@@ -202,6 +202,7 @@ function resolveCatalogSourcePath(source: CatalogSkillSource, relativePath: stri
 async function fetchCatalogSourceFile(
   skill: CatalogSkill,
   relativePath: string,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const source = skill.source;
   if (!source) {
@@ -220,7 +221,7 @@ async function fetchCatalogSourceFile(
 
   const sourcePath = resolveCatalogSourcePath(source, relativePath);
   const url = resolveRawGitHubUrl(source.hostname, source.owner, source.repo, source.commit, sourcePath);
-  const response = await ghFetch(url);
+  const response = await ghFetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch pinned catalog file ${sourcePath} from ${source.owner}/${source.repo}@${source.commit}: HTTP ${response.status}`);
   }
@@ -230,13 +231,14 @@ async function fetchCatalogSourceFile(
 async function readCatalogFileBytes(
   skill: CatalogSkill,
   relativePath: string,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const fileEntry = skill.files.find((entry) => entry.path === relativePath);
   if (!fileEntry) {
     throw notFound("Catalog skill file not found");
   }
 
-  const bytes = await fetchCatalogSourceFile(skill, relativePath);
+  const bytes = await fetchCatalogSourceFile(skill, relativePath, signal);
   const actualSha = createHash("sha256").update(bytes).digest("hex");
   if (actualSha !== fileEntry.sha256) {
     throw unprocessable(`Pinned catalog file hash mismatch for ${skill.id}:${relativePath}.`);
@@ -344,6 +346,23 @@ export async function copyCatalogSkillFile(reference: string, relativePath: stri
   }
 
   await fs.writeFile(targetPath, await readCatalogFileBytes(skill, normalizedPath));
+}
+
+export async function readPinnedCatalogSkillFiles(reference: string, contentHash: string, signal?: AbortSignal) {
+  let skill: CatalogSkill | null;
+  try { skill = resolveCatalogSkillReference(reference).skill; }
+  catch (error) {
+    if (isCatalogManifestUnavailableError(error)) return null;
+    throw error;
+  }
+  if (!skill || skill.contentHash !== contentHash) return null;
+  const pinned = skill;
+  const files: Array<{ path: string; bytes: Buffer }> = [];
+  for (const entry of pinned.files) {
+    signal?.throwIfAborted();
+    files.push({ path: entry.path, bytes: await readCatalogFileBytes(pinned, entry.path, signal) });
+  }
+  return files;
 }
 
 export function getCatalogPackageMetadata() {

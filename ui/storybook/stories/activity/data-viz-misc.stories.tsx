@@ -651,6 +651,13 @@ const meta = {
           "Fixture-backed stories for charting, board, filtering, live run, onboarding, package preview, entity row, mobile gesture, generated icon, ASCII animation, and skeleton states.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "activity/overview"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta;
 

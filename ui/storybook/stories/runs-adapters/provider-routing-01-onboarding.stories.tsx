@@ -7,7 +7,17 @@ const meta = {
   id: "ai-connections-provider-routing-01-onboarding",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Provider routing/01 Onboarding",
   component: Onboarding,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "status": "mixed",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Design-review route uses simulated account/provider state; audit the rendered subject before treating it as the live connection flow."
+    },
+  },
   ...reviewLifecycle,
   decorators: [
     (Story) => (

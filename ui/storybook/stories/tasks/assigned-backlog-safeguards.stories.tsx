@@ -208,7 +208,17 @@ const meta = {
   id: "paperclip-assigned-backlog-safeguards",
   title: "Tasks and conversations/Task creation and lifecycle/Paperclip/Assigned Backlog Safeguards",
   component: AllStates,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "tasks/completion",
+        "recovery/diagnosis"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 } satisfies Meta<typeof AllStates>;
 
 export default meta;

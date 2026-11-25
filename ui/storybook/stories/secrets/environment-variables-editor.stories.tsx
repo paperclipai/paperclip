@@ -93,7 +93,15 @@ function Editor({
 const meta: Meta = {
   id: "product-environment-variables-editor",
   title: "Apps, channels, and extensions/Secrets and proposals/Product/Environment Variables Editor",
-  parameters: { layout: "fullscreen", a11y: { test: "off" } },
+  parameters: { layout: "fullscreen", a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "secrets/runtime-delivery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 type Story = StoryObj;

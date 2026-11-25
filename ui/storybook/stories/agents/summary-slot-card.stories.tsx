@@ -328,7 +328,15 @@ const meta: Meta<typeof CardHarness> = {
   id: "summaries-summaryslotcard",
   title: "Agents and reusable capabilities/Hiring, configuration, and organization/Summaries/SummarySlotCard",
   component: CardHarness,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "agents/built-in"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 
 export default meta;
