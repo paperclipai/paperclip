@@ -384,6 +384,20 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       for (let pass = 0; pass < 3; pass++) await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).not.toContain("Working on this");
     });
+    it("settles a GitHub request whose posted comment was deleted instead of retrying it", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      f.responseComments.delete(firstId);
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      const writes = f.responseWrites.length;
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const [response] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment")));
+      expect(response).toMatchObject({ status: "cancelled", result: { final: true, code: "response_deleted" } });
+      expect(f.responseComments.size).toBe(0);
+      expect(f.responseWrites).toHaveLength(writes);
+    });
     it("settles a GitHub thread whose acknowledgement retries ran out, after the recovery migration", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];

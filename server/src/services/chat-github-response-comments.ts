@@ -472,6 +472,17 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       if (!row || row.result?.final === true) return;
       const attempts = Number(row.result?.attempts ?? 0) + 1;
       const denied = error instanceof Error && "status" in error && error.status === 403;
+      const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
+      if (row.result?.id && details?.code === "github_bot_operation_failed" && details.providerStatus === 404) {
+        // Someone deleted the posted comment. Settle the request without
+        // recreating it, as finishRun does for coalesced requests.
+        await db.transaction(async tx => {
+          await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
+          await tx.update(chatActions).set({ status: "cancelled", result: { ...row.result, final: true, code: "response_deleted" },
+            updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+        });
+        return;
+      }
       await db.transaction(async tx => {
         await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
         await tx.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
