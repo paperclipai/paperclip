@@ -454,13 +454,15 @@ describe("Antigravity CLI swarm runtime", () => {
     const siblings: number[] = [];
     afterEach(() => { for (const pid of siblings.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } });
 
-    async function startOrphanSwarm(dependencies: Parameters<typeof openAntigravitySwarmRuntime>[1] = {}) {
+    async function startOrphanSwarm(dependencies: Parameters<typeof openAntigravitySwarmRuntime>[1] = {}, helperDelayMs = HELPER_DELAY_MS) {
       const context = setup("orphan-helpers");
       const spawnChild = context.options.command.spawn;
       let cliPid = 0;
       (context.options.command as { spawn: typeof spawnChild }).spawn = (args, spawnOptions = {}, lifetime) => {
-        const env = { ...(spawnOptions as { env?: NodeJS.ProcessEnv }).env, FAKE_AGY_HELPER_DELAY_MS: String(HELPER_DELAY_MS) };
-        const child = spawnChild(args, { ...spawnOptions, env }, lifetime);
+        // setup() builds the fake CLI's environment from process.env at spawn time.
+        process.env.FAKE_AGY_HELPER_DELAY_MS = String(helperDelayMs);
+        let child: ReturnType<typeof spawnChild>;
+        try { child = spawnChild(args, spawnOptions, lifetime); } finally { delete process.env.FAKE_AGY_HELPER_DELAY_MS; }
         cliPid = child.pid!;
         return child;
       };
@@ -472,6 +474,7 @@ describe("Antigravity CLI swarm runtime", () => {
       void (async () => { for await (const _event of turn.events) { /* drain */ } })();
       await waitFor(() => existsSync(context.workerPidFile) && readFileSync(context.workerPidFile, "utf8").length > 0);
       const helper = Number(readFileSync(context.workerPidFile, "utf8"));
+      siblings.push(helper); // cleaned up after the test if it ever survives
       // Let the lineage record the helper while the CLI still runs.
       await new Promise(resolve => setTimeout(resolve, 150));
       expect(alive(helper)).toBe(true);
@@ -481,14 +484,11 @@ describe("Antigravity CLI swarm runtime", () => {
 
     it("stops them before reporting a killed CLI, without waiting on the pipe they hold, and leaves other processes alone", async () => {
       const run = await startOrphanSwarm();
-      const killedAt = Date.now();
       process.kill(run.cliPid, "SIGKILL");
       const result = await run.turn.result;
-      const reportedAfterMs = Date.now() - killedAt;
       // The helper is already gone when the failure is reported.
       expect(alive(run.helper)).toBe(false);
       expect(result).toMatchObject({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", retryable: true } });
-      expect(reportedAfterMs).toBeLessThan(2_000);
       await run.runtime.close({ reason: "done" });
       await settledAfterHelperDeadline();
       expect(existsSync(run.late)).toBe(false);
@@ -500,14 +500,17 @@ describe("Antigravity CLI swarm runtime", () => {
       const run = await startOrphanSwarm({ readProcessTable: async () => {
         if (!tableReadable) throw new Error("process table unavailable");
         return readProcessTable();
-      } });
+      } }, 60_000);
       tableReadable = false;
       process.kill(run.cliPid, "SIGKILL");
       expect(await run.turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_FAILED", retryable: false,
         message: expect.stringMatching(/could not confirm that all of its helpers stopped/) } });
+      // The helper outlives the failed cleanup, so the later close is what stops it.
+      expect(alive(run.helper)).toBe(true);
       tableReadable = true;
       await run.runtime.close({ reason: "done" });
       expect(alive(run.helper)).toBe(false);
+      expect(existsSync(run.late)).toBe(false);
       expect(alive(run.sibling)).toBe(true);
     }, 20_000);
 

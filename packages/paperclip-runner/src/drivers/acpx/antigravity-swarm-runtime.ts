@@ -5,7 +5,7 @@ import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
 import { userInfo } from "node:os";
 import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { retireAntigravityProcess } from "./antigravity-process.js";
-import { trackAntigravityProcessLineage, type LineageEntry } from "./antigravity-process-lineage.js";
+import { trackAntigravityProcessLineage, type ProcessTableRead } from "./antigravity-process-lineage.js";
 import { antigravityOutsideChange } from "./antigravity-swarm-paths.js";
 import { antigravityAccountDigest, antigravitySwarmChannelLabel, antigravitySwarmLogFile } from "./antigravity-swarm-route.js";
 import {
@@ -76,7 +76,7 @@ export interface AntigravitySwarmRuntimeDependencies {
   /** Test seam: how often the CLI's process lineage is recorded. */
   lineageSampleIntervalMs?: number;
   /** Test seam: reads the host's process table for the lineage. */
-  readProcessTable?: () => Promise<LineageEntry[]>;
+  readProcessTable?: () => Promise<ProcessTableRead>;
 }
 
 type Json = Record<string, unknown>;
