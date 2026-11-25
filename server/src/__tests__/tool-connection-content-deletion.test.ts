@@ -38,7 +38,7 @@ import {
   readIdleGoogleTechnicalInformationSchedule,
 } from "../services/tool-access/connections/google-technical-information.js";
 import { deleteGoogleContentWhenAccessEnds } from "../services/tool-access/connections/google-content-retention.js";
-import { forgetSessionsOfDeletedRun } from "../services/tool-access/connections/run-session-reset.js";
+import { forgetSessionsOfDeletedRun, runContentDeleted } from "../services/tool-access/connections/run-session-reset.js";
 import type { RunLogHandle, RunLogStore } from "../services/run-log-store.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -376,6 +376,8 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     const [restored] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, seed.agent.id));
     expect(restored!.sessionId).toBeNull();
     expect(await forgetSessionsOfDeletedRun(db, { id: seed.otherRun.id, companyId: seed.company.id })).toBe(false);
+    expect(await runContentDeleted(db, seed.company.id, seed.liveRun.id)).toBe(true);
+    expect(await runContentDeleted(db, seed.company.id, seed.otherRun.id)).toBe(false);
   });
 
   it("extends a pending deletion to everything saved before access ended, and keeps content saved after reconnecting", async () => {

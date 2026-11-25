@@ -19,6 +19,7 @@ import {
 } from "./workspaces.js";
 import type { HeartbeatWorkspacePreparationInput, prepareHeartbeatWorkspace } from "./workspace-preparation.js";
 import type { prepareHeartbeatTaskContext } from "./task-context.js";
+import { runContentDeleted } from "../tool-access/connections/run-session-reset.js";
 
 type RunState = ReturnType<typeof createHeartbeatRunState>;
 type WorkspaceInput = HeartbeatWorkspacePreparationInput;
@@ -203,7 +204,8 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision && !agentIdentity,
   });
   const resetTaskSession =
-    context.workspaceSelectionChanged === true || shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+    context.workspaceSelectionChanged === true || shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset
+    || await runContentDeleted(db, agent.companyId, taskSession?.lastRunId);
   const sessionResetReason =
     sessionConfigFreshness.reasons.join("; ") || null;
   const taskSessionForRun = resetTaskSession ? null : taskSession;
