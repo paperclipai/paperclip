@@ -1246,9 +1246,28 @@ describe("mapFinalResultForTest", () => {
     expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 4 });
   });
 
+  it("classifies camelCase statusCode 429 in nested error payloads as transient_upstream", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-camel-429",
+        status: "failed",
+        payload: { status: "failed", error: { statusCode: 429, message: "slow down" } },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.errorMessage).toBe("slow down");
+  });
+
   it.each([
     { status: "failed", error: "HTTP 400: invalid request body" },
+    { status: "failed", error: "HTTP 400: rate_limit_error header invalid" },
     { status: "failed", error: "HTTP 403: API key limit denied" },
+    { status: "failed", error: "HTTP 403: overloaded project key" },
+    { status: "failed", error: "Validation error: maximum 500 tokens exceeded" },
     { status: "failed", error: { status_code: 403, message: "Forbidden" } },
   ])("keeps non-transient terminal error %j unclassified", (payload) => {
     const result = mapFinalResultForTest({

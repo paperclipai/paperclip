@@ -589,13 +589,14 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (aliveWait) return aliveWait;
   const fenced = await fenceSourceWorkspace(tx, run);
   const workspaceProviderFailure = readWorkspaceProviderFailure(run.resultJson);
-  const nonRetryableWorkspaceProviderFailure = workspaceProviderFailure?.retryable === false;
+  const workspaceBindingInvalidated = workspaceProviderFailure?.retryable === false
+    && workspaceProviderFailure.reason === "binding_mismatch";
   // Never claim a stop that was not proven: record what isolates the successor.
-  // A non-retryable workspace provider failure (such as binding_mismatch) means
-  // the bound workspace cannot be reused, so continuation must request a fresh
-  // isolated workspace instead of looping on the broken binding.
+  // Only a workspace binding mismatch forces a fresh isolated workspace; other
+  // non-retryable operator/provider errors (e.g. credential_unavailable,
+  // unsupported_operation) preserve the usable task workspace.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
-    : writer === "ended" && !pastBound() && !refused && !nonRetryableWorkspaceProviderFailure
+    : writer === "ended" && !pastBound() && !refused && !workspaceBindingInvalidated
       ? "writer_ended"
       : "fresh_isolated_workspace";
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
@@ -615,8 +616,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
       ? `Paperclip abandoned unverified workspace epoch ${fenced.abandonedEpoch} of run ${run.id}; the continuation restores `
         + `${fenced.snapshotId ? `committed snapshot ${fenced.snapshotId}` : "the workspace source"} into a new root.`
       : isolation === "fresh_isolated_workspace"
-        ? nonRetryableWorkspaceProviderFailure
-          ? `The previous workspace of run ${run.id} could not be reused (${workspaceProviderFailure.reason ?? workspaceProviderFailure.kind}), so the continuation starts in a new isolated workspace.`
+        ? workspaceBindingInvalidated
+          ? `The previous workspace of run ${run.id} could not be reused (${workspaceProviderFailure.reason}), so the continuation starts in a new isolated workspace.`
           : `The previous writer of run ${run.id} is not proven stopped, so the continuation starts in a new isolated workspace; no unverified files are applied.`
         : `The continuation of run ${run.id} starts from the task's last saved workspace; no unverified files are applied.` };
   const freshContinuation = { schema: FRESH_CONTINUATION_SCHEMA, sourceRunId: run.id, trigger: input.trigger,

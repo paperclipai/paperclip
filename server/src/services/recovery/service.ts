@@ -194,7 +194,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
-import { readWorkspaceProviderFailure, workspaceProviderFailureMessage } from "../workspace-provider-failure.js";
+import { readWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
@@ -5795,7 +5795,7 @@ export function recoveryService(
             latestRun,
             notice: buildNoRunningExecutionNoticeSeed({
               status: "todo",
-              failureReason: workspaceProviderFailureMessage(readWorkspaceProviderFailure(latestRun?.resultJson)),
+              workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
             }),
           });
           if (updated) {
@@ -5841,7 +5841,7 @@ export function recoveryService(
             latestRun,
             notice: buildNoRunningExecutionNoticeSeed({
               status: "todo",
-              failureReason: workspaceProviderFailureMessage(readWorkspaceProviderFailure(latestRun?.resultJson)),
+              workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
             }),
           });
           if (updated) {
@@ -6082,7 +6082,7 @@ export function recoveryService(
               notice: buildNoRunningExecutionNoticeSeed({
                 status: "in_progress",
                 attempts: consecutive,
-                failureReason: workspaceProviderFailureMessage(readWorkspaceProviderFailure(latestRun?.resultJson)),
+                workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
               }),
             });
             if (updated) {
@@ -6144,7 +6144,7 @@ export function recoveryService(
           notice: recoveryOutcome.retryExhausted
             ? buildNoRunningExecutionNoticeSeed({
                 status: "in_progress",
-                failureReason: workspaceProviderFailureMessage(readWorkspaceProviderFailure(latestRun?.resultJson)),
+                workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
               })
             : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
             : nonRetryableContinuationNotice(),

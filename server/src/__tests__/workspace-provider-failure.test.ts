@@ -118,11 +118,11 @@ describe("workspace provider call failures", () => {
     expect(findWorkspaceProviderFailure(new Error("other"))).toBeNull();
   });
 
-  it("surfaces a saved binding_mismatch failure reason in the no-running-execution stranded notice", () => {
+  it("surfaces a saved binding_mismatch failure reason in the no-running-execution stranded notice and drops unknown text", () => {
     const inProgress = buildNoRunningExecutionNoticeSeed({
       status: "in_progress",
       attempts: 3,
-      failureReason: "binding_mismatch",
+      workspaceProviderFailure: "binding_mismatch",
     });
     expect(inProgress.body).toContain("after 3 tries");
     expect(inProgress.body).toContain("Saved workspace storage no longer matches this workspace");
@@ -130,7 +130,7 @@ describe("workspace provider call failures", () => {
 
     const todo = buildNoRunningExecutionNoticeSeed({
       status: "todo",
-      failureReason: "binding_mismatch",
+      workspaceProviderFailure: "binding_mismatch",
     });
     expect(todo.body).toContain("Saved workspace storage no longer matches this workspace");
     expect(todo.body).toContain("Press Retry to start it again.");
@@ -140,14 +140,26 @@ describe("workspace provider call failures", () => {
       "Paperclip tried to start this task again, but it still could not start. Press Retry to start it again.",
     );
 
-    const savedReason = workspaceProviderFailureMessage(readWorkspaceProviderFailure({
+    // Arbitrary/raw provider strings are never echoed into user-facing notices.
+    const unknownText = buildNoRunningExecutionNoticeSeed({
+      status: "todo",
+      workspaceProviderFailure: "raw provider stack trace" as never,
+    });
+    expect(unknownText.body).toBe(generic.body);
+
+    const savedSummary = readWorkspaceProviderFailure({
       workspaceProviderFailure: { kind: "provider", reason: "binding_mismatch", retryable: false },
-    }));
+    });
     const escalated = buildStrandedRecoveryEscalationNotice({
-      seed: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 2, failureReason: savedReason }),
+      seed: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 2, workspaceProviderFailure: savedSummary }),
       recoveryActionId: id(10),
       recoveryOwner: null,
-      sourceRun: { id: id(11), status: "failed", errorCode: "setup_failed", errorSummary: savedReason },
+      sourceRun: {
+        id: id(11),
+        status: "failed",
+        errorCode: "setup_failed",
+        errorSummary: workspaceProviderFailureMessage(savedSummary),
+      },
     });
     expect(escalated.body).toContain("Saved workspace storage no longer matches this workspace");
     expect(escalated.body).toContain("after 2 tries");

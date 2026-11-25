@@ -1589,14 +1589,16 @@ suite("fresh-continuation fallback", () => {
     });
   }, 60_000);
 
-  it("keeps writer_ended isolation when workspaceProviderFailure is retryable", async () => {
-    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed",
-      error: "Project storage is still being prepared; retry the same workspace shortly" });
+  it.each([
+    { reason: "storage_pending", retryable: true, error: "Project storage is still being prepared; retry the same workspace shortly" },
+    { reason: "credential_unavailable", retryable: false, error: "Workspace storage provider cannot use the project's Git credential; reconnect it before retrying" },
+  ])("keeps writer_ended isolation for non-binding workspaceProviderFailure ($reason)", async ({ reason, retryable, error }) => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed", error });
     const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
-      strategyType: "git_worktree", name: "Pending task workspace", providerType: "local_fs", cwd: "/tmp/pending-workspace" }).returning();
+      strategyType: "git_worktree", name: "Reusable task workspace", providerType: "local_fs", cwd: "/tmp/reusable-workspace" }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({
-      resultJson: { workspaceProviderFailure: { kind: "provider", reason: "storage_pending", retryable: true } },
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason, retryable } },
     }).where(eq(heartbeatRuns.id, f.runId));
 
     const decided = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
