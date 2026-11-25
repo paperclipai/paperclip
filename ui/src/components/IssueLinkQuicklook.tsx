@@ -18,6 +18,7 @@ import { ProjectTile } from "@/components/ProjectTile";
 import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
 import { workContentClassForCompany } from "@/lib/analytics/privacy";
 import { useOptionalCompany } from "@/context/CompanyContext";
+import { markdownToPlainText } from "@/lib/markdown-plain-text";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -112,12 +113,7 @@ export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
 
 function summarizeIssueDescription(description: string | null | undefined) {
   if (!description) return null;
-  const summary = description
-    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[#>*_`~-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const summary = markdownToPlainText(description);
 
   if (!summary) return null;
   return summary.length > 180 ? `${summary.slice(0, 177).trimEnd()}...` : summary;

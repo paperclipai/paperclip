@@ -188,7 +188,28 @@ function redactSecretAssignments(text: string, nodeStart: number, continues: (of
  * `--password hunter2`, `--api-key "a b"`. (`--password=hunter2` is an
  * assignment.)
  */
-const SECRET_FLAG = /(--[A-Za-z0-9-]*(?:password|passwd|passphrase|pwd|token|secret|api-?key|credential)[A-Za-z0-9-]*[ \t]+)("[^"\n\r]*"?|'[^'\n\r]*'?|\S+)/gi;
+const SECRET_FLAG_NAME = /password|passwd|passphrase|pwd|token|secret|api-?key|credential/i;
+
+function redactSecretFlags(text: string): string {
+  const names = /--[A-Za-z0-9-]*/g;
+  const values = /"[^"\n\r]*"?|'[^'\n\r]*'?|\S+/y;
+  let result = "";
+  let copied = 0;
+  let match: RegExpExecArray | null;
+  while ((match = names.exec(text)) !== null) {
+    if (!SECRET_FLAG_NAME.test(match[0])) continue;
+    let valueStart = names.lastIndex;
+    while (text[valueStart] === " " || text[valueStart] === "\t") valueStart += 1;
+    if (valueStart === names.lastIndex) continue;
+    values.lastIndex = valueStart;
+    const value = values.exec(text);
+    if (!value) continue;
+    result += text.slice(copied, valueStart) + maskCharacters(value[0]);
+    copied = values.lastIndex;
+    names.lastIndex = copied;
+  }
+  return copied === 0 ? text : result + text.slice(copied);
+}
 
 /** `Authorization: Bearer x`, `Basic x`, `Token x`: the credential is masked. */
 const AUTH_SCHEME = /(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{8,})/g;
@@ -235,8 +256,7 @@ function mergeMasks(text: string, first: string, second: string): string {
 
 /** Every redaction keeps the text length, so a slice of the result lines up with the input. */
 function redactSecretsInLine(text: string, nodeStart: number, continues: (offset: number) => boolean): string {
-  return redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters), nodeStart, continues)
-    .replace(SECRET_FLAG, (_match, flag: string, value: string) => `${flag}${maskCharacters(value)}`)
+  return redactSecretFlags(redactSecretAssignments(text.replace(KNOWN_TOKEN, maskCharacters), nodeStart, continues))
     .replace(AUTH_SCHEME, (_match, scheme: string, value: string) => `${scheme}${maskCharacters(value)}`)
     .replace(URL_USERINFO, (_match, scheme: string, userinfo: string, at: string) => `${scheme}${maskCharacters(userinfo)}${at}`)
     .replace(RANDOM_TOKEN, (token) => (looksRandom(token) ? maskCharacters(token) : token));

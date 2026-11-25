@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import type { ConnectionGrant, DocumentRevision } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountQuotaPanels } from "@/components/AccountQuotaPanels";
@@ -20,6 +21,8 @@ import { RunInvocationCard } from "@/components/run-log/RunDetails";
 import { ChatConversationList } from "@/pages/apps/chat/ChatConversationList";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
+import { IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
+import * as CompanyContext from "@/context/CompanyContext";
 import { buildPostHogInitOptions } from "./product-analytics";
 import {
   ANALYTICS_MASK_CLASS,
@@ -378,6 +381,8 @@ describe("session replay text masking", () => {
     const longPassword = "p".repeat(400);
     expect(redactReplaySecrets(`postgres://admin:${longPassword}@db:5432/app`))
       .toBe(`postgres://${stars(`admin:${longPassword}`)}@db:5432/app`);
+    const longFlag = `--${"service-".repeat(500)}password`;
+    expect(redactReplaySecrets(`${longFlag} hunter2 --region us`)).toBe(`${longFlag} ******* --region us`);
   });
 
   it.each([
@@ -606,6 +611,45 @@ describe("session replay text masking", () => {
     expect(workContentClassForCompany(null, null)).toBe(ANALYTICS_MASK_CLASS);
     const quicklook = readFileSync(join(UI_SRC, "components/IssueLinkQuicklook.tsx"), "utf8");
     expect(quicklook).toContain("workContentClassForCompany(issue.companyId, selectedCompanyId)");
+  });
+
+  it.each([
+    ["glpat", "-", "AbCdEfGhIjKlMnOpQr12"],
+    ["ghp", "_", "AbCdEfGhIjKlMnOpQr12"],
+    ["sk-proj", "-", "AbCdEfGhIjKlMnOpQr12"],
+  ])("masks a %s credential in the rendered task preview", (prefix, separator, value) => {
+    const token = [prefix, value].join(separator);
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const html = renderToStaticMarkup(
+        <MemoryRouter>
+          <IssueQuicklookCard
+            issue={{
+              id: "task-1", companyId: "co-1", title: "Review access", status: "todo",
+              priority: "medium", updatedAt: new Date(0), description: `Use **${token}** for the review.`,
+            }}
+            linkTo="/ACME/issues/ACME-1"
+          />
+        </MemoryRouter>,
+      );
+      expect(recordedTextOf(html, value)).toBe(`Use ${stars(token)} for the review.`);
+      expect(document.querySelector('[data-slot="task-preview-description"]')?.textContent)
+        .toBe(`Use ${token} for the review.`);
+    } finally {
+      company.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("redacts an adversarial run of hyphens without stalling the recorder", () => {
+    const prefix = "-".repeat(512 * 1024);
+    const input = `${prefix}\nmysql --password hunter2 --host db`;
+    const started = performance.now();
+    expect(redactReplaySecrets(input)).toBe(`${prefix}\nmysql --password ******* --host db`);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it("sends the marker selector and the work content mask function to session replay", () => {
