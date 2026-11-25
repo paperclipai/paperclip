@@ -27,6 +27,10 @@ describe("execution workspace policy helpers", () => {
     expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
       .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
   });
+  it("ignores operator-owned billing fields in stored task overrides", () => {
+    expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { billingType: "subscription_included", biller: "ollama", model: "task-model" } }))
+      .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
+  });
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({

@@ -2706,6 +2706,8 @@ export function agentRoutes(
       throw forbidden("Only an operator can configure Runner homeMode.");
     if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId", "museBindingId", "museGeneration", "museConnection"].some(key => hasOwn(adapterConfig, key)))
       throw forbidden("Only an operator can configure external-agent pairing, attachment access, or workspace access.");
+    if (req.actor.type === "agent" && ["billingType", "biller"].some(key => hasOwn(adapterConfig, key)))
+      throw forbidden("Only an operator can configure the billing type or biller.");
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
