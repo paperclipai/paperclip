@@ -552,9 +552,16 @@ test("release verify workflow covers the same split test surface as stable PR ve
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
   }
-  for (const shardIndex of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
-    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 9`));
-  }
+  const serializedJob = verifyWorkflow.match(/  serialized_tests:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  const serializedRows = [
+    ...serializedJob.matchAll(
+      /shard_index: (\d+)\n\s+shard_count: (\d+)\n\s+shard_label: ([^\n]+)/g,
+    ),
+  ];
+  assert.deepEqual(
+    serializedRows.map((row) => [Number(row[1]), Number(row[2]), row[3].trim()]),
+    Array.from({ length: 9 }, (_, index) => [index, 9, `${index + 1}/9`]),
+  );
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release
   // verification must keep the same two-shard coverage.
