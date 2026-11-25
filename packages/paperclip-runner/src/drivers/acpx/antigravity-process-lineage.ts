@@ -101,7 +101,10 @@ export async function readProcessTable(platform: NodeJS.Platform = process.platf
 }
 
 export interface AntigravityProcessLineage {
-  /** Stops every recorded process that is still alive and proves none remain. Idempotent. */
+  /**
+   * Stops every recorded process that is still alive and proves none remain.
+   * A proven result is kept; a call after a failed one tries again.
+   */
   terminate(): Promise<void>;
 }
 
@@ -141,15 +144,17 @@ export function trackAntigravityProcessLineage(rootPid: number | undefined, opti
       const deadline = Date.now() + TERMINATE_DEADLINE_MS;
       for (;;) {
         // A fresh read each round: a member that forked meanwhile is found by its parent or group.
-        const live = await sample();
-        if (live.length === 0) return;
+        // A failed read proves nothing, so it is retried until the deadline.
+        const live = await sample().catch(() => null);
+        if (live?.length === 0) return;
         if (Date.now() >= deadline) throw new Error("Antigravity helper processes could not be stopped");
+        if (!live) { await new Promise(resolve => setTimeout(resolve, 50)); continue; }
         for (const entry of live) {
           try { process.kill(entry.pid, "SIGKILL"); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
         }
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-    })(),
+    })().catch(error => { termination = null; throw error; }),
   };
 }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
 import { ANTIGRAVITY_SWARM_INSTRUCTIONS, antigravityCliAccountMatch, antigravitySwarmPaperclipTool, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
 import { acpxProfileActivity } from "./profile-activity.js";
+import { readProcessTable } from "./antigravity-process-lineage.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { antigravityAccountDigest } from "./antigravity-swarm-route.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -453,7 +454,7 @@ describe("Antigravity CLI swarm runtime", () => {
     const siblings: number[] = [];
     afterEach(() => { for (const pid of siblings.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } });
 
-    async function startOrphanSwarm() {
+    async function startOrphanSwarm(dependencies: Parameters<typeof openAntigravitySwarmRuntime>[1] = {}) {
       const context = setup("orphan-helpers");
       const spawnChild = context.options.command.spawn;
       let cliPid = 0;
@@ -466,7 +467,7 @@ describe("Antigravity CLI swarm runtime", () => {
       // An unrelated process of the same OS user, not started by this run's CLI.
       const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
       siblings.push(sibling.pid!);
-      const runtime = await openAntigravitySwarmRuntime(context.options, { lineageSampleIntervalMs: 20, cancelGraceMs: 500 });
+      const runtime = await openAntigravitySwarmRuntime(context.options, { lineageSampleIntervalMs: 20, cancelGraceMs: 500, ...dependencies });
       const turn = runtime.startTurn({ text: envelope(SWARM_REQUEST), requestId: "run-1:turn-1" });
       void (async () => { for await (const _event of turn.events) { /* drain */ } })();
       await waitFor(() => existsSync(context.workerPidFile) && readFileSync(context.workerPidFile, "utf8").length > 0);
@@ -493,6 +494,22 @@ describe("Antigravity CLI swarm runtime", () => {
       expect(existsSync(run.late)).toBe(false);
       expect(alive(run.sibling)).toBe(true);
     });
+
+    it("does not report a recoverable failure while it cannot prove the helpers stopped, and stops them on a later close", async () => {
+      let tableReadable = true;
+      const run = await startOrphanSwarm({ readProcessTable: async () => {
+        if (!tableReadable) throw new Error("process table unavailable");
+        return readProcessTable();
+      } });
+      tableReadable = false;
+      process.kill(run.cliPid, "SIGKILL");
+      expect(await run.turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_FAILED", retryable: false,
+        message: expect.stringMatching(/could not confirm that all of its helpers stopped/) } });
+      tableReadable = true;
+      await run.runtime.close({ reason: "done" });
+      expect(alive(run.helper)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    }, 20_000);
 
     it("stops them on Stop before the stopped turn is reported", async () => {
       const run = await startOrphanSwarm();

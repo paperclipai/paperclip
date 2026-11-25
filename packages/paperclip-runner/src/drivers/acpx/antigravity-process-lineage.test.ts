@@ -30,6 +30,17 @@ describe("Antigravity process lineage", () => {
     expect(pids(state.observe([entry(100, 50, 100, 77)]))).toEqual([]);
   });
 
+  it("does not keep a failed termination: a later call reads again and proves the lineage gone", async () => {
+    let readable = false;
+    const lineage = trackAntigravityProcessLineage(999_999, { sampleIntervalMs: 1_000, readTable: async () => {
+      if (!readable) throw new Error("unavailable");
+      return [];
+    } });
+    await expect(lineage.terminate()).rejects.toThrow(/could not be stopped/);
+    readable = true;
+    await expect(lineage.terminate()).resolves.toBeUndefined();
+  });
+
   it("reads this host's process table, including this process with its parent and group", async () => {
     const table = await readProcessTable();
     const self = table.find(item => item.pid === process.pid);
