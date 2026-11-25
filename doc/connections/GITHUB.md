@@ -10,10 +10,9 @@ only in its existing encrypted secret system.
 **GitHub** connects an account for repository tools, Git, and `gh`, and opens
 Access → Connect directly. **GitHub Code Review Bot** connects one agent to a
 GitHub App for pull-request reviews and mentions, and opens Choose agent directly.
-The bot entry follows **Settings → Experimental → GitHub review bots**
-(`enableGitHubReviewBots`), which defaults to off. It is independent of Chat
-connectors: enabling one does not enable the other. Turning off the GitHub
-setting hides setup and management; existing bots keep running.
+It is available by default in Connectors and does not require turning on
+**Chat connectors** or any experimental setting. The legacy
+`enableGitHubReviewBots` key is kept for compatibility only and is always on.
 
 Both entries reuse the existing GitHub integrations. Bot endpoints retain the
 `github` provider identity and existing setup, reconnect, and management URLs;

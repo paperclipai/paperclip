@@ -1492,7 +1492,7 @@ describe("AppDefinition catalog", () => {
   });
   it("mints AWS credentials instead of placing stored keys in headers", () => {
     const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
-    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    expect(aws.experimentalFeatureKey).toBeUndefined();
     for (const method of aws.methods) {
       expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
       expect(method.keyPlacement).toBeUndefined();

@@ -330,15 +330,14 @@ test.describe("native chat adapter UI", () => {
     expect(mock.slackCreations).toBe(0);
   });
 
-  test("GitHub: the default-off gate keeps direct tool setup and fences chat routes", async ({
+  test("GitHub: direct tool setup and GitHub review bot routes stay open while experimental chat routes stay fenced", async ({
     page,
   }) => {
     const github = PROVIDERS.find(
       (provider) => provider.provider === "github",
     )!;
     const mock = await installChatControlPlaneMock(page, github, seed, {
-      enableChatConnectors: true,
-      enableGitHubReviewBots: false,
+      enableChatConnectors: false,
     });
 
     await page.goto(`/${seed.prefix}/apps`);
@@ -365,12 +364,13 @@ test.describe("native chat adapter UI", () => {
     ).toHaveCount(0);
 
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=github`);
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/chat/connect\\?provider=github$`));
+    await expect(page.getByRole("heading", { name: "Choose agent" })).toBeVisible();
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=discord`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
     await expect(
       page.getByRole("heading", { name: "Plugins" }),
     ).toBeVisible();
-    await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
     await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
     await expect(page.getByRole("button", { name: "Connect AgentMail", exact: true })).toBeVisible();
     expect(mock.createdWithAgentId).toBeNull();
@@ -402,9 +402,7 @@ test.describe("native chat adapter UI", () => {
       await expect(agentNavigation.getByRole("link", { name: "Identity", exact: true })).toBeVisible();
       await expect(agentNavigation.getByRole("link", { name: "Channels", exact: true })).toHaveCount(0);
       await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
-      if (!enabled) {
-        await expect(page.getByText("Connect AgentMail from Connectors.", { exact: true })).toBeVisible();
-      }
+      await expect(page.getByText("Connect an agent identity from Connectors.", { exact: true })).toBeVisible();
     });
   }
 });

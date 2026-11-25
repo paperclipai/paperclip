@@ -142,10 +142,16 @@ describe("instanceSettingsService managed overlay", () => {
       expect((await service.get()).experimental).toMatchObject(features);
       expect((await service.getExperimental()).managedKeys).toMatchObject(
         Object.fromEntries(Object.keys(features)
-          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp")
+          .filter((key) =>
+            key !== "enableApps"
+            && key !== "enableMcpAggregators"
+            && key !== "enablePublicMcp"
+            && key !== "enableAwsConnector"
+            && key !== "enableGitHubReviewBots")
           .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
       );
-      for (const key of Object.keys(features).filter((key) => key !== "enablePublicMcp")) {
+      for (const key of Object.keys(features).filter((key) =>
+        key !== "enablePublicMcp" && key !== "enableAwsConnector" && key !== "enableGitHubReviewBots")) {
         await expect(service.updateExperimental({ [key]: false })).rejects.toMatchObject({
           status: 403,
           details: { code: "settings_operator_managed" },
@@ -273,6 +279,25 @@ describe("instanceSettingsService managed overlay", () => {
     expect(await service.updateExperimental({ enableMcpAggregators: false })).toMatchObject({ experimental: { enableMcpAggregators: true, enableChatConnectors: true } });
   });
 
+  it.each([{}, { enableAwsConnector: false }])("keeps the AWS connector on with legacy stored and managed values: %j", async (stored) => {
+    const { db } = stubDb(settingsRow(stored));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "legacy", features: { enableAwsConnector: false }, plugins: { autoInstall: [] },
+    })) });
+    const experimental = await service.getExperimental();
+    expect(experimental.enableAwsConnector).toBe(true);
+    expect(experimental.managedKeys).not.toHaveProperty("enableAwsConnector");
+    expect(await service.updateExperimental({ enableAwsConnector: false })).toMatchObject({ experimental: { enableAwsConnector: true } });
+  });
+
+  it("accepts an old client's write of the retired AWS connector key while Cloud lists it as on", async () => {
+    const { db } = stubDb(settingsRow({}));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "test", features: { enableAwsConnector: true }, plugins: { autoInstall: [] },
+    })) });
+    expect(await service.updateExperimental({ enableAwsConnector: false })).toMatchObject({ experimental: { enableAwsConnector: true } });
+  });
+
   it("persists chat connector opt-in and reads it back after service reconstruction", async () => {
     const row = settingsRow({});
     const { db, persistedSets } = stubDb(row);
@@ -369,5 +394,32 @@ describe("instanceSettingsService managed overlay", () => {
     expect(persistedSets).toHaveLength(1);
     expect(persistedSets[0]!.experimental).not.toHaveProperty("managedKeys");
     expect(Object.prototype.hasOwnProperty.call(updated.experimental, "managedKeys")).toBe(false);
+  });
+
+  it("ignores Cloud-managed values for retired enableGitHubReviewBots and allows legacy off patches", async () => {
+    const managedOff = JSON.stringify({
+      v: 1,
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+      features: { enableGitHubReviewBots: false, enableStatusCards: true },
+      plugins: { autoInstall: [] },
+    });
+    const managedOn = JSON.stringify({
+      v: 1,
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+      features: { enableGitHubReviewBots: true },
+      plugins: { autoInstall: [] },
+    });
+    const { db } = stubDb(settingsRow({ enableGitHubReviewBots: false }));
+    const offSvc = instanceSettingsService(db, { runtimeEnv: managedEnv(managedOff) });
+    const experimental = await offSvc.getExperimental();
+    expect(experimental.enableGitHubReviewBots).toBe(true);
+    expect(experimental.managedKeys?.enableGitHubReviewBots).toBeUndefined();
+
+    const onSvc = instanceSettingsService(db, { runtimeEnv: managedEnv(managedOn) });
+    const updated = await onSvc.updateExperimental({ enableGitHubReviewBots: false });
+    expect(updated.experimental.enableGitHubReviewBots).toBe(true);
+    expect(updated.experimental.managedKeys?.enableGitHubReviewBots).toBeUndefined();
   });
 });
