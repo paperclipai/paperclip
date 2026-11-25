@@ -1,4 +1,4 @@
-import { ProjectSkillRepositoryRow } from "@/components/skill-studio/ProjectSkillRepositoryRow";
+import { ProjectSkillImportError, ProjectSkillRepositoryRow } from "@/components/skill-studio/ProjectSkillRepositoryRow";
 import { SkillSourceConnectionRepair } from "@/components/skill-studio/SkillSourceConnectionRepair";
 import { SkillSourceBranchRepair } from "@/components/skill-studio/SkillSourceBranchRepair";
 import { SkillSourceSyncControls } from "@/components/skill-studio/SkillSourceSyncControls";
@@ -109,12 +109,14 @@ export function SkillSources() {
     {projectsView.kind === 'error' && <p role="alert" className="text-sm text-destructive">{describeError(projectRepositories.error).body} <Button variant="ghost" size="sm" onClick={() => void projectRepositories.refetch()}>Try again</Button></p>}
     {adopt.error && <p role="alert" className="text-sm text-destructive">{describeError(adopt.error).body}</p>}
     {uninstalledProjects.length > 0 && <div className="divide-y divide-border" aria-label="Project repositories">
-      {uninstalledProjects.map(group => <ProjectSkillRepositoryRow key={group.key} repository={group.repository} backgroundPending={group.hasPending} disabled={adopt.isPending}
+      {uninstalledProjects.map(group => <ProjectSkillRepositoryRow key={group.key} repository={group.repository} workspaces={group.workspaces} backgroundPending={group.hasPending} disabled={adopt.isPending}
         pending={adopt.isPending && adopt.variables?.key === group.key} onImport={() => adopt.mutate(group)} />)}
     </div>}
     <div className="divide-y divide-border">
       {query.data?.map(source => {
         const installed = source.entries.filter(entry => entry.skillId);
+        const azure = source.repositoryUrl.startsWith('https://dev.azure.com/');
+        const azureProject = source.projects?.find(project => project.active);
         const newCount = source.entries.filter(entry => entry.selection === 'new' && entry.present).length;
         const result = results[source.id];
         const projectGroup = availableProjects.find(group => groupSource(group)?.id === source.id);
@@ -124,14 +126,14 @@ export function SkillSources() {
           ? result.message : null;
         return <section key={source.id} className="flex flex-col gap-3 py-4" aria-label={source.fullName}>
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex min-w-0 basis-full items-start gap-3 sm:flex-1 sm:basis-auto"><GithubIcon className="size-5 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1">
+            <div className="flex min-w-0 basis-full items-start gap-3 sm:flex-1 sm:basis-auto">{azure ? <GitBranch className="size-5 shrink-0 text-muted-foreground" aria-label="Azure DevOps" /> : <GithubIcon className="size-5 shrink-0 text-muted-foreground" />}<div className="min-w-0 flex-1">
               <a href={source.repositoryUrl} target="_blank" rel="noreferrer" title={source.fullName} className="block truncate rounded-sm text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{source.fullName}</a>
-              <p className="truncate text-xs text-muted-foreground">{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}{source.lastSuccessAt ? ` · Updated ${timeAgo(source.lastSuccessAt)}` : ''}{source.accessScope === 'projects' ? ' · Project access' : ''}{importingProjectSkills && <span role="status"> · Importing skills…</span>}</p>
+              <p className="truncate text-xs text-muted-foreground">{azure ? 'Azure DevOps · ' : ''}{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}{source.lastSuccessAt ? ` · Updated ${timeAgo(source.lastSuccessAt)}` : ''}{source.accessScope === 'projects' ? ' · Project access' : ''}{importingProjectSkills && <span role="status"> · Importing skills…</span>}</p>
               {source.enabled && source.automaticUpdates === false && <p className="text-xs text-muted-foreground">Automatic updates paused</p>}
               {source.trackingActive === false && <p className="text-xs text-muted-foreground">Repository tracking stopped · installed skills kept</p>}
               {!source.enabled && <p className="text-xs text-muted-foreground">Disconnected</p>}
               {refresh.isPending && refresh.variables === source.id && <p role="status" className="text-xs text-muted-foreground">Refreshing…</p>}
-              {newCount > 0 && <Link to={`/skills/sources/${source.id}`} className="text-xs underline">{newCount} new {newCount === 1 ? 'skill' : 'skills'} available</Link>}
+              {newCount > 0 && (azure ? <span className="text-xs text-muted-foreground">{newCount} new {newCount === 1 ? 'skill' : 'skills'} available</span> : <Link to={`/skills/sources/${source.id}`} className="text-xs underline">{newCount} new {newCount === 1 ? 'skill' : 'skills'} available</Link>)}
             </div></div>
             <SkillSourceSyncControls showPreference={false} automaticUpdates={source.automaticUpdates ?? true}
               refreshing={source.syncState === 'refreshing' || (refresh.isPending && refresh.variables === source.id)}
@@ -144,17 +146,17 @@ export function SkillSources() {
               <DropdownMenuContent align="end">
                 <DropdownMenuCheckboxItem checked={source.automaticUpdates ?? true} disabled={!source.enabled || settings.isPending}
                   onCheckedChange={enabled => settings.mutate({ source, enabled })}>Automatic updates</DropdownMenuCheckboxItem>
-                <DropdownMenuItem onSelect={() => navigate(`/skills/sources/${source.id}`)}>Select skills</DropdownMenuItem>
+                {!azure && <DropdownMenuItem onSelect={() => navigate(`/skills/sources/${source.id}`)}>Select skills</DropdownMenuItem>}
                 {projectGroup && projectGroup.importableWorkspaces.length > 0 && <DropdownMenuItem disabled={adopt.isPending} onSelect={() => adopt.mutate(projectGroup)}>
                   {projectGroup.repository.status === 'error' ? 'Retry project import' : projectGroup.hasPending ? 'Import remaining project skills' : 'Import project skills'}
                 </DropdownMenuItem>}
-                <DropdownMenuItem onSelect={() => setRepairSourceId(source.id)}>Choose connection</DropdownMenuItem>
+                {azure ? (azureProject && <DropdownMenuItem asChild><Link to={`/projects/${azureProject.id}/configuration`}>Manage project connection</Link></DropdownMenuItem>) : <DropdownMenuItem onSelect={() => setRepairSourceId(source.id)}>Choose connection</DropdownMenuItem>}
                 {source.accessScope !== 'projects' && !source.projects?.some(project => project.active) && <DropdownMenuItem onSelect={() => setBranchSourceId(source.id)}>Choose a new branch</DropdownMenuItem>}
                 <DropdownMenuItem variant="destructive" disabled={disconnect.isPending} onSelect={() => { disconnect.reset(); reloadRemoval.reset(); setDisconnectSource(source); }}>{source.enabled ? 'Disconnect source' : 'Remove source'}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          {projectGroup?.repository.lastError && <SourceErrorNotice message={projectGroup.repository.lastError} />}
+          {projectGroup?.repository.lastError && <ProjectSkillImportError message={projectGroup.repository.lastError} workspaces={projectGroup.workspaces} />}
           {installed.length > 0 && <ul className="ml-8 min-w-0" aria-label={`Installed skills from ${source.fullName}`}>
             {installed.map(entry => <li key={entry.id}>
               <Link to={skillRoute(entry.skillId!)} title={entry.path} className="group flex min-w-0 items-center gap-2 rounded-sm py-1 text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -172,8 +174,10 @@ export function SkillSources() {
           <SkillImportWarnings warnings={skillImportWarnings(source.entries.filter(entry => entry.selection === 'selected'), source.repositoryPackage)} />
           {source.lastError && <SourceErrorNotice message={source.lastError}
             detail={source.lastAttemptAt ? `Last attempt ${timeAgo(source.lastAttemptAt)}` : undefined}
-            action={<Link to={`/skills/sources/${source.id}`} className="font-medium text-destructive underline underline-offset-2">Review source</Link>} />}
-          {source.lastError && (source.repairAction === 'connection' || (!source.repairAction && !source.connectionId)) && <Button variant="outline" size="sm" className="self-start" onClick={() => setRepairSourceId(source.id)}>Choose connection</Button>}
+            action={!azure ? <Link to={`/skills/sources/${source.id}`} className="font-medium text-destructive underline underline-offset-2">Review source</Link> : undefined} />}
+          {source.lastError && (source.repairAction === 'connection' || (!source.repairAction && !source.connectionId)) && (azure
+            ? azureProject && <Button asChild variant="outline" size="sm" className="self-start"><Link to={`/projects/${azureProject.id}/configuration`}>Manage project connection</Link></Button>
+            : <Button variant="outline" size="sm" className="self-start" onClick={() => setRepairSourceId(source.id)}>Choose connection</Button>)}
           {source.lastError && source.repairAction === 'branch' && (source.accessScope === 'projects' || source.projects?.some(project => project.active)
             ? <div className="flex flex-wrap gap-3">{source.projects?.filter(project => project.active).map(project => <Link key={project.id} to={`/projects/${project.id}`} className="text-sm underline">Update {project.name} repository</Link>)}</div>
             : <Button variant="outline" size="sm" className="self-start" onClick={() => setBranchSourceId(source.id)}>Choose a new branch</Button>)}
@@ -190,7 +194,8 @@ export function SkillSources() {
       stale={staleRemoval} onReload={() => reloadRemoval.mutate()} onChoiceChange={() => { if (!staleRemoval) disconnect.reset(); }}
       onClose={() => setDisconnectSource(null)}
       onConfirm={skills => disconnect.mutate({ source: disconnectSource, skills })} />}
-    {sourceId && (sourceId === 'new' || activeSource) && <SourceDialog key={`${companyId}:${sourceId}`} companyId={companyId} source={activeSource} onClose={() => navigate('/skills/sources')} onSaved={async result => {
+    {sourceId && activeSource?.repositoryUrl.startsWith('https://dev.azure.com/') && <p role="status" className="text-sm text-muted-foreground">Azure DevOps skill sources are managed through their project. Individual skill selection is not available yet.</p>}
+    {sourceId && (sourceId === 'new' || activeSource) && !activeSource?.repositoryUrl.startsWith('https://dev.azure.com/') && <SourceDialog key={`${companyId}:${sourceId}`} companyId={companyId} source={activeSource} onClose={() => navigate('/skills/sources')} onSaved={async result => {
       setResults(prev => ({ ...prev, [result.source.id]: null })); await invalidate(); navigate('/skills/sources');
     }} />}
     {sourceId && sourceId !== 'new' && query.isSuccess && !activeSource && <p role="alert" className="text-sm text-destructive">Source not found.</p>}

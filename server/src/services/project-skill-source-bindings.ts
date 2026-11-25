@@ -6,6 +6,7 @@ import { parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { currentSkillActor } from './skill-access.js';
 import { captureRunIdentity } from './run-identity.js';
 import { forbidden } from '../errors.js';
+import { azureDevOpsGitInvocation } from './connectors/azure-devops/git-auth.js';
 
 export async function projectSkillSetupIdentity(db: Db, companyId: string, actor = currentSkillActor()) {
   let userId = actor?.type === 'board' ? actor.userId ?? null : null;
@@ -27,8 +28,21 @@ export async function projectSkillSetupIdentity(db: Db, companyId: string, actor
     refreshLocalTrusted: actor?.source === 'local_implicit' || userId === 'local-board', connectionId, refreshGrantId };
 }
 
-export function projectSkillRepository(workspace: Pick<typeof projectWorkspaces.$inferSelect, 'repoUrl' | 'defaultRef' | 'repoRef'>) {
+export function projectSkillRepository(workspace: Pick<typeof projectWorkspaces.$inferSelect, 'repoUrl' | 'defaultRef' | 'repoRef'> & Partial<Pick<typeof projectWorkspaces.$inferSelect, 'metadata'>>) {
   const url = workspace.repoUrl?.replace(/^git@github\.com:/i, 'https://github.com/');
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname === 'dev.azure.com') {
+        const remote = azureDevOpsGitInvocation(url, { kind: 'pat', token: 'validation' }).repositoryAuthority!.url;
+        const org = parsed.pathname.split('/')[1]!.toLowerCase();
+        const id = workspace.metadata?.repositoryId;
+        if (workspace.metadata?.repositoryProvider !== 'azure-devops' || typeof id !== 'string' ||
+            !new RegExp(`^azure-devops:${org}:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$`).test(id)) return null;
+        return { repositoryUrl: remote, trackingRef: workspace.defaultRef ?? workspace.repoRef ?? 'HEAD' };
+      }
+    } catch { return null; }
+  }
   const parsed = url ? parseGitHubSkillRepositoryUrl(url) : null;
   if (!parsed) return null;
   return { repositoryUrl: parsed.repositoryUrl.toLowerCase(), trackingRef: workspace.defaultRef ?? workspace.repoRef ?? parsed.trackingRef ?? 'HEAD' };

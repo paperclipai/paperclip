@@ -1,8 +1,9 @@
 import type { ToolRiskLevel } from "@paperclipai/shared";
 import { SUPABASE_TOOLS, isSupabaseConnection, isCurrentSupabaseCatalogEntry, supabaseClient, supabaseRisk } from "./supabase/index.js";
 import { VERCEL_TOOLS, isVercelConnection, isCurrentVercelCatalogEntry, vercelClient, vercelRisk } from "./vercel/index.js";
+import { AZURE_DEVOPS_TOOLS, isAzureDevOpsConnection, isCurrentAzureDevOpsCatalogEntry, azureDevOpsClient, azureDevOpsRisk } from "./azure-devops/index.js";
 
-type Connection = { transport: string; config?: Record<string, unknown> };
+type Connection = { transport: string; authKind?: string; config?: Record<string, unknown> };
 type CatalogEntry = { toolName: string; versionHash: string; schemaHash: string | null; riskLevel: string };
 type Request = (url: string, init: RequestInit) => Promise<Response>;
 interface RestConnector {
@@ -26,6 +27,12 @@ function settings(connection: Connection): Record<string, unknown> {
 // Only reviewed adapters enter the REST gateway. Provider code owns endpoints,
 // schemas and payloads; the existing gateway owns grants, policy and audit.
 export const REST_CONNECTORS: readonly RestConnector[] = [
+  {
+    sourceTemplateKey: "azure-devops", name: "Azure DevOps",
+    matches: isAzureDevOpsConnection, tools: AZURE_DEVOPS_TOOLS,
+    risk: azureDevOpsRisk, isCurrent: isCurrentAzureDevOpsCatalogEntry,
+    client: (connection, headers, request, signal, deadlineAt) => azureDevOpsClient(connection, headers, request, signal, deadlineAt),
+  },
   {
     sourceTemplateKey: "supabase", name: "Supabase",
     matches: isSupabaseConnection, tools: SUPABASE_TOOLS,

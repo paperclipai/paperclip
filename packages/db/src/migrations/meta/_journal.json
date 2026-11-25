@@ -3550,6 +3550,13 @@
       "when": 1795572002132,
       "tag": "0508_normal_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795572002133,
+      "tag": "0509_project_provider_authorizations",
+      "breakpoints": true
     }
   ]
 }

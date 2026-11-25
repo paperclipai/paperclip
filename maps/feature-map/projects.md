@@ -80,8 +80,9 @@ Sources: [Project properties](../../ui/src/components/ProjectProperties.tsx), [a
 
 ### Automatic repository skills
 
-Creating or attaching a GitHub repository enqueues skill import without another setup
-step. Check Skills → Sources and the installed library afterward. Ordinary edits to
+Creating or attaching a GitHub repository enqueues skill import. Azure DevOps project
+repositories also enqueue import, which requires the project's authorized Azure
+DevOps connection. Check Skills → Sources and the installed library afterward. Ordinary edits to
 older projects do not adopt their repositories; explicit adoption belongs in Sources.
 Removing a repository retains installed skills and originating project access but stops
 its automatic tracking. Changing the ref does not retarget existing skill references.

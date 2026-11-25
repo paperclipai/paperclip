@@ -5,7 +5,8 @@ import path from 'node:path';
 import type { SkillSourceScanProgress } from '@paperclipai/shared';
 import { parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { unprocessable } from '../errors.js';
-import { buildGitAuthInvocation } from './git-credentials.js';
+import { buildGitAuthInvocation, type GitAuthInvocation } from './git-credentials.js';
+import { azureDevOpsGitInvocation } from './connectors/azure-devops/git-auth.js';
 import { MAX_REPOSITORY_BYTES, MAX_REPOSITORY_FILES } from './skill-repository-package.js';
 
 export type GitSkillTreeEntry = { path: string; type: string; mode: string; sha: string; size?: number };
@@ -40,15 +41,20 @@ export function parseGitDownloadProgress(line: string): NonNullable<SkillSourceS
     ...(size ? { receivedBytes: Math.round(Number(size[1]) * ({ bytes: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 }[size[2]!] ?? 1)) } : {}) };
 }
 
-function gitEnvironment(token: string) {
+function gitEnvironment(token: string, providerAuth?: GitAuthInvocation) {
   // Do not inherit host Git config, credential helpers, tracing, object directories,
   // URL rewrites, or checkout filters. The existing host-scoped helper keeps tokens
   // in the child environment, never argv, remote URLs, or repository config.
-  const authorization = buildGitAuthInvocation({ token, source: 'managed_connection', secretName: null }).env;
+  const authorization = providerAuth ? { ...providerAuth.env } : buildGitAuthInvocation({ token, source: 'managed_connection', secretName: null }).env;
+  if (providerAuth) {
+    delete authorization.GH_TOKEN;
+    delete authorization.GITHUB_TOKEN;
+    delete authorization.PAPERCLIP_GIT_TOKEN;
+  }
   // Public GitHub remotes need not issue a credential challenge. Send the chosen
   // caller's authorization proactively, scoped to GitHub with redirects disabled.
   const index = Number(authorization.GIT_CONFIG_COUNT);
-  if (token) {
+  if (token && !providerAuth) {
     authorization.GIT_CONFIG_COUNT = String(index + 1);
     authorization[`GIT_CONFIG_KEY_${index}`] = 'http.https://github.com/.extraHeader';
     authorization[`GIT_CONFIG_VALUE_${index}`] = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`;
@@ -56,8 +62,8 @@ function gitEnvironment(token: string) {
   return {
     PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TMPDIR: process.env.TMPDIR,
     ...authorization,
-    LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: os.devNull,
-    GIT_CONFIG_GLOBAL: os.devNull, GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_NO_REPLACE_OBJECTS: '1',
+    LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_NO_REPLACE_OBJECTS: '1',
   };
 }
 
@@ -73,12 +79,12 @@ async function directoryBytes(directory: string): Promise<number> {
   return size;
 }
 
-async function runGit(directory: string, args: string[], token: string, options: GitSkillSnapshotOptions & { download?: boolean; maxOutput?: number; input?: string } = {}): Promise<Buffer> {
+async function runGit(directory: string, args: string[], token: string, options: GitSkillSnapshotOptions & { download?: boolean; maxOutput?: number; input?: string; providerAuth?: GitAuthInvocation } = {}): Promise<Buffer> {
   options.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['-c', `core.hooksPath=${os.devNull}`, '-c', 'init.templateDir=', '-c', 'protocol.allow=never',
+    const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'init.templateDir=', '-c', 'protocol.allow=never',
       '-c', 'protocol.https.allow=always', '-c', 'http.followRedirects=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args],
-    { cwd: directory, env: gitEnvironment(token), stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    { cwd: directory, env: gitEnvironment(token, options.providerAuth), stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     const chunks: Buffer[] = [];
     let bytes = 0, stderr = '', unfinishedLine = '';
     let failure: unknown;
@@ -148,9 +154,10 @@ async function runGit(directory: string, args: string[], token: string, options:
       if (failure) { reject(failure); return; }
       if (code !== 0) {
         const denied = /authentication failed|could not read Username|repository not found|HTTP 40[13]|returned error: 40[13]/i.test(stderr);
-        reject(unprocessable(denied ? 'GitHub denied repository access. Reconnect GitHub or choose an authorized connection.'
+        const provider = options.providerAuth ? 'Azure DevOps' : 'GitHub';
+        reject(unprocessable(denied ? `${provider} denied repository access. Reconnect ${provider} or choose an authorized connection.`
           : /couldn.t find remote ref|not our ref|invalid refspec/i.test(stderr) ? 'The repository branch or commit is unavailable. Check the URL and try again.'
-          : 'Could not download the GitHub repository. Check your connection and try again.', { code: 'skill_source_git_read_failed', status: denied ? 401 : 422 }));
+          : `Could not download the ${provider} repository. Check your connection and try again.`, { code: 'skill_source_git_read_failed', status: denied ? 401 : 422 }));
         return;
       }
       resolve(Buffer.concat(chunks));
@@ -235,11 +242,22 @@ function acquire(cached: NonNullable<ReturnType<typeof snapshots.get>>, key: str
 }
 
 /** Caller authorization must be resolved before every invocation, including cache hits. */
-export async function openGitSkillSnapshot(input: { repositoryUrl: string; ref: string; commitSha?: string; token: string; cacheScope: string }, options: GitSkillSnapshotOptions = {}): Promise<GitSkillSnapshot> {
+export async function openGitSkillSnapshot(input: { repositoryUrl: string; ref: string; commitSha?: string; token: string; cacheScope: string; providerAuth?: GitAuthInvocation }, options: GitSkillSnapshotOptions = {}): Promise<GitSkillSnapshot> {
   options.signal?.throwIfAborted();
-  const parsed = parseGitHubSkillRepositoryUrl(input.repositoryUrl);
-  if (!parsed || parsed.trackingRef || (input.commitSha && !/^[a-f0-9]{40}$/i.test(input.commitSha))) throw unprocessable('Invalid GitHub snapshot request.');
-  const prefix = `${input.cacheScope}:${parsed.repositoryUrl}:`;
+  let remote: string;
+  if (input.providerAuth) {
+    try {
+      remote = azureDevOpsGitInvocation(input.repositoryUrl, { kind: 'pat', token: 'validation' }).repositoryAuthority!.url;
+      if (input.token || input.providerAuth.configArgs.length || input.providerAuth.repositoryAuthority?.provider !== 'azure-devops' ||
+          input.providerAuth.repositoryAuthority.url !== remote) throw new Error('invalid authority');
+    } catch { throw unprocessable('Invalid Azure DevOps snapshot request.'); }
+  } else {
+    const parsed = parseGitHubSkillRepositoryUrl(input.repositoryUrl);
+    if (!parsed || parsed.trackingRef) throw unprocessable('Invalid GitHub snapshot request.');
+    remote = `${parsed.repositoryUrl}.git`;
+  }
+  if (input.commitSha && !/^[a-f0-9]{40}$/i.test(input.commitSha)) throw unprocessable('Invalid Git snapshot request.');
+  const prefix = `${input.cacheScope}:${remote}:`;
   const pinnedKey = input.commitSha ? `${prefix}${input.commitSha.toLowerCase()}` : null;
   const existing = pinnedKey ? snapshots.get(pinnedKey) : undefined;
   if (existing && existing.expires > Date.now()) return acquire(existing, pinnedKey!);
@@ -252,9 +270,9 @@ export async function openGitSkillSnapshot(input: { repositoryUrl: string; ref: 
     directory = await mkdtemp(path.join(os.tmpdir(), 'paperclip-skill-git-'));
     await chmod(directory, 0o700);
     await runGit(directory, ['init', '--bare', '--quiet', '.'], '', options);
-    if (!input.commitSha && !/^[a-f0-9]{40}$/i.test(input.ref)) await runGit(directory, ['check-ref-format', '--branch', input.ref], '', options);
+    if (!input.commitSha && input.ref !== 'HEAD' && !/^[a-f0-9]{40}$/i.test(input.ref)) await runGit(directory, ['check-ref-format', '--branch', input.ref], '', options);
     await runGit(directory, ['-c', 'fetch.unpackLimit=1', 'fetch', '--depth=1', '--no-tags', '--no-recurse-submodules', '--no-auto-maintenance', '--progress',
-      '--', `${parsed.repositoryUrl}.git`, input.commitSha ?? input.ref], input.token, { ...options, download: true });
+      '--', remote, input.commitSha ?? input.ref], input.token, { ...options, providerAuth: input.providerAuth, download: true });
     const downloadBytes = await directoryBytes(directory);
     if (downloadBytes > MAX_DOWNLOAD_BYTES) throw unprocessable('Repository download exceeds the 128 MB limit. Use a smaller skills repository.');
     const commitSha = (await runGit(directory, ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], '', options)).toString('utf8').trim();

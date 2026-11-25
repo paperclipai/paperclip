@@ -21,6 +21,10 @@ export async function skillPackageRecoveryReader(db: Db, companyId: string, reci
   const { skillSourceSetupContext } = await import("./skill-source-sync.js");
   const context = await skillSourceSetupContext(db, source);
   await context.authorize("skills.update", { sourceType: "git", sourceLocator: recipe.repositoryUrl });
+  if (source.accessScope === "projects" && new URL(source.repositoryUrl).hostname === "dev.azure.com") {
+    const { azureSkillPackageRecoveryReader } = await import("./azure-skill-package-recovery.js");
+    return azureSkillPackageRecoveryReader(db, companyId, recipe);
+  }
   return context.read(source.connectionId);
 }
 
@@ -28,10 +32,14 @@ export async function recoverSkillPackage(recipe: SkillPackageRestoreRecipe, rea
   if (recipe.version !== 1 || !/^[a-f0-9]{40}$/i.test(recipe.commitSha)) throw new Error("Invalid immutable skill package recipe");
   const manifest = validateSkillPackageManifest(recipe.manifest);
   const url = new URL(recipe.repositoryUrl);
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password
-    || !/^\/[^/]+\/[^/]+$/.test(url.pathname) || url.search || url.hash) throw new Error("Invalid skill repository identity");
-  const repository = await read(`/repos${url.pathname}`, signal) as { id?: number | string };
-  if (String(repository.id) !== recipe.repositoryId) throw new Error("The repository at this URL is not the original skill repository");
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("Invalid skill repository identity");
+  if (read.provider === "azure-devops") {
+    if (url.hostname !== "dev.azure.com" || !/^\/[^/]+\/[^/]+\/_git\/[^/]+$/.test(url.pathname)) throw new Error("Invalid skill repository identity");
+  } else {
+    if (url.hostname !== "github.com" || !/^\/[^/]+\/[^/]+$/.test(url.pathname)) throw new Error("Invalid skill repository identity");
+    const repository = await read(`/repos${url.pathname}`, signal) as { id?: number | string };
+    if (String(repository.id) !== recipe.repositoryId) throw new Error("The repository at this URL is not the original skill repository");
+  }
   const snapshot = await read.openSnapshot({ repositoryUrl: recipe.repositoryUrl, ref: recipe.commitSha, commitSha: recipe.commitSha }, { signal });
   try {
     if (snapshot.commitSha !== recipe.commitSha) throw new Error("Git returned a different skill commit");

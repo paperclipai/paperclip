@@ -1,3 +1,4 @@
+import { lockAzureSkillAuthority } from './azure-project-skill-bindings.js';
 import { DELIVERY_QUEUES, notifyDeliveryWork } from './delivery-work-notifications.js';
 import type { createDeliveryWorkCoordinator } from './delivery-work-coordinator.js';
 import type { DeadlineReconciliationSnapshot } from './deadline-reconciliation.js';
@@ -8,12 +9,14 @@ import { randomUUID } from 'node:crypto';
 import { skillSourceRetryAt } from './skill-source-retry.js';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { activityLog, agents, authUsers, heartbeatRuns, companies, companyMemberships, companySkillSources, companySkillSourceEntries,
-  projectSkillSources, projectWorkspaces, projects, type Db } from '@paperclipai/db';
+  projectSkillSources, projectWorkspaces, projectProviderAuthorizations, connectionGrants, projects, type Db } from '@paperclipai/db';
 import type { ProjectSkillRepository } from '@paperclipai/shared';
 import { authorizationService, type AuthorizationActor } from './authorization.js';
 import { skillSourceGitHubReader } from './skill-source-github-access.js';
 import { skillSourceService, type SkillSourceContext } from './skill-sources.js';
 import { scanGitHubSkillsWithPackageFallback } from './github-skill-source.js';
+import { scanAzureDevOpsProjectSkillsWithPackageFallback } from './azure-project-skill-source.js';
+import { resolveAzureDevOpsProjectGitCredentials } from './azure-project-git-credentials.js';
 import { companySkillPolicyService } from './company-skill-policy.js';
 import { persistActivity, publishActivity } from './activity-log.js';
 import type { ActivityPublication } from './activity-log.js';
@@ -105,19 +108,19 @@ function setupActor(setup: Setup): AuthorizationActor {
     : { type: 'board', userId: setup.refreshUserId, source: setup.refreshLocalTrusted ? 'local_implicit' : 'session', companyIds: [setup.companyId] };
 }
 export async function skillSourceSetupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
-  if (!setup.refreshUserId && !setup.refreshLocalTrusted) throw forbidden('Choose a GitHub connection to enable automatic updates.');
+  if (!setup.refreshUserId && !setup.refreshLocalTrusted) throw forbidden('Choose an authorized connection to enable automatic updates.');
   if (!setup.refreshLocalTrusted) {
     const [member] = await db.select({ id: companyMemberships.id }).from(companyMemberships)
       .innerJoin(authUsers, eq(authUsers.id, companyMemberships.principalId)).where(and(
       eq(companyMemberships.companyId, setup.companyId), eq(companyMemberships.principalType, 'user'),
       eq(companyMemberships.principalId, setup.refreshUserId!), eq(companyMemberships.status, 'active')));
-    if (!member) throw forbidden('The person who connected this source no longer has company access. Choose another GitHub connection.');
+    if (!member) throw forbidden('The person who connected this source no longer has company access. Choose another authorized connection.');
   }
   if (setup.refreshAgentId) {
     const [agent] = await db.select({ status: agents.status }).from(agents).where(and(eq(agents.companyId, setup.companyId), eq(agents.id, setup.refreshAgentId)));
-    if (!agent || agent.status === 'terminated') throw forbidden('The agent who connected this source is unavailable. Choose a GitHub connection.');
+    if (!agent || agent.status === 'terminated') throw forbidden('The agent who connected this source is unavailable. Choose an authorized connection.');
   }
-  if (setup.refreshAgentId && (!setup.connectionId || !setup.refreshGrantId)) throw forbidden('Choose a GitHub connection to authorize this agent-created repository.');
+  if (setup.refreshAgentId && (!setup.connectionId || !setup.refreshGrantId)) throw forbidden('Choose an authorized connection for this agent-created repository.');
   const readerActor: AuthorizationActor = { type: 'board', userId: setup.refreshUserId,
     source: setup.refreshLocalTrusted ? 'local_implicit' : 'session', companyIds: [setup.companyId] };
   const actor = setupActor(setup);
@@ -198,21 +201,46 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
       .where(and(eq(projectSkillSources.id, binding.id), eq(projectSkillSources.active, true), isNull(projectSkillSources.sourceId),
         or(isNull(projectSkillSources.leaseToken), lte(projectSkillSources.leaseExpiresAt, now)))).returning();
     if (!claimed) return false;
+    const azure = binding.repositoryUrl.startsWith('https://dev.azure.com/');
     try {
       if (!options.context) {
         const actor = setupActor(binding);
-        if (!(await authorizationService(db).decide({ actor, action: 'project:read', resource: { type: 'project', companyId: binding.companyId, projectId: binding.projectId } })).allowed) throw forbidden('Project access changed. Choose an authorized GitHub connection to retry.');
+        if (!(await authorizationService(db).decide({ actor, action: 'project:read', resource: { type: 'project', companyId: binding.companyId, projectId: binding.projectId } })).allowed) throw forbidden('Project access changed. Choose an authorized connection to retry.');
       }
-      const context = await contextFor(binding);
+      let setup = binding;
+      if (azure) {
+        const org = new URL(binding.repositoryUrl).pathname.split('/')[1]?.toLowerCase();
+        const [authorization] = org ? await db.select({ grantId: projectProviderAuthorizations.grantId, connectionId: connectionGrants.connectionId })
+          .from(projectProviderAuthorizations).innerJoin(connectionGrants, and(eq(connectionGrants.id, projectProviderAuthorizations.grantId),
+            eq(connectionGrants.companyId, binding.companyId))).where(and(eq(projectProviderAuthorizations.companyId, binding.companyId),
+            eq(projectProviderAuthorizations.projectId, binding.projectId), eq(projectProviderAuthorizations.provider, 'azure-devops'),
+            eq(projectProviderAuthorizations.scopeKey, org))) : [];
+        if (!authorization) throw forbidden('Authorize this project’s Azure DevOps connection to import its skills.');
+        setup = { ...binding, connectionId: authorization.connectionId, refreshGrantId: authorization.grantId };
+      }
+      const context = await contextFor(setup);
       await context.authorize('skills.import', { sourceType: 'git', sourceLocator: binding.repositoryUrl });
       await reserveInitialSkillWork(db, binding, token, now);
       const reader = context.read(binding.connectionId);
-      const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: binding.repositoryUrl, trackingRef: binding.trackingRef, packageMode: 'repository' }, reader, { signal: shutdown.signal });
+      const scan = azure
+        ? await scanAzureDevOpsProjectSkillsWithPackageFallback(db, { companyId: binding.companyId, projectId: binding.projectId,
+          repositoryUrl: binding.repositoryUrl, trackingRef: binding.trackingRef, packageMode: 'repository' }, { signal: shutdown.signal })
+        : await scanGitHubSkillsWithPackageFallback({ repositoryUrl: binding.repositoryUrl, trackingRef: binding.trackingRef, packageMode: 'repository' }, reader, { signal: shutdown.signal });
       const [existing] = await db.select().from(companySkillSources).where(and(eq(companySkillSources.companyId, binding.companyId),
         eq(companySkillSources.repositoryUrl, scan.repositoryUrl), eq(companySkillSources.trackingRef, binding.trackingRef), isNull(companySkillSources.removedAt)));
       let sourceId: string;
       if (existing) {
         await context.authorize('skills.import', { sourceType: 'git', sourceLocator: existing.repositoryUrl });
+        if (azure) {
+          await resolveAzureDevOpsProjectGitCredentials(db, { companyId: binding.companyId, projectId: binding.projectId, repoUrl: binding.repositoryUrl });
+          const org = new URL(binding.repositoryUrl).pathname.split('/')[1]!.toLowerCase();
+          const [current] = await db.select({ grantId: projectProviderAuthorizations.grantId, connectionId: connectionGrants.connectionId })
+            .from(projectProviderAuthorizations).innerJoin(connectionGrants, and(eq(connectionGrants.id, projectProviderAuthorizations.grantId),
+              eq(connectionGrants.companyId, binding.companyId))).where(and(eq(projectProviderAuthorizations.companyId, binding.companyId),
+              eq(projectProviderAuthorizations.projectId, binding.projectId), eq(projectProviderAuthorizations.provider, 'azure-devops'),
+              eq(projectProviderAuthorizations.scopeKey, org)));
+          if (current?.grantId !== scan.grantId || current.connectionId !== scan.connectionId) throw conflict('Azure DevOps authorization changed during import.');
+        }
         sourceId = existing.id;
       } else {
         try {
@@ -237,6 +265,12 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
           || (source.repositoryId && source.repositoryId !== scan.repositoryId)) {
           throw conflict('Source repository or branch changed during import. Retry from Skills.');
         }
+        if (azure) {
+          const org = new URL(binding.repositoryUrl).pathname.split('/')[1]!.toLowerCase();
+          await lockAzureSkillAuthority(tx, { companyId: binding.companyId, projectId: binding.projectId, organization: org,
+            grantId: scan.grantId!, connectionId: scan.connectionId!, credentialSecretId: scan.credentialSecretId!,
+            credentialSecretVersion: scan.credentialSecretVersion! });
+        }
         const linked = await tx.update(projectSkillSources).set({ sourceId, status: 'ready', lastError: null, failureCount: 0, leaseToken: null, leaseExpiresAt: null })
           .where(and(eq(projectSkillSources.id, binding.id), eq(projectSkillSources.companyId, binding.companyId),
             eq(projectSkillSources.active, true), eq(projectSkillSources.leaseToken, token))).returning({ id: projectSkillSources.id });
@@ -246,7 +280,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
     } catch (error) {
       const message = shutdown.signal.aborted ? binding.lastError : error instanceof Error && 'status' in error ? error.message : 'Skill import failed. Retry from Skills.';
       await db.update(projectSkillSources).set({ status: shutdown.signal.aborted ? 'pending' : 'error', lastError: message, leaseToken: null, leaseExpiresAt: null,
-        ...(error instanceof Error && 'status' in error && error.status === 403 ? { active: false } : {}),
+        ...(error instanceof Error && 'status' in error && error.status === 403 && !azure ? { active: false } : {}),
         failureCount: shutdown.signal.aborted ? binding.failureCount : binding.failureCount + 1, nextSyncAt: shutdown.signal.aborted ? now : skillSourceRetryAt(error, binding.failureCount, now) })
         .where(and(eq(projectSkillSources.id, binding.id), eq(projectSkillSources.leaseToken, token)));
       return false;
@@ -278,7 +312,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
           try { await skillAccessService(db, setupActor(source)).assertSource(source.companyId, source.id); }
           catch (error) {
             if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
-            throw forbidden('The person who connected this source no longer has project access. Choose another GitHub connection.');
+            throw forbidden('The person who connected this source no longer has project access. Choose another authorized connection.');
           }
         }
         await sources.refresh(source.companyId, source.id, context, undefined, undefined, { checkCommit: true, automatic: true, now, signal: shutdown.signal });
@@ -310,7 +344,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
       try { await skillAccessService(db, setupActor(source)).assertSource(companyId, sourceId); }
       catch (error) {
         if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
-        throw forbidden('The person who connected this source no longer has project access. Choose another GitHub connection.');
+        throw forbidden('The person who connected this source no longer has project access. Choose another authorized connection.');
       }
     }
     return sources.refresh(companyId, sourceId, { ...setup, actor: initiator.actor,

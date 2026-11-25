@@ -213,6 +213,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(await f.service.resolve(f.request, f.scope)).toBeNull();
       expect(ghFetch).not.toHaveBeenCalled(); expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
     });
+    it("requires project consent and the stored repository ID when reopening a public repository", async () => {
+      const f = await projectAuthorizationFixture();
+      await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: false } }).where(eq(projectWorkspaces.id, f.workspace.id));
+      const request = { ...f.request, requireConnected: true, expectedRepositoryId: "1" };
+      await expect(f.service.resolve(request, f.scope)).rejects.toThrow("Authorize this project");
+      await f.service.set(f.input.companyId, f.project.id, "A", f.selected.id);
+      expect(await f.service.resolve(request, f.scope)).toBe("test-token-A");
+      await expect(f.service.resolve({ ...request, expectedRepositoryId: "2" }, f.scope)).rejects.toThrow("does not include this repository");
+    });
     it.each(["inspect", "remove"] as const)("allows authorized %s after archive while denying provisioning and revoked consent", async operation => {
       const f = await projectAuthorizationFixture();
       await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: true } })

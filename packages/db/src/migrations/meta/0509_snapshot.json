@@ -1,6 +1,6 @@
 {
-  "id": "8ddb0345-f9e8-4dde-8156-391f71d858b1",
-  "prevId": "2f88a046-845e-47f5-ad81-b3b338c79fb5",
+  "id": "828e9a79-4d1b-45eb-a8ac-58b2bea12629",
+  "prevId": "8ddb0345-f9e8-4dde-8156-391f71d858b1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -51963,6 +51963,174 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.project_provider_authorizations": {
+      "name": "project_provider_authorizations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope_key": {
+          "name": "scope_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authorized_by_user_id": {
+          "name": "authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "project_provider_authorizations_project_provider_scope_uq": {
+          "name": "project_provider_authorizations_project_provider_scope_uq",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "project_provider_authorizations_company_project_idx": {
+          "name": "project_provider_authorizations_company_project_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_provider_authorizations_company_id_companies_id_fk": {
+          "name": "project_provider_authorizations_company_id_companies_id_fk",
+          "tableFrom": "project_provider_authorizations",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_provider_authorizations_company_project_fk": {
+          "name": "project_provider_authorizations_company_project_fk",
+          "tableFrom": "project_provider_authorizations",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "company_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_provider_authorizations_company_grant_fk": {
+          "name": "project_provider_authorizations_company_grant_fk",
+          "tableFrom": "project_provider_authorizations",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "company_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_provider_authorizations_provider_check": {
+          "name": "project_provider_authorizations_provider_check",
+          "value": "\"project_provider_authorizations\".\"provider\" ~ '^[a-z][a-z0-9-]{0,31}$'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.project_workspaces": {

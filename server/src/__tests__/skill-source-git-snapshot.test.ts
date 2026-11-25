@@ -2,10 +2,11 @@ import { execFile } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const interception = vi.hoisted(() => ({ remote: '', commands: [] as Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }>, hang: false, hangBatch: false, closedFetches: 0, closedBatches: 0 }));
+const interception = vi.hoisted(() => ({ remote: '', azureRemote: '', commands: [] as Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }>, hang: false, hangBatch: false, closedFetches: 0, closedBatches: 0 }));
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, spawn: (command: string, args: string[], options: import('node:child_process').SpawnOptions) => {
@@ -17,7 +18,9 @@ vi.mock('node:child_process', async importOriginal => {
       return child;
     }
     // Exercise real Git objects/processes without depending on the network in CI.
-    const localArgs = args.map(arg => arg === 'https://github.com/acme/skills.git' ? `file://${interception.remote}` : arg);
+    const localRemote = pathToFileURL(interception.remote).href;
+    const localArgs = args.map(arg => arg === 'https://github.com/acme/skills.git' || (interception.azureRemote && arg === interception.azureRemote)
+      ? localRemote : arg);
     if (args.includes('fetch')) localArgs.unshift('-c', 'protocol.file.allow=always');
     const child = actual.spawn(command, localArgs, options);
     if (args.includes('fetch')) child.once('close', () => { interception.closedFetches++; });
@@ -25,6 +28,7 @@ vi.mock('node:child_process', async importOriginal => {
   } };
 });
 import { clearGitSkillSnapshotCache, openGitSkillSnapshot, parseGitDownloadProgress } from '../services/skill-source-git-snapshot.js';
+import { azureDevOpsGitInvocation } from '../services/connectors/azure-devops/git-auth.js';
 import { scanGitHubSkills, scanGitHubSkillsWithPackageFallback, type GitHubRead } from '../services/github-skill-source.js';
 const exec = promisify(execFile);
 let directory: string, commit: string, laterCommit: string;
@@ -47,7 +51,7 @@ beforeAll(async () => {
   await git('commit', '-m', 'Gitlink');
   laterCommit = (await git('rev-parse', 'HEAD')).stdout.trim();
 });
-afterEach(async () => { vi.useRealTimers(); interception.hang = false; interception.hangBatch = false; await clearGitSkillSnapshotCache(); interception.commands = []; interception.closedFetches = 0; interception.closedBatches = 0; interception.remote = directory; vi.unstubAllEnvs(); });
+afterEach(async () => { vi.useRealTimers(); interception.hang = false; interception.hangBatch = false; await clearGitSkillSnapshotCache(); interception.commands = []; interception.closedFetches = 0; interception.closedBatches = 0; interception.remote = directory; interception.azureRemote = ''; vi.unstubAllEnvs(); });
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
 
 describe('Git skill snapshots', () => {
@@ -167,6 +171,49 @@ describe('Git skill snapshots', () => {
     expect(await readFile(path.join(fetch.cwd, 'config'), 'utf8')).not.toContain('test-token');
     await expect(readFile(path.join(fetch.cwd, '.agents/deep/SKILL.md'))).rejects.toMatchObject({ code: 'ENOENT' });
     await snapshot.release();
+  });
+  it('fetches the exact authorized Azure remote at a pinned commit without GitHub credentials', async () => {
+    const repositoryUrl = 'https://dev.azure.com/contoso/Project/_git/repo';
+    const azureToken = 'azure-entra-token-not-in-argv';
+    interception.azureRemote = repositoryUrl;
+    const providerAuth = azureDevOpsGitInvocation(repositoryUrl, { kind: 'entra', token: azureToken });
+    expect(providerAuth.repositoryAuthority).toEqual({ provider: 'azure-devops', url: repositoryUrl });
+    expect(providerAuth.configArgs).toEqual([]);
+    const snapshot = await openGitSkillSnapshot({ repositoryUrl, ref: 'feature/skills', commitSha: commit, token: '',
+      cacheScope: 'company:azure-project', providerAuth });
+    try {
+      expect(snapshot.commitSha).toBe(commit);
+      const fetch = interception.commands.find(command => command.args.includes('fetch'))!;
+      const remoteIndex = fetch.args.indexOf('--') + 1;
+      expect(fetch.args[remoteIndex]).toBe(repositoryUrl);
+      expect(fetch.args[remoteIndex]).not.toMatch(/\.git$/);
+      expect(fetch.args).toContain(commit);
+      expect(fetch.args.join(' ')).not.toContain(azureToken);
+      expect(fetch.env.PAPERCLIP_GIT_TOKEN).toBeUndefined();
+      expect(fetch.env.PAPERCLIP_AZURE_GIT_TOKEN).toBeUndefined();
+      const gitConfig = Object.entries(fetch.env).filter(([key]) => /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key));
+      expect(gitConfig.some(([, value]) => value?.includes('github.com'))).toBe(false);
+      expect(gitConfig.some(([key, value]) => /^GIT_CONFIG_KEY_\d+$/.test(key) && value === `http.https://${repositoryUrl.slice('https://'.length)}.extraheader`)).toBe(true);
+      expect(gitConfig.some(([key, value]) => /^GIT_CONFIG_VALUE_\d+$/.test(key) && value === `AUTHORIZATION: bearer ${azureToken}`)).toBe(true);
+    } finally { await snapshot.release(); }
+  });
+  it('rejects Azure snapshot requests with a mismatched authority or repository URL before Git starts', async () => {
+    const repositoryUrl = 'https://dev.azure.com/contoso/Project/_git/repo';
+    const azureToken = 'azure-mismatch-token';
+    const validAuth = azureDevOpsGitInvocation(repositoryUrl, { kind: 'entra', token: azureToken });
+    const wrongAuth = azureDevOpsGitInvocation('https://dev.azure.com/contoso/Project/_git/other', { kind: 'entra', token: azureToken });
+    const input = { repositoryUrl, ref: 'feature/skills', token: '', cacheScope: 'company:azure-project' };
+    await expect(openGitSkillSnapshot({ ...input, providerAuth: wrongAuth })).rejects.toThrow('Invalid Azure DevOps snapshot request');
+    await expect(openGitSkillSnapshot({ ...input, providerAuth: { ...validAuth,
+      repositoryAuthority: { provider: 'github', url: repositoryUrl } } })).rejects.toThrow('Invalid Azure DevOps snapshot request');
+    await expect(openGitSkillSnapshot({ ...input, repositoryUrl: 'https://evil.example/contoso/Project/_git/repo', providerAuth: validAuth }))
+      .rejects.toThrow('Invalid Azure DevOps snapshot request');
+    await expect(openGitSkillSnapshot({ ...input, token: 'must-be-empty', providerAuth: validAuth }))
+      .rejects.toThrow('Invalid Azure DevOps snapshot request');
+    await expect(openGitSkillSnapshot({ ...input, providerAuth: { ...validAuth, configArgs: ['-c', `secret=${azureToken}`] } }))
+      .rejects.toThrow('Invalid Azure DevOps snapshot request');
+    expect(interception.commands).toHaveLength(0);
+    expect(JSON.stringify(interception.commands)).not.toContain(azureToken);
   });
   it('reuses the exact scanned commit for import and isolates snapshots between callers', async () => {
     const beforeDownload = vi.fn();

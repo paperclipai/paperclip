@@ -24,6 +24,7 @@ import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
 import { requiresAnonymousRepositoryAcquisition, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
+import { azureDevOpsGitInvocation } from "./connectors/azure-devops/git-auth.js";
 
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
@@ -35,6 +36,18 @@ const controllerAcquisitionMessage = "New controller repository acquisition requ
 const REPOSITORY_REF_NOT_FOUND = "repository_ref_not_found";
 const repositoryRetryConflictMessage = "Repository preparation conflicts with an existing receipt. A different ref requires a separate workspace; existing files are never switched automatically.";
 const lowTrustRepositoryMessage = "Low-trust repository reuse permits anonymous public URLs only; new acquisition is unavailable. Use an authorized configured source for private repositories.";
+
+function normalizeAzureDevOpsRepositoryUrl(value: string): string {
+  return azureDevOpsGitInvocation(value, { kind: "pat", token: "catalog-validation" }).repositoryAuthority!.url;
+}
+
+export function normalizeExecutionRepositoryUrl(value: string): string {
+  let parsed: URL | undefined;
+  try { parsed = new URL(value); } catch { /* Preserve the GitHub validator's established error. */ }
+  return parsed?.hostname.toLowerCase() === "dev.azure.com"
+    ? normalizeAzureDevOpsRepositoryUrl(value)
+    : normalizeProjectRepositoryUrl(value).url;
+}
 
 function withRepositoryPublication<T>(cwd: string, work: () => Promise<T>): Promise<T> {
   return measureRunPhase("workspace.repository.publication", async () => {
@@ -97,8 +110,33 @@ function assertAcquisitionReceipt(row: Pick<RepositoryRow, "catalogRepositoryId"
 export function resolveTaskRepository(request: PrepareWorkspaceRepository["repository"], available: ProjectRepository[]) {
   const selected = request.kind === "catalog" ? available.find(repo => repo.id === request.id) : null;
   if (request.kind === "catalog" && !selected) throw forbidden("Repository access is no longer available; refresh the repository catalog");
-  const source = normalizeProjectRepositoryUrl(selected?.url ?? (request.kind === "url" ? request.url : ""));
-  const match = selected ?? available.find(repo => normalizeProjectRepositoryUrl(repo.url).url.toLowerCase() === source.url.toLowerCase());
+  const normalize = (repo: Pick<ProjectRepository, "provider" | "url">) =>
+    repo.provider === "azure-devops" ? normalizeAzureDevOpsRepositoryUrl(repo.url) : normalizeProjectRepositoryUrl(repo.url).url;
+  let source: { url: string };
+  if (selected) {
+    source = { url: normalize(selected) };
+  } else if (request.kind === "url") {
+    let parsed: URL | undefined;
+    try { parsed = new URL(request.url); } catch { /* GitHub normalizer provides the established error. */ }
+    if (parsed?.hostname.toLowerCase() === "dev.azure.com") {
+      const url = normalizeAzureDevOpsRepositoryUrl(request.url);
+      const match = available.find(repo => {
+        if (repo.provider !== "azure-devops") return false;
+        try { return normalize(repo).toLowerCase() === url.toLowerCase(); }
+        catch { return false; }
+      });
+      if (!match) throw forbidden("Azure DevOps repositories must be selected from an authorized connection catalog");
+      source = { url: normalize(match) };
+    } else {
+      source = { url: normalizeProjectRepositoryUrl(request.url).url };
+    }
+  } else {
+    throw forbidden("Repository access is no longer available; refresh the repository catalog");
+  }
+  const match = selected ?? available.find(repo => {
+    try { return normalize(repo).toLowerCase() === source.url.toLowerCase(); }
+    catch { return false; }
+  });
   return { repoUrl: source.url, repositoryIdentity: source.url.toLowerCase(), catalogRepositoryId: match?.id ?? null };
 }
 
@@ -599,8 +637,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
             if (result.warning) throw conflict(result.warning);
           }
           const git = async (...args: string[]) => (await execFile("git", ["-C", cwd, ...args], { timeout: 30_000, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
-          const origin = normalizeProjectRepositoryUrl(await measureRunPhase("workspace.repository.git_origin", () => git("remote", "get-url", "origin")));
-          if (origin.url.toLowerCase() !== row.repositoryIdentity) throw conflict("Repository checkout belongs to a different origin");
+          const origin = normalizeExecutionRepositoryUrl(await measureRunPhase("workspace.repository.git_origin", () => git("remote", "get-url", "origin")));
+          if (origin.toLowerCase() !== row.repositoryIdentity) throw conflict("Repository checkout belongs to a different origin");
           const ownership = await readOwnership();
           if (!authorizedPin && (ownership?.repositoryId !== row.id || !/^[a-f0-9]{40,64}$/.test(ownership.pinnedCommit))) throw conflict("Repository publication has no valid preparation receipt");
           const pinnedCommit: string = authorizedPin ?? ownership.pinnedCommit;

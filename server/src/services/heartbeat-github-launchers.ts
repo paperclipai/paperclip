@@ -8,6 +8,7 @@ export async function prepareHeartbeatGitHubLaunchers(
   input: LauncherInput & {
     native: boolean;
     githubConfigured: boolean;
+    hostGitHub?: boolean;
     agentId: string;
     brokerUrl: string;
     createBrokerToken: () => string;
@@ -20,13 +21,13 @@ export async function prepareHeartbeatGitHubLaunchers(
     return { env: githubBrokerEnvironment(input.env, {
       url: input.githubConfigured ? input.brokerUrl : "",
       token: input.githubConfigured ? input.createBrokerToken() : "",
-    }), cleanupLocation: null };
+    }, { preserveHostGitHub: input.hostGitHub }), cleanupLocation: null };
   }
   // Native configured access is owned by the provider session supervisor.
   // Defer staging until it has acquired that session; never mutate a live
   // process's authorization from heartbeat preparation.
   if (input.native && input.githubConfigured) {
-    return { env: githubBrokerEnvironment(input.env, { url: "", token: "" }), cleanupLocation: null };
+    return { env: githubBrokerEnvironment(input.env, { url: "", token: "" }, { preserveHostGitHub: input.hostGitHub }), cleanupLocation: null };
   }
   // An unconfigured sandbox has no managed GitHub identity to broker. Its
   // token-free wrappers still isolate image credentials, but may live as long
@@ -43,10 +44,10 @@ export async function prepareHeartbeatGitHubLaunchers(
   const env = githubBrokerEnvironment(input.env, {
     url: anonymous ? "" : input.brokerUrl,
     token: anonymous ? "" : input.createBrokerToken(),
-  });
+  }, { preserveHostGitHub: input.hostGitHub });
   try {
     return {
-      env: await prepareLaunchers({ ...location, cwd: input.cwd, env }),
+      env: await prepareLaunchers({ ...location, cwd: input.cwd, env, hostGitHub: input.hostGitHub, requireGitHubConnection: input.requireGitHubConnection }),
       cleanupLocation: anonymous ? null : location,
     };
   } catch (error) {

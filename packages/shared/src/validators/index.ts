@@ -392,6 +392,7 @@ export {
 
 export {
   projectDiscoverySchema,
+  projectRepositoryIdsSchema,
   createProjectSchema,
   updateProjectSchema,
   addProjectAccessMemberSchema,

@@ -35,6 +35,40 @@ describe("heartbeat GitHub launcher lifetime", () => {
     expect(result.cleanupLocation).toBeNull();
     expect(result.env).toMatchObject({ GH_TOKEN: "", PAPERCLIP_GITHUB_BROKER_TOKEN: "" });
   });
+  it("preserves configured host GitHub credentials while native staging is deferred", async () => {
+    const prepare = vi.fn(), createBrokerToken = vi.fn();
+    const hostEnv = { GH_TOKEN: "host-gh-token", GITHUB_TOKEN: "host-github-token", PAPERCLIP_GIT_TOKEN: "host-git-token" };
+    const result = await prepareHeartbeatGitHubLaunchers({
+      native: true, githubConfigured: true, hostGitHub: true, agentId: "agent-a", runId: "run-a", target,
+      cwd: "/workspace", env: hostEnv, brokerUrl: "https://paperclip.test", createBrokerToken,
+    }, prepare);
+    expect(result.cleanupLocation).toBeNull();
+    expect(result.env).toMatchObject({ ...hostEnv, PAPERCLIP_GITHUB_BROKER_URL: "", PAPERCLIP_GITHUB_BROKER_TOKEN: "" });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(createBrokerToken).not.toHaveBeenCalled();
+  });
+  it("passes baked-in host mode to non-native staging and preserves host GitHub credentials", async () => {
+    const prepareLaunchers = vi.fn(async input => input.env);
+    const hostEnv = { GH_TOKEN: "host-gh-token", GITHUB_TOKEN: "host-github-token" };
+    const result = await prepareHeartbeatGitHubLaunchers({
+      native: false, githubConfigured: true, hostGitHub: true, agentId: "agent-a", runId: "run-a", target,
+      cwd: "/workspace", env: hostEnv, brokerUrl: "https://paperclip.test", createBrokerToken: () => "run-capability",
+    }, prepareLaunchers);
+    expect(prepareLaunchers).toHaveBeenCalledOnce();
+    expect(prepareLaunchers.mock.calls[0]?.[0]).toMatchObject({ hostGitHub: true, runId: "run-a" });
+    expect(result.env).toMatchObject({ ...hostEnv, PAPERCLIP_GITHUB_BROKER_TOKEN: "run-capability" });
+  });
+  it("continues clearing ambient credentials in the default managed mode", async () => {
+    const prepareLaunchers = vi.fn(async input => input.env);
+    const result = await prepareHeartbeatGitHubLaunchers({
+      native: false, githubConfigured: true, agentId: "agent-a", runId: "run-a", target,
+      cwd: "/workspace", env: { GH_TOKEN: "ambient-gh-token", GITHUB_TOKEN: "ambient-github-token", PAPERCLIP_GIT_TOKEN: "ambient-git-token" },
+      brokerUrl: "https://paperclip.test", createBrokerToken: () => "run-capability",
+    }, prepareLaunchers);
+    expect(prepareLaunchers.mock.calls[0]?.[0]).not.toHaveProperty("hostGitHub", true);
+    expect(result.env).toMatchObject({ GH_TOKEN: "", GITHUB_TOKEN: "", PAPERCLIP_GIT_TOKEN: "" });
+    expect(result.env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("run-capability");
+  });
   it("keeps anonymous native sandbox launchers stable without issuing a run capability", async () => {
     const createBrokerToken = vi.fn(() => "run-secret");
     const prepareLaunchers = vi.fn(async (input) => input.env);

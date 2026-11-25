@@ -14,6 +14,7 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
+import { isAzureDevOpsRemote } from "./git-credential-policy.js";
 
 /**
  * Server-side git credentials for managed project checkouts and execution-workspace base
@@ -53,6 +54,8 @@ export type GitCredential = {
   githubIdentity?: { userId: string; login: string };
   identitySource?: "personal" | "dedicated";
   connectionId?: string;
+  credentialSecretId?: string;
+  credentialSecretVersion?: number;
   grantId?: string;
 };
 
@@ -62,14 +65,18 @@ export type GitAuthInvocation = {
   env: Record<string, string>;
   source: GitCredential["source"];
   secretName: string | null;
+  /** Exact remote for which a provider credential was authorized. */
+  repositoryAuthority?: { provider: string; url: string };
+  grantId?: string;
+  connectionId?: string;
 };
 
 /**
- * Resolve auth for one remote URL. Returns null when the URL is out of scope (non-GitHub,
- * ssh, or already credentialed) or when no token is available — callers then run git with
- * ambient behavior, exactly as before this module existed.
+ * Resolve auth for one remote URL and optional controller-selected project. Returns null
+ * when the URL is out of scope or no credential is available; callers apply the
+ * provider-specific policy for anonymous fallback.
  */
-export type GitRemoteAuthProvider = (remoteUrl: string) => Promise<GitAuthInvocation | null>;
+export type GitRemoteAuthProvider = (remoteUrl: string, projectId?: string) => Promise<GitAuthInvocation | null>;
 
 /**
  * True only for `https://github.com/...` (or `www.`) URLs without inline userinfo. GHES and
@@ -174,10 +181,14 @@ const GIT_AUTH_FAILURE_PATTERN =
 export function describeGitAuthFailure(input: {
   error: string;
   used: { source: GitCredential["source"]; secretName: string | null } | null;
+  provider?: string;
 }): string | null {
   if (!GIT_AUTH_FAILURE_PATTERN.test(input.error)) {
     return null;
   }
+  if (input.provider === "azure-devops") return input.used
+    ? "The Azure DevOps connection was rejected or lacks access to this repository."
+    : "An active Azure DevOps connection with access to this repository is required.";
   if (input.used) {
     const label = input.used.secretName
       ? `the ${input.used.secretName} company-secret GitHub credential`
@@ -259,13 +270,14 @@ export async function resolveGitHubApiCredential(
 export function createIssueGitRemoteAuthProvider(db: Db, companyId: string, issueId: string,
   create: typeof createGitRemoteAuthProvider = createGitRemoteAuthProvider): GitRemoteAuthProvider {
   let provider: Promise<GitRemoteAuthProvider> | null = null;
-  return async (remoteUrl: string) => {
+  return async (remoteUrl: string, projectId?: string) => {
     provider ??= db.select({ responsibleUserId: issues.responsibleUserId, assigneeAgentId: issues.assigneeAgentId }).from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then(([issue]) => create(db, companyId, {
         issueId, responsibleUserId: issue?.responsibleUserId ?? null, agentId: issue?.assigneeAgentId ?? null,
       }));
-    return (await provider)(remoteUrl);
+    const resolved = await provider;
+    return projectId === undefined ? resolved(remoteUrl) : resolved(remoteUrl, projectId);
   };
 }
 
@@ -277,6 +289,7 @@ export function createGitRemoteAuthProvider(
     heartbeatRunId?: string | null;
     responsibleUserId?: string | null;
     agentId?: string | null;
+    projectId?: string | null;
   },
   deps?: {
     secrets?: GitCredentialSecretsDeps;
@@ -325,7 +338,34 @@ export function createGitRemoteAuthProvider(
     return null;
   };
 
-  return async (remoteUrl: string) => {
+  return async (remoteUrl: string, projectId?: string) => {
+    if (isAzureDevOpsRemote(remoteUrl)) {
+      if (!context?.heartbeatRunId || !context.agentId) {
+        if (!projectId && !context?.projectId) throw new Error("Azure DevOps connection authorization is unavailable");
+        const { resolveAzureDevOpsProjectGitCredentials } = await import("./azure-project-git-credentials.js");
+        return resolveAzureDevOpsProjectGitCredentials(db, { companyId, projectId: projectId ?? context!.projectId!, repoUrl: remoteUrl });
+      }
+      const { resolveAzureDevOpsRunGitCredentials } = await import("./azure-devops-run-git-credentials.js");
+      return resolveAzureDevOpsRunGitCredentials(db, { companyId, runId: context.heartbeatRunId, agentId: context.agentId, repoUrl: remoteUrl, projectId: projectId ?? context.projectId ?? undefined });
+    }
+    const selectedProjectId = projectId ?? context?.projectId;
+    if (selectedProjectId) {
+      const { isGitHubProjectRemote, authorizeProjectGitHubCheckout, authorizeProjectGitHubReopen } = await import('./project-run-github-access.js');
+      if (isGitHubProjectRemote(remoteUrl)) {
+        if (!isSupportedGitHubRemoteUrl(remoteUrl))
+          throw new Error('Project GitHub authorization is unavailable. Reconnect and reselect the repository.');
+        if (!context?.heartbeatRunId || !context.agentId) {
+          const token = await authorizeProjectGitHubReopen(db, { companyId, projectId: selectedProjectId, repoUrl: remoteUrl });
+          const invocation = buildGitAuthInvocation({ token, source: 'managed_connection', secretName: null });
+          return { ...invocation, env: { ...invocation.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } };
+        }
+        const result = await authorizeProjectGitHubCheckout(db, { companyId, projectId: selectedProjectId,
+          agentId: context.agentId, runId: context.heartbeatRunId, repoUrl: remoteUrl });
+        const invocation = buildGitAuthInvocation({ token: '', source: 'managed_connection', secretName: null });
+        return { ...invocation, env: { ...invocation.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+          GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '', ...result.env } };
+      }
+    }
     if (!isSupportedGitHubRemoteUrl(remoteUrl)) return null;
     if (db && context?.heartbeatRunId && context.agentId) {
       const [run] = await db.select({ contextId: heartbeatRuns.activeIdentityContextId }).from(heartbeatRuns).where(and(
