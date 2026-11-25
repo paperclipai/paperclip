@@ -69,6 +69,34 @@ describe("parseOpenCodeJsonl", () => {
     expect(parsed.toolErrors).toEqual(["File not found: e2b-adapter-result.txt"]);
   });
 
+  it("marks only the text of the message that finished with stop as the final response", () => {
+    const event = (type: string, part: Record<string, unknown>) => JSON.stringify({ type, sessionID: "s", part });
+    const stdout = [
+      event("text", { messageID: "msg_1", text: "I'll fetch the task list first." }),
+      event("tool_use", { messageID: "msg_1", state: { status: "completed" } }),
+      event("step_finish", { messageID: "msg_1", reason: "tool-calls" }),
+      event("text", { messageID: "msg_2", text: "Here is what I found." }),
+      event("text", { messageID: "msg_2", text: "Two tasks are stale." }),
+      event("step_finish", { messageID: "msg_2", reason: "stop" }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("I'll fetch the task list first.\n\nHere is what I found.\n\nTwo tasks are stale.");
+    expect(parsed.finalResponseText).toBe("Here is what I found.\n\nTwo tasks are stale.");
+
+    const progressOnly = [
+      event("text", { messageID: "msg_1", text: "I'll fetch the task list first." }),
+      event("step_finish", { messageID: "msg_1", reason: "tool-calls" }),
+    ].join("\n");
+    expect(parseOpenCodeJsonl(progressOnly).finalResponseText).toBeNull();
+
+    const unmatched = [
+      event("text", { messageID: "msg_1", text: "I'll fetch the task list first." }),
+      event("step_finish", { messageID: "msg_2", reason: "stop" }),
+    ].join("\n");
+    expect(parseOpenCodeJsonl(unmatched).finalResponseText).toBeNull();
+  });
+
   it("detects unknown session errors", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
