@@ -458,7 +458,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const assistantConnections = useAssistantConnections();
   const tailscaleConnections = useTailscaleConnections(selectedCompanyId);
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
-  const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const connectorAvailability = useConnectorAvailability();
   const googleWorkspaceConnectorEnabled = connectorAvailability.enabled(getConnectableAppDefinition("google-workspace"));
@@ -657,11 +657,11 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     if (!connectorEnabled(entry)) return false;
     const definition = getAppStoreDefinition(appDefinitionSlug(entry));
     return (
-      chatProviderVisible(appDefinitionSlug(entry), chatConnectorsEnabled, githubEnabled) ||
+      chatProviderVisible(appDefinitionSlug(entry), chatConnectorsEnabled) ||
       !definition?.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(definition)
     );
-  }), [galleryQuery.data, memoryConnectorsEnabled, connectorEnabled, chatConnectorsEnabled, githubEnabled]);
+  }), [galleryQuery.data, memoryConnectorsEnabled, connectorEnabled, chatConnectorsEnabled]);
   const userProfileById = useMemo(
     () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
     [userDirectoryQuery.data],
@@ -713,7 +713,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         slug,
         name: appDefinitionName(entry),
         description:
-          !chatProviderVisible(slug, chatConnectorsEnabled, githubEnabled) && chatProviderForSlug(slug)
+          !chatProviderVisible(slug, chatConnectorsEnabled) && chatProviderForSlug(slug)
             ? appCopyFor(slug).tagline
             : appDefinitionDescription(entry),
         brandKey: slug,
@@ -759,7 +759,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           "Chat with agents from Telegram direct messages, groups, and topics.",
       },
     ] as const;
-    for (const item of nativeChatApps.filter(item => chatProviderVisible(item.slug, chatConnectorsEnabled, githubEnabled))) {
+    for (const item of nativeChatApps.filter(item => chatProviderVisible(item.slug, chatConnectorsEnabled))) {
       if (rowsBySlug.has(item.slug)) continue;
       rowsBySlug.set(item.slug, {
         key: `native-chat:${item.slug}`,
@@ -848,7 +848,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       });
     }
 
-    for (const endpoint of (chatEndpointsQuery.data ?? []).filter(endpoint => chatProviderVisible(endpoint.provider, chatConnectorsEnabled, githubEnabled))) {
+    for (const endpoint of (chatEndpointsQuery.data ?? []).filter(endpoint => chatProviderVisible(endpoint.provider, chatConnectorsEnabled))) {
       if (endpoint.status === "archived") continue;
       let target = [...rowsBySlug.values()].find(
         (row) => chatProviderForSlug(row.slug) === endpoint.provider,
@@ -903,7 +903,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           && (managedCatalogIdentities.has(aggregatorAppIdentity(row!.slug)) || managedCatalogIdentities.has(aggregatorAppIdentity(row!.name)))
           && nativeConnectorRequiresCustomerOAuthApp({ ...row!.entry!, methods: declaredMethods ?? [] }, {
             enableChatConnectors: chatConnectorsEnabled,
-            enableGitHubReviewBots: githubEnabled,
           });
       }
       yieldDecisions.set(slug, yields);
@@ -969,7 +968,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     applicationsQuery.data,
     chatEndpointsQuery.data,
     chatConnectorsEnabled,
-    githubEnabled,
     connectionsQuery.data,
     tailscaleConnections.data,
     tailscaleConnections.canManage,
@@ -1088,7 +1086,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       preselectedAgentId={preselectedChatAgentId}
       chatConnectorsEnabled={chatConnectorsEnabled}
       setupEnabled={setupEnabledFor(row)}
-      githubReviewBotsEnabled={githubEnabled}
       onConnectAggregator={connectAggregator}
       onManageAggregator={(app, connectionId) => setAggregatorToManage({ app, connectionId })}
       onRefreshAggregator={connectionId => refreshAggregator.mutate(connectionId)}
@@ -1103,7 +1100,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   );
   const connectActionFor = (row: ConnectorRowModel) => {
     if (row.networkConnections || !setupEnabledFor(row)) return null;
-    const action = connectorAction(row, chatProviderVisible(row.slug, chatConnectorsEnabled, githubEnabled), preselectedChatAgentId);
+    const action = connectorAction(row, chatProviderVisible(row.slug, chatConnectorsEnabled), preselectedChatAgentId);
     return {
       label: action.label,
       title: action.title,
@@ -1386,7 +1383,6 @@ export function ConnectorCard({
   preselectedAgentId,
   chatConnectorsEnabled,
   setupEnabled = true,
-  githubReviewBotsEnabled = false,
   onConnectAggregator,
   onManageAggregator,
   onRefreshComposio,
@@ -1411,7 +1407,6 @@ export function ConnectorCard({
   preselectedAgentId?: string | null;
   chatConnectorsEnabled: boolean;
   setupEnabled?: boolean;
-  githubReviewBotsEnabled?: boolean;
   onConnectAggregator?: (app: AggregatorAppCatalogEntry) => void;
   onManageAggregator?: (app: AggregatorAppCatalogEntry, connectionId?: string) => void;
   onRefreshComposio?: (connectionId: string) => void;
@@ -1434,7 +1429,7 @@ export function ConnectorCard({
   }, [defaultExpanded, searchQuery]);
   const action = connectorAction(
     row,
-    chatProviderVisible(row.slug, chatConnectorsEnabled, githubReviewBotsEnabled),
+    chatProviderVisible(row.slug, chatConnectorsEnabled),
     preselectedAgentId,
   );
   const upstreamAccounts = (row.upstreamApps ?? []).flatMap(snapshot => {

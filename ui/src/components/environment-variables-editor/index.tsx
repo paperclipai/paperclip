@@ -10,12 +10,13 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save, UserRound } from "lucide-react";
-import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
+import { SECRET_SHAPED_ENV_NAME_ERROR, type CompanySecret, type EnvBinding, type UserSecretDefinition } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import { EnvironmentVariableRow } from "./Row";
 import { parseDotenv } from "./parse-dotenv";
+import { looksLikeCredentialToken } from "./sensitive";
 import {
   computeDuplicateNames,
   computeRowHealth,
@@ -81,9 +82,10 @@ function normalizedEnvKey(value: Record<string, EnvBinding> | null | undefined):
 const CHANGE_SUMMARY_MAX_NAMES = 3;
 
 function formatChangedNames(names: readonly string[]): string {
-  const shown = names.slice(0, CHANGE_SUMMARY_MAX_NAMES).join(", ");
-  return names.length > CHANGE_SUMMARY_MAX_NAMES
-    ? `${shown} +${names.length - CHANGE_SUMMARY_MAX_NAMES} more`
+  const safeNames = names.map((name) => (looksLikeCredentialToken(name) ? "[redacted]" : name));
+  const shown = safeNames.slice(0, CHANGE_SUMMARY_MAX_NAMES).join(", ");
+  return safeNames.length > CHANGE_SUMMARY_MAX_NAMES
+    ? `${shown} +${safeNames.length - CHANGE_SUMMARY_MAX_NAMES} more`
     : shown;
 }
 
@@ -125,6 +127,7 @@ export interface EnvironmentVariablesEditorProps {
    */
   userSecretDefinitions?: readonly UserSecretDefinition[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
+  onRotateSecret?: (secretId: string, value: string) => Promise<CompanySecret>;
   /** Optional "Recently used" picker group + quick-bind chips. */
   recentlyUsedSecrets?: readonly CompanySecret[];
   /** Read-only rendering. */
@@ -143,12 +146,19 @@ export interface EnvironmentVariablesEditorProps {
   addLabel?: string;
 }
 
+export type FlushPendingDraftResult =
+  | { status: "clean" }
+  | { status: "flushed"; value: Record<string, EnvBinding> }
+  | { status: "blocked"; reason: string };
+
 export interface EnvironmentVariablesEditorHandle {
   /**
    * Promote the editor-local draft into the controlled value before an outer
-   * action reads parent state. Returns the promoted value when a draft existed.
+   * action reads parent state. Returns `{ status: "blocked" }` when a draft row
+   * has a secret-shaped variable name so callers stop outer saves instead of
+   * silently saving stale state.
    */
-  flushPendingDraft: () => Record<string, EnvBinding> | null;
+  flushPendingDraft: () => FlushPendingDraftResult;
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -157,6 +167,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   secrets,
   userSecretDefinitions,
   onCreateSecret,
+  onRotateSecret,
   recentlyUsedSecrets,
   disabled,
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
@@ -293,14 +304,23 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [disabled, hasUnsavedChanges]);
 
-  const flushPendingDraft = useCallback(() => {
-    if (disabled || !hasUnsavedChanges) return null;
+  const hasSecretShapedName = useMemo(
+    () => rows.some((row) => looksLikeCredentialToken(row.name)),
+    [rows],
+  );
+
+  const flushPendingDraft = useCallback((): FlushPendingDraftResult => {
+    if (disabled) return { status: "clean" };
+    if (hasSecretShapedName) {
+      return { status: "blocked", reason: SECRET_SHAPED_ENV_NAME_ERROR };
+    }
+    if (!hasUnsavedChanges) return { status: "clean" };
     pendingSaveValueKeyRef.current = draftValueKey;
     flushSync(() => {
       onChange(draftValue);
     });
-    return draftValue ?? {};
-  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+    return { status: "flushed", value: draftValue ?? {} };
+  }, [disabled, draftValue, draftValueKey, hasSecretShapedName, hasUnsavedChanges, onChange]);
 
   useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
 
@@ -308,8 +328,11 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     const form = editorRootRef.current?.closest("form");
     if (!form) return;
 
-    function handleSubmit() {
-      flushPendingDraft();
+    function handleSubmit(event: SubmitEvent) {
+      if (flushPendingDraft().status === "blocked") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     }
 
     form.addEventListener("submit", handleSubmit, true);
@@ -407,7 +430,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   function saveDraft() {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || hasSecretShapedName) return;
     pendingSaveValueKeyRef.current = draftValueKey;
     onChange(draftValue);
   }
@@ -468,7 +491,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
           {rows.map((row, index) => {
             const issue = validateName(row.name, duplicateNames, reservedPrefixes);
-            const touched = touchedNames.has(row.name.trim());
+            const trimmedName = row.name.trim();
+            const showIssue = touchedNames.has(trimmedName) || looksLikeCredentialToken(trimmedName);
             return (
               <EnvironmentVariableRow
                 key={row.id}
@@ -479,7 +503,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
                 nameIssue={issue}
-                showNameIssue={touched}
+                showNameIssue={showIssue}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}
                 onPatch={(patch) => patchRow(row.id, patch)}
                 onRemove={() => removeRow(row.id)}
@@ -487,6 +511,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 onNamePaste={(text) => bulkImport(text, row.id)}
                 onEnterInValueLast={addRow}
                 onCreateSecret={onCreateSecret}
+                onRotateSecret={onRotateSecret}
                 onToast={(message) => toast?.pushToast({ title: message, tone: "success" })}
                 focusRequest={pendingFocus?.rowId === row.id ? pendingFocus.field : null}
                 onFocusConsumed={() => setPendingFocus(null)}
@@ -560,7 +585,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
             <button
               type="button"
               onClick={saveDraft}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              disabled={hasSecretShapedName}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
             >
               <Save className="size-4" />
               Save

@@ -282,6 +282,13 @@ describe("Runner image workflow", () => {
     }
   });
 
+  it("builds and caches on the standard GitHub-hosted matrix runners", () => {
+    for (const job of [jobs.build, jobs.cache]) {
+      expect(/^ {4}runs-on: (.+)$/m.exec(job)?.[1]).toBe("${{ matrix.runner }}");
+      expect(job).not.toMatch(/cloud-release-32|CORE_PUBLICATION_RUNNER|runs-on\/fleet=/);
+    }
+  });
+
   it("is registered with the merge-review notifier under its own name", () => {
     const name = /^name: (.+)$/m.exec(workflow)![1];
     const listed = /workflow_run:\n {4}workflows:\n((?: {6}- .+\n)+)/.exec(mergeReview)![1].split("\n").filter(Boolean).map((line) => line.trim().slice(2));

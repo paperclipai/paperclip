@@ -129,11 +129,12 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enableGitHubReviewBots: {
-    title: "GitHub review bots",
-    description: "Show GitHub review bot setup and management independently of chat connectors. Existing bots keep running when hidden; GitHub tool connections are unaffected.",
+    title: "GitHub review bots (compatibility)",
+    description:
+      "Deprecated compatibility key. GitHub review bots are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
@@ -184,11 +185,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAwsConnector: {
-    title: "AWS connector",
-    description: "Show and allow the AWS connector, which reaches AWS's hosted MCP server with short-lived credentials minted for each connection.",
+    title: "AWS connector (compatibility)",
+    description: "Deprecated compatibility key. The AWS connector is always available; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",

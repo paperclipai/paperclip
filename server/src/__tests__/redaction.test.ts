@@ -972,3 +972,67 @@ describe("redaction of long letter/digit runs", () => {
     }
   });
 });
+
+describe("secret-shaped env var names and tokens", () => {
+  const githubPat = ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_");
+  const ghpToken = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+  const openaiKey = ["sk", "proj", "secretApiKey1234567890abcdef"].join("-");
+
+  it("redacts secret-shaped keys in redactAgentAdapterConfig without leaking the key name", () => {
+    const redacted = redactAgentAdapterConfig({
+      model: "claude",
+      env: {
+        GH_TOKEN: { type: "plain", value: "plain-secret" },
+        [githubPat]: { type: "plain", value: "accidental" },
+        [ghpToken]: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
+        [openaiKey]: "raw-value",
+      },
+    });
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect(serialized).not.toContain(openaiKey);
+    expect((redacted.env as Record<string, unknown>).GH_TOKEN).toEqual({
+      type: "plain",
+      value: REDACTED_EVENT_VALUE,
+    });
+  });
+
+  it("redacts secret-shaped object keys in sanitizeRecord and redactEventPayload", () => {
+    const sanitized = redactEventPayload({
+      env: {
+        [githubPat]: "x",
+        [ghpToken]: { type: "plain", value: "y" },
+        SAFE_KEY: "visible",
+      },
+    });
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect((sanitized?.env as Record<string, unknown>).SAFE_KEY).toBe("visible");
+  });
+
+  it("redacts github_pat_ tokens in free-form text logs", () => {
+    const out = redactSensitiveText(`Exported ${githubPat} and ${ghpToken} and ${openaiKey}`);
+    expect(out).not.toContain(githubPat);
+    expect(out).not.toContain(ghpToken);
+    expect(out).not.toContain(openaiKey);
+  });
+
+  it("redacts thousands of distinct credential-shaped keys in linear time", () => {
+    const env: Record<string, unknown> = {};
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = { type: "plain", value: "v" };
+    }
+    const startedAt = performance.now();
+    const redactedAdapter = redactAgentAdapterConfig({ env });
+    const sanitized = sanitizeRecord(env);
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(redactedAdapter.env as Record<string, unknown>)).toHaveLength(4_000);
+    expect(Object.keys(sanitized)).toHaveLength(4_000);
+    expect(JSON.stringify(redactedAdapter)).not.toContain(prefix);
+    expect(JSON.stringify(sanitized)).not.toContain(prefix);
+  });
+});
