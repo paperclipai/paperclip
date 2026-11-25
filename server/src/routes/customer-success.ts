@@ -5,7 +5,9 @@ import {
   canonicalJson,
   inspectionReadPath,
   parseInspectionQuery,
+  INSPECTION_EXTENDED_READ_PATH,
   INSPECTION_READ_PATH,
+  INSPECTION_SEARCH_READ_PATH,
   INSPECTION_AUDIENCE,
   INSPECTION_PERMIT_TYPE,
   INSPECTION_HEADER,
@@ -214,8 +216,11 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
     }
     if (canonicalJson(query) !== canonicalJson(permit.query))
       throw forbidden("Inspection parameters do not match permit");
-    if (req.path === INSPECTION_READ_PATH && inspectionReadPath(query) !== INSPECTION_READ_PATH)
+    const requiredPath = inspectionReadPath(query);
+    if (req.path === INSPECTION_READ_PATH && requiredPath !== INSPECTION_READ_PATH)
       throw forbidden("This inspection query needs the extended read path");
+    if (req.path === INSPECTION_EXTENDED_READ_PATH && requiredPath === INSPECTION_SEARCH_READ_PATH)
+      throw forbidden("This inspection query needs the search read path");
     // Replay fencing and all inspection state live in Cloud. No tenant receipt.
     const consumed = await fetch(`${origin}/v1/customer-success/permits/consume`, {
       method: "POST",
@@ -233,6 +238,7 @@ export function customerSuccessRoutes(db: Db, storage: StorageService, options: 
   };
   router.post("/read", read);
   router.post("/read-v2", read);
+  router.post("/read-v3", read);
   // Cloud run liveness check for inspection authority. Cloud asks with its
   // own signed, stack-addressed, 60-second question; no agent credential,
   // identity key, actor, session or activity is involved.

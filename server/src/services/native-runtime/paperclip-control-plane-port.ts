@@ -45,6 +45,10 @@ import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, valid
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 import { recordRunEventCommitted } from "../server-metrics.js";
+import {
+  extractRunPlatformDiagnosticsFromEvent,
+  recordRunPlatformDiagnostics,
+} from "../run-platform-diagnostics.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -542,6 +546,21 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       } catch {
       }
       await this.#onCommittedEvent?.(event, persisted.row.seq);
+      const diagnosticCodes = extractRunPlatformDiagnosticsFromEvent(
+        persisted.row.eventType,
+        persisted.row.message,
+        persisted.row.payload as Record<string, unknown> | null,
+      );
+      if (diagnosticCodes.length > 0) {
+        void recordRunPlatformDiagnostics(this.#db, {
+          companyId: this.#binding.companyId,
+          runId: this.#binding.runId,
+          agentId: this.#binding.agentId,
+          codes: diagnosticCodes,
+          runtimeMode: "native",
+          occurredAt: persisted.row.createdAt,
+        });
+      }
     } else {
       // A recovered runner may replay the event whose durable side effects
       // parked the prior attempt. Do not repeat those effects, but let the

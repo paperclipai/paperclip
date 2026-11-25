@@ -6,6 +6,10 @@ export const INSPECTION_HEADER = "x-paperclip-cloud-inspection";
 export const CHALLENGE_DOMAIN = "paperclip-customer-success-challenge/v1\n";
 export const MAX_INSPECTION_BYTES = 1024 * 1024;
 export const MAX_INSPECTION_ROWS = 100;
+export const MAX_INSPECTION_SEARCH_PATTERNS = 5;
+export const MAX_INSPECTION_PATTERN_LENGTH = 200;
+export const MAX_INSPECTION_SEARCH_RUNS = 200;
+export const MAX_INSPECTION_SEARCH_SAMPLE_RUNS = 10;
 export const INSPECTION_RESOURCES = [
   "companies",
   "goals",
@@ -77,10 +81,46 @@ export const INSPECTION_READ_PATH = "/read";
  * `tenant_inspection_version_unsupported` instead of misreading the query.
  */
 export const INSPECTION_EXTENDED_READ_PATH = "/read-v2";
+/**
+ * The tenant path for `runs.search` and stack-wide `count` (omitting `companyId`).
+ * A tenant predating these answers 404 here, so Cloud classifies it as
+ * `tenant_inspection_version_unsupported` instead of misreading the query.
+ */
+export const INSPECTION_SEARCH_READ_PATH = "/read-v3";
 export interface InspectionCount {
   total: number;
   /** Counts grouped by the resource's `status` column, or null when it has none. */
   byStatus: Record<string, number> | null;
+}
+export interface InspectionRunSearchSample {
+  runId: string;
+  companyId: string;
+  status: string;
+  driverKind: string | null;
+  runtimeMode: string;
+  createdAt: string;
+  diagnostics: string[];
+  excerpt?: string;
+}
+export interface InspectionRunSearchPatternHit {
+  pattern: string;
+  matchedRuns: number;
+  byStatus: Record<string, number>;
+  byDriver: Record<string, number>;
+  byRuntimeMode: Record<string, number>;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  sampleRuns: InspectionRunSearchSample[];
+}
+export interface InspectionRunSearchResult {
+  runsScanned: number;
+  runsTotalInWindow: number;
+  truncated: boolean;
+  byStatus: Record<string, number>;
+  byDriver: Record<string, number>;
+  byDiagnostic: Record<string, number>;
+  patterns: InspectionRunSearchPatternHit[];
+  coOccurrence: Array<{ patterns: string[]; matchedRuns: number }>;
 }
 export interface InspectionQuery {
   operation:
@@ -90,6 +130,7 @@ export interface InspectionQuery {
     | "instructions.file"
     | "skills.file"
     | "runs.log"
+    | "runs.search"
     | "files.list"
     | "files.read"
     | "files.download"
@@ -107,6 +148,16 @@ export interface InspectionQuery {
   order?: InspectionOrder;
   /** `list`/`get` on `runs` only: leave out the large JSON columns. */
   view?: InspectionView;
+  /** `runs.search` only: 1-5 literal substrings (never regex) to search for. */
+  patterns?: string[];
+  /** `runs.search` only: ISO-8601 lower bound (inclusive) on run creation time. */
+  createdAfter?: string;
+  /** `runs.search` only: ISO-8601 upper bound (exclusive) on run creation time. */
+  createdBefore?: string;
+  /** `runs.search` only: literal match case sensitivity (default false). */
+  caseSensitive?: boolean;
+  /** `runs.search` with `companyId` only: include one short redacted excerpt per sample hit. */
+  includeExcerpts?: boolean;
   context?: {
     projectId?: string;
     workspaceId?: string;
@@ -152,9 +203,21 @@ export function canonicalJson(value: unknown): string {
   throw new Error("Invalid JSON value");
 }
 export function inspectionReadPath(query: InspectionQuery): string {
+  if (
+    query.operation === "runs.search" ||
+    (query.operation === "count" && query.companyId === undefined)
+  ) {
+    return INSPECTION_SEARCH_READ_PATH;
+  }
   return query.operation === "count" || query.order !== undefined || query.view !== undefined
     ? INSPECTION_EXTENDED_READ_PATH
     : INSPECTION_READ_PATH;
+}
+function parseIsoTimestamp(value: unknown, field: string): number {
+  if (typeof value !== "string" || value.length > 64) throw new Error(`Invalid ${field}`);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error(`Invalid ${field}`);
+  return parsed;
 }
 export function parseInspectionQuery(value: unknown): InspectionQuery {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -173,6 +236,11 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
     "range",
     "order",
     "view",
+    "patterns",
+    "createdAfter",
+    "createdBefore",
+    "caseSensitive",
+    "includeExcerpts",
     "context",
   ]);
   if (Object.keys(q).some((k) => !allowed.has(k)))
@@ -185,6 +253,7 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
       "instructions.file",
       "skills.file",
       "runs.log",
+      "runs.search",
       "files.list",
       "files.read",
       "files.download",
@@ -198,10 +267,79 @@ export function parseInspectionQuery(value: unknown): InspectionQuery {
   }
   if (q.resource !== undefined && !INSPECTION_RESOURCES.includes(q.resource))
     throw new Error("Unsupported inspection resource");
+  const isSearch = q.operation === "runs.search";
+  if (isSearch) {
+    for (const forbidden of [
+      "resource",
+      "resourceId",
+      "parentId",
+      "path",
+      "versionId",
+      "offset",
+      "range",
+      "order",
+      "view",
+      "context",
+    ] as const) {
+      if (q[forbidden] !== undefined) throw new Error(`${forbidden} does not apply to runs.search`);
+    }
+    if (
+      !Array.isArray(q.patterns) ||
+      q.patterns.length < 1 ||
+      q.patterns.length > MAX_INSPECTION_SEARCH_PATTERNS
+    )
+      throw new Error("runs.search requires 1 to 5 literal patterns");
+    const seen = new Set<string>();
+    for (const pattern of q.patterns) {
+      if (
+        typeof pattern !== "string" ||
+        pattern.trim().length === 0 ||
+        pattern.length > MAX_INSPECTION_PATTERN_LENGTH ||
+        pattern.includes("\0")
+      )
+        throw new Error("Invalid search pattern");
+      const key = q.caseSensitive ? pattern : pattern.toLowerCase();
+      if (seen.has(key)) throw new Error("Duplicate search pattern");
+      seen.add(key);
+    }
+    const after =
+      q.createdAfter !== undefined ? parseIsoTimestamp(q.createdAfter, "createdAfter") : undefined;
+    const before =
+      q.createdBefore !== undefined
+        ? parseIsoTimestamp(q.createdBefore, "createdBefore")
+        : undefined;
+    if (after !== undefined && before !== undefined && before <= after)
+      throw new Error("createdBefore must be after createdAfter");
+    if (q.caseSensitive !== undefined && typeof q.caseSensitive !== "boolean")
+      throw new Error("Invalid caseSensitive");
+    if (q.includeExcerpts !== undefined && typeof q.includeExcerpts !== "boolean")
+      throw new Error("Invalid includeExcerpts");
+    if (q.includeExcerpts === true && !q.companyId)
+      throw new Error("includeExcerpts requires companyId");
+    if (
+      q.limit !== undefined &&
+      (!Number.isSafeInteger(q.limit) || q.limit < 1 || q.limit > MAX_INSPECTION_SEARCH_RUNS)
+    )
+      throw new Error("Invalid limit");
+    return JSON.parse(canonicalJson(q)) as InspectionQuery;
+  }
+  for (const searchOnly of [
+    "patterns",
+    "createdAfter",
+    "createdBefore",
+    "caseSensitive",
+    "includeExcerpts",
+  ] as const) {
+    if (q[searchOnly] !== undefined) throw new Error(`${searchOnly} applies only to runs.search`);
+  }
   if (q.operation === "get" && !q.resourceId) throw new Error("resourceId required");
   if (["get", "list", "count"].includes(q.operation) && !q.resource)
     throw new Error("resource required");
-  if (!(q.operation === "list" && q.resource === "companies") && !q.companyId)
+  if (
+    !(q.operation === "list" && q.resource === "companies") &&
+    q.operation !== "count" &&
+    !q.companyId
+  )
     throw new Error("companyId required");
   if (!["get", "list", "count"].includes(q.operation) && !q.resourceId)
     throw new Error("resourceId required");

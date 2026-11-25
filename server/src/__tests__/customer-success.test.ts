@@ -775,8 +775,9 @@ describe("customer-success read authority", () => {
     })) as { items: Array<Record<string, unknown>>; nextOffset: number | null };
     expect(latest.items.map((r) => r.id)).toEqual([runs[2].id]);
     expect(latest.nextOffset).toEqual(1);
-    expect(Object.keys(latest.items[0]).sort()).toEqual([...RUN_SUMMARY_COLUMNS, "durationMs"].sort());
+    expect(Object.keys(latest.items[0]).sort()).toEqual([...RUN_SUMMARY_COLUMNS, "diagnostics", "durationMs"].sort());
     expect(latest.items[0].durationMs).toBeNull();
+    expect(latest.items[0].diagnostics).toEqual([]);
     expect(JSON.stringify(latest).length).toBeLessThan(2_000);
 
     const page = (await readCustomerSuccessResource(db, storage, {
@@ -845,7 +846,7 @@ describe("customer-success read authority", () => {
       expect(seen.sort()).toEqual(labels.map((label) => label.id).sort());
     }
   });
-  it("count, order and view are bounded and take the extended read path", () => {
+  it("count, order, view, and runs.search are bounded and take their versioned read paths", () => {
     expect(inspectionReadPath(parseInspectionQuery({ operation: "list", resource: "runs", companyId }))).toEqual("/read");
     for (const value of [
       { operation: "count", resource: "runs", companyId },
@@ -854,16 +855,211 @@ describe("customer-success read authority", () => {
     ])
       expect(inspectionReadPath(parseInspectionQuery(value))).toEqual("/read-v2");
     for (const value of [
-      { operation: "count", companyId },
       { operation: "count", resource: "runs" },
+      { operation: "runs.search", patterns: ["paperclip_git_storage_limit"] },
+      { operation: "runs.search", companyId, patterns: ["paperclip_git_storage_limit"], includeExcerpts: true },
+    ])
+      expect(inspectionReadPath(parseInspectionQuery(value))).toEqual("/read-v3");
+    for (const value of [
+      { operation: "count", companyId },
+      { operation: "list", resource: "runs" },
       { operation: "count", resource: "runs", companyId, resourceId: agentId },
       { operation: "get", resource: "runs", companyId, resourceId: agentId, order: "newest" },
       { operation: "list", resource: "runs", companyId, order: "random" },
       { operation: "list", resource: "tasks", companyId, view: "summary" },
       { operation: "list", resource: "runs", companyId, view: "full" },
       { operation: "runs.log", companyId, resourceId: agentId, view: "summary" },
+      { operation: "runs.search", patterns: [] },
+      { operation: "runs.search", patterns: ["a", "b", "c", "d", "e", "f"] },
+      { operation: "runs.search", patterns: ["dup", "DUP"] },
+      { operation: "runs.search", patterns: ["paperclip_git_storage_limit"], includeExcerpts: true },
+      { operation: "runs.search", patterns: ["ok"], resource: "runs" },
+      {
+        operation: "runs.search",
+        patterns: ["ok"],
+        createdAfter: "2026-11-25T00:00:00Z",
+        createdBefore: "2026-11-24T00:00:00Z",
+      },
+      { operation: "list", resource: "runs", companyId, patterns: ["nope"] },
     ])
       expect(() => parseInspectionQuery(value)).toThrow();
+  });
+  it("runs.search catches hidden platform errors inside succeeded runs, reports co-occurrence, and redacts excerpts", async () => {
+    const [coA, coB] = await db
+      .insert(schema.companies)
+      .values([
+        { name: "SearchCoA", issuePrefix: "SCA" },
+        { name: "SearchCoB", issuePrefix: "SCB" },
+      ])
+      .returning();
+    const [agentA] = await db
+      .insert(schema.agents)
+      .values({ companyId: coA.id, name: "Codex A", adapterType: "codex_local" })
+      .returning();
+    const [agentB] = await db
+      .insert(schema.agents)
+      .values({ companyId: coB.id, name: "OpenCode B", adapterType: "opencode_local" })
+      .returning();
+
+    const t1 = new Date("2026-11-23T10:00:00.000Z");
+    const t2 = new Date("2026-11-24T10:00:00.000Z");
+    const t3 = new Date("2026-11-24T12:00:00.000Z");
+
+    const [runBoth, runGitOnly] = await db
+      .insert(schema.heartbeatRuns)
+      .values([
+        {
+          companyId: coA.id,
+          agentId: agentA.id,
+          status: "succeeded",
+          exitCode: 0,
+          runtimeMode: "native",
+          driverKind: "codex",
+          createdAt: t1,
+        },
+        {
+          companyId: coA.id,
+          agentId: agentA.id,
+          status: "succeeded",
+          exitCode: 0,
+          runtimeMode: "native",
+          driverKind: "codex",
+          createdAt: t2,
+        },
+      ])
+      .returning();
+    const [runOtherCo] = await db
+      .insert(schema.heartbeatRuns)
+      .values([
+        {
+          companyId: coB.id,
+          agentId: agentB.id,
+          status: "failed",
+          exitCode: 1,
+          runtimeMode: "native",
+          driverKind: "opencode",
+          error: "remote_workspace_archive_failed: exit=75 program=git reason=git_storage_guard_unavailable",
+          createdAt: t3,
+        },
+      ])
+      .returning();
+
+    await db.insert(schema.heartbeatRunEvents).values([
+      {
+        companyId: coA.id,
+        runId: runBoth.id,
+        agentId: agentA.id,
+        seq: 1,
+        eventType: "item.completed",
+        stream: "system",
+        payload: {
+          prpEvent: {
+            payload: {
+              kind: "commandExecution",
+              aggregatedOutput:
+                "Paperclip: GitHub capability_missing; continuing without managed credentials.\n" +
+                "paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured; Git did not complete.",
+            },
+          },
+        },
+      },
+      {
+        companyId: coA.id,
+        runId: runBoth.id,
+        agentId: agentA.id,
+        seq: 2,
+        eventType: "platform.diagnostic",
+        stream: "system",
+        message: "git_storage_guard_unavailable",
+        payload: { code: "git_storage_guard_unavailable" },
+      },
+      {
+        companyId: coA.id,
+        runId: runGitOnly.id,
+        agentId: agentA.id,
+        seq: 1,
+        eventType: "item.completed",
+        stream: "system",
+        payload: {
+          prpEvent: {
+            payload: {
+              kind: "commandExecution",
+              aggregatedOutput:
+                "paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured.",
+            },
+          },
+        },
+      },
+    ]);
+
+    // Company-scoped search with excerpts returns redacted matches and co-occurrence.
+    const scoped = (await readCustomerSuccessResource(db, storage, {
+      operation: "runs.search",
+      companyId: coA.id,
+      patterns: ["paperclip_git_storage_limit", "capability_missing"],
+      createdAfter: "2026-11-23T00:00:00.000Z",
+      includeExcerpts: true,
+    })) as {
+      runsScanned: number;
+      runsTotalInWindow: number;
+      truncated: boolean;
+      byDiagnostic: Record<string, number>;
+      patterns: Array<{
+        pattern: string;
+        matchedRuns: number;
+        byStatus: Record<string, number>;
+        sampleRuns: Array<{ runId: string; excerpt?: string; diagnostics: string[] }>;
+      }>;
+      coOccurrence: Array<{ patterns: string[]; matchedRuns: number }>;
+    };
+    expect(scoped.runsScanned).toBe(2);
+    expect(scoped.runsTotalInWindow).toBe(2);
+    expect(scoped.truncated).toBe(false);
+    expect(scoped.byDiagnostic).toEqual({ git_storage_guard_unavailable: 1 });
+    expect(scoped.patterns[0]!.matchedRuns).toBe(2);
+    expect(scoped.patterns[0]!.byStatus).toEqual({ succeeded: 2 });
+    expect(scoped.patterns[0]!.sampleRuns[0]!.excerpt).toContain("paperclip_git_storage_limit");
+    expect(scoped.patterns[1]!.matchedRuns).toBe(1);
+    expect(scoped.coOccurrence).toEqual([
+      { patterns: ["paperclip_git_storage_limit"], matchedRuns: 1 },
+      { patterns: ["paperclip_git_storage_limit", "capability_missing"], matchedRuns: 1 },
+    ]);
+
+    // Stack-wide search (no companyId, zero excerpts) spans both companies on the stack.
+    const stackWide = (await readCustomerSuccessResource(db, storage, {
+      operation: "runs.search",
+      patterns: ["paperclip_git_storage_limit", "git_storage_guard_unavailable"],
+      createdAfter: "2026-11-23T00:00:00.000Z",
+      createdBefore: "2026-11-25T00:00:00.000Z",
+    })) as {
+      runsScanned: number;
+      patterns: Array<{ pattern: string; matchedRuns: number; sampleRuns: Array<{ runId: string; excerpt?: string }> }>;
+    };
+    expect(stackWide.runsScanned).toBe(3);
+    expect(stackWide.patterns[0]!.matchedRuns).toBe(2);
+    // Matches both runOtherCo (run.error) and runBoth (platform.diagnostic event).
+    expect(stackWide.patterns[1]!.matchedRuns).toBe(2);
+    expect(stackWide.patterns[1]!.sampleRuns.map((r) => r.runId)).toContain(runOtherCo.id);
+    expect(stackWide.patterns[1]!.sampleRuns.map((r) => r.runId)).toContain(runBoth.id);
+    expect(stackWide.patterns[0]!.sampleRuns[0]!.excerpt).toBeUndefined();
+
+    // Stack-wide count (no companyId) counts across all companies on the stack.
+    const allRunCount = (await readCustomerSuccessResource(db, storage, {
+      operation: "count",
+      resource: "runs",
+    })) as { total: number; byStatus: Record<string, number> };
+    expect(allRunCount.total).toBeGreaterThanOrEqual(3);
+
+    // Summary view attaches structured diagnostics on succeeded runs.
+    const summaryRun = (await readCustomerSuccessResource(db, storage, {
+      operation: "get",
+      resource: "runs",
+      companyId: coA.id,
+      resourceId: runBoth.id,
+      view: "summary",
+    })) as { status: string; diagnostics: string[] };
+    expect(summaryRun.status).toBe("succeeded");
+    expect(summaryRun.diagnostics).toEqual(["git_storage_guard_unavailable"]);
   });
   it("the operation contract has no writes, credentials or unknown parameters", () => {
     for (const value of [
