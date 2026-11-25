@@ -307,20 +307,60 @@ blocks new imports rather than resetting the budget. See the
 [local qualification record](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
 for runnable acceptance cells and the remaining live qualification gates.
 
-Google Antigravity is an **unqualified, pending** native ACPX integration. The
-explicit `paperclipai runtime setup antigravity` command installs the verified
-Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
-It verifies both the official vendor closure and the separately pinned patched
-closure; npm installation downloads no Antigravity runtime. This setup installs
-assets only. Global release qualification remains pending and normal execution
-admission stays closed. An isolated operator can admit one company, exact model,
-local platform and pinned native closure/profile until a fixed expiry through
-trusted server startup authority. The candidate supports a managed saved Google
-subscription; the recorded acceptance reused the same owner's personal default
-grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
-consent or the separate API-key route. Google Workspace OAuth does not substitute
-for a runtime credential. See the
-[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
+Google Antigravity is an **unqualified, pending** native ACPX integration on
+Google's official ACP server 1.5.2 with Paperclip's owned admission patch
+(`1.5.2-paperclip.2`). The explicit `paperclipai runtime setup antigravity`
+command installs it on macOS ARM64, Linux x64 and Linux ARM64; macOS Intel stays
+inventory-only (no native host). Setup verifies both the official vendor closure
+and the separately pinned patched closure; npm installation downloads no
+Antigravity runtime. The Daytona image and remote provider pack carry the Linux
+x64 closure only when built with `--candidate-providers=antigravity`; while the
+profile is pending it is listed under `candidateProviders`.
+
+Two connection routes exist: a Gemini API key (`gemini-api-key`, locally and in
+a cloud environment once released) and personal Google sign-in (Paperclip host
+only, one turn at a time). Agent save and Test refuse any other combination in
+plain language. Models are the server's own catalog. The 1.5.2 catalog lists
+Gemini 4 families only for Agent Platform, but patch `1.5.2-paperclip.2` admits
+an exact requested model ID under an API key, so Gemini 4 (Neon included) runs
+on the API-key route with a paid key; a refused model is named with its fix. Global release qualification remains pending and normal execution
+admission stays closed: an isolated operator can admit one company, exact
+model, execution platform (this host, or linux-x64 for a cloud environment with
+an API key) and pinned patched closure/profile, per-turn only, until a fixed
+expiry through trusted server startup authority. Live acceptance on 1.5.2 (API key, Linux,
+Daytona, the model lineups) has not passed yet. Google Workspace OAuth does not
+substitute for a runtime credential. See the
+[current qualification plan](../../doc/plans/2026-11-22-antigravity-qualification.md)
+and the [October integration record](../../doc/plans/2026-10-28-antigravity-integration.md).
+
+### Antigravity CLI route (experimental)
+
+`antigravity-cli-distributions.json` pins Google's Antigravity CLI (`agy`)
+1.5.15 for darwin-arm64, linux-x64 and linux-arm64. Each pin has the archive URL,
+size, SHA-512 and SHA-256, plus the extracted executable's digests.
+`paperclipai runtime setup antigravity-cli` downloads the archive from Google,
+verifies it, and installs `agy` under `~/.paperclip/runtimes/antigravity-cli/`.
+A mismatch installs nothing. Re-running setup verifies the installed copy and
+replaces it if it was changed. The binary is never packed into npm, the
+provider pack or an image.
+
+A driver gets a launch from one call:
+
+```ts
+resolveAntigravityCliLaunch(options?: {
+  arguments?: readonly string[];  // driver flags, appended after the pinned `acp`
+  platform?: NodeJS.Platform; architecture?: string; home?: string;
+}): Promise<AntigravityCliLaunch>
+```
+
+The result has `version`, `build`, `target`, `commandDigest`, the exact
+`arguments`, the pinned `environment` (`AGY_CLI_DISABLE_AUTO_UPDATE=1`),
+`environmentFor(base)`, which merges the pins over a driver environment, and
+`installation`. `installation.openCommand()` admits the sealed verified store
+copy, and each spawn re-hashes the executable it runs. The call fails with
+`AntigravityCliRuntimeError` (`ANTIGRAVITY_CLI_UNSUPPORTED_PLATFORM` or
+`ANTIGRAVITY_CLI_RUNTIME_MISSING`, both permanent). The endpoint, modes,
+`--gemini-dir` and route selection are the driver's choices.
 
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that

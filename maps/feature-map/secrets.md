@@ -54,7 +54,7 @@ Manual: Create a dummy secret reference, bind it through a supported field, and 
 
 ### `proposal-import`
 
-Automated: [proposal routes](../../server/src/__tests__/secret-proposals-routes.test.ts) and [vault import dialog](../../ui/src/pages/secrets/ImportFromVaultDialog.test.tsx) cover route/UI layers; a real vault integration needs live validation.
+Automated: [proposal routes](../../server/src/__tests__/secret-proposals-routes.test.ts) covers route contracts (mocked `ImportFromVaultDialog` UI tests were removed; verify the vault import dialog manually); a real vault integration needs live validation.
 
 Manual: Review a dummy proposal, reject one and accept another, then inspect the resulting reference state and history. Preview a vault import, select only disposable entries, and verify imported references and denied-access errors after reload.
 
@@ -77,7 +77,7 @@ Capability ID: `secrets/proposals`.
 Scope: ui
 Storybook: Mount ProposalsTab pending secret/binding proposals, blocked authority, expired/resolved proposal, approval/rejection pending/error, and redacted metadata.
 Production: GET /companies/{id}/secret-proposals and POST approve/reject must enforce company/admin/target authority, durable resolution and redaction; verified run-bound agent proposal creation is separate.
-Sources: Source: [ProposalsTab.tsx](../../ui/src/pages/secrets/ProposalsTab.tsx), [secrets.ts](../../server/src/routes/secrets.ts), [secret-proposal-authorization.ts](../../server/src/services/secret-proposal-authorization.ts). Tests: [ProposalsTab.render.test.tsx](../../ui/src/pages/secrets/ProposalsTab.render.test.tsx), [secret-proposals-routes.test.ts](../../server/src/__tests__/secret-proposals-routes.test.ts)
+Sources: Source: [ProposalsTab.tsx](../../ui/src/pages/secrets/ProposalsTab.tsx), [secrets.ts](../../server/src/routes/secrets.ts), [secret-proposal-authorization.ts](../../server/src/services/secret-proposal-authorization.ts). Tests: [secret-proposals-routes.test.ts](../../server/src/__tests__/secret-proposals-routes.test.ts)
 
 ### Documentation scope: Secrets and secret proposals
 

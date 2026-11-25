@@ -7,33 +7,51 @@ import type { APIRequestContext } from "@playwright/test";
 import { reserveRunnerE2EServerPort } from "./ports.js";
 import { resolvePaperclipRunnerBinaryForHarness } from "./harness-env.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
-import { ConnectionBlock, ConnectionFailure, targetOrigin, type ConnectionConfig } from "./connection-config.js";
+import { ConnectionBlock, ConnectionFailure, isTransientConnectionFailure, targetOrigin, type ConnectionConfig } from "./connection-config.js";
 import type { MatrixExecution } from "./types.js";
 
 export const connectionDelay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+const maxRetryAfterMs = 5_000;
+/** Bounded Retry-After in milliseconds (seconds form only), else the fixed backoff. */
+function retryDelay(response: { headers?: () => Record<string, string> } | undefined, attempt: number) {
+  const seconds = Number(response?.headers?.()["retry-after"]);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(maxRetryAfterMs, seconds * 1000) : 250 * attempt;
+}
+
 /** No raw response bodies, callback URLs, headers, or Playwright diagnostics escape. */
 export class ConnectionApi {
   constructor(readonly request: APIRequestContext, readonly origin: string) {}
-  async response(route: string, method = "GET", data?: unknown, options: { timeoutMs?: number } = {}) {
+  async response(route: string, method = "GET", data?: unknown, options: { timeoutMs?: number; retry?: boolean } = {}) {
     const target = new URL(route, this.origin);
     if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
     const timeout = options.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
-    try {
-      const response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0, timeout });
-      if (!response.ok()) throw new ConnectionFailure(`api_status_${response.status()}`);
-      return response;
-    } catch (error) {
-      if (error instanceof Error && /^api_status_\d+$/.test(error.message)) throw error;
-      throw new ConnectionFailure("api_request_failed");
+    // A read is safe to repeat: one dropped connection or gateway error must not
+    // fail a long journey. Writes, binary downloads and callers that keep their
+    // own retry ledger opt out. All attempts share the caller's timeout.
+    const deadline = Date.now() + timeout;
+    const attempts = method === "GET" && options.retry !== false ? 3 : 1;
+    for (let attempt = 1; ; attempt++) {
+      let failure: ConnectionFailure, response: Awaited<ReturnType<APIRequestContext["fetch"]>> | undefined;
+      try {
+        response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0,
+          timeout: attempt === 1 ? timeout : Math.max(1, deadline - Date.now()) });
+        if (response.ok()) return response;
+        failure = new ConnectionFailure(`api_status_${response.status()}`);
+      } catch {
+        failure = new ConnectionFailure("api_request_failed");
+      }
+      const wait = retryDelay(response, attempt);
+      if (attempt >= attempts || !isTransientConnectionFailure(failure) || Date.now() + wait + 1_000 > deadline) throw failure;
+      await connectionDelay(wait);
     }
   }
-  async get<T = any>(route: string, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "GET", undefined, options)).json(); }
+  async get<T = any>(route: string, options?: { timeoutMs?: number; retry?: boolean }): Promise<T> { return (await this.response(route, "GET", undefined, options)).json(); }
   async post<T = any>(route: string, data?: unknown, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "POST", data, options)).json(); }
   async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
   async delete(route: string) { await this.response(route, "DELETE"); }
-  async bytes(route: string) { return (await this.response(route)).body(); }
+  async bytes(route: string) { return (await this.response(route, "GET", undefined, { retry: false })).body(); }
   /** Keep fixture credentials out of Playwright request traces. */
   async postSensitive<T = any>(route: string, data: unknown, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
     const target = new URL(route, this.origin);

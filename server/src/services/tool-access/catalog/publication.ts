@@ -1,5 +1,10 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectorToolPolicy } from "../../connectors/tool-policy.js";
+
+function pluginDeclaredRisk(descriptor: { annotations?: Record<string, unknown> | null }) {
+  const declared = descriptor.annotations?.paperclipRisk;
+  return declared === "read" || declared === "write" || declared === "destructive" ? declared : "write";
+}
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
@@ -7,6 +12,7 @@ import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash, descriptorHash } from "../../tool-catalog-hash.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
+import { paperclipDefinedTool, shippedPaperclipSchemaHashes } from "../../connectors/paperclip-defined-tools.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
@@ -15,6 +21,8 @@ import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
+import { isGoogleWorkspaceConnection } from "../connections/google-content-retention.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { HttpError, unprocessable } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { mcpSkillsService } from "../../mcp-skills.js";
@@ -141,7 +149,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       existingRows.map((entry) => [entry.toolName, entry]),
     );
     const nativeProvider = Boolean(nativeProviderCatalogFor(connection) || restConnectorFor(connection));
-    if (connection.config.sourceTemplateKey === "google-workspace"
+    if (connection.config.sourceTemplateKey === "google-workspace" || connection.transport === "plugin"
       || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
       // The catalog is shared, but discovery uses only the caller's grant. A
@@ -180,6 +188,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     }
     const catalogValues: Array<typeof toolCatalogEntries.$inferInsert> = [];
     let quarantinedCount = 0;
+    const releasedNames = new Set<string>();
     const sourceTemplateKey =
       typeof asRecord(connection.config).sourceTemplateKey === "string"
         ? String(asRecord(connection.config).sourceTemplateKey)
@@ -214,15 +223,27 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
-      const riskLevel = classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
+      // A plugin-served connection's tools carry the risk its plugin declared
+      // (statically, or per connection from its worker). Other transports keep
+      // the reviewed classifier; a remote server cannot set this annotation's
+      // effect because it is read only for plugin connections.
+      const riskLevel = connection.transport === "plugin"
+        ? pluginDeclaredRisk(descriptor)
+        : classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
       const hash = descriptorHash(descriptor, riskLevel);
       const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
       const changed =
         existing &&
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
+      const paperclipDefined = paperclipDefinedTool(connection, descriptor.name) !== null;
+      if (paperclipDefined && existing?.status === "quarantined") releasedNames.add(descriptor.name);
+      const leavingPaperclipDefinition = Boolean(!paperclipDefined && existing?.schemaHash
+        && shippedPaperclipSchemaHashes(connection, descriptor.name).includes(existing.schemaHash));
       const shouldQuarantine =
         quarantineOnRefresh &&
+        !paperclipDefined &&
+        !leavingPaperclipDefinition &&
         (!existing || changed) &&
         existing?.status !== "disabled" &&
         (!safeDefault || riskLevel !== "read" || nativeProvider);
@@ -236,7 +257,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
           ? "quarantined"
           : existing?.status === "disabled" && existing.quarantineReason !== "mcp_tool_removed"
             ? "disabled"
-            : quarantineOnRefresh && existing?.status === "quarantined"
+            : quarantineOnRefresh && existing?.status === "quarantined" && !paperclipDefined
               ? "quarantined"
               : "active";
       if (shouldQuarantine && !providerPermanentlyBlocked) quarantinedCount += 1;
@@ -274,7 +295,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
             versionHash: sql`excluded.version_hash`, schemaHash: sql`excluded.schema_hash`, lastSeenAt: sql`excluded.last_seen_at`,
             quarantinedAt: sql`excluded.quarantined_at`, quarantineReason: sql`excluded.quarantine_reason`, updatedAt: sql`excluded.updated_at`,
           } }).returning();
-        for (const row of rows) if (!existingNonQuarantinedNames.has(row.name)) newCatalogEntryIds.add(row.id);
+        for (const row of rows) if (!existingNonQuarantinedNames.has(row.name) && !releasedNames.has(row.name)) newCatalogEntryIds.add(row.id);
         return rows;
       }));
     }
@@ -292,7 +313,9 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       : refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
-    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, tx => tx
+    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      if (await isGoogleWorkspaceConnection(tx, connection)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.googleTechnicalInformation);
+      return tx
       .update(toolConnections)
       .set({
         config: normalizedConfig,
@@ -310,7 +333,8 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         updatedAt: refreshedAt,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning());
+      .returning();
+    });
 
     if (connection.transport === "local_stdio") {
       await ensureRuntimeSlot(updatedConnection);

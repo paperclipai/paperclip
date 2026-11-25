@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { resolveAntigravityProvisioner, resolveCursorProvisioner, resolveKimiProvisioner } from "../commands/runtime.js";
+import { Command } from "commander";
+import { registerRuntimeCommands, resolveAntigravityCliProvisioner, resolveAntigravityProvisioner, resolveCursorProvisioner, resolveKimiProvisioner } from "../commands/runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -58,4 +59,21 @@ it("rejects an Antigravity provisioner outside the installed server", async () =
   await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
   await expect(resolveAntigravityProvisioner(f.url)).rejects.toThrow("escapes");
   await expect(resolveAntigravityProvisioner(`${f.url}?redirect=1`)).rejects.toThrow("installed Paperclip server");
+});
+
+it("resolves the Antigravity CLI route's own provisioner, never the registry-server one", async () => {
+  const f = await fixture("antigravity-cli");
+  expect(await resolveAntigravityCliProvisioner(f.url)).toBe(f.provisioner);
+  const registryOnly = await fixture("antigravity");
+  await expect(resolveAntigravityCliProvisioner(registryOnly.url)).rejects.toThrow();
+  const other = await fixture("antigravity-cli");
+  await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
+  await expect(resolveAntigravityCliProvisioner(f.url)).rejects.toThrow("escapes");
+  await expect(resolveAntigravityCliProvisioner(`${other.url}?redirect=1`)).rejects.toThrow("installed Paperclip server");
+});
+
+it("lists antigravity-cli among the supported runtime setups", async () => {
+  const program = new Command().exitOverride();
+  registerRuntimeCommands(program);
+  await expect(program.parseAsync(["node", "paperclipai", "runtime", "setup", "unknown"])).rejects.toThrow("pi, cursor, kimi, antigravity, or antigravity-cli");
 });

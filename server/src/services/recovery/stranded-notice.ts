@@ -1,5 +1,6 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -75,7 +76,7 @@ const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: TEMPORARY_SETUP_NEXT_ACTION },
   remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
   plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "The plugin that starts this agent's sandbox was not running, so no agent work started. Press Retry once it is running again." },
-  environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip retried automatically before the agent started, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
+  environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip kept retrying automatically for 30 minutes, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
   reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "The sandbox service did not start the saved sandbox in time. "
     + "The saved sandbox and its files were kept, and no agent work started. Paperclip tries again automatically." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "The server was too busy to read the task's files, so no agent work started. Press Retry to start it again." },
@@ -128,6 +129,7 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
 }
 
 export const SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON = "sandbox_provider_plugin_not_ready";
+export const PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION = "Assign the task to an agent whose environment can use this project's workspace storage, or choose a workspace from a project for this agent's environment, then press Retry.";
 
 function readNonEmptyStringField(payload: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = payload?.[key];
@@ -223,6 +225,14 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
         + "in the project or the agent's arguments, such as an API key, token or apiKeyHelper. The task is blocked until the conflict is removed.",
       nextAction: "Remove the API key, token or apiKeyHelper from the project's Claude or Codex settings or the agent's arguments, "
         + "or choose a different AI connection for this agent, then retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE) {
+    return {
+      title: "Workspace storage unavailable",
+      body: "The agent did not start because the project that stores this task's files uses workspace storage that the agent's environment cannot use.",
+      nextAction: PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
       tone: "danger",
     };
   }

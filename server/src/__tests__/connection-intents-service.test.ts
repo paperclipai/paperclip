@@ -43,6 +43,8 @@ import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { attentionService } from "../services/attention.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -456,6 +458,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("was not found");
     expect((await service.search(claims, "github")).results).toEqual([
       expect.objectContaining({ service: "github", state: "available" }),
+      expect.objectContaining({ service: "github-copilot", state: "available" }),
     ]);
     await expect(service.request(claims, "github")).resolves.toMatchObject({
       state: "needs_user_action",
@@ -476,10 +479,17 @@ describeEmbeddedPostgres("connectionIntentService", () => {
             auth: "api_key",
             purpose: "tool",
           }),
+        ],
+      }),
+    );
+    const copilot = search.results.find((result) => result.service === "github-copilot");
+    expect(copilot).toEqual(
+      expect.objectContaining({
+        methods: [
           expect.objectContaining({
             key: "copilot-token",
             purpose: "ai",
-            setupPath: expect.stringContaining("/apps/connect?source=github"),
+            setupPath: expect.stringMatching(/\/apps\/connect\?source=github-copilot$/),
           }),
         ],
       }),
@@ -913,6 +923,49 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+  it("resumes transferred AI authentication with the recipient's account without sharing it with the original person", async () => {
+    const companyId = claims.company_id, agentId = randomUUID(), issueId = randomUUID(), sourceRunId = randomUUID();
+    const recipient = `recipient-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: recipient, name: "Recipient", email: `${recipient}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: recipient, status: "active", membershipRole: "member" });
+    const binding = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(agents).values({ id: agentId, companyId, name: "Transferred agent", adapterType: "codex_local", runtimeConfig: { aiConnection: binding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Transferred authentication", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: recipient });
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const origin = await initializeRunIdentity(db, { companyId, runId: sourceRunId, issueId, responsibleUserId: claims.responsible_user_id!, cause: "company_default" });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: `handoff-${agentId}`, name: "OpenAI", type: "mcp_http", metadata: { sourceTemplateKey: "openai" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Recipient account", uid: `handoff-${agentId}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "openai", ai: { provider: "openai", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: recipient, createdByUserId: recipient }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId, userId: recipient, provider: "openai", grantId: grant!.id });
+    const service = connectionIntentService(db);
+    const sourceClaims = { ...claims, sub: agentId, run_id: sourceRunId };
+    const pending = await service.request(sourceClaims, "openai", { purpose: "ai" });
+    expect(pending.state).toBe("needs_user_action");
+    await attentionService(db).transfer(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: pending.interactionId!, toUserId: recipient,
+      actor: { type: "board", source: "session", userId: claims.responsible_user_id! },
+    });
+    await expect(service.complete(pending.interactionId!, connection!.id, claims.responsible_user_id!)).rejects.toThrow("Only the addressed user");
+    await service.complete(pending.interactionId!, connection!.id, recipient);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(pending.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const contextSnapshot = wakeup.mock.calls[0][1].contextSnapshot;
+    expect(contextSnapshot).toMatchObject({ interactionId: pending.interactionId, forceFreshSession: true });
+    const continuedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: continuedRunId, companyId, agentId, status: "running", contextSnapshot });
+    const continued = await initializeRunIdentity(db, {
+      companyId, runId: continuedRunId, issueId, interactionId: contextSnapshot.interactionId,
+      responsibleUserId: claims.responsible_user_id!, cause: contextSnapshot.wakeReason,
+    });
+    expect(continued).toMatchObject({ responsibleUserId: recipient, parentContextId: origin.id, cause: "connection_handoff" });
+    expect(await service.request({ ...sourceClaims, run_id: continuedRunId, responsible_user_id: recipient }, "openai", { purpose: "ai" }))
+      .toMatchObject({ state: "ready", connectionId: connection!.id });
+    expect(await service.usableConnectionForAgent({ companyId, agentId, responsibleUserId: claims.responsible_user_id!, serviceSlug: "openai", purpose: "ai" })).toBeNull();
+    const [saved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    expect(saved).toMatchObject({ sourceIdentityContextId: origin.id, addresseeUserId: recipient, resolvedByUserId: recipient });
+  });
+
   it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
     const companyId = claims.company_id;
     const agentId = randomUUID();
@@ -976,6 +1029,96 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
+
+  it("requests Copilot authentication through the GitHub Copilot connector", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const service = connectionIntentService(db);
+    const aiRequest = await service.request({ ...claims, sub: agentId, run_id: aiRunId }, "github", { purpose: "ai" });
+    expect(aiRequest).toMatchObject({ service: "github-copilot", state: "needs_user_action" });
+    const setup = await service.setupOptions(aiRequest.interactionId!);
+    expect(setup.service).toMatchObject({ service: "github-copilot", name: "GitHub Copilot" });
+    expect(setup.service.methods.map((method) => method.key)).toEqual(["copilot-token"]);
+    expect(setup.aiConnection).toMatchObject({ provider: "github", method: "api_key" });
+  });
+
+  async function copilotAccountFixture(agentRuntimeConfig: Record<string, unknown>, run: { status: "running" | "failed"; errorCode?: string }) {
+    const companyId = claims.company_id;
+    const userId = claims.responsible_user_id!;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const [agent] = await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }, runtimeConfig: agentRuntimeConfig }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: run.status, errorCode: run.errorCode ?? null, responsibleUserId: userId, contextSnapshot: { issueId } });
+    const [application] = await db.insert(toolApplications).values({ companyId, applicationKey: `app-gallery:github:${randomUUID()}`, name: `GitHub ${randomUUID()}`, type: "mcp_http", metadata: { sourceTemplateKey: "github" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id, name: "Older Copilot account", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: userId, createdByUserId: userId }).returning();
+    await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId), eq(aiProviderDefaults.provider, "github")));
+    await db.insert(aiProviderDefaults).values({ companyId, userId, provider: "github", grantId: grant!.id });
+    return { companyId, userId, agent: agent!, issueId, runId, connection: connection! };
+  }
+
+  it("completes a Copilot request saved before the connector split with an older Copilot account", async () => {
+    const f = await copilotAccountFixture({ aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } }, { status: "running" });
+    const card = await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null, requestingAgentId: f.agent.id,
+        requestingAgentName: f.agent.name, phase: "requested", purpose: "ai" },
+      sourceRunId: f.runId,
+      addresseeUserId: f.userId,
+      idempotencyKey: `connection-intent:${f.runId}:${f.userId}:github:ai`,
+    });
+    expect((await connectionIntentService(db).setupOptions(card.id)).service).toMatchObject({ service: "github-copilot" });
+    await expect(connectionIntentService(db).complete(card.id, f.connection.id, f.userId)).resolves.toMatchObject({ status: "accepted" });
+  });
+
+  it("keeps a Copilot request declined before the connector split declined in its continuation", async () => {
+    const companyId = claims.company_id;
+    const userId = claims.responsible_user_id!;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const continuationRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId } });
+    const intents = connectionIntentService(db);
+    const card = await issueThreadInteractionService(db).createConnectionIntent({ id: issueId, companyId }, {
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null, requestingAgentId: agentId,
+        requestingAgentName: "Copilot Agent", phase: "requested", purpose: "ai" },
+      sourceRunId: runId,
+      addresseeUserId: userId,
+      idempotencyKey: `connection-intent:${runId}:${userId}:github:ai`,
+    });
+    await intents.decline(card.id, userId);
+    await db.insert(heartbeatRuns).values({ id: continuationRunId, companyId, agentId, status: "running", responsibleUserId: userId,
+      contextSnapshot: { issueId, interactionId: card.id } });
+    await expect(intents.request({ ...claims, sub: agentId, run_id: continuationRunId }, "github", { purpose: "ai" }))
+      .rejects.toThrow("The user declined this connection");
+  });
+
+  it("adopts a Copilot account for an agent without a saved AI connection", async () => {
+    const f = await copilotAccountFixture({}, { status: "failed", errorCode: "copilot_auth_required" });
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(f.runId);
+    expect(card).toMatchObject({ service: "github-copilot", state: "needs_user_action" });
+    const setup = await intents.setupOptions(card!.interactionId!);
+    expect(setup).toMatchObject({ aiConnectionRequiresAdoption: true, aiConnection: { provider: "github", mode: "responsible_user" } });
+    await expect(intents.complete(card!.interactionId!, f.connection.id, f.userId, {
+      validatedAdoption: { agentUpdatedAt: f.agent.updatedAt, binding: setup.aiConnection! },
+    })).resolves.toMatchObject({ status: "accepted" });
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0]!.runtimeConfig.aiConnection).toMatchObject({ provider: "github", mode: "responsible_user" });
+  });
 
   async function accessFixture(source = "composio") {
     const [company] = await db.insert(companies).values({ name: "Grant fixture", issuePrefix: `G${randomUUID().slice(0, 7)}` }).returning();
@@ -1136,6 +1279,38 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     })).resolves.toMatchObject({ status: "accepted" });
     await expect(f.service.usableConnectionForAgent({ companyId: f.company.id, agentId: f.otherAgent.id,
       responsibleUserId: "grant-user", serviceSlug: "notion" })).resolves.toMatchObject({ id: f.connection.id });
+  });
+
+  it("names a shared connection whose sign-in must be renewed instead of a generic attention reason", async () => {
+    const f = await accessFixture("sentry");
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Sentry", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
+    const sentry = async () => (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(await sentry()).toMatchObject({ state: "ready", connectionId: f.connection.id });
+    // The rows a rejected refresh writes for an organization grant: the grant
+    // needs reauthorization and the connection is disabled. lastError is unchanged.
+    await db.update(connectionGrants).set({ status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.update(toolConnections).set({ authKind: "oauth", status: "draft", enabled: false })
+      .where(eq(toolConnections.id, f.connection.id));
+    const result = await sentry();
+    expect(result).toMatchObject({ state: "needs_user_action", connectionId: null });
+    expect(result?.reason).toContain("Saved sentry");
+    expect(result?.reason).toMatch(/sign in again|signed in again/i);
+    expect(result?.reason).toMatch(/reconnect/i);
+  });
+
+  it("does not name another person's private connection that must be renewed", async () => {
+    const f = await accessFixture("sentry");
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user", status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    await db.update(toolConnections).set({
+      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user", status: "draft", enabled: false,
+    }).where(eq(toolConnections.id, f.connection.id));
+    const result = (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(result).toBeDefined();
+    expect(result?.reason).not.toContain("Private Sentry of another person");
   });
 
   it("creates a scoped access card and atomically accepts repeated clicks without granting other agents", async () => {

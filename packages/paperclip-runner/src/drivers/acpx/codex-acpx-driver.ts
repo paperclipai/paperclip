@@ -23,6 +23,7 @@ import type {
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
+  prpSemanticResultConflictMessage,
 } from "../../contracts/completion-result.js";
 import {
   HarnessCapabilityUnavailableError,
@@ -66,7 +67,7 @@ import {
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
   AcpxProviderProcessLostError,
-  openCodexAcpxRuntime,
+  openQualifiedAcpxRuntime,
 } from "./acpx-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
 import {
@@ -275,7 +276,7 @@ function openProductionAcpxHost(
   options: OpenAcpxRuntimeHostOptions,
 ): Promise<AcpxRuntimeHost> {
   return AcpxRuntimeHost.open(options, {
-    openRuntime: openCodexAcpxRuntime,
+    openRuntime: openQualifiedAcpxRuntime,
     reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
   });
 }
@@ -1199,7 +1200,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#semanticFingerprint !== null &&
         this.#semanticFingerprint !== fingerprint
       ) {
-        throw new Error("A different semantic result is already committed");
+        throw new Error(prpSemanticResultConflictMessage(this.#semanticResult));
       }
       const claimsLaterTurn =
         this.#semanticFingerprint === fingerprint &&
@@ -1520,8 +1521,11 @@ class CodexAcpxSession implements HarnessSession {
       const trackSubagents = this.#agent === "claude"
         ? createClaudeSubagentLineageTracker<AcpRuntimeEvent>(activity.toolExecutionId ?? ((id) => id))
         : (event: AcpRuntimeEvent) => event;
-      for await (const event of turn.events) {
-        toolEvidence?.tool(event);
+      const projectToolEvent = activity.createToolEventProjection?.() ?? ((event: AcpRuntimeEvent) => event);
+      for await (const raw of turn.events) {
+        toolEvidence?.tool(raw);
+        const event = projectToolEvent(raw);
+        if (!event) continue;
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
         this.#mapRuntimeEvent(normalizeMessage(trackSubagents(normalizeToolEvent(projected))), turnId, ++index);

@@ -1,4 +1,4 @@
-import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, SUPERSEDED_REUSABLE_SANDBOX_KEY, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
@@ -8,6 +8,7 @@ import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -66,9 +67,19 @@ import {
  * all use this one list, or a delete can orphan a sandbox. */
 export const KEPT_SANDBOX_LEASE_POLICIES = ["reuse_by_environment", "retain_on_failure"] as const;
 
+/**
+ * Record a started sandbox as its creation operation's lease. The provider has
+ * already created the sandbox, so losing a lock race here must not fail the
+ * run. This transaction locks the run row, then the lease insert takes a
+ * key-share lock on its parent issue and workspace; a writer holding one of
+ * those and then waiting for the run closes a lock cycle and PostgreSQL aborts
+ * this transaction. The rollback is whole (the operation stays `pending` and
+ * no lease row exists), so a bounded fresh attempt re-proves every check.
+ * `attach` must therefore only write through `tx`.
+ */
 export async function attachSandboxCreation(db: Db, id: string, scope: { companyId: string; environmentId: string; heartbeatRunId?: string | null },
   attach: (tx: Db) => Promise<EnvironmentLease>): Promise<EnvironmentLease> {
-  return db.transaction(async tx => {
+  return retryTransientLockContention(() => db.transaction(async tx => {
     await assertEnvironmentCompanyBinding(tx as unknown as Db, scope.environmentId, scope.companyId);
     const [operation] = await tx.select().from(sandboxCreationOperations)
       .where(and(eq(sandboxCreationOperations.id, id), eq(sandboxCreationOperations.companyId, scope.companyId),
@@ -89,7 +100,7 @@ export async function attachSandboxCreation(db: Db, id: string, scope: { company
     await tx.update(sandboxCreationOperations).set({ state: "attached", leaseId: lease.id, updatedAt: new Date() })
       .where(eq(sandboxCreationOperations.id, id));
     return lease;
-  });
+  }));
 }
 
 export async function assertEnvironmentCompanyBinding(db: Db, environmentId: string, companyId: string): Promise<void> {
@@ -169,17 +180,6 @@ export interface ManagedSandboxEnvironmentInput {
   extraMetadata?: Record<string, unknown>;
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
-  /**
-   * Asserts the caller's deployment gives no operator any path to hand-edit
-   * this row (currently only true for the PAPERCLIP_MANAGED_CONFIG applier,
-   * where `enableManagedSandboxOnly` removes the tenant's own environment
-   * choice entirely). When set, a plain content-hash mismatch against a real
-   * prior binding is treated as ordinary stock drift instead of an operator
-   * customization to protect — see the `operator_modified` handling below.
-   * Leave unset for any caller (self-hosted `kubernetes-execution-mode`
-   * bootstrap, tests, admin routes) where an operator could realistically
-   * have edited the row through the normal environments UI/API.
-   */
   platformFullyManaged?: boolean;
 }
 
@@ -637,35 +637,19 @@ export function environmentService(db: Db) {
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
 
-        // `platformFullyManaged` callers (currently: the PAPERCLIP_MANAGED_CONFIG
-        // applier) assert that nothing in their deployment can hand-edit this
-        // row — the product gives a cloud-harness tenant no path to it, unlike
-        // the general self-hosted contract this function otherwise protects
-        // (see "classifies operator drift" in environment-service.test.ts,
-        // which exercises a real operator edit and must keep winning). Under
-        // that assertion, a plain content-hash mismatch against a real prior
-        // binding can only be drift between two platform-driven reconciliation
-        // passes (e.g. a stock hash recorded by an older app build before a
-        // later stock field was added), never a customization to protect —
-        // apply it like any other stock-outdated row.
-        //
-        // Two things the bypass must never touch:
-        // - A row with NO matching binding. `row` can be a same-name sandbox
-        //   row that was never Paperclip-managed (the fallback lookup above).
-        //   It also reads as `operator_modified`, but there is no prior
-        //   platform pass to have drifted from — adopting it would overwrite
-        //   a tenant-created environment and stamp it managed. Require a
-        //   binding for this exact row, so "prior binding" is enforced, not
-        //   just documented.
-        // - Archive-reaffirmation. A `sandbox_image` update must never
-        //   resurrect a row something else deliberately kept archived after
-        //   Paperclip's own provider-unavailability archival, so that path
-        //   still skips below regardless of this flag.
+        const platformOwnedRow = row.metadata?.managedByPaperclip === true;
+        const platformArchivedRow = row.status === "archived" &&
+          typeof rowArchiveToken === "string" &&
+          matchingBindings.some((binding) =>
+            binding.defaultsJson.status === "archived" &&
+            binding.defaultsJson[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken,
+          );
         if (
           input.platformFullyManaged &&
           stockStatus === "operator_modified" &&
           !operatorReaffirmedArchive &&
-          matchingBindings.length > 0
+          platformOwnedRow &&
+          (row.status === "active" || platformArchivedRow)
         ) {
           stockStatus = "stock_update_available";
         }
@@ -1649,7 +1633,7 @@ export function environmentService(db: Db) {
                       // A source whose harness backup was restored into another
                       // lease holds older session state. That claim and this
                       // handoff compete on this row, so only one of them wins.
-                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'reusableSandboxLeaseSuperseded')`,
+                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${SUPERSEDED_REUSABLE_SANDBOX_KEY})`,
                       sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'portableTaskSuccessor')`,
                     ),
                   )

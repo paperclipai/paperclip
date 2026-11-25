@@ -10,6 +10,9 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  AntigravityBrowserLoginState,
+  GeneratedAntigravitySwarmChannel,
+  GeneratedAntigravitySwarmCredentialFacts,
   NativeCursorCloudConfig,
   AcpxCandidateAdmission,
   DotHarnessDriver,
@@ -70,6 +73,7 @@ export type {
   ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
+  RunnerReleaseResumeOutcome,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
   DurablePrpCheckpoint,
@@ -94,16 +98,20 @@ export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEO
 export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const providerFailureFromError = runner.providerFailureFromError;
+export const isPrpAutomaticallyContinuedBlocker = runner.isPrpAutomaticallyContinuedBlocker;
 export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
+export const inspectDurablePrpCheckpointRunner = runner.inspectDurablePrpCheckpointRunner;
+export const revertUnattachedRelaunchRotation = runner.revertUnattachedRelaunchRotation;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
+export const nativeRunAttachReservedBytes = runner.nativeRunAttachReservedBytes;
 export const admitToolInputSchema = runner.admitToolInputSchema;
 export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
 export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
@@ -189,12 +197,17 @@ export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
 export const runnerProviderLaunchRequirements = runner.runnerProviderLaunchRequirements;
 export const createRunnerProviderLaunch = runner.createRunnerProviderLaunch;
 export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
+export const isAntigravityNativeTarget = runner.isAntigravityNativeTarget;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
+export const ANTIGRAVITY_DISTRIBUTION_PINS = runner.ANTIGRAVITY_DISTRIBUTION_PINS;
 export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = runner.KIMI_DISTRIBUTION_CLOSURE_SHA256;
+export const COPILOT_CLOSURE_SHA256 = runner.COPILOT_CLOSURE_SHA256;
+export const SANDBOX_DISK_FULL_FAILURE_CODE = runner.SANDBOX_DISK_FULL_FAILURE_CODE;
+export const isSandboxDiskFullFailure = runner.isSandboxDiskFullFailure;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const resolveCodexCommand = runner.resolveCodexCommand;
 export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
@@ -213,6 +226,8 @@ export const nativeRestartContinuationInFlight = runner.nativeRestartContinuatio
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const completeTerminatedRemoteNativeSessionCleanupForTask = runner.completeTerminatedRemoteNativeSessionCleanupForTask;
+export const nativeSessionCleanupRemoteScopes = runner.nativeSessionCleanupRemoteScopes;
 export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
 export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
 export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;
@@ -223,6 +238,10 @@ export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
 export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
 export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
 export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;
+export const GENERATED_ANTIGRAVITY_SWARM_CHANNELS = runner.GENERATED_ANTIGRAVITY_SWARM_CHANNELS;
+export const GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD = runner.GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD;
+export const GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL = runner.GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL;
+export const readGeneratedAntigravitySwarmCredentialFacts = runner.readGeneratedAntigravitySwarmCredentialFacts;
 export const discoverAntigravityModels = runner.discoverAntigravityModels;
 export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;

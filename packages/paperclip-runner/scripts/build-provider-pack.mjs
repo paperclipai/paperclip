@@ -19,8 +19,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields, providerPackQualification } from "./candidate-provider-pack.mjs";
 import { smokeKimiProviderPack } from "./kimi-provider-pack-smoke.mjs";
+import { smokeAntigravityProviderPack } from "./antigravity-provider-pack-smoke.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack, sha256Tree } from "./provider-pack-runtime-tree.mjs";
@@ -154,7 +155,7 @@ try {
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) || provider === "kimi" && profiles.profiles.kimi.qualificationStatus !== "pending" ? "qualified" : "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: providerPackQualification(provider), path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -370,6 +371,12 @@ try {
 
   if (payload.providers?.kimi && profiles.profiles.kimi.qualificationStatus !== "pending") {
     const smoke = await smokeKimiProviderPack(temporaryRoot);
+    process.stdout.write(`${JSON.stringify(smoke)}\n`);
+  }
+  // Credential-free: the packaged closure starts and advertises its native
+  // admission patch. It sends no authentication, session or prompt request.
+  if (payload.providers?.antigravity || payload.candidateProviders?.antigravity) {
+    const smoke = await smokeAntigravityProviderPack(temporaryRoot);
     process.stdout.write(`${JSON.stringify(smoke)}\n`);
   }
 

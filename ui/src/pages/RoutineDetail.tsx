@@ -1,689 +1,483 @@
-import { companyProjectsQuery } from "@/lib/company-projects-query";
-import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useNavigate, useParams, useSearchParams } from "@/lib/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, History, Pencil, Repeat, Sparkles, X } from "lucide-react";
-import { ApiError } from "../api/client";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Issue, RoutineDetail as RoutineDetailType, RoutineTrigger } from "@paperclipai/shared";
+import { AlertCircle, Repeat } from "lucide-react";
+import { ApiError } from "@/api/client";
+import { documentAnnotationsApi } from "@/api/document-annotations";
+import { describeError } from "@/api/errors";
+import { issuesApi } from "@/api/issues";
+import { responsibilitiesApi } from "@/api/responsibilities";
+import { routinesApi, type RestoreRoutineRevisionResponse } from "@/api/routines";
+import { EmptyState } from "@/components/EmptyState";
+import { IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
+import { PageSkeleton } from "@/components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
+import { RoutineRunVariablesDialog, type RoutineRunDialogSubmitData } from "@/components/RoutineRunVariablesDialog";
+import { RoutineEditDialog, type RoutineFormDraft } from "@/components/routine-page/RoutineEditDialog";
 import {
-  routinesApi,
-  type RoutineTriggerResponse,
-  type RotateRoutineTriggerResponse,
-  type RestoreRoutineRevisionResponse,
-} from "../api/routines";
-import { secretsApi } from "../api/secrets";
-import { type RoutineHistoryDirtyFieldDescriptor } from "../components/RoutineHistoryTab";
-import { heartbeatsApi } from "../api/heartbeats";
-import { agentsApi } from "../api/agents";
-import { accessApi } from "../api/access";
-import { useCompany } from "../context/CompanyContext";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToastActions } from "../context/ToastContext";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
-import { queryKeys } from "../lib/queryKeys";
-import { copyTextToClipboard } from "../lib/clipboard";
-import { routineOverviewCopyText } from "../lib/routine-description-copy";
-import { buildMarkdownMentionOptions } from "../lib/company-members";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { EmptyState } from "../components/EmptyState";
-import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "../components/QueryView";
-import { describeError } from "../api/errors";
-import { type InlineEntityOption } from "../components/InlineEntitySelector";
-import { type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
+  RoutinePage,
+  RoutinePageActions,
+  RoutineSubpage,
+  type RoutinePageAgent,
+  type RoutinePageProject,
+} from "@/components/routine-page/RoutinePage";
+import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
 import {
-  RoutineRunVariablesDialog,
-  type RoutineRunDialogSubmitData,
-} from "../components/RoutineRunVariablesDialog";
-import { RunButton } from "../components/AgentActionButtons";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
-import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { RoutineOverview } from "../components/RoutineOverview";
-import { RoutineSectionHeading } from "../components/RoutineSectionHeading";
-import { RoutineSectionPicker, RoutineSubSidebar } from "../components/RoutineSubSidebar";
-import {
-  isRoutineDetailView,
-  resolveRoutineDetailDestination,
-  routineDetailHref,
-} from "../components/RoutineContextualSidebar";
-import { RoutineSaveBar } from "../components/RoutineSaveBar";
-import {
-  EDITABLE_SECTIONS,
-  SECTION_FIELD_KEYS,
-  RoutineDetailContext,
-  createDefaultNewTrigger,
-  type RoutineDetailContextValue,
-  type RoutineEditDraft,
-  type RoutineSectionKey,
-  type SecretMessage,
-} from "../components/routine-sections/context";
-import {
-  OverviewSection,
-  TriggersSection,
-  VariablesSection,
-  SecretsSection,
-  DeliverySection,
-} from "../components/routine-sections/editable-sections";
-import {
-  ActivitySection,
-  HistorySection,
-  RunsSection,
-} from "../components/routine-sections/operate-sections";
-import type {
-  RoutineDetail as RoutineDetailType,
-  RoutineEnvConfig,
-  RoutineVariable,
-} from "@paperclipai/shared";
+  PartialRoutineSaveError,
+  primarySchedule,
+  type RoutineSavePart,
+  buildRoutineResponsibilityChoices,
+  routineFieldsChanged,
+  routineFieldsPayload,
+  routineToDraft,
+  syncRoutineResponsibility,
+  syncRoutineSchedule,
+} from "@/components/routine-page/routine-form";
+import { resolveRoutineAddress, routinePath, type RoutineView } from "@/components/routine-page/routine-routes";
+import { routineAutomationState } from "@/components/routine-page/routine-summary";
+import { useRoutineFormOptions } from "@/components/routine-page/useRoutineFormOptions";
+import { useRoutineWebhookDialog } from "@/components/routine-page/useRoutineWebhookDialog";
+import { RoutineAuditActivity } from "@/pages/audit/RoutineAuditActivity";
+import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useCompany } from "@/context/CompanyContext";
+import { useSidebar } from "@/context/SidebarContext";
+import { useToastActions } from "@/context/ToastContext";
+import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
+import { configurationWarningMessages } from "@/lib/configuration-warnings";
+import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
+import { queryKeys } from "@/lib/queryKeys";
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 
-export function buildRoutineProjectOptions(
-  projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
-): InlineEntityOption[] {
-  return projects
-    .filter((project) => !project.archivedAt)
-    .map((project) => ({
-      id: project.id,
-      label: project.name,
-      searchText: project.description ?? "",
-    }));
+/** Tasks shown per History page; "Load more" fetches the next page. */
+export const ROUTINE_HISTORY_PAGE_SIZE = 20;
+
+export function routineHistoryQueryKey(companyId: string, routineId: string) {
+  return [...queryKeys.issues.list(companyId), "routine", routineId, "history"] as const;
 }
 
-const SECTION_TITLES: Record<RoutineSectionKey, string> = {
-  overview: "Overview",
-  triggers: "Triggers",
-  variables: "Variables",
-  secrets: "Secrets",
-  delivery: "Delivery",
-  runs: "Runs",
-  activity: "Activity",
-  history: "Version history",
-};
-
-function autoResizeTextarea(element: HTMLTextAreaElement | null) {
-  if (!element) return;
-  element.style.height = "auto";
-  element.style.height = `${element.scrollHeight}px`;
-}
-
-function getLocalTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return "UTC";
-  }
-}
-
-function buildRoutineMutationPayload(input: RoutineEditDraft) {
-  return {
-    ...input,
-    description: input.description.trim() || null,
-    projectId: input.projectId || null,
-    assigneeAgentId: input.assigneeAgentId || null,
-    env: input.env && Object.keys(input.env).length > 0 ? input.env : null,
-  };
-}
-
+/** `/routines/:routineId` and its two sub-views; every older section address redirects here. */
 export function RoutineDetail() {
-  const { routineId, section: sectionParam } = useParams<{ routineId: string; section?: string }>();
+  const { routineId, section } = useParams<{ routineId: string; section?: string }>();
   const [searchParams] = useSearchParams();
-  const triggerSetup = sectionParam === "triggers" && searchParams.has("triggerSetup");
   const { selectedCompanyId } = useCompany();
-  const { setBreadcrumbs } = useBreadcrumbs();
+  if (!selectedCompanyId) return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
+  if (!routineId) return <Navigate to="/routines" replace />;
+  const address = resolveRoutineAddress({ routineId, section, legacyTab: searchParams.get("tab") });
+  if (address.redirectTo) return <Navigate to={address.redirectTo} replace />;
+  return <RoutineDetailPage key={routineId} companyId={selectedCompanyId} routineId={routineId} view={address.view} />;
+}
+
+function withCurrent<T extends { id: string }>(options: readonly T[], all: readonly T[], currentId: string | null | undefined): T[] {
+  if (!currentId || options.some((option) => option.id === currentId)) return [...options];
+  const current = all.find((option) => option.id === currentId);
+  return current ? [...options, current] : [...options];
+}
+
+function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; routineId: string; view: RoutineView }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
+  const { setBreadcrumbs, setBreadcrumbToolbar } = useBreadcrumbs();
+  const { isMobile } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const hydratedRoutineIdRef = useRef<string | null>(null);
-  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
-  const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
-  const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
-  const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
+  const options = useRoutineFormOptions(companyId);
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editInitial, setEditInitial] = useState<RoutineFormDraft | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
-  const [runVariablesOpen, setRunVariablesOpen] = useState(false);
-  const [overviewEditing, setOverviewEditing] = useState(false);
-  const [newTrigger, setNewTrigger] = useState(createDefaultNewTrigger);
-  const [editDraft, setEditDraft] = useState<RoutineEditDraft>({
-    title: "",
-    description: "",
-    projectId: "",
-    assigneeAgentId: "",
-    priority: "medium",
-    concurrencyPolicy: "coalesce_if_active",
-    catchUpPolicy: "skip_missed",
-    activityGatePolicy: "always",
-    activityGateScope: "company",
-    variables: [],
-    env: null,
-  });
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [removedWebhooks, setRemovedWebhooks] = useState<RoutineTrigger[]>([]);
+  const [runOpen, setRunOpen] = useState(false);
+  // A link to one instruction comment opens the whole text with its comments,
+  // also when only the fragment changes on a routine already on screen.
+  const { hash: locationHash } = useLocation();
+  const [commentsOpen, setCommentsOpen] = useState(() => locationHash.startsWith("#document-description"));
+  useEffect(() => {
+    if (locationHash.startsWith("#document-description")) setCommentsOpen(true);
+  }, [locationHash]);
+  /** The revision the open form started from; refreshed after this person's own changes. */
+  const baseRevisionRef = useRef<{ id: string | null; number: number } | null>(null);
+  /** The direct responsibility when the form opened; Save only moves the link when the person changed it. */
+  const editResponsibilityRef = useRef("");
+  /** The schedule the form opened with, by id; Save changes only this one. */
+  const editScheduleIdRef = useRef<string | null>(null);
+  const [pageRemoved, setPageRemoved] = useState<RoutineTrigger[]>([]);
+  const editOpenRef = useRef(false);
+  editOpenRef.current = editOpen;
+  const [webhookDialogOpen, setWebhookDialogOpen] = useState(false);
 
-  const legacyOperateSection = !streamlinedUiEnabled && (sectionParam === "runs" || sectionParam === "activity")
-    ? sectionParam
-    : null;
-  const section: RoutineSectionKey = legacyOperateSection
-    ?? (isRoutineDetailView(sectionParam) ? sectionParam : "overview");
-
-  const navigateToSection = useCallback(
-    (next: RoutineSectionKey, options?: { replace?: boolean }) => {
-      if (!routineId) return;
-      if (!streamlinedUiEnabled && (next === "runs" || next === "activity")) {
-        navigate(`/routines/${routineId}/${next}`, { replace: options?.replace ?? true });
-        return;
-      }
-      navigate(
-        resolveRoutineDetailDestination({ routineId, section: next }),
-        { replace: options?.replace ?? true },
-      );
-    },
-    [navigate, routineId, streamlinedUiEnabled],
-  );
-
+  const detailKey = queryKeys.routines.detail(routineId);
   const routineQuery = useQuery({
-    queryKey: queryKeys.routines.detail(routineId!),
-    queryFn: () => routinesApi.get(routineId!),
-    enabled: !!routineId,
+    queryKey: detailKey,
+    queryFn: () => routinesApi.get(routineId),
+    // Live webhook status while its dialog is open (test events, first delivery).
+    refetchInterval: webhookDialogOpen ? 2000 : false,
   });
-  const { data: routine, isLoading } = routineQuery;
   const routineView = useQueryView(routineQuery);
-  const activeIssueId = routine?.activeIssue?.id;
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.issues.liveRuns(activeIssueId!),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
-    enabled: !!activeIssueId,
-    refetchInterval: 3000,
-  });
-  const hasLiveRun = (liveRuns ?? []).length > 0;
-  const { data: routineRuns } = useQuery({
-    queryKey: queryKeys.routines.runs(routineId!),
-    queryFn: () => routinesApi.listRuns(routineId!),
-    enabled: !!routineId,
-    refetchInterval: hasLiveRun ? 3000 : false,
-  });
-  const relatedActivityIds = useMemo(
-    () => ({
-      triggerIds: routine?.triggers.map((trigger) => trigger.id) ?? [],
-      runIds: routineRuns?.map((run) => run.id) ?? [],
-    }),
-    [routine?.triggers, routineRuns],
-  );
-  const activityQuery = useQuery({
-    queryKey: [
-      ...queryKeys.routines.activity(selectedCompanyId!, routineId!),
-      relatedActivityIds.triggerIds.join(","),
-      relatedActivityIds.runIds.join(","),
-    ],
-    queryFn: () => routinesApi.activity(selectedCompanyId!, routineId!, relatedActivityIds),
-    enabled: !!selectedCompanyId && !!routineId && !!routine,
-  });
-  const { data: activity } = activityQuery;
-  const activityView = useQueryView(activityQuery);
-  const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const { data: projects } = useQuery({
-    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
-    enabled: !!selectedCompanyId,
-  });
-  const { data: companyMembers } = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const { data: availableSecrets = [] } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
-    queryFn: () => secretsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-  });
-  const createSecret = useMutation({
-    mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
-      return secretsApi.create(selectedCompanyId, input);
-    },
-    onSuccess: () => {
-      if (!selectedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    },
-  });
+  const routine = routineView.data;
+  const routineRef = useRef(routine);
+  routineRef.current = routine;
 
-  const routineDefaults = useMemo<RoutineEditDraft | null>(
-    () =>
-      routine
-        ? {
-            title: routine.title,
-            description: routine.description ?? "",
-            projectId: routine.projectId ?? "",
-            assigneeAgentId: routine.assigneeAgentId ?? "",
-            priority: routine.priority,
-            concurrencyPolicy: routine.concurrencyPolicy,
-            catchUpPolicy: routine.catchUpPolicy,
-            activityGatePolicy: routine.activityGatePolicy,
-            activityGateScope: routine.activityGateScope,
-            variables: routine.variables,
-            env: routine.env ?? null,
-          }
-        : null,
-    [routine],
-  );
-  const dirtyFields = useMemo<RoutineHistoryDirtyFieldDescriptor[]>(() => {
-    if (!routineDefaults) return [];
-    const result: RoutineHistoryDirtyFieldDescriptor[] = [];
-    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: "the title" });
-    if (editDraft.description !== routineDefaults.description) {
-      result.push({ key: "description", label: "the description" });
-    }
-    if (editDraft.projectId !== routineDefaults.projectId) {
-      result.push({ key: "projectId", label: "the project" });
-    }
-    if (editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId) {
-      result.push({ key: "assigneeAgentId", label: "the default agent" });
-    }
-    if (editDraft.priority !== routineDefaults.priority) {
-      result.push({ key: "priority", label: "the priority" });
-    }
-    if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
-      result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
-    }
-    if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
-      result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
-    }
-    if (editDraft.activityGatePolicy !== routineDefaults.activityGatePolicy) {
-      result.push({ key: "activityGatePolicy", label: "the advanced run policy" });
-    }
-    if (editDraft.activityGateScope !== routineDefaults.activityGateScope) {
-      result.push({ key: "activityGateScope", label: "the activity gate scope" });
-    }
-    if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
-      result.push({ key: "variables", label: "the variables" });
-    }
-    if (JSON.stringify(editDraft.env ?? null) !== JSON.stringify(routineDefaults.env ?? null)) {
-      result.push({ key: "env", label: "the secrets" });
-    }
-    return result;
-  }, [editDraft, routineDefaults]);
-  const isEditDirty = dirtyFields.length > 0;
-
-  const sectionDirtyFields = useCallback(
-    (target: RoutineSectionKey) => {
-      const keys = SECTION_FIELD_KEYS[target];
-      if (!keys) return [];
-      return dirtyFields.filter((field) => keys.includes(field.key));
-    },
-    [dirtyFields],
-  );
-  const isSectionDirty = useCallback(
-    (target: RoutineSectionKey) => sectionDirtyFields(target).length > 0,
-    [sectionDirtyFields],
-  );
-  const discardSection = useCallback(
-    (target: RoutineSectionKey) => {
-      if (!routineDefaults) return;
-      const keys = SECTION_FIELD_KEYS[target];
-      if (!keys) return;
-      setEditDraft((current) => {
-        const next = { ...current } as Record<string, unknown>;
-        for (const key of keys) {
-          next[key] = (routineDefaults as Record<string, unknown>)[key];
-        }
-        return next as RoutineEditDraft;
-      });
-    },
-    [routineDefaults],
+  const historyQuery = useInfiniteQuery({
+    queryKey: routineHistoryQueryKey(companyId, routineId),
+    queryFn: ({ pageParam }) =>
+      issuesApi.list(companyId, {
+        originKind: "routine_execution",
+        originId: routineId,
+        limit: ROUTINE_HISTORY_PAGE_SIZE + 1,
+        offset: pageParam,
+        sortField: "created",
+        sortDir: "desc",
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (last: Issue[], pages: Issue[][]) =>
+      last.length > ROUTINE_HISTORY_PAGE_SIZE ? pages.length * ROUTINE_HISTORY_PAGE_SIZE : undefined,
+    enabled: view === "routine",
+  });
+  const historyView = useQueryView(historyQuery);
+  const history = useMemo(
+    () => (historyQuery.data?.pages ?? []).flatMap((page) => page.slice(0, ROUTINE_HISTORY_PAGE_SIZE)),
+    [historyQuery.data],
   );
 
-  useEffect(() => {
-    if (!routine) return;
-    if (!triggerSetup) setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
-    if (!routineDefaults) return;
-    const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
-    if (changedRoutine || !isEditDirty) {
-      setEditDraft(routineDefaults);
-      hydratedRoutineIdRef.current = routine.id;
+  const { userId } = useResolvedViewerId({ enabled: options.responsibilitiesOn });
+  const linksQuery = useQuery({
+    queryKey: [...queryKeys.responsibilities.routineLinks(companyId, routineId), userId],
+    queryFn: () => responsibilitiesApi.lookupRoutineLinks(companyId, routineId),
+    enabled: options.responsibilitiesOn && !!userId,
+  });
+  const linkEntries = linksQuery.data?.responsibilities;
+  const linksView = useQueryView(linksQuery);
+
+  const annotationTarget = { kind: "routine" as const, routineId, documentKey: "description" as const };
+  const annotationsQuery = useQuery({
+    queryKey: queryKeys.routines.documentAnnotations(routineId, "description", "all"),
+    queryFn: () => documentAnnotationsApi.listForTarget(annotationTarget, { status: "all", includeComments: true }),
+    enabled: Boolean(routine?.descriptionDocument),
+    staleTime: 30_000,
+  });
+  const openCommentCount = (annotationsQuery.data ?? []).filter(
+    (thread) => thread.status === "open" && thread.anchorState !== "orphaned",
+  ).length;
+
+  /** Refetches the routine after a change; an open form adopts the new revision as its own. */
+  const refreshRoutine = useCallback(async () => {
+    const fresh = await queryClient.fetchQuery({ queryKey: detailKey, queryFn: () => routinesApi.get(routineId), staleTime: 0 });
+    // Each change made from the open form adds one revision. Adopt it only when
+    // nothing else changed the routine, so a save still reports someone else's edit.
+    const base = baseRevisionRef.current;
+    if (editOpenRef.current && base && fresh.latestRevisionNumber - base.number <= 1) {
+      baseRevisionRef.current = { id: fresh.latestRevisionId, number: fresh.latestRevisionNumber };
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, triggerSetup]);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(companyId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(companyId, routineId) });
+    return fresh;
+  }, [companyId, detailKey, queryClient, routineId]);
 
-  useEffect(() => {
-    autoResizeTextarea(titleInputRef.current);
-  }, [editDraft.title, routine?.id]);
-
-  useEffect(() => {
-    if (section !== "overview") setOverviewEditing(false);
-  }, [routineId, section]);
-
-  const copySecretValue = useCallback(
-    async (label: string, value: string) => {
-      try {
-        await copyTextToClipboard(value);
-        pushToast({ title: `${label} copied`, tone: "success" });
-      } catch (copyError) {
-        pushToast({
-          title: `Failed to copy ${label.toLowerCase()}`,
-          body: describeError(copyError, { action: "copy to the clipboard" }).body,
-          tone: "error",
-        });
-      }
+  const webhook = useRoutineWebhookDialog({
+    routineId,
+    triggers: routine?.triggers ?? [],
+    onChanged: refreshRoutine,
+    onRemoved: (trigger) => {
+      if (editOpenRef.current) setRemovedWebhooks((current) => [...current, trigger]);
+      else setPageRemoved((current) => [...current, trigger]);
     },
+  });
+  useEffect(() => setWebhookDialogOpen(webhook.open), [webhook.open]);
+
+  const toastError = useCallback(
+    (title: string, error: unknown, action: string) => pushToast({ title, body: describeError(error, { action }).body, tone: "error" }),
     [pushToast],
   );
 
-  const saveRoutine = useMutation({
-    mutationFn: () => {
-      const payload = buildRoutineMutationPayload(editDraft);
-      const baseRevisionId = routine?.latestRevisionId ?? null;
-      return routinesApi.update(routineId!, {
-        ...payload,
-        ...(baseRevisionId ? { baseRevisionId } : {}),
-      });
-    },
-    onSuccess: async (updated) => {
-      setSaveConflict(false);
-      const notice = configurationWarningMessages(updated);
-      if (notice) pushToast({ title: "Routine saved", body: notice, tone: "warn" });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId!) }),
-      ]);
-    },
-    onError: (mutationError) => {
-      if (mutationError instanceof ApiError && mutationError.status === 409) {
-        setSaveConflict(true);
-        pushToast({
-          title: "Routine changed",
-          body: "Someone else updated this routine. Reload to see the latest revision.",
-          tone: "warn",
-        });
-        return;
-      }
+  const setStatus = useMutation({
+    mutationFn: (status: "active" | "paused" | "archived") => routinesApi.update(routineId, { status }),
+    onSuccess: async (_saved, status) => {
       pushToast({
-        title: "Failed to save routine",
-        body: describeError(mutationError, { action: "save the routine" }).body,
-        tone: "error",
+        title: status === "active" ? "Routine is on" : status === "paused" ? "Routine paused" : "Routine archived",
+        tone: "success",
       });
+      await refreshRoutine();
     },
+    onError: (error) => toastError("Couldn’t change the routine", error, "change the routine"),
   });
 
   const runRoutine = useMutation({
     mutationFn: (data?: RoutineRunDialogSubmitData) =>
-      routinesApi.run(routineId!, {
+      routinesApi.run(routineId, {
         ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
         ...(data?.assigneeAgentId !== undefined ? { assigneeAgentId: data.assigneeAgentId } : {}),
         ...(data?.projectId !== undefined ? { projectId: data.projectId } : {}),
         ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
-        ...(data?.executionWorkspacePreference !== undefined
-          ? { executionWorkspacePreference: data.executionWorkspacePreference }
-          : {}),
-        ...(data?.executionWorkspaceSettings !== undefined
-          ? { executionWorkspaceSettings: data.executionWorkspaceSettings }
-          : {}),
+        ...(data?.executionWorkspacePreference !== undefined ? { executionWorkspacePreference: data.executionWorkspacePreference } : {}),
+        ...(data?.executionWorkspaceSettings !== undefined ? { executionWorkspaceSettings: data.executionWorkspaceSettings } : {}),
       }),
     onSuccess: async () => {
       pushToast({ title: "Routine run started", tone: "success" });
-      setRunVariablesOpen(false);
-      navigateToSection("runs");
+      setRunOpen(false);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine", routineId!] }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+        queryClient.invalidateQueries({ queryKey: routineHistoryQueryKey(companyId, routineId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId) }),
+        refreshRoutine(),
       ]);
     },
-    onError: (runError) => {
-      pushToast({
-        title: "Routine run failed",
-        body: describeError(runError, { action: "start the routine run" }).body,
-        tone: "error",
-      });
-    },
+    onError: (error) => toastError("Routine run failed", error, "start the routine run"),
   });
 
-  const updateRoutineStatus = useMutation({
-    mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
-    onSuccess: async (_data, status) => {
-      pushToast({
-        title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
-        tone: "success",
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-      ]);
+  /** Saves, pauses, resumes, removes (with Undo on the page) or restores one trigger from the page. */
+  const changeTrigger = useMutation({
+    mutationFn: ({ trigger, patch }: { trigger: RoutineTrigger; patch: Record<string, unknown>; success: string }) =>
+      routinesApi.updateTrigger(trigger.id, patch),
+    onSuccess: async (_saved, { trigger, patch, success }) => {
+      if (patch.archived === true) setPageRemoved((current) => [...current, trigger]);
+      else if (patch.archived === false) setPageRemoved((current) => current.filter((item) => item.id !== trigger.id));
+      else pushToast({ title: success, tone: "success" });
+      await refreshRoutine();
     },
-    onError: (statusError) => {
-      pushToast({
-        title: "Failed to update routine",
-        body: describeError(statusError, { action: "update the routine" }).body,
-        tone: "error",
-      });
-    },
+    onError: (error) => toastError("Couldn’t change this trigger", error, "change this trigger"),
   });
+  const triggerById = (id: string) => routineRef.current?.triggers.find((trigger) => trigger.id === id);
 
-  const createTrigger = useMutation({
-    mutationFn: async (): Promise<RoutineTriggerResponse> => {
-      const existingOfKind = (routine?.triggers ?? []).filter((t) => t.kind === newTrigger.kind).length;
-      const autoLabel = existingOfKind > 0 ? `${newTrigger.kind}-${existingOfKind + 1}` : newTrigger.kind;
-      return routinesApi.createTrigger(routineId!, {
-        kind: newTrigger.kind,
-        label: autoLabel,
-        ...(newTrigger.kind === "schedule"
-          ? { cronExpression: newTrigger.cronExpression.trim(), timezone: getLocalTimezone() }
-          : {}),
-        ...(newTrigger.kind === "webhook"
-          ? { signingMode: newTrigger.signingMode, replayWindowSec: Number(newTrigger.replayWindowSec || "300") }
-          : {}),
-      });
-    },
-    onSuccess: async (result) => {
-      if (result.secretMaterial) {
-        setSecretMessage({
-          title: "Webhook trigger created",
-          entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
+  const saveEdits = useMutation({
+    mutationFn: async (draft: RoutineFormDraft) => {
+      const latest = routineRef.current;
+      if (!latest) throw new Error("This routine is still loading. Try again in a moment.");
+      const saved = routineToDraft(latest, editResponsibilityRef.current);
+      const responsibleUserChanged = Boolean(draft.responsibleUserId)
+        && draft.responsibleUserId !== saved.responsibleUserId
+        && latest.canChangeResponsibleUser !== false;
+      let warnings: string | null = null;
+      // Each step records what it saved, so a retry after a partial failure only does what is left.
+      const savedParts: RoutineSavePart[] = [];
+      if (routineFieldsChanged(draft, saved) || responsibleUserChanged) {
+        const updated = await routinesApi.update(routineId, {
+          ...routineFieldsPayload(draft),
+          ...(responsibleUserChanged ? { responsibleUserId: draft.responsibleUserId } : {}),
+          ...(baseRevisionRef.current?.id ? { baseRevisionId: baseRevisionRef.current.id } : {}),
         });
-      } else {
-        pushToast({ title: "Trigger added", body: "The routine schedule was saved.", tone: "success" });
+        baseRevisionRef.current = { id: updated.latestRevisionId, number: updated.latestRevisionNumber };
+        warnings = configurationWarningMessages(updated);
+        savedParts.push("details");
       }
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
-    },
-    onError: (triggerError) => {
-      pushToast({
-        title: "Failed to add trigger",
-        body: describeError(triggerError, { action: "create the trigger" }).body,
-        tone: "error",
-      });
-    },
-  });
-
-  const updateTrigger = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
-    onSuccess: async () => {
-      pushToast({ title: "Trigger saved", body: "The routine cadence update was saved.", tone: "success" });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
-    },
-    onError: (triggerError) => {
-      pushToast({
-        title: "Failed to update trigger",
-        body: describeError(triggerError, { action: "update the trigger" }).body,
-        tone: "error",
-      });
-    },
-  });
-
-  const deleteTrigger = useMutation({
-    mutationFn: (id: string) => routinesApi.deleteTrigger(id),
-    onSuccess: async () => {
-      pushToast({ title: "Trigger deleted", tone: "success" });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
-    },
-    onError: (triggerError) => {
-      pushToast({
-        title: "Failed to delete trigger",
-        body: describeError(triggerError, { action: "delete the trigger" }).body,
-        tone: "error",
-      });
-    },
-  });
-
-  const rotateTrigger = useMutation({
-    mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
-    onSuccess: async (result) => {
-      setSecretMessage({
-        title: "Webhook secret rotated",
-        entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
-    },
-    onError: (triggerError) => {
-      pushToast({
-        title: "Failed to rotate webhook secret",
-        body: describeError(triggerError, { action: "rotate the webhook secret" }).body,
-        tone: "error",
-      });
-    },
-  });
-
-  const agentById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
-  const projectById = useMemo(() => new Map((projects ?? []).map((project) => [project.id, project])), [projects]);
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
-  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
-  const assigneeOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
-        recentAssigneeIds,
-      ).map((agent) => ({
-        id: agent.id,
-        label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-      })),
-    [agents, recentAssigneeIds],
-  );
-  const projectOptions = useMemo<InlineEntityOption[]>(
-    () => buildRoutineProjectOptions(projects ?? []),
-    [projects],
-  );
-  const mentionOptions = useMemo<MentionOption[]>(
-    () => buildMarkdownMentionOptions({
-      agents,
-      projects: (projects ?? []).filter((project) => !project.archivedAt),
-      members: companyMembers?.users,
-    }),
-    [agents, companyMembers?.users, projects],
-  );
-
-  // Wrap track-recent side-effects so the section components stay declarative.
-  const setEditDraftTracked: typeof setEditDraft = useCallback((updater) => {
-    setEditDraft((current) => {
-      const next = typeof updater === "function" ? (updater as (c: RoutineEditDraft) => RoutineEditDraft)(current) : updater;
-      if (next.assigneeAgentId && next.assigneeAgentId !== current.assigneeAgentId) {
-        trackRecentAssignee(next.assigneeAgentId);
+      try {
+        const schedule = await syncRoutineSchedule(routineId, latest.triggers, editScheduleIdRef.current, draft.schedule);
+        editScheduleIdRef.current = schedule.scheduleId;
+        if (schedule.changed) {
+          savedParts.push("schedule");
+          await refreshRoutine();
+        }
+      } catch (error) {
+        if (savedParts.length > 0) throw new PartialRoutineSaveError(savedParts, "schedule", error);
+        throw error;
       }
-      if (next.projectId && next.projectId !== current.projectId) {
-        trackRecentProject(next.projectId);
+      if (options.responsibilitiesOn) {
+        try {
+          if (await syncRoutineResponsibility(routineId, editResponsibilityRef.current, draft.responsibilityId)) {
+            await queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.all });
+          }
+          editResponsibilityRef.current = draft.responsibilityId;
+        } catch (error) {
+          if (savedParts.length > 0) throw new PartialRoutineSaveError(savedParts, "responsibility", error);
+          throw error;
+        }
       }
-      return next;
-    });
-  }, []);
-
-  const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
-  const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
-
-  const reloadLatest = useCallback(() => {
-    setSaveConflict(false);
-    if (routineDefaults) setEditDraft(routineDefaults);
-    queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
-  }, [queryClient, routineDefaults, routineId]);
-
-  const onHistoryRestoreSecretMaterials = useCallback((response: RestoreRoutineRevisionResponse) => {
-    if (response.secretMaterials.length > 0) {
-      navigateToSection("triggers");
-      setSecretMessage({
-        title:
-          response.secretMaterials.length === 1
-            ? "Webhook trigger restored"
-            : `${response.secretMaterials.length} webhook triggers restored`,
-        entries: response.secretMaterials.map((recreated) => ({
-          webhookUrl: recreated.webhookUrl,
-          webhookSecret: recreated.webhookSecret,
-        })),
-      });
-    }
-  }, [navigateToSection]);
-
-  const onHistoryRestored = useCallback(
-    (response: RestoreRoutineRevisionResponse) => {
+      return warnings;
+    },
+    onMutate: () => {
+      setSaveError(null);
       setSaveConflict(false);
-      queryClient.setQueryData<RoutineDetailType | undefined>(
-        queryKeys.routines.detail(routineId!),
-        (prev) =>
-          prev
-            ? {
-                ...prev,
-                ...response.routine,
-                latestRevisionId: response.revision.id,
-                latestRevisionNumber: response.revision.revisionNumber,
-              }
-            : prev,
-      );
-      setEditDraft({
-        title: response.routine.title,
-        description: response.routine.description ?? "",
-        projectId: response.routine.projectId ?? "",
-        assigneeAgentId: response.routine.assigneeAgentId ?? "",
-        priority: response.routine.priority,
-        concurrencyPolicy: response.routine.concurrencyPolicy,
-        catchUpPolicy: response.routine.catchUpPolicy,
-        activityGatePolicy: response.routine.activityGatePolicy,
-        activityGateScope: response.routine.activityGateScope,
-        variables: response.routine.variables as RoutineVariable[],
-        env: (response.routine.env ?? null) as RoutineEnvConfig | null,
-      });
-      hydratedRoutineIdRef.current = response.routine.id;
     },
-    [queryClient, routineId],
+    onSuccess: async (warnings) => {
+      setEditOpen(false);
+      setRemovedWebhooks([]);
+      pushToast(warnings ? { title: "Routine saved", body: warnings, tone: "warn" } : { title: "Routine saved", tone: "success" });
+      await refreshRoutine();
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        setSaveConflict(true);
+        return;
+      }
+      setSaveError(error instanceof PartialRoutineSaveError ? error.message : describeError(error, { action: "save the routine" }).body);
+      void refreshRoutine().catch(() => undefined);
+    },
+  });
+
+  /** The routine's direct responsibility, read before the form opens so Save never unlinks one it had not loaded. */
+  const loadDirectResponsibility = useCallback(async () => {
+    if (!options.responsibilitiesOn) return "";
+    const links = await queryClient.fetchQuery({
+      queryKey: [...queryKeys.responsibilities.routineLinks(companyId, routineId), userId],
+      queryFn: () => responsibilitiesApi.lookupRoutineLinks(companyId, routineId),
+    });
+    return links.responsibilities.find((entry) => entry.via === "direct")?.id ?? "";
+  }, [companyId, options.responsibilitiesOn, queryClient, routineId, userId]);
+
+  const openEdit = useCallback(async () => {
+    const current = routineRef.current;
+    if (!current) return;
+    let responsibilityId = "";
+    try {
+      responsibilityId = await loadDirectResponsibility();
+    } catch (error) {
+      toastError("Couldn’t open the editor", error, "load this routine’s responsibility");
+      return;
+    }
+    editResponsibilityRef.current = responsibilityId;
+    editScheduleIdRef.current = primarySchedule(current.triggers)?.id ?? null;
+    setEditInitial(routineToDraft(current, responsibilityId));
+    baseRevisionRef.current = { id: current.latestRevisionId, number: current.latestRevisionNumber };
+    setSaveConflict(false);
+    setSaveError(null);
+    setRemovedWebhooks([]);
+    setEditOpen(true);
+  }, [loadDirectResponsibility, toastError]);
+
+  const reloadLatest = useCallback(async () => {
+    try {
+      const fresh = await refreshRoutine();
+      const responsibilityId = await loadDirectResponsibility();
+      editResponsibilityRef.current = responsibilityId;
+      editScheduleIdRef.current = primarySchedule(fresh.triggers)?.id ?? null;
+      baseRevisionRef.current = { id: fresh.latestRevisionId, number: fresh.latestRevisionNumber };
+      setEditInitial(routineToDraft(fresh, responsibilityId));
+      setSaveConflict(false);
+      setSaveError(null);
+    } catch (error) {
+      setSaveError(describeError(error, { action: "reload the routine" }).body);
+    }
+  }, [loadDirectResponsibility, refreshRoutine]);
+
+  const restoreWebhook = useMutation({
+    mutationFn: (trigger: RoutineTrigger) => routinesApi.updateTrigger(trigger.id, { archived: false }),
+    onSuccess: async (_saved, trigger) => {
+      setRemovedWebhooks((current) => current.filter((item) => item.id !== trigger.id));
+      await refreshRoutine();
+    },
+    onError: (error) => setSaveError(describeError(error, { action: "restore the webhook" }).body),
+  });
+  const removeWebhook = useMutation({
+    mutationFn: (trigger: RoutineTrigger) => routinesApi.updateTrigger(trigger.id, { archived: true }),
+    onSuccess: async (_saved, trigger) => {
+      setRemovedWebhooks((current) => [...current, trigger]);
+      await refreshRoutine();
+    },
+    onError: (error) => setSaveError(describeError(error, { action: "remove the webhook" }).body),
+  });
+
+  const onRestoreSecretMaterials = useCallback(
+    (response: RestoreRoutineRevisionResponse) => {
+      if (response.secretMaterials.length === 0) return;
+      navigate(routinePath(routineId));
+      const restoredTriggers = new Map(response.revision.snapshot.triggers.map((trigger) => [trigger.id, trigger]));
+      webhook.showKeys(response.secretMaterials.map((material) => ({
+        triggerId: material.triggerId,
+        webhookUrl: material.webhookUrl,
+        webhookSecret: material.webhookSecret,
+        signingMode: restoredTriggers.get(material.triggerId)?.signingMode ?? null,
+      })));
+    },
+    [navigate, routineId, webhook],
+  );
+  const onRestored = useCallback(
+    (response: RestoreRoutineRevisionResponse) => {
+      queryClient.setQueryData<RoutineDetailType | undefined>(detailKey, (previous) =>
+        previous
+          ? { ...previous, ...response.routine, latestRevisionId: response.revision.id, latestRevisionNumber: response.revision.revisionNumber }
+          : previous,
+      );
+      void refreshRoutine().catch(() => undefined);
+    },
+    [detailKey, queryClient, refreshRoutine],
   );
 
-  if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
-  }
-
-  const legacyTab = new URLSearchParams(window.location.search).get("tab");
-  const validLegacySection = !streamlinedUiEnabled && (sectionParam === "runs" || sectionParam === "activity");
-  if (routineId && (legacyTab || !sectionParam || (!isRoutineDetailView(sectionParam) && !validLegacySection))) {
-    return (
-      <Navigate
-        to={resolveRoutineDetailDestination({ routineId, section: sectionParam, legacyTab })}
-        replace
-      />
+  const routineTitle = routine?.title;
+  useEffect(() => {
+    if (!routineTitle) return;
+    setBreadcrumbs(
+      view === "routine"
+        ? [{ label: "Routines", href: "/routines" }, { label: routineTitle }]
+        : [
+            { label: "Routines", href: "/routines" },
+            { label: routineTitle, href: routinePath(routineId) },
+            { label: view === "history" ? "Version history" : "Audit log" },
+          ],
     );
-  }
+  }, [routineId, routineTitle, setBreadcrumbs, view]);
+
+  // Header actions sit in the shell header where it has a page toolbar; elsewhere above the page.
+  const archived = routine ? routineAutomationState(routine) === "archived" : false;
+  const actionsInToolbar = streamlinedUiEnabled && !isMobile;
+  const handlers = useRef({
+    edit: openEdit,
+    run: () => setRunOpen(true),
+    versions: () => navigate(routinePath(routineId, "history")),
+    audit: () => navigate(routinePath(routineId, "activity")),
+    archive: () => setStatus.mutate("archived"),
+    restore: () => setStatus.mutate("paused"),
+  });
+  handlers.current = {
+    edit: openEdit,
+    run: () => setRunOpen(true),
+    versions: () => navigate(routinePath(routineId, "history")),
+    audit: () => navigate(routinePath(routineId, "activity")),
+    archive: () => setStatus.mutate("archived"),
+    restore: () => setStatus.mutate("paused"),
+  };
+  const hasRoutine = Boolean(routine);
+  const runPending = runRoutine.isPending;
+  const actions = useMemo(
+    () =>
+      hasRoutine && view === "routine" ? (
+        <RoutinePageActions
+          archived={archived}
+          runPending={runPending}
+          onEdit={() => handlers.current.edit()}
+          onRunNow={() => handlers.current.run()}
+          onOpenVersionHistory={() => handlers.current.versions()}
+          onOpenAuditLog={() => handlers.current.audit()}
+          onArchive={() => handlers.current.archive()}
+          onRestore={() => handlers.current.restore()}
+        />
+      ) : null,
+    [archived, hasRoutine, runPending, view],
+  );
+  useEffect(() => {
+    if (!actionsInToolbar) return;
+    setBreadcrumbToolbar(actions);
+    return () => setBreadcrumbToolbar(null);
+  }, [actions, actionsInToolbar, setBreadcrumbToolbar]);
+
+  const routineProjectId = routine?.projectId ?? null;
+  const routineAgentId = routine?.assigneeAgentId ?? null;
+  // Stable between refreshes, so the form's pickers do not rebuild their indexes on every poll.
+  const agents = useMemo(
+    () => withCurrent<RoutinePageAgent>(options.agents, options.allAgents, routineAgentId),
+    [options.agents, options.allAgents, routineAgentId],
+  );
+  const projects = useMemo(
+    () => withCurrent<RoutinePageProject>(options.projects, options.allProjects, routineProjectId),
+    [options.projects, options.allProjects, routineProjectId],
+  );
+  const responsibilityChoices = useMemo(
+    () => buildRoutineResponsibilityChoices({
+      links: linkEntries ?? [],
+      options: options.responsibilities ?? [],
+      areaTitles: options.areaTitles,
+      projectId: routineProjectId,
+    }),
+    [linkEntries, options.areaTitles, options.responsibilities, routineProjectId],
+  );
 
   // Keep a loaded routine on screen through a failed refetch; only a real
   // failure, or an outage before the first load, replaces the page.
-  if (isLoading || routineView.kind === "reconnecting") {
+  if (routineView.kind === "loading" || routineView.kind === "reconnecting") {
     return <PageSkeleton variant="issues-list" />;
   }
-
-  if (routineView.kind === "error") {
+  if (routineView.kind === "error" && !routine) {
     return (
       <QueryErrorState
         size="page"
@@ -694,292 +488,196 @@ export function RoutineDetail() {
       />
     );
   }
+  if (!routine) return <EmptyState icon={AlertCircle} message="We couldn't load this routine." />;
 
-  if (!routine || !routineDefaults) {
-    return (
-      <EmptyState
-        icon={AlertCircle}
-        message="We couldn't load this routine."
+  const agent = options.allAgents.find((candidate) => candidate.id === routine.assigneeAgentId)
+    ?? (routine.assignee ? { id: routine.assignee.id, name: routine.assignee.name, urlKey: routine.assignee.urlKey } : null);
+  const project = options.allProjects.find((candidate) => candidate.id === routine.projectId)
+    ?? (routine.project ? { id: routine.project.id, name: routine.project.name } : null);
+  const responsibleUser = routine.responsibleUserId
+    ? options.people.find((person) => person.id === routine.responsibleUserId)
+      ?? (options.peopleFailed || options.people.length === 0 ? { id: routine.responsibleUserId, name: options.peopleFailed ? "Couldn’t load this person" : "Loading…" } : { id: routine.responsibleUserId, name: "Former member" })
+    : null;
+  const pageResponsibilities = options.responsibilitiesOn ? responsibilityChoices.onPage : undefined;
+  const responsibilityOptions = options.responsibilities ? responsibilityChoices.choices : undefined;
+  const loadErrors = [
+    // The routine stays on screen through a failed refresh; say so instead of showing stale data silently.
+    ...(routineView.kind === "error"
+      ? [{ action: "refresh this routine", error: routineView.error, retry: routineView.retry, retrying: routineView.isFetching }]
+      : []),
+    ...options.loadErrors,
+    ...(linksView.kind === "error"
+      ? [{ action: "load this routine’s responsibilities", error: linksView.error, retry: linksView.retry, retrying: linksView.isFetching }]
+      : []),
+  ];
+  const webhooks = routine.triggers.filter((trigger) => trigger.kind === "webhook");
+  const routineActive = routineAutomationState(routine) === "active";
+  const webhookDialog = (
+    <RoutineWebhookDialog {...webhook.dialogProps} routineTitle={routine.title} routineActive={routineActive} />
+  );
+  const descriptionDocument = routine.descriptionDocument;
+
+  const page =
+    view === "routine" ? (
+      <RoutinePage
+        routine={routine}
+        agent={agent}
+        project={project}
+        responsibleUser={responsibleUser}
+        responsibilities={pageResponsibilities}
+        history={history}
+        historyLoading={historyView.kind === "loading" || historyView.kind === "reconnecting"}
+        historyError={
+          historyView.kind === "error" ? (
+            <QueryErrorState
+              size="inline"
+              error={historyView.error}
+              action="load this routine’s tasks"
+              onRetry={historyView.retry}
+              retrying={historyView.isFetching}
+            />
+          ) : null
+        }
+        hasMoreHistory={Boolean(historyQuery.hasNextPage)}
+        loadingMoreHistory={historyQuery.isFetchingNextPage}
+        onLoadMoreHistory={() => void historyQuery.fetchNextPage()}
+        historyLinkState={createIssueDetailLocationState(routine.title, routinePath(routine.id), "issues")}
+        skippedRunCount={routine.recentRuns.filter((run) => run.status === "coalesced").length}
+        instructionCommentCount={openCommentCount}
+        onOpenInstructionComments={() => setCommentsOpen(true)}
+        instructionsExpanded={commentsOpen}
+        renderInstructionsBody={
+          descriptionDocument
+            ? (body) => (
+                <IssueDocumentAnnotations
+                  issueId={routine.id}
+                  doc={descriptionDocument}
+                  target={annotationTarget}
+                  bodyMarkdown={routine.description ?? ""}
+                  draftDirty={false}
+                  draftConflicted={false}
+                  historicalPreview={false}
+                  locationHash={locationHash}
+                  panelOpen={commentsOpen}
+                  onPanelOpenChange={setCommentsOpen}
+                >
+                  {body}
+                </IssueDocumentAnnotations>
+              )
+            : undefined
+        }
+        statusPending={setStatus.isPending}
+        onToggleActive={(active) => setStatus.mutate(active ? "active" : "paused")}
+        onEdit={openEdit}
+        onSaveSchedule={(id, change) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: change, success: "Schedule saved" });
+        }}
+        onRemoveSchedule={(id) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: { archived: true }, success: "Schedule removed" });
+        }}
+        onSetTriggerPaused={(id, paused) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: { enabled: !paused }, success: paused ? "Paused" : "Resumed" });
+        }}
+        onRemoveTrigger={(trigger) => changeTrigger.mutate({ trigger, patch: { archived: true }, success: "Removed" })}
+        removedTriggers={pageRemoved}
+        onRestoreTrigger={(trigger) => changeTrigger.mutate({ trigger, patch: { archived: false }, success: "Restored" })}
+        onOpenWebhook={(trigger) => webhook.show(trigger)}
       />
+    ) : (
+      <RoutineSubpage
+        routineTitle={routine.title}
+        title={view === "history" ? "Version history" : "Audit log"}
+        onBack={() => navigate(routinePath(routine.id))}
+      >
+        {view === "history" ? (
+          <RoutineHistoryTab
+            routine={routine}
+            isEditDirty={false}
+            dirtyFields={[]}
+            onDiscardEdits={() => {}}
+            onSaveEdits={() => {}}
+            agents={new Map(options.allAgents.map((candidate) => [candidate.id, candidate]))}
+            projects={new Map(options.allProjects.map((candidate) => [candidate.id, candidate]))}
+            secrets={options.secrets}
+            onRestoreSecretMaterials={onRestoreSecretMaterials}
+            onRestored={onRestored}
+          />
+        ) : (
+          <RoutineAuditActivity companyId={companyId} routineId={routine.id} />
+        )}
+      </RoutineSubpage>
     );
-  }
-
-  const automationEnabled = routine.status === "active";
-  const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
-  const automationLabel =
-    routine.status === "archived"
-      ? "Archived"
-      : !routine.assigneeAgentId
-        ? "Draft"
-        : automationEnabled
-          ? "Active"
-          : "Paused";
-  const automationLabelClassName =
-    routine.status === "archived"
-      ? "text-muted-foreground"
-      : automationEnabled
-        ? "text-emerald-400"
-        : "text-muted-foreground";
-
-  const contextValue: RoutineDetailContextValue = {
-    routine,
-    routineId: routineId!,
-    companyId: routine.companyId,
-    editDraft,
-    setEditDraft: setEditDraftTracked,
-    routineDefaults,
-    dirtyFields,
-    isEditDirty,
-    sectionDirtyFields,
-    isSectionDirty,
-    discardSection,
-    saveRoutine,
-    saveConflict,
-    reloadLatest,
-    automationEnabled,
-    automationLabel,
-    automationLabelClassName,
-    automationToggleDisabled,
-    onToggleAutomation: () => {
-      if (!automationEnabled && !routine.assigneeAgentId) {
-        pushToast({
-          title: "Default agent required",
-          body: "Set a default agent before enabling routine automation.",
-          tone: "warn",
-        });
-        return;
-      }
-      updateRoutineStatus.mutate(automationEnabled ? "paused" : "active");
-    },
-    onOpenRunDialog: () => setRunVariablesOpen(true),
-    runRoutinePending: runRoutine.isPending,
-    newTrigger,
-    setNewTrigger,
-    createTrigger,
-    updateTrigger,
-    deleteTrigger,
-    rotateTrigger,
-    secretMessage,
-    setSecretMessage,
-    copySecretValue,
-    availableSecrets,
-    createSecret,
-    agents: agents ?? [],
-    projects: projects ?? [],
-    agentById,
-    projectById,
-    assigneeOptions,
-    projectOptions,
-    recentAssigneeIds,
-    recentProjectIds,
-    mentionOptions,
-    currentAssignee,
-    currentProject,
-    routineRuns,
-    activity,
-    hasLiveRun,
-    activeIssueId,
-    titleInputRef,
-    descriptionEditorRef,
-    assigneeSelectorRef,
-    projectSelectorRef,
-    onHistoryRestoreSecretMaterials,
-    onHistoryRestored,
-    navigateToSection,
-  };
-
-  if (triggerSetup) return <RoutineDetailContext.Provider value={contextValue}><TriggersSection /></RoutineDetailContext.Provider>;
-
-  const isEditableSection = EDITABLE_SECTIONS.includes(section);
 
   return (
-    <RoutineDetailContext.Provider value={contextValue}>
-      <a
-        href="#routine-section"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded focus:bg-background focus:px-3 focus:py-1.5 focus:text-sm"
-      >
-        Skip to section
-      </a>
-
-      {/* The global shell owns routine navigation. This surface keeps one
-          content scroll owner and a compact action header. */}
-      <div className="-m-4 flex h-full min-h-0 overflow-hidden md:-m-6">
-        {!streamlinedUiEnabled ? (
-          <RoutineSubSidebar
-            activeSection={section}
-            hrefFor={(next) => next === "runs" || next === "activity"
-              ? `/routines/${routine.id}/${next}`
-              : routineDetailHref(routine.id, next)}
-            isSectionDirty={isSectionDirty}
-            hasLiveRun={hasLiveRun}
-            onNavigate={navigateToSection}
-          />
-        ) : null}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!streamlinedUiEnabled ? (
-          <RoutineSectionPicker
-            activeSection={section}
-            onNavigate={navigateToSection}
-            isSectionDirty={isSectionDirty}
-          />
-        ) : null}
-        <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-background px-4 py-2 md:px-6">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            {section === "overview" && overviewEditing ? (
-              <textarea
-                ref={titleInputRef}
-                data-autosize-title
-                className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
-                rows={1}
-                value={editDraft.title}
-                onChange={(event) => {
-                  setEditDraft((current) => ({ ...current, title: event.target.value }));
-                  autoResizeTextarea(event.target);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    descriptionEditorRef.current?.focus();
-                  }
-                }}
-              />
-            ) : (
-              <h1 className="min-w-0 flex-1 truncate text-xl font-bold">{routine.title}</h1>
-            )}
-            {routine.managedByPlugin ? (
-              <Badge variant="outline" className="hidden shrink-0 gap-1.5 text-xs text-muted-foreground sm:inline-flex">
-                <Sparkles className="h-3 w-3" />
-                {routine.managedByPlugin.pluginDisplayName}
-                <span className="font-mono text-(length:--text-nano)">{routine.managedByPlugin.resourceKey}</span>
-              </Badge>
-            ) : null}
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {section === "history" ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => navigate(routineDetailHref(routine.id))}
-              >
-                Back to overview
-              </Button>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => navigate(routineDetailHref(routine.id, "history"))}
-              >
-                <History className="h-3.5 w-3.5" />
-                History
-              </Button>
-            )}
-            {section === "overview" ? (
-              overviewEditing ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    discardSection("overview");
-                    setOverviewEditing(false);
-                  }}
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Cancel editing
-                </Button>
-              ) : (
-                <Button variant="outline" size="sm" onClick={() => setOverviewEditing(true)}>
-                  <Pencil className="h-3.5 w-3.5" />
-                  Edit routine
-                </Button>
-              )
-            ) : null}
-            <RunButton onClick={() => setRunVariablesOpen(true)} disabled={runRoutine.isPending} />
-            <div className="flex items-center gap-2">
-              <ToggleSwitch
-                size="default"
-                checked={automationEnabled}
-                onCheckedChange={contextValue.onToggleAutomation}
-                disabled={automationToggleDisabled}
-                aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
-              />
-              <span className={`text-sm font-medium ${automationLabelClassName}`}>{automationLabel}</span>
-            </div>
-          </div>
-        </header>
-
-        <main
-          id="routine-section"
-          role="main"
-          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-8 md:px-8"
-        >
-          <section
-            aria-labelledby="routine-section-title"
-            className={
-              section === "overview" && !overviewEditing
-                ? "mx-auto w-full max-w-5xl"
-                : isEditableSection
-                  ? "mx-auto w-full max-w-3xl"
-                  : "w-full"
-            }
-          >
-            <RoutineSectionHeading
-              title={SECTION_TITLES[section]}
-              copyText={section === "overview"
-                ? routineOverviewCopyText({
-                    editing: overviewEditing,
-                    draft: editDraft.description,
-                    saved: routine.description,
-                  })
-                : null}
+    <div className="-m-4 md:-m-6">
+      {!actionsInToolbar && actions ? <div className="flex justify-end px-4 pt-3 md:px-8">{actions}</div> : null}
+      {loadErrors.length > 0 ? (
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 pt-4 md:px-8">
+          {loadErrors.map((failure) => (
+            <QueryErrorState
+              key={failure.action}
+              size="inline"
+              error={failure.error}
+              action={failure.action}
+              onRetry={failure.retry}
+              retrying={failure.retrying}
             />
-
-            {section === "overview" && (overviewEditing ? <OverviewSection /> : <RoutineOverview />)}
-            {section === "triggers" && <TriggersSection />}
-            {section === "variables" && <VariablesSection />}
-            {section === "secrets" && <SecretsSection />}
-            {section === "delivery" && <DeliverySection />}
-            {section === "runs" && <RunsSection />}
-            {section === "activity" && (
-              <ActivitySection
-                isLoading={activityView.kind === "loading" || activityView.kind === "reconnecting"}
-                error={activityView.kind === "error" ? activityView.error : null}
-                onRetry={activityView.retry}
-                retrying={activityView.isFetching}
-              />
-            )}
-            {section === "history" && <HistorySection />}
-
-            {isEditableSection && (section !== "overview" || overviewEditing) ? (
-              <RoutineSaveBar
-                dirtyFields={sectionDirtyFields(section)}
-                isSaving={saveRoutine.isPending}
-                saveConflict={saveConflict}
-                onSave={() => {
-                  if (!saveRoutine.isPending && editDraft.title.trim()) saveRoutine.mutate();
-                }}
-                onDiscard={() => discardSection(section)}
-                onReload={reloadLatest}
-              />
-            ) : null}
-          </section>
-        </main>
+          ))}
         </div>
-      </div>
+      ) : null}
+      {page}
+
+      {editInitial ? (
+        <RoutineEditDialog
+          open={editOpen}
+          onOpenChange={(open) => {
+            if (open) return;
+            if (webhook.open) void webhook.close();
+            setEditOpen(false);
+            setRemovedWebhooks([]);
+          }}
+          initial={editInitial}
+          agents={agents}
+          projects={projects}
+          people={options.people}
+          secrets={options.secrets}
+          responsibilities={responsibilityOptions}
+          mentions={options.mentions}
+          canChangeResponsibleUser={routine.canChangeResponsibleUser !== false}
+          saving={saveEdits.isPending}
+          saveConflict={saveConflict}
+          error={saveError ?? (loadErrors.length > 0 ? "Some choices couldn’t be loaded. Close this and use Retry on the page." : null)}
+          onSave={(draft) => saveEdits.mutate(draft)}
+          onReloadLatest={() => void reloadLatest()}
+          onCreateSecret={options.createSecret}
+          webhooks={webhooks}
+          onOpenWebhook={(trigger) => webhook.show(trigger)}
+          onRemoveWebhook={(trigger) => removeWebhook.mutate(trigger)}
+          removedWebhooks={removedWebhooks}
+          onRestoreWebhook={(trigger) => restoreWebhook.mutate(trigger)}
+        >
+          {editOpen ? webhookDialog : null}
+        </RoutineEditDialog>
+      ) : null}
+
+      {editOpen ? null : webhookDialog}
 
       <RoutineRunVariablesDialog
-        open={runVariablesOpen}
-        onOpenChange={setRunVariablesOpen}
+        open={runOpen}
+        onOpenChange={setRunOpen}
         companyId={routine.companyId}
         routineName={routine.title}
-        agents={agents ?? []}
-        projects={projects ?? []}
+        agents={options.allAgents}
+        projects={options.allProjects}
         defaultProjectId={routine.projectId}
         defaultAssigneeAgentId={routine.assigneeAgentId}
         variables={routine.variables ?? []}
         isPending={runRoutine.isPending}
         onSubmit={(data) => runRoutine.mutate(data)}
       />
-    </RoutineDetailContext.Provider>
+    </div>
   );
 }

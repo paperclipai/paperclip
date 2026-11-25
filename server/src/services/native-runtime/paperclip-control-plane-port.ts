@@ -1,4 +1,6 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { applyNativeAcceptedOutcome, deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
+import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { and, asc, eq, gt, or, sql } from "drizzle-orm";
@@ -36,6 +38,7 @@ import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-
 import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, type NativeControllerCompatibility } from "./native-controller-recovery.js";
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
@@ -399,6 +402,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
+    const eventType = (value as { eventType?: unknown }).eventType;
+    return trackRunIntake(this.#binding.runId, "received", typeof eventType === "string" ? eventType : "unknown",
+      () => this.#appendEvent(value, options));
+  }
+
+  async #appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -735,9 +744,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         return false;
       }
       if (owner?.resultId) throw new Error("structured_result_replay_conflict");
+      const acceptedOutcome = value.terminal.runTerminalState === "failed" && value.terminal.reportedWorkDisposition === "done"
+        ? deriveNativeAcceptedOutcome({ terminal: value.terminal,
+          ...await readPersistedNativeFailureEvidence(tx as unknown as Db, run, value.turnId ?? null, value.terminal) })
+        : null;
+      const effectiveTerminal = applyNativeAcceptedOutcome(acceptedOutcome, value.terminal);
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,
+        ...(acceptedOutcome ? { [NATIVE_ACCEPTED_OUTCOME_KEY]: acceptedOutcome } : {}),
         normalizationDiagnostics: {
           ignoredAttentionRequests: normalizationDiagnostics.ignoredAttentionRequests,
         },
@@ -785,8 +800,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           // Publish the accepted contract with its durable receipt. Recovery
           // may settle this run without the original adapter ever returning.
           nativeTerminal: value.terminal,
-          prpTurnTerminalState: value.terminal.turnTerminalState,
-          prpRunTerminalState: value.terminal.runTerminalState,
+          prpTurnTerminalState: effectiveTerminal.turnTerminalState,
+          prpRunTerminalState: effectiveTerminal.runTerminalState,
           prpReportedWorkDisposition: value.terminal.reportedWorkDisposition,
         },
         updatedAt: new Date(),

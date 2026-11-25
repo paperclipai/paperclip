@@ -2,6 +2,7 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { RESPONSIBILITY_TOOL_NAMES } from "../responsibility-tools.js";
 import { createServer } from "node:http";
 import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
@@ -190,6 +191,19 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.delete(agents).where(eq(agents.id, claudeId));
   });
 
+  it("advertises the responsibility tools only while the instance has them on", async () => {
+    const tools = [...RESPONSIBILITY_TOOL_NAMES];
+    const off = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    expect(off.definitions().map(tool => tool.name)).not.toEqual(expect.arrayContaining([tools[0]]));
+    // A hidden tool called by name says the feature is off, so the agent does not report an empty list.
+    await expect(off.execute({ tool: "list_responsibilities", callId: randomUUID(), arguments: {} }))
+      .rejects.toThrow("Areas and responsibilities are turned off");
+
+    const on = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, responsibilitiesEnabled: true });
+    expect(on.definitions()).toHaveLength(off.definitions().length + tools.length);
+    expect(on.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining(tools));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -197,10 +211,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(54);
+    expect(authority.definitions()).toHaveLength(57);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
-      "search_skills", "load_skill",
+      "search_skills", "load_skill", "list_routines", "update_routine", "update_skill_details",
     ]));
     // The read-only response export is its own tool, so call_api offers no save flag on writes.
     const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
@@ -1064,6 +1078,24 @@ describe("PaperclipRunnerToolAuthority", () => {
     } finally {
       await db.update(agents).set({ adapterConfig: actor.adapterConfig }).where(eq(agents.id, agentId));
     }
+  });
+
+  it("moves assigned tools on demand when the run's reserved attachment bytes leave no room for them", async () => {
+    const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 40 }, (_, i) => ({
+      name: `app.lookup_${i}`, displayName: `Lookup ${i}`, description: "Read a fixture",
+      parametersSchema: { type: "object", properties: { query: { type: "string", description: "Lookup field documentation. ".repeat(80) } } }, risk: "read",
+    })));
+    const assignedMcpTools = await createAssignedMcpTools({
+      gateway: { listToolsForNamedGateway } as unknown as ToolGatewayService,
+      gatewayPublicId: "fixture", bearerToken: "fixture-token",
+    });
+    const binding = { companyId, agentId, issueId, runId, assignedMcpTools };
+    const direct = new PaperclipRunnerToolAuthority(db, binding).definitions().map(tool => String(tool.name));
+    expect(direct.filter(name => name.includes("lookup"))).toHaveLength(40);
+    const reserved = new PaperclipRunnerToolAuthority(db, { ...binding, runAttachReservedBytes: 340 * 1024 })
+      .definitions().map(tool => String(tool.name));
+    expect(reserved.filter(name => name.includes("lookup"))).toEqual([]);
+    expect(reserved).toEqual(expect.arrayContaining(["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"]));
   });
 
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {

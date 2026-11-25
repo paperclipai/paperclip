@@ -1415,8 +1415,9 @@ Terminal states: `done`, `cancelled`
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
+| GET    | `/api/companies/:companyId/issues/count` | Count blocked issues that need attention. `?attention=blocked` is required; other requests return 400. Accepts issue-list filters such as `?status=`, `?assigneeAgentId=`, `?projectId=`, `?labelId=` and `?q=`, and rejects `?limit=` and `?offset=`. For any other count, page through `GET /api/companies/:companyId/issues` with `?limit=` (default 500, maximum 1000) and increasing `?offset=` until a page is empty, and count every returned issue |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor, and `currentExecutionWorkspace` when one is linked |
 | GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
 | GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
 | GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
@@ -1445,7 +1446,6 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
 | GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
@@ -1479,7 +1479,7 @@ Terminal states: `done`, `cancelled`
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/companies/:companyId/routines` | List the company's routines. Optional filters, all applied before any limit: `projectId`, `q` (words in the title or description), `status`, `assigneeAgentId`, `responsibleUserId`, `responsibilityId` (filed under it, directly or through its project), `unfiled=true` (under no proposed or active responsibility); those two need Responsibilities on |
 | GET    | `/api/routines/:routineId` | Routine details including triggers |
 | POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
 | PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
@@ -1490,6 +1490,105 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/routines/:routineId/run` | Manual run (bypasses schedule; concurrency policy still applies) |
 | POST   | `/api/routine-triggers/public/:publicId/fire` | Fire webhook trigger from external system |
 | GET    | `/api/routines/:routineId/runs` | Run history (default 50) |
+| POST   | `/api/issues/:issueId/routine-suggestions` | Offer once to repeat the task you just finished as a routine (assignee agent only; experimental). See **Offer a routine after recurring work** in `SKILL.md` |
+
+Offer a routine after finishing recurring work (the person accepts or declines in the task conversation; you are not woken):
+
+```
+POST /api/issues/{issueId}/routine-suggestions
+{ "title": "Weekly competitor pricing summary", "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.", "cadence": { "frequency": "weekly", "dayOfWeek": "monday", "time": "09:00" }, "message": "Want me to put this summary together every Monday morning?" }
+```
+
+### Areas and responsibilities
+
+A person's responsibilities are saved records, each optionally filed under an area (experimental, `enableResponsibilities`). Prefer the dedicated tools `list_responsibilities`, `get_responsibility` and `find_responsibilities_for`; these are the routes behind them. While the feature is off every route returns `404` with code `responsibilities_disabled`: report that the feature is off, not that the person has none.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/responsibilities` | One person's areas, responsibilities (with health and counts), proposals, totals and the company's work filed under no responsibility (`loose`). `ownerUserId` defaults to the person your run works for; `includeLetGo=true` adds let-go ones |
+| GET    | `/api/companies/:companyId/responsibility-areas` | The company's areas; `includeArchived=true` adds archived ones |
+| GET    | `/api/responsibilities/:responsibilityId` | One responsibility with its projects, tasks and routines (`linkId` set when filed directly) and the skills of the agents doing its work |
+| GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId`, `routineId` or `skillId` |
+| POST   | `/api/companies/:companyId/responsibilities` | Create one. Acting for the person your run works for (who may manage the owner, and who directed the run: their own chat or task, or their message woke it), a title is enough and it is active; otherwise it is a proposal with its whole bar |
+| PATCH  | `/api/responsibilities/:responsibilityId` | Change any field, as the person could; otherwise only a proposal, or `metricCurrent` on one you work under |
+| POST   | `/api/responsibilities/:responsibilityId/file` | `{ items: [{ kind: "project" \| "task" \| "routine" \| "skill", id }], moveFrom?: responsibilityId \| "all" }`: file items, optionally moving them |
+| POST   | `/api/responsibilities/:responsibilityId/unfile` | `{ items }`: unfile items by kind and id |
+| DELETE | `/api/responsibilities/:responsibilityId?confirmationId=` | Permanent. An agent sends the id of an accepted `request_confirmation` card it posted, with target `{ type: "custom", key: "responsibility-delete:<id>" }` |
+| POST   | `/api/companies/:companyId/responsibility-areas` | Create an area (or get the live one with that title) |
+| PATCH  | `/api/responsibility-areas/:areaId` | Rename, describe, reorder, archive or restore an area |
+| DELETE | `/api/responsibility-areas/:areaId?confirmationId=&moveResponsibilitiesTo=` | Permanent; card key `responsibility-area-delete:<id>`. Its responsibilities move to `moveResponsibilitiesTo`, or keep no area |
+
+An agent's change for a person is saved as a version of that person's Dashboard, where they can undo it.
+
+### Responsibility bars
+
+A bar conversation is a task a person opens from a responsibility to agree how its success is measured (experimental). Its prompt carries a **Bar conversation** block with the responsibility's facts, the templates and these calls. Only the person can apply a bar, by accepting your proposal.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/api/issues/:issueId/bar-proposals` | Propose a bar in the bar conversation assigned to you (experimental). A new proposal replaces the waiting one. It may carry up to two supporting `metrics` and a `primaryDisplay` |
+| POST   | `/api/responsibilities/:responsibilityId/metrics/:metricId/readings` | Record what one of a responsibility's metrics reads now (experimental). `metricId` is a supporting metric's id, or `primary` for the bar's own; you must run the responsibility or have a task or routine under it. Never send `recordedAt` |
+
+The bar's own metric is the primary one on the responsibility's page; a proposal may add up to two supporting metrics (`metrics`: each `{ title, description, display, unit?, target?, direction?, readings?, readingsEvidence? }`, `display` is `number`, `percent`, `line` or `bar`) and say how the primary is drawn (`primaryDisplay`). Accepting replaces the supporting metrics. Record a supporting metric's reading as it changes:
+
+```
+POST /api/responsibilities/{responsibilityId}/metrics/{metricId}/readings
+{ "value": 4, "note": "Four intro meetings on the shared calendar this week" }
+```
+
+Propose a range bar (`metricKind` is `volume`, `percentage`, `yes_no` or `range`; you choose it):
+
+```
+POST /api/issues/{issueId}/bar-proposals
+{ "standard": "We always have between 12 and 24 months of runway.", "metricKind": "range", "metricName": "Runway", "metricUnit": "months", "metricLow": 12, "metricHigh": 24, "metricCurrent": 18, "currentEvidence": "Cash on hand divided by the last three months' average burn", "message": "Here is a bar that keeps runway in a healthy band." }
+```
+
+### Automation conversations and standing checks
+
+An automation conversation is a task a person opens from one of their manual tasks to turn it into an automation (experimental). Its prompt carries an **Automation conversation** block with the task's facts, the ways it can start and these calls. Only the person can set it up, by accepting your proposal. A standing check is an automation you carry out each time your heartbeat wakes you; the timer wake prompt lists yours under **Standing checks**.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/api/issues/:issueId/automation-proposals` | Propose one automation in the automation conversation assigned to you (experimental). A new proposal replaces the waiting one |
+| POST   | `/api/routines/:routineId/standing-check-results` | Report what one of your standing checks found on this wake-up (experimental) |
+
+Propose a webhook automation (`trigger.kind` is `schedule` with a `cadence`, `webhook` with a `caller`, or `standing_check` with `lookFor` and `whenFound`):
+
+```
+POST /api/issues/{issueId}/automation-proposals
+{ "title": "Triage new support tickets", "instructions": "Read the new ticket, label it by product area and urgency, and assign it.", "trigger": { "kind": "webhook", "caller": "The help desk, each time a ticket is opened" }, "message": "This can start by itself whenever a ticket arrives." }
+```
+
+### Dashboard conversations
+
+A dashboard conversation is a task a person opens from their Dashboard to have you draft it (create: interview and research them first) or change it (edit) (experimental). Its prompt carries a **Dashboard conversation** block with their areas and responsibilities, the ids you need, the rules and this call. Only the person can apply your changes, by accepting your proposal; every applied change can be undone.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/api/issues/:issueId/dashboard-changes` | Propose an ordered list of changes to the person's Dashboard in the dashboard conversation assigned to you (experimental). A new proposal replaces the waiting one |
+
+Propose a first dashboard (`op` is `add_area`, `rename_area`, `remove_area`, `add_responsibility`, `reword_responsibility`, `move_responsibility` or `remove_responsibility`; removals need a `reason`):
+
+```
+POST /api/issues/{issueId}/dashboard-changes
+{ "message": "Here is a first dashboard from your answers.", "changes": [{ "op": "add_area", "ref": "fundraising", "name": "Fundraising" }, { "op": "add_responsibility", "areaRef": "fundraising", "sentence": "Every prospective LP hears from us at least every two weeks.", "reason": "You run the weekly fundraising sync." }] }
+```
+
+### Responsibility status
+
+A responsibility can carry a status an agent wrote (experimental): behind, at risk or on track (or that you cannot tell yet), one plain line saying why, and optional detail. The agent with the best view of a responsibility writes it. When a person asks you for an update, the task's prompt carries a **Status update** block with the facts and this call; on other work under a responsibility you report on, the prompt carries a short **Responsibility status** reminder.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/api/responsibilities/:responsibilityId/status-report` | Write a responsibility's status, as its reporter or an agent working under it (experimental) |
+| GET    | `/api/responsibilities/:responsibilityId/status-report` | Read a responsibility's current status, its reporter and recent reports (experimental) |
+
+Write a status (`status` is `behind`, `at_risk`, `on_track` or `unknown`):
+
+```
+POST /api/responsibilities/{responsibilityId}/status-report
+{ "status": "at_risk", "message": "Drifted from 2.1 s to 2.4 s as the catalogue grew.", "detail": "The image pipeline rebuild is the fix and it is two weeks late." }
+```
 
 ### Approvals, Costs, Activity, Dashboard
 

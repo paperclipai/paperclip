@@ -1,4 +1,4 @@
-import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
+import { supportsHostedGoogleAiLogin, supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { localOperatorCredential } from "../middleware/local-operator-credential.js";
 import { Router } from "express";
@@ -21,6 +21,7 @@ import {
 } from "../services/cloud-instance.js";
 import { getCloudRuntimeIdentity } from "../services/cloud-runtime-identity.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { getAvailableHarnesses } from "../services/harness-availability.js";
 import {
   inspectDatabaseBackupHealth,
   type DatabaseBackupHealthStatus,
@@ -103,12 +104,14 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
   const context = getCloudStackContext(env);
   if (!context) return undefined;
   const runtimeIdentity = env === process.env ? getCloudRuntimeIdentity() : null;
+  const availableHarnesses = getAvailableHarnesses(env);
 
   return {
     managed: true as const,
     managedBy: "paperclip-cloud" as const,
     stackSlug: context.stackSlug,
     cloudBaseUrl: context.cloudOrigin,
+    ...(availableHarnesses !== undefined ? { availableHarnesses } : {}),
     ...(runtimeIdentity ? {
       runtimeIdentity: {
         canonicalOrigin: runtimeIdentity.canonicalOrigin,
@@ -419,6 +422,7 @@ export function healthRoutes(
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
+        hostedGoogleAiLoginSupported: supportsHostedGoogleAiLogin(opts),
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
@@ -443,7 +447,8 @@ export function healthRoutes(
       commit,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
-        localAiLoginSupported: supportsLocalAiLogin(opts),
+      localAiLoginSupported: supportsLocalAiLogin(opts),
+      hostedGoogleAiLoginSupported: supportsHostedGoogleAiLogin(opts),
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,

@@ -1,3 +1,4 @@
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { settleReattachRun } from "./run-admission.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
@@ -48,6 +49,7 @@ import { cancellationResultJson } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import {
   hasAcknowledgedNativeReassignmentStopIntent,
   hasAcknowledgedNativeLifecycleStopIntent,
@@ -279,6 +281,8 @@ export const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
   "low_trust_runtime_services_denied",
   "chat_failed_run_retry_not_authorized",
   CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+  // A requested /swarm that cannot run waits for the user (send /swarm again or Retry).
+  ANTIGRAVITY_SWARM_UNAVAILABLE,
 ]);
 
 // Error codes that mark a pre-dispatch setup failure. The adapter process never
@@ -625,7 +629,7 @@ export async function persistHeartbeatRunProcessMetadata(
   );
   const startedAt = new Date(observedStartedAt ?? meta.startedAt);
   const processStartedAt = Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
-  return db.transaction(async tx => {
+  return trackRunIntake(runId, "process_identity", PROCESS_IDENTITY_RECORDED, () => db.transaction(async tx => {
     const [binding] = await tx
       .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -654,7 +658,7 @@ export async function persistHeartbeatRunProcessMetadata(
     });
     return tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-  });
+  }));
 }
 
 type SkillTestHeartbeatCompletion = {

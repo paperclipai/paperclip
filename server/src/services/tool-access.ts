@@ -1,4 +1,7 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, AWS_ROLE_ARN_PATTERN, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
+import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -10,6 +13,7 @@ import { createConnectionCredentialValidation } from "./tool-access/connections/
 import { createConnectionGrants } from "./tool-access/connections/grants.js";
 import { createConnectionInstalls } from "./tool-access/connections/installs.js";
 import { createConnectionRemoval } from "./tool-access/connections/removal.js";
+import { createFirstSignInDrafts } from "./tool-access/connections/first-sign-in.js";
 import { createToolRemoteHttp } from "./tool-access/remote-http.js";
 import { classifyRisk, normalizeToolDescriptor, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
 export { classifyRisk, isGmailToolPermanentlyBlocked, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
@@ -29,6 +33,7 @@ import { toApplication } from "./tool-access/applications/projection.js";
 import { groupedActions } from "./tool-access/catalog/action-summary.js";
 import { createConnectionSetupPolicy, assertSupportedConnection } from "./tool-access/connections/setup-policy.js";
 import { createOrganizationGrantStore } from "./tool-access/connections/organization-grant.js";
+import { createAgentGrantStore } from "./tool-access/connections/agent-grant.js";
 import { createPersonalConnectionIdentity } from "./tool-access/connections/personal-identity.js";
 import { createOAuthStateStore } from "./tool-access/oauth/state.js";
 import { createOAuthCatalogCompletion } from "./tool-access/oauth/catalog-completion.js";
@@ -84,15 +89,17 @@ import { stableHash } from "./tool-catalog-hash.js";
 
 import { NATIVE_PROVIDER_SLUGS, nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { connectorToolPolicy } from "./connectors/tool-policy.js";
+import { loadPluginAppCatalog, pluginAppCatalogFor } from "./plugin-app-catalog.js";
+import { validateInstanceConfig } from "./plugin-config-validator.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
-import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
+import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isCatalogEntryBlocked, isCatalogEntryOffered, isCatalogEntryRemovedByProvider, isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -110,7 +117,7 @@ import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
-import { getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { connectionSourceSlug, isPluginAppSlug, parsePluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp, type ConnectionMethodDef } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -145,9 +152,11 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 
 import { googleChatToolDescription } from "./google-chat-tool-policy.js";
 import { gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
+import { googleWorkspaceCatalogToolTitle } from "./google-workspace-rest-dispatch.js";
 
 import { createToolRuntimeSupervisor } from "./tool-runtime-supervisor.js";
 
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 import { appWithPaperclipCloudConnectorAvailability, paperclipCloudConnectorCapabilitiesFromEnv, createPaperclipCloudConnector, isPaperclipCloudConnectorStrategy, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { createVercelConnectClient, deriveVercelConnectSubject, vercelConnectIntegrationStatus, type VercelConnectClient } from "./vercel-connect.js";
 
@@ -168,10 +177,10 @@ type ToolAccessServiceOptions = {
   composioAppToolkits?: readonly string[];
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
-  /** @deprecated Use paperclipCloudConnector. */
-  paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+  awsMcpClients?: AwsMcpClients;
 };
 
 const GOOGLE_SHEETS_SPREADSHEET_SCHEMA = {
@@ -588,6 +597,7 @@ function toCatalogEntryForConnection(
   const rawCatalogEntry = toCatalogEntry(row);
   const catalogEntry = {
     ...rawCatalogEntry,
+    title: googleWorkspaceCatalogToolTitle(asRecord(connection.config).sourceTemplateKey, row.toolName, rawCatalogEntry.title),
     inputSchema: projectedConnectionToolInputSchema(
       connection,
       rawCatalogEntry.inputSchema ?? {},
@@ -750,16 +760,13 @@ export function toolAccessService(
   const { resolveInstalledConnectionsForAgent, listConnectionInstalls } = connectionInstalls;
   const audit = createToolAccessAudit(db);
   const ensureDefaultOrganizationGrant = createOrganizationGrantStore(db);
+  const agentGrants = createAgentGrantStore(db);
   const { mintConnectionTokenForAgent, loadBrokerRunContext } = createConnectionTokenBroker(db, { now, secrets, policySvc, audit, getConnectionRow, ensureDefaultOrganizationGrant });
   const profileService = createToolProfileService(db, now);
   const profileDetails = profileService.getProfile;
   const profileResolver = createToolProfileResolver(db, { assertOptionalAgent, resolveInstalledConnectionsForAgent, toCatalogEntry });
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;
@@ -776,15 +783,50 @@ export function toolAccessService(
     const profiles = connectorWasProvided
       ? (await currentCloudConnector()?.getCapabilities() ?? [])
       : await paperclipCloudConnectorCapabilitiesFromEnv();
-    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+    return appWithPaperclipCloudConnectorAvailability(app, profiles, paperclipGoogleSignInAvailable());
   }
   const vercelConnect =
     options.vercelConnectClient === undefined
       ? createVercelConnectClient()
       : options.vercelConnectClient;
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
-  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect });
-  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow });
+  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets });
+  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow });
+  const firstSignInDrafts = createFirstSignInDrafts(db, { removeConnection });
+  /**
+   * Connection setup resolves connector definitions synchronously. Refresh the
+   * plugin-provided part of the catalog from the plugins table first, so a
+   * plugin enabled or disabled through another process is seen here too.
+   */
+  /**
+   * A setup step that finishes after its plugin became unavailable reports the
+   * connector as gone. If the plugin was uninstalled, its cleanup may already
+   * have run, so this connection (and the credential just stored) is removed
+   * through the normal removal too.
+   */
+  async function retireIfPluginAppUnavailable<Result extends { connectionId: string; connection: { companyId: string; config?: Record<string, unknown> | null } }>(
+    result: Result,
+    actor?: ActorInfo,
+  ): Promise<Result> {
+    const source = result.connection.config?.sourceTemplateKey;
+    const pluginKey = parsePluginAppSlug(source)?.pluginKey;
+    if (!pluginKey || (await loadPluginAppCatalog(db)).isAvailable(source as string)) return result;
+    // Disabled: keep the saved setup (hidden) so re-enabling restores it.
+    // Uninstalled (or deleted): its cleanup may already have passed, so
+    // remove this connection the same way.
+    const [plugin] = await db.select({ status: plugins.status }).from(plugins).where(eq(plugins.pluginKey, pluginKey));
+    if (!plugin || plugin.status === "uninstalled") {
+      await removeConnection(result.connectionId, result.connection.companyId, actor);
+    }
+    throw notFound("Tool app gallery entry not found");
+  }
+
+  function withPluginApps<Args extends unknown[], Result>(fn: (...args: Args) => Promise<Result>) {
+    return async (...args: Args): Promise<Result> => {
+      await loadPluginAppCatalog(db);
+      return fn(...args);
+    };
+  }
   const credentialStore = createOAuthCredentialStore(db, secrets);
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
@@ -805,7 +847,7 @@ export function toolAccessService(
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
-  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
+  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients: options.awsMcpClients });
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentialAccess;
   const setupPolicy = createConnectionSetupPolicy(db);
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
@@ -817,7 +859,14 @@ export function toolAccessService(
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
-  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  const publishCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  // Every catalog refresh (setup, scheduled discovery, or a read that
+  // refreshes) classifies tools from the connector definition, so make sure
+  // plugin-provided definitions are current first.
+  const refreshCatalog: typeof publishCatalog = async (...args) => {
+    await loadPluginAppCatalog(db);
+    return publishCatalog(...args);
+  };
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
   const listAppsNeedingAttention = createToolAppAttention(db, now);
   const aggregatorAccounts = createAggregatorAccounts(db, { options, secrets, audit, credentials: credentialAccess, getConnectionRow, requestRemoteHttpEndpoint, remoteTools: catalogDiscovery.remoteTools });
@@ -1529,7 +1578,20 @@ export function toolAccessService(
     };
   }
 
+  /** Origin and path of a pasted MCP address; query strings may carry credentials and are ignored. */
+  function linkEndpoint(value: unknown): string | null {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+      const url = new URL(value.trim());
+      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      return null;
+    }
+  }
+
   function defaultLinkName(link: string): string {
+    const peer = paperclipPeerFromMcpUrl(link);
+    if (peer) return peer.name;
     try {
       const url = new URL(link);
       const host = url.host.replace(/^www\./, "");
@@ -1620,6 +1682,19 @@ export function toolAccessService(
       if (!used.has(candidate.toLocaleLowerCase())) return candidate;
     }
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
+  }
+
+  /** Per-connection settings of a plugin-served method, validated by its schema. */
+  function pluginConnectionSettings(method: ConnectionMethodDef, settings: Record<string, unknown>): Record<string, unknown> {
+    if (!method.settingsSchema) {
+      if (Object.keys(settings).length > 0) throw badRequest("This connector has no settings");
+      return {};
+    }
+    const result = validateInstanceConfig(settings, method.settingsSchema);
+    if (!result.valid) {
+      throw unprocessable("Check this connection's settings", { code: "plugin_connection_settings_invalid", errors: result.errors });
+    }
+    return settings;
   }
 
   async function connectGalleryApp(
@@ -1733,16 +1808,36 @@ export function toolAccessService(
         : null;
       const requestedSource =
         galleryEntry?.slug ?? (input.link ? "link" : null);
+      // A pasted address names its own server. Default names can repeat
+      // across hosts (two `acme Paperclip`s), so a removed link connection is
+      // revived only for the same endpoint; otherwise the new server would
+      // inherit another server's identity, instructions and tool prefix.
+      const sameLinkEndpoint = async (applicationId: string) => {
+        const requested = linkEndpoint(input.link);
+        if (!requested) return false;
+        const retained = await db
+          .select({ config: toolConnections.config })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.applicationId, applicationId)));
+        return retained.some((row) => linkEndpoint(asRecord(row.config).url) === requested);
+      };
       if (
         recoverableApplication &&
         requestedSource &&
-        recoverableSource === requestedSource
+        recoverableSource === requestedSource &&
+        (requestedSource !== "link" || await sameLinkEndpoint(recoverableApplication.id))
       ) {
         existingApplication = recoverableApplication;
       }
     }
 
     await assertConnectorConnectionSetupEnabled(requestedResumeConnection ?? {}, existingApplication?.applicationKey);
+    // Another Paperclip reached by address: tell agents those tools act on a
+    // different instance. Derived from the typed address, never from the server.
+    const paperclipPeer = galleryEntry ? null : paperclipPeerFromMcpUrl(input.link);
+    const newConnectionAgentInstructions = paperclipPeer
+      ? paperclipPeerAgentInstructions(paperclipPeer)
+      : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions);
     const requestedName =
       input.name ??
       existingApplication?.name ??
@@ -1777,6 +1872,14 @@ export function toolAccessService(
       input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
       && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
     ));
+    if (galleryEntry && input.link && paperclipPeerFromMcpUrl(input.link)) {
+      // Another Paperclip needs its own name, instructions and tool prefix,
+      // which only the "Connect your own MCP server" path sets up.
+      throw badRequest(
+        `That is a Paperclip address. Connect it with "Connect your own MCP server" instead of ${galleryEntry.name}.`,
+        { code: "paperclip_peer_requires_generic_connection" },
+      );
+    }
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&
@@ -1842,7 +1945,8 @@ export function toolAccessService(
     const transport = method?.transport ?? "mcp_remote";
     const applicationType = transport === "rest_api" ? "rest_api"
       : transport === "mcp_remote" ? "mcp_http"
-        : transport === "local_stdio" ? "mcp_stdio" : null;
+        : transport === "local_stdio" ? "mcp_stdio"
+          : transport === "plugin" ? "paperclip_plugin" : null;
     if ((retainedConnection && retainedConnection.transport !== transport)
       || (existingApplication && applicationType && existingApplication.type !== applicationType)) {
       if (requestedResumeConnection || input.applicationId) {
@@ -1983,8 +2087,28 @@ export function toolAccessService(
         `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
       );
     }
-    const dedicatedAgentId =
+    // OAuth names the agent in its state and the callback writes that agent's
+    // grant. A curated method without sign-in (`none` or `api_key`) has no
+    // callback, so connect itself must create the agent's grant.
+    const createsAgentGrantAtConnect = Boolean(
+      requestedGrantKind === "agent" && galleryEntry && method && method.auth !== "oauth" && !remoteMcpConnector,
+    );
+    let dedicatedAgentId =
       requestedGrantKind === "agent" ? (input.subjectAgentId ?? null) : null;
+    if (createsAgentGrantAtConnect && !dedicatedAgentId) {
+      // Continuing the same identity (resume or reconnect) without naming the
+      // agent keeps its one active agent. A fresh connect that only recovered
+      // an archived row is a new identity decision and must name the agent.
+      const retainedAgentGrant = retainsIdentity && retainedConnection
+        ? await agentGrants.activeAgentGrant(companyId, retainedConnection.id)
+        : null;
+      dedicatedAgentId = retainedAgentGrant?.subjectAgentId ?? null;
+      if (!dedicatedAgentId) {
+        throw badRequest("Choose the agent that uses this connection", {
+          code: "connection_subject_agent_required",
+        });
+      }
+    }
     if (dedicatedAgentId) {
       const [subjectAgent] = await db
         .select({ id: agents.id })
@@ -1995,7 +2119,7 @@ export function toolAccessService(
         .limit(1);
       if (!subjectAgent)
         throw badRequest(
-          "Dedicated GitHub identity requires an agent in this company",
+          "A dedicated agent identity requires an agent in this company",
         );
     }
     const credentialSource: ToolConnectionCredentialSource =
@@ -2124,8 +2248,9 @@ export function toolAccessService(
       transport === "mcp_remote" && input.link
         ? splitRemoteUrlCredential(input.link)
         : null;
-    const baseConfig =
-      (transport === "mcp_remote" || transport === "rest_api")
+    const baseConfig = transport === "plugin" && method
+      ? { settings: pluginConnectionSettings(method, input.settings ?? asRecord(asRecord(retainedConnection?.config).settings)) }
+      : (transport === "mcp_remote" || transport === "rest_api")
         ? {
             url:
               (remoteMcpConnector ? remoteUrlCredential?.publicUrl : undefined) ??
@@ -2136,12 +2261,27 @@ export function toolAccessService(
               "",
           }
         : { templateId: method?.defaults?.templateKey };
+    // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
+    // gets a clear message instead of a role refusal. Testing a draft keeps the issuer recorded at the
+    // draft step; saving the draft again, any other setup, or a reconnect records the current address.
+    const recordedAwsIssuer = !input.reconnectConnectionId && !input.saveDraft && retainedConnection?.status === "draft"
+      ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
+      : undefined;
+    const awsIssuerOrigin = workloadIdentityIssuerOrigin();
+    const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
+      : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
+        : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
-          methodConfig: normalizedMethodConfig?.values ?? {},
+          methodConfig: input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry.slug, method?.key)
+            // A role ARN is only kept once AWS accepted it in a test, so an unchecked ARN never reaches
+            // the setup steps (which tell an AWS administrator to update that role).
+            ? Object.fromEntries(Object.entries(normalizedMethodConfig?.values ?? {}).filter(([key]) => key !== "roleArn"))
+            : normalizedMethodConfig?.values ?? {},
           ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
             ? { workspaceSetup: retainedConnection.config.workspaceSetup }
             : {}),
@@ -2158,6 +2298,7 @@ export function toolAccessService(
             mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
           } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
+          ...(galleryEntry.plugin?.legacyTools ? { legacyPluginTools: true } : {}),
           // Telem.AI attributes each search to the Paperclip company, agent,
           // run and issue, so its catalog connection forwards those context
           // headers by default (the gateway still drops empty values). A
@@ -2172,7 +2313,20 @@ export function toolAccessService(
               }
             : {}),
         }
-      : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
+      : {
+          ...baseConfig,
+          quarantineNewEntries: false,
+          unverifiedServer: true,
+          // Peer tool prefix, fixed when the identity is created. A retained
+          // identity keeps whatever it had, so tool names that saved rules and
+          // approvals refer to never change on reconnect or rename.
+          ...(() => {
+            const namespace = retainedConnection
+              ? asRecord(retainedConnection.config).paperclipPeerToolNamespace
+              : paperclipPeer?.toolNamespace;
+            return typeof namespace === "string" ? { paperclipPeerToolNamespace: namespace } : {};
+          })(),
+        };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
       const connectorProfile = method.connectorProfile;
       const profile = managedConnectorProfile(connectorProfile);
@@ -2286,8 +2440,22 @@ export function toolAccessService(
       retainedMethodKey === method?.key &&
       (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
+    // A dedicated agent's API key lives on its grant, not on the connection.
+    const [retainedAgentGrant] = canRetainCredentialMaterial && createsAgentGrantAtConnect && retainedConnection && dedicatedAgentId
+      ? await db
+          .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+          .from(connectionGrants)
+          .where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, retainedConnection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+          ))
+          .limit(1)
+      : [];
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
+        retainedAgentGrant?.credentialSecretRefs ??
         retainedConnection?.credentialSecretRefs ??
         [])
       : [];
@@ -2473,7 +2641,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "plugin" ? "paperclip_plugin" : transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -2533,7 +2701,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -2570,7 +2738,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -2696,6 +2864,19 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // Without sign-in, the agent's grant is written here, carrying the
+        // API key when the method has one. The grant alone gives no tools:
+        // the agent still needs an install of the active connection.
+        if (createsAgentGrantAtConnect) {
+          const mutation = await agentGrants.upsertConnectAgentGrant({
+            companyId,
+            connectionId: connectionRow.id,
+            subjectAgentId: dedicatedAgentId,
+            credentialSecretRefs,
+            actor,
+          });
+          if (revivedConnectionPrevious) revivedGrantMutation = mutation;
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
@@ -2765,7 +2946,13 @@ export function toolAccessService(
       );
       await ensureRuntimeSlot(connectionRow);
 
-      if (input.saveDraft && remoteMcpConnector) {
+      // Minted-credential methods (AWS role) need the connection to exist before the
+      // provider can trust it, so they may also save a draft without contacting it.
+      // AWS validates the issuer's discovery document when the customer registers it, so publish the key now.
+      if (input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
+        await workloadIdentityService(db).ensureActiveKey(companyId);
+      }
+      if (input.saveDraft && (remoteMcpConnector || method?.credentialMinter)) {
         return { connectionId: connectionRow.id, application: toApplication(applicationRow), connection: toConnection(connectionRow),
           catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] } };
       }
@@ -3219,11 +3406,11 @@ export function toolAccessService(
       connection.id,
       input.askFirstCatalogEntryIds,
     );
-    if (enabledRows.some((entry) => entry.status === "disabled" && !(entry.quarantineReason === "mcp_tool_removed" && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)))) {
+    if (enabledRows.some(isCatalogEntryBlocked)) {
       throw badRequest("Disabled actions cannot be enabled");
     }
     if (reviewedIds.length > 0) {
-      await assertCatalogEntriesForConnection(
+      const reviewedRows = await assertCatalogEntriesForConnection(
         companyId,
         connection.id,
         reviewedIds,
@@ -3238,7 +3425,7 @@ export function toolAccessService(
             eq(toolCatalogEntries.status, "quarantined"),
           ),
         );
-      const reviewedIdSet = new Set(reviewedIds);
+      const reviewedIdSet = new Set(reviewedRows.filter((entry) => !isCatalogEntryRemovedByProvider(entry)).map((entry) => entry.id));
       if (
         quarantinedRows.length !== reviewedIdSet.size ||
         quarantinedRows.some((entry) => !reviewedIdSet.has(entry.id))
@@ -3251,7 +3438,7 @@ export function toolAccessService(
     if (input.access !== "all_agents")
       await assertAgentsInCompany(companyId, input.access.agentIds);
 
-    const entries: CreateToolProfileEntryForProfile[] = enabledRows.map(
+    const entries: CreateToolProfileEntryForProfile[] = enabledRows.filter(isCatalogEntryOffered).map(
       (entry) => ({
         selectorType: "catalog_entry",
         effect: "include",
@@ -3353,8 +3540,19 @@ export function toolAccessService(
                 priority: prior.priority,
                 metadata: prior.metadata,
               });
+          const priorCatalogEntryIds = [...new Set(priorEntries.flatMap((prior) => prior.catalogEntryId ? [prior.catalogEntryId] : []))];
+          const removedPriorCatalogEntryIds = new Set(
+            (priorCatalogEntryIds.length > 0
+              ? await tx
+                  .select({ id: toolCatalogEntries.id, status: toolCatalogEntries.status, quarantineReason: toolCatalogEntries.quarantineReason })
+                  .from(toolCatalogEntries)
+                  .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, priorCatalogEntryIds)))
+              : []
+            ).filter(isCatalogEntryRemovedByProvider).map((entry) => entry.id),
+          );
           for (const prior of priorEntries)
             if (
+              !(prior.effect === "include" && prior.catalogEntryId && removedPriorCatalogEntryIds.has(prior.catalogEntryId)) &&
               !entries.some(
                 (entry) =>
                   entry.catalogEntryId &&
@@ -3533,6 +3731,7 @@ export function toolAccessService(
               inArray(toolCatalogEntries.id, enabledIds),
               ne(toolCatalogEntries.status, "quarantined"),
               ne(toolCatalogEntries.status, "disabled"),
+              ne(toolCatalogEntries.status, "removed"),
             ),
           );
       }
@@ -3541,7 +3740,7 @@ export function toolAccessService(
         {
           companyId,
           connection,
-          askFirstEntries: askFirstRows,
+          askFirstEntries: askFirstRows.filter(isCatalogEntryOffered),
           disableStale: !input.preserveExistingAccess,
           actor,
         },
@@ -3676,8 +3875,20 @@ export function toolAccessService(
       undefined,
       actor,
     );
+    // A dedicated agent's key lives on its grant, which is what the gateway
+    // reads for a per-agent connection. Rotate it there.
+    const agentGrant = connection.credentialPolicy === "per_agent"
+      ? await agentGrants.activeAgentGrant(companyId, connection.id)
+      : null;
+    if (connection.credentialPolicy === "per_agent" && !agentGrant) {
+      throw conflict("This connection has no agent to update. Connect it again and choose its agent.", {
+        code: "connection_subject_agent_required",
+      });
+    }
+    const grantIdentity = Boolean(personalIdentity || agentGrant);
     const credentialSecretRefs = [
       ...(personalIdentity?.grant?.credentialSecretRefs ??
+        agentGrant?.credentialSecretRefs ??
         connection.credentialSecretRefs),
     ];
     const credentialRefs: McpConnectionCredentialRef[] = [
@@ -3759,13 +3970,19 @@ export function toolAccessService(
           });
         }
       }
+      if (agentGrant) {
+        await tx
+          .update(connectionGrants)
+          .set({ credentialSecretRefs, updatedAt })
+          .where(eq(connectionGrants.id, agentGrant.id));
+      }
       const [nextConnection] = await tx
         .update(toolConnections)
         .set({
           credentialRefs,
-          // Personal reconnect rotates the existing user's grant. The
+          // Personal and agent reconnects rotate that identity's grant. The
           // connection-level organization slot stays exactly as it was.
-          credentialSecretRefs: personalIdentity
+          credentialSecretRefs: grantIdentity
             ? connection.credentialSecretRefs
             : credentialSecretRefs,
           lastError: null,
@@ -3774,7 +3991,7 @@ export function toolAccessService(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await syncConnectionCredentialBindings(tx, nextConnection,
-        personalIdentity ? credentialSecretRefs : []);
+        grantIdentity ? credentialSecretRefs : []);
       return nextConnection;
     });
     const health = await checkConnectionHealth(updated.id, actor);
@@ -3805,6 +4022,45 @@ export function toolAccessService(
     return preflightConnectionMetadata(app, method, method.defaults, serverUrl, () => options.now?.() ?? new Date());
   }
 
+  /** The values and template a customer needs to create an AWS role for this connection. */
+  async function getAwsSetup(
+    companyId: string, connectionId: string, options: { accessLevel?: "read_only" | "full" } = {},
+  ): Promise<AwsConnectionSetup> {
+    const [row] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+    if (!row) throw notFound("Tool connection not found");
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role") {
+      throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
+    }
+    // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
+    const origin = workloadIdentityIssuerOrigin();
+    if (!origin.available) return { available: false, reason: origin.reason };
+    const issuer = workloadIdentityIssuer(origin.origin, companyId);
+    // Paperclip signs only as its current address, so a draft set up for an older one could never pass
+    // the test: it is saved again first. Reconnecting a connection records the current address, so it
+    // gets setup for that address.
+    const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
+    if (row.status === "draft" && typeof recorded === "string" && recorded !== issuer) {
+      return { available: false, reason: "address_changed" };
+    }
+    const methodConfig = asRecord(row.config.methodConfig);
+    const setup = awsRoleSetup({
+      issuer, connectionId: row.id,
+      accessLevel: options.accessLevel ?? (methodConfig.accessLevel === "full" ? "full" : "read_only"),
+    });
+    return {
+      available: true,
+      ...setup,
+      // The setup steps tell an AWS administrator to update this role, so only the role made for this
+      // connection (named after it, so no other role shares the name) on a finished connection is
+      // offered. A draft's unchecked value, or any other role, could point that update at an unrelated role.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string"
+        && methodConfig.roleArn.split(":role/")[1] === setup.roleName && AWS_ROLE_ARN_PATTERN.test(methodConfig.roleArn)
+        ? methodConfig.roleArn : null,
+      issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
+    };
+  }
+
   return {
     /** Identity-only verification: no bot installation/repository access required. */
     verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
@@ -3823,7 +4079,7 @@ export function toolAccessService(
       if (!current) throw forbidden("Your GitHub connection was revoked. Connect it again.");
       return { githubUserId: String(identity.id), login: identity.login, avatarUrl: identity.avatar_url ?? null, connectionId, grantId: grant.id };
     },
-    preflightGalleryAppMetadata,
+    preflightGalleryAppMetadata: withPluginApps(preflightGalleryAppMetadata),
     approvedStdioTemplates: async (
       companyId: string,
     ): Promise<ToolStdioCommandTemplate[]> => {
@@ -3903,21 +4159,23 @@ export function toolAccessService(
     },
     ...aggregatorAccounts,
 
-    connectGalleryApp,
+    connectGalleryApp: withPluginApps(async (companyId: string, input: ConnectToolApp, actor?: ActorInfo) =>
+      retireIfPluginAppUnavailable(await connectGalleryApp(companyId, input, actor), actor)),
 
-    finishGalleryAppConnection,
+    finishGalleryAppConnection: withPluginApps(finishGalleryAppConnection),
 
     createMachineSignIn: clientCredentials.createMachineSignIn,
     testMachineSignIn: clientCredentials.testMachineSignIn,
     rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
+    getAwsSetup,
 
-    reconnectGalleryApp,
+    reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 
     storeConnectorOAuthSecret: createOrRotateOAuthSecret,
     resolveConnectorOAuthGrantSecret: resolveOAuthGrantSecret,
-    startOAuth,
+    startOAuth: withPluginApps(startOAuth),
 
     startAuthorizationForAgent: async (input: {
       companyId: string;
@@ -3962,11 +4220,12 @@ export function toolAccessService(
 
     peekOAuthState,
 
-    completePaperclipCloudConnectorCallback,
+    completePaperclipCloudConnectorCallback: withPluginApps(completePaperclipCloudConnectorCallback),
 
     completeVercelConnectCallback,
 
-    completeOAuthCallback,
+    completeOAuthCallback: withPluginApps(async (...args: Parameters<typeof completeOAuthCallback>) =>
+      retireIfPluginAppUnavailable(await completeOAuthCallback(...args), args[0].actor)),
     refreshOAuthGrantCredentials,
     finalizeOAuthAccess,
 
@@ -4150,7 +4409,10 @@ export function toolAccessService(
         .from(toolApplications)
         .where(eq(toolApplications.companyId, companyId))
         .orderBy(desc(toolApplications.updatedAt));
-      return rows.map(toApplication);
+      // A disabled plugin's connectors leave the Connectors page; their rows
+      // stay so re-enabling restores them unchanged.
+      const pluginApps = await pluginAppCatalogFor(db, rows);
+      return rows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row))).map(toApplication);
     },
 
     createApplication: async (
@@ -4496,11 +4758,13 @@ export function toolAccessService(
       companyId: string,
       viewerUserId?: string,
     ): Promise<ToolConnection[]> => {
-      const rows = await db
+      const allRows = await db
         .select()
         .from(toolConnections)
         .where(eq(toolConnections.companyId, companyId))
         .orderBy(desc(toolConnections.updatedAt));
+      const pluginApps = await pluginAppCatalogFor(db, allRows);
+      const rows = allRows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row)));
       const connections = rows.map(toConnection);
       if (connections.length === 0) return connections;
       const installRows = await db
@@ -4546,6 +4810,7 @@ export function toolAccessService(
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       await annotateSavedOAuthClientSecret(connections, viewerUserId);
+      await firstSignInDrafts.annotateFirstSignInPending(companyId, rows, connections);
       return connections;
     },
 
@@ -4756,6 +5021,8 @@ export function toolAccessService(
     },
 
     archiveConnection: removeConnection,
+
+    abandonFirstSignIn: firstSignInDrafts.abandonFirstSignIn,
 
     checkHealth: checkConnectionHealth,
 

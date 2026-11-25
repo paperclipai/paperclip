@@ -2,6 +2,9 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
+import { assertProjectStorageEnvironment, listProjectWorkspaceProviders, projectStorageForEnvironment } from "../project-workspace-provider.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { WorkspaceBusyDeferral } from "./retries.js";
 import { remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
@@ -35,6 +38,7 @@ import {
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   recordWorkspaceConfigFreshnessOperation,
   prepareProjectRepositoryWorkspaces,
+  WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY,
 } from "./workspaces.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import fs from "node:fs/promises";
@@ -282,9 +286,53 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
-  if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-    adapterType: agent.adapterType,
-    pluginTaskWorkspace, remoteAuthority });
+  const projectStorageEnvironmentIncompleteFailure = (details: {
+    message: string;
+    projectId: string | null;
+    storageProviderPluginId: string | null;
+    environmentId: string;
+  }) => new ConfigurationIncompleteFailure(details.message, {
+    configurationIncomplete: {
+      reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      issueId: issueId ?? null,
+      projectId: details.projectId,
+      storageProviderPluginId: details.storageProviderPluginId,
+      environmentId: details.environmentId,
+      fingerprint: `project_storage_environment:${details.storageProviderPluginId ?? "core"}:${details.environmentId}`,
+      actionUrl: `/agents/${agent.id}/runtime`,
+      missingBindings: [],
+    },
+  });
+  // A volume-free server rejects execution without durable task storage. When
+  // the source project's storage provider cannot serve the selected
+  // environment, that mismatch is the cause and only an owner can repair it.
+  const assertEphemeralExecution = async () => {
+    if (providerApiPlacement) return;
+    try {
+      assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, adapterType: agent.adapterType,
+        environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
+    } catch (error) {
+      const storagePluginId = projectExecutionWorkspacePolicy?.storageProviderPluginId;
+      const provider = storagePluginId && selectedEnvironmentForConfig
+        ? (await listProjectWorkspaceProviders(db, agent.companyId)).find(value => value.id === storagePluginId) : undefined;
+      if (provider && selectedEnvironmentForConfig) {
+        try {
+          assertProjectStorageEnvironment(provider, selectedEnvironmentForConfig);
+        } catch (mismatch) {
+          throw projectStorageEnvironmentIncompleteFailure({
+            message: mismatch instanceof Error ? mismatch.message : String(mismatch),
+            projectId: issueRef?.projectId ?? null,
+            storageProviderPluginId: provider.id,
+            environmentId: selectedEnvironmentForConfig.id,
+          });
+        }
+      }
+      throw error;
+    }
+  };
+  await assertEphemeralExecution();
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
     db, companyId: agent.companyId, runId: run.id,
     leaseOwner: runOptions.nativeLeaseOwner ?? runOptions.nativeRestartRecovery?.leaseOwner,
@@ -368,8 +416,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           remoteAuthority = false;
           // Source resolution can retain a configured host folder. Check the
           // resolved authority before materializing it or acquiring a sandbox.
-          if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-            adapterType: agent.adapterType, pluginTaskWorkspace, remoteAuthority });
+          await assertEphemeralExecution();
         }
         else {
           remoteSourceState.value = sourceState;
@@ -761,6 +808,21 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   } satisfies ExecutionWorkspaceInput;
   const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, hostExecutionWorkspaceConfig);
   if (pluginTaskWorkspace && !pluginPrepared && latestWorkspaceStrategyType === "git_worktree") {
+    if (selectedEnvironmentForConfig && !projectExecutionWorkspacePolicy?.storageProviderPluginId
+      && resolvedWorkspace.projectId && resolvedWorkspace.workspaceId) {
+      const environmentStorage = projectStorageForEnvironment(
+        selectedEnvironmentForConfig,
+        await listProjectWorkspaceProviders(db, agent.companyId),
+      );
+      if (environmentStorage?.pluginId) {
+        throw projectStorageEnvironmentIncompleteFailure({
+          message: `This project's workspace storage (Core / local) does not support the environment "${selectedEnvironmentForConfig.name}". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+          projectId: resolvedWorkspace.projectId,
+          storageProviderPluginId: null,
+          environmentId: selectedEnvironmentForConfig.id,
+        });
+      }
+    }
     throw new WorkspaceValidationFailure("The selected plugin environment does not support Core Git worktree preparation.",
       { reason: "plugin_workspace_strategy_unsupported" });
   }
@@ -863,6 +925,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         reusableExistingExecutionWorkspace?.metadata ?? null,
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
+      providerOwnedStorage: Boolean(pluginPrepared),
     },
   );
   const workspaceReuseProvisioningPolicy =
@@ -1182,9 +1245,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       );
     }
   }
+  const coreConfigFingerprint = baseExecutionWorkspaceMetadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY];
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,
     ...(pluginPrepared?.metadata ?? {}),
+    ...(pluginPrepared && coreConfigFingerprint !== undefined
+      ? { [WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY]: coreConfigFingerprint }
+      : {}),
     ...(taskWorkspaceOwner && !pluginPrepared ? { runnerTaskWorkspaceOwner: taskWorkspaceOwner } : {}),
     ...(providerFresh && pluginTaskWorkspace && !pluginPrepared ? { runnerTaskFreshWorkspace: providerFresh } : {}),
     ...(copyOnlyProvisioning ? { [CONTROLLER_PROVISION_COPY_ONLY]: true } : {}),

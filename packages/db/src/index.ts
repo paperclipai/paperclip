@@ -1,5 +1,7 @@
 export {
   createDb,
+  databaseClientOptionsFromEnv,
+  type DatabaseClientOptions,
   withDedicatedDbConnection,
   closeDedicatedDbConnections,
   DEDICATED_CONNECTION_IDLE_MAX,
@@ -34,6 +36,7 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  afterTransactionCommit,
 } from "./client.js";
 export {
   getEmbeddedPostgresTestSupport,

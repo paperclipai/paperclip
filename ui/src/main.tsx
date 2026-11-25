@@ -8,6 +8,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
+import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
@@ -15,6 +16,7 @@ import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
+import { TaskCancellationProvider } from "./context/TaskCancellationContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
@@ -26,6 +28,7 @@ import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { startTranslationDomGuard } from "./lib/translation-dom-guard";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
@@ -48,6 +51,8 @@ initPluginBridge(React, ReactDOM);
 startPerfMeasureReaper();
 
 startChunkLoadRecovery();
+
+startTranslationDomGuard();
 
 // The global mutation error toast is raised from the MutationCache, outside
 // React; the bridge below hands it the ToastProvider's pushToast.
@@ -131,6 +136,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
+        <ProductAnalyticsGate />
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
@@ -145,7 +151,9 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
+                                <TaskCancellationProvider>
                                 <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
+                                </TaskCancellationProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

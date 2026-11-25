@@ -14,6 +14,15 @@ checks for an incoming connection every 10 ms (or sooner, when that delay is
 smaller). It never redials, so a connection does not wait out the reconnect
 delay after a disconnect or an authority rotation.
 
+A listening Runner accepts one controller at a time. Core pings the Runner
+every 20 seconds. When the current controller sends no frame, ping included,
+for 90 seconds, the Runner closes that connection and accepts the next one
+within its reconnect grace. A path that broke without a close therefore cannot
+block a replacement controller.
+
+In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
+when the connected peer is on loopback.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
@@ -167,6 +176,16 @@ fresh snapshot and checkpoint and runs any recovery callback. B can then
 start work. If a write or callback fails, Core can retry the handoff.
 Cancellation cleanup only settles retained work.
 
+**What if the Runner starts as B?** Core can rotate the session to B before
+launch: it archives A's Runner state and starts a Runner under B's identity.
+That Runner starts with fresh durable state over A's saved Codex session. It
+does not restore Codex under A's settings. Until `run.attach`, it refuses
+commands that start work; snapshots and shutdown commands still work. The
+Runner saves the wait in the Codex state before it creates its durable state,
+so a restart before attachment keeps it.
+`run.attach` then starts Codex once with B's settings. ACPX follows the same
+rule.
+
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.
 
@@ -312,6 +331,14 @@ retirement names the park request. Cancelling a claim additionally requires its
 claim ID, the unchanged authority and sequence cut, and provider quiescence.
 Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
 suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+
+When a trusted host relaunches an absent Runner from a verified ACPX park, it can
+pass `--acpx-park-relaunch` with the private host-control descriptor. For
+park-eligible ACPX providers, Runner validates the settled checkpoint and keeps
+the claim fence without starting the provider. The authenticated `run.attach`
+opens the provider with the incoming run's bindings and checks live session
+identity and dormancy before committing the attachment. An existing warm
+transition receipt follows the ordinary replay path.
 
 This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake

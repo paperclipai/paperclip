@@ -46,6 +46,13 @@ describe("company routes", () => {
     );
   });
 
+  it("treats Responsibilities as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/responsibilities")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/responsibilities/resp-1")).toBeNull();
+    expect(applyCompanyPrefix("/responsibilities/resp-1", "pap")).toBe("/PAP/responsibilities/resp-1");
+    expect(toCompanyRelativePath("/PAP/responsibilities/resp-1")).toBe("/responsibilities/resp-1");
+  });
+
   it("treats /search as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/search")).toBe(true);
     expect(extractCompanyPrefixFromPath("/search")).toBeNull();

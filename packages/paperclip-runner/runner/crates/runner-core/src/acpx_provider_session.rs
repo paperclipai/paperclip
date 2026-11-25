@@ -1,4 +1,3 @@
-use crate::generated_acpx_profiles::acpx_release_profile;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,6 +9,7 @@ use crate::acpx_provider_state::{
     PRP_COMPLETION_TOOL_NAME,
 };
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
+use crate::acpx_tool_failure_feedback::{semantic_failure_feedback, GENERIC_SEMANTIC_FAILURE};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
     GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -124,9 +124,10 @@ pub struct AcpxProviderSessionConfig {
 impl AcpxProviderSessionConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         self.transport.validate()?;
-        let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
-            LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
-        })?;
+        let profile =
+            crate::acpx_candidate_admission::release_profile(&self.agent).ok_or_else(|| {
+                LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
+            })?;
         if let Some(admission) = &self.candidate_admission {
             admission.validate_binding(
                 &self.agent,
@@ -1197,12 +1198,13 @@ impl AcpxProviderSession {
         let resolution = if result.is_error {
             // The durable result remains authoritative for correlation and
             // retry bookkeeping, but provider-facing failures expose only a
-            // fixed diagnostic. Internal dispatcher payloads must not cross
-            // the sidecar boundary on the separate success-result channel.
+            // stable code and validated field rules. Internal dispatcher
+            // payloads must not cross the sidecar boundary on the separate
+            // success-result channel.
             let message = if is_reserved_terminal_operation(&result.operation_id) {
                 reserved_terminal_feedback(&result.result)
             } else {
-                "Paperclip semantic operation failed".to_owned()
+                semantic_failure_feedback(&result.result)
             };
             json!({
                 "callId":result.call_id,
@@ -1541,7 +1543,7 @@ impl AcpxProviderSession {
 fn reserved_terminal_feedback(result: &Value) -> String {
     const MAX_FEEDBACK_CHARS: usize = 2_000;
     if result.get("success").and_then(Value::as_bool) != Some(false) {
-        return "Paperclip semantic operation failed".to_owned();
+        return GENERIC_SEMANTIC_FAILURE.to_owned();
     }
     let text = result
         .get("contentItems")
@@ -1550,13 +1552,13 @@ fn reserved_terminal_feedback(result: &Value) -> String {
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("inputText"))
         .and_then(|item| item.get("text"))
         .and_then(Value::as_str)
-        .unwrap_or("Paperclip semantic operation failed");
+        .unwrap_or(GENERIC_SEMANTIC_FAILURE);
     let mut bounded = text.chars().take(MAX_FEEDBACK_CHARS).collect::<String>();
     if text.chars().count() > MAX_FEEDBACK_CHARS {
         bounded.push_str("…");
     }
     if bounded.trim().is_empty() {
-        "Paperclip semantic operation failed".to_owned()
+        GENERIC_SEMANTIC_FAILURE.to_owned()
     } else {
         bounded
     }
@@ -2039,7 +2041,9 @@ fn with_cleanup_error(
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         ))
-        .with_provider_failure(error.provider_failure()),
+        .with_provider_failure(error.provider_failure())
+        .with_command_rejection(error.command_rejection())
+        .with_sidecar_rejection(error.sidecar_rejection()),
     }
 }
 
@@ -2512,7 +2516,13 @@ mod mode_tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
         let mut cfg = config();
         assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
@@ -2533,6 +2543,18 @@ mod mode_tests {
         );
         assert_eq!(
             session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        // A granted /swarm turn keeps the same grant and names its provider mode;
+        // the sidecar, not the Runner, decides which agent modes it accepts.
+        let mut swarm = cfg.clone();
+        swarm.mode = Some("swarm".to_owned());
+        swarm.validate().unwrap();
+        let open = session_open_params(&swarm, &[]);
+        assert_eq!(open["candidateAdmission"], json!(admission));
+        assert_eq!(open["mode"], json!("swarm"));
+        assert_eq!(
+            initialize_params(&swarm)["candidateAdmission"],
             json!(admission)
         );
         for (field, value) in [
