@@ -1,4 +1,5 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { checkpointProfileForRun } from "../tool-access/connections/content-cleaning.js";
 import { applyNativeAcceptedOutcome, deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
@@ -391,7 +392,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
       await tx.update(heartbeatRuns).set({
-        runnerProfileJson: profile,
+        runnerProfileJson: checkpointProfileForRun(run.resultJson, profile),
         sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
         nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
         nativePhaseUpdatedAt: new Date(),

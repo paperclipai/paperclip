@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalNativeJson, nativeSha256 } from "../../native-runtime/canonical.js";
+import { RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 
 export const RESULT_TEXT_KEYS = ["summary", "result", "message", "text", "output", "content", "body"];
 
@@ -28,6 +29,7 @@ export function withoutResultText(value: Record<string, unknown> | null): { valu
   const walk = (node: unknown, topLevel: boolean): unknown => {
     if (Array.isArray(node)) return node.map((entry) => walk(entry, false));
     if (!node || typeof node !== "object") return node;
+    if ((node as Record<string, unknown>).schema === "paperclip.run_result.v1") return node;
     const next: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(node as Record<string, unknown>)) {
       if (RESULT_TEXT_KEYS.includes(key) && typeof entry === "string") {
@@ -44,7 +46,10 @@ export function withoutResultText(value: Record<string, unknown> | null): { valu
   return { value: changed ? next : value, changed };
 }
 
-const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition", "reasonCode", "ownerClass", "contractRevision", "idempotencyKey", "handoffId"]);
+const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition", "reasonCode", "ownerClass", "scope", "contractRevision", "handoffId"]);
+const HASHED_KEYS = new Set(["idempotencyKey"]);
+export const DELETED_TEXT = "Removed because the connection data was deleted.";
+export const CHECKPOINT_CONTENT_DELETED_MARKER = "contentDeletedAt";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 const HASHED_FINGERPRINT = /^sha256:[a-f0-9]{64}$/;
 
@@ -52,8 +57,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function hashedText(value: string): string {
+  return HASHED_FINGERPRINT.test(value) ? value : `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
 export function withoutFreeText(value: unknown, key = ""): unknown {
-  if (typeof value === "string") return STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key) ? value : "";
+  if (typeof value === "string") {
+    if (STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key)) return value;
+    if (HASHED_KEYS.has(key)) return hashedText(value);
+    return value === "" ? value : DELETED_TEXT;
+  }
   if (Array.isArray(value)) return value.map((entry) => withoutFreeText(entry, key));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
@@ -62,8 +75,7 @@ export function withoutFreeText(value: unknown, key = ""): unknown {
 }
 
 function hashedFingerprint(value: unknown): unknown {
-  if (typeof value !== "string" || HASHED_FINGERPRINT.test(value)) return value;
-  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+  return typeof value === "string" ? hashedText(value) : value;
 }
 
 export function withoutRunAnswers(value: Record<string, unknown> | null): { value: Record<string, unknown> | null; changed: boolean } {
@@ -93,6 +105,7 @@ export function withoutCheckpointAnswers(profile: Record<string, unknown> | null
     const sourceEvent = nextCheckpoint.governedWait.sourceEvent;
     nextCheckpoint.governedWait = { ...nextCheckpoint.governedWait, sourceEvent: { ...sourceEvent, payload: withoutFreeText(sourceEvent.payload) } };
   }
+  if (typeof nextCheckpoint[CHECKPOINT_CONTENT_DELETED_MARKER] !== "string") nextCheckpoint[CHECKPOINT_CONTENT_DELETED_MARKER] = new Date().toISOString();
   if (canonicalNativeJson(nextCheckpoint) === canonicalNativeJson(checkpoint)) return { value: profile, changed: false };
   const next: Record<string, unknown> = { ...profile, sessionCheckpoint: nextCheckpoint };
   const recovery = profile.nativeControllerRecovery;
@@ -100,4 +113,9 @@ export function withoutCheckpointAnswers(profile: Record<string, unknown> | null
     next.nativeControllerRecovery = { ...recovery, snapshotSha256: nativeSha256(nextCheckpoint) };
   }
   return { value: next, changed: true };
+}
+
+export function checkpointProfileForRun(resultJson: unknown, profile: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(resultJson) || typeof resultJson[RUN_CONTENT_DELETED_MARKER] !== "string") return profile;
+  return withoutCheckpointAnswers(profile).value ?? profile;
 }

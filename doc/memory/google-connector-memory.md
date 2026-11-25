@@ -408,7 +408,7 @@ nested run answers and migrated log originals.
 | Approval requests and their approval cards in the task | Preview, arguments and the executed result | Yes, for settled requests. | Yes. Cards are deleted with the task; requests are cleared. | Yes, rows deleted |
 | Results passed to a later run (run context and wake payload) | Approved action results | Yes, for settled runs and wakes. | Yes | Yes, rows deleted |
 | App views | Tool input, result and shared context | Yes, rows deleted. | Yes, rows deleted | Yes, rows deleted |
-| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts, answer text at any depth of the run result, the free text of every `paperclip.run_result.v1` object in `result_json` (for example `nativeResult` evidence refs, verification details and completion-claim evidence refs), and the session checkpoint copy in `runner_profile_json.sessionCheckpoint` (`semanticResult.result` free text; `semanticResult` and `terminalTurns[]` fingerprints become `sha256:` hashes) | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. | Yes, for each of the task's runs that called a connection or received an approved result. The runs themselves stay. | Yes. Rows deleted, then every run log is removed from storage in the background. |
+| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts, answer text at any depth of the run result, the free text of every `paperclip.run_result.v1` object in `result_json` (for example `nativeResult` evidence refs, verification details and completion-claim evidence refs), and the session checkpoint copy in `runner_profile_json.sessionCheckpoint` (`semanticResult`, `governedWait.result` and `governedWait.sourceEvent.payload`; `terminalTurns[]` fingerprints become `sha256:` hashes). Free text in a run result becomes "Removed because the connection data was deleted.", so the result stays valid; agent-chosen `idempotencyKey` values become `sha256:` hashes | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. | Yes, for each of the task's runs that called a connection or received an approved result. The runs themselves stay. | Yes. Rows deleted, then every run log is removed from storage in the background. |
 | Saved tool results over 500,000 bytes (`runner-api` files and their asset rows) | Full result | Yes, for the runs whose transcript is deleted. Files attached to a task stay. | Yes, for those runs | Yes, file and row |
 | Comments, documents and attached files agents wrote into tasks | Whatever the agent copied | No, by design. The user edits or deletes them, or the task. | Yes. Attached files are also removed from storage, and retried until it succeeds. | Yes. Every company file is removed from storage in the background. |
 | Transcripts of later runs that read an app view's shared context | Shared context | No. Nothing records which runs read it. | Only when the run belongs to the deleted task | Yes |
@@ -518,9 +518,12 @@ the person chose to disconnect that identity.
   health back to `ok`. The removal message and dialog count a connection as
   "available to agents" only when it is on, is not waiting for a new sign-in,
   and its tools are offered (healthy, personal, or plugin).
-- A cleaned run's result gets `answerCopiesDeletedAt`. A run in scope that has
-  a run result or a session checkpoint but not this mark is cleaned again, so
-  runs cleaned by an older build are fixed by the next deletion.
+- Each store carries its own mark: `result_json.answerCopiesDeletedAt` and
+  `sessionCheckpoint.contentDeletedAt`. A run in scope whose run result or
+  checkpoint lacks its mark is cleaned again, so runs cleaned by an older
+  build, and a checkpoint rewritten later, are fixed by the next deletion.
+  The control-plane port also cleans a checkpoint it writes for a run whose
+  result has `contentDeletedAt`.
 - Kept on purpose: the task description and prompt copies
   (`contextSnapshot.paperclipIssue.description`,
   `runnerProfileJson.nativeExecutionInput.task`), which are the user's text,
