@@ -90,7 +90,8 @@ pub(crate) enum WriteBack {
     /// the decision holds only while the host file keeps that stamp. Without
     /// one, the refreshed credential itself is not usable.
     Kept(Option<HostStamp>),
-    /// The host file changed while the replacement was prepared. Retry later.
+    /// The host file changed while the replacement was prepared. Decide again
+    /// against the new contents.
     Raced,
 }
 
@@ -309,7 +310,7 @@ pub(crate) fn write_back(
 }
 
 /// Rename a synced copy of `source` over `destination`, unless the host file
-/// no longer matches `metadata` from the decision read. Then the next scan
+/// no longer matches `metadata` from the decision read. The caller then
 /// decides again against the new contents.
 #[cfg(unix)]
 fn replace_if_unchanged(

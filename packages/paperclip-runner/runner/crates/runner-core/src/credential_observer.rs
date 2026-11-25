@@ -24,6 +24,8 @@ const SCHEMA: &str = "paperclip.runner.credential-observer.v1";
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
+/// Decisions per write-back while other writers keep replacing the host file.
+const WRITE_BACK_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -63,8 +65,6 @@ pub(crate) struct CredentialObserver {
     /// Digest of the last refreshed credential settled against the host file,
     /// with the host file stamp that decision depends on, if any.
     written: Option<(String, Option<credential_write_back::HostStamp>)>,
-    /// Digest whose write-back failure was already reported.
-    reported: Option<String>,
 }
 
 impl CredentialObserver {
@@ -78,7 +78,6 @@ impl CredentialObserver {
             dirty: Arc::new(AtomicBool::new(true)),
             last_scan: Instant::now() - SCAN_INTERVAL,
             written: None,
-            reported: None,
         }
     }
 
@@ -174,7 +173,6 @@ impl CredentialObserver {
         self.save(&next)?;
         self.state = Some(next);
         self.written = None;
-        self.reported = None;
         self.dirty.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -333,10 +331,11 @@ impl CredentialObserver {
         let snapshot = parse_snapshot(&state.provider, &bytes);
         let host_file = state.host_file.clone();
         let provider = state.provider.clone();
-        if let Some(host_file) = host_file {
-            self.write_back(&provider, &bytes, &host_file);
-        }
+        let written = host_file.map_or(Ok(()), |host_file| {
+            self.write_back(&provider, &bytes, &host_file)
+        });
         bytes.fill(0);
+        written?;
         let state = self.state.as_ref().expect("configured observer");
         let Some(snapshot) = snapshot.filter(|_| !state.silent && state.pending.is_none()) else {
             return Ok(());
@@ -359,12 +358,17 @@ impl CredentialObserver {
         Ok(())
     }
 
-    /// Settle one refreshed credential against the host file. Failures keep the
-    /// run going: the host file is left unchanged, the failure is reported once
-    /// per credential, and the next scan of the session retries. Nothing
-    /// retries after the final scan at close, so the host file then keeps a
-    /// refresh token the provider already rotated.
-    fn write_back(&mut self, provider: &str, bytes: &[u8], host_file: &Path) {
+    /// Settle one refreshed credential against the host file. A host file that
+    /// changes during the replacement is read and decided again at once. A
+    /// failure is returned, so the command or turn that observed it fails: a
+    /// rotated refresh token that cannot reach the host file must not be lost
+    /// quietly.
+    fn write_back(
+        &mut self,
+        provider: &str,
+        bytes: &[u8],
+        host_file: &Path,
+    ) -> Result<(), DurableRunnerError> {
         let digest = format!("{:x}", Sha256::digest(bytes));
         // A kept decision holds only while the host file is unchanged, so a
         // repaired or replaced host file is compared again.
@@ -374,35 +378,37 @@ impl CredentialObserver {
                     credential_write_back::host_stamp(host_file).as_ref() == Some(stamp)
                 })
         }) {
-            return;
+            return Ok(());
         }
-        match credential_write_back::write_back(
-            provider,
-            bytes,
-            host_file,
-            credential_write_back::now_ms(),
-        ) {
-            Ok(WriteBack::Kept(stamp)) => {
-                self.written = Some((digest, stamp));
-                self.reported = None;
-            }
-            // The next scan reads the replaced host file and settles a tie,
-            // recording the stamp of the file actually in place.
-            Ok(WriteBack::Written) => {
-                self.written = None;
-                self.reported = None;
-            }
-            Ok(WriteBack::Raced) => self.dirty.store(true, Ordering::Relaxed),
-            Err(error) => {
-                if self.reported.as_deref() != Some(digest.as_str()) {
-                    eprintln!(
-                        "paperclip-runnerd: {provider} credential write-back to the host credential file failed ({:?}); later scans of this session retry it",
+        for _ in 0..WRITE_BACK_ATTEMPTS {
+            match credential_write_back::write_back(
+                provider,
+                bytes,
+                host_file,
+                credential_write_back::now_ms(),
+            ) {
+                Ok(WriteBack::Kept(stamp)) => {
+                    self.written = Some((digest, stamp));
+                    return Ok(());
+                }
+                // The next scan reads the replaced host file and settles a
+                // tie, recording the stamp of the file actually in place.
+                Ok(WriteBack::Written) => {
+                    self.written = None;
+                    return Ok(());
+                }
+                Ok(WriteBack::Raced) => {}
+                Err(error) => {
+                    return Err(observer_error(&format!(
+                        "{provider} write-back to the host credential file failed ({:?})",
                         error.kind()
-                    );
-                    self.reported = Some(digest);
+                    )))
                 }
             }
         }
+        Err(observer_error(&format!(
+            "{provider} write-back to the host credential file failed: the file kept changing"
+        )))
     }
 
     pub(crate) fn pending(&self) -> Option<PolledEvent> {

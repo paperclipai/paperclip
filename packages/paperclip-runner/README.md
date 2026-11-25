@@ -1099,10 +1099,10 @@ never creates a missing host file. The replacement is a synced temporary file
 in the host file's directory, renamed over the host file and followed by a
 directory sync. It keeps the host file's mode and, where the Runner user may
 set it, its group. If the host file changed while the replacement was prepared,
-Runner discards it and decides again on the next scan. A failed write-back is
-reported once on the Runner's standard error and retried on every later scan of
-the session; it does not fail the run. The final write-back at close is
-attempted once. When the consumer opted in to credential observation, the
+Runner discards it, reads the host file again and decides at once, up to three
+times. Any other failure to settle a refresh against the host file, or a host
+file that keeps changing, fails the command or turn that observed it: a rotated
+refresh token must never be lost quietly. When the consumer opted in to credential observation, the
 `auth.credentials.updated` event follows the write-back as before.
 
 The host directory must allow the Runner user to create and rename files.
@@ -1128,11 +1128,6 @@ own isolated home, so that coordination never reaches the host file or another
 session. Runner does not lock the host file either. Run at most one session at
 a time for each account and host file, or give concurrent sessions separate
 accounts.
-
-When the final write-back at close fails, for example because the host
-directory cannot be written, the host file keeps a refresh token that the
-session already rotated. The next session that needs to refresh from it fails
-until the user signs in again.
 
 ## Preconfigured home
 

@@ -342,16 +342,20 @@ fn host_file_receives_refreshes_during_the_session_and_at_close() {
 }
 
 #[test]
-fn a_failed_write_back_keeps_the_session_running_and_retries() {
+fn a_failed_write_back_fails_the_poll_without_exposing_the_credential() {
     let seed = codex_at("seed", "2026-01-01T00:00:00Z");
     let mut f = Fixture::new("codex", &seed);
     let host = with_host_file(&mut f, true);
+    f.write("host/auth.json", &seed);
     f.write("auth.json", &seed);
     f.observer.activate().unwrap();
+    fs::remove_file(&host).unwrap();
     let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
     f.write("auth.json", &refreshed);
-    // The host file is missing: nothing is created and the poll succeeds.
-    f.observer.poll(true).unwrap();
+    // The host file is gone: nothing is created and the poll fails.
+    let error = f.observer.poll(true).unwrap_err().to_string();
+    assert!(error.contains("write-back to the host credential file failed"));
+    assert!(!error.contains("refreshed"));
     assert!(!host.exists());
     f.write("host/auth.json", &seed);
     f.observer.poll(true).unwrap();
@@ -363,6 +367,7 @@ fn a_repaired_host_file_receives_the_refresh_it_was_kept_from() {
     let seed = codex_at("seed", "2026-01-01T00:00:00Z");
     let mut f = Fixture::new("codex", &seed);
     let host = with_host_file(&mut f, true);
+    f.write("host/auth.json", &seed);
     f.write("auth.json", &seed);
     f.observer.activate().unwrap();
     let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
