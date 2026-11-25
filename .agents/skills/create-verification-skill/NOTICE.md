@@ -7,7 +7,8 @@ The fork imported pstack 0.15.15 by Lauren Tan (poteto) from
 [cursor/plugins](https://github.com/cursor/plugins/tree/ccb5507cec1546dc88135c1139c811e6c59115ba/pstack),
 upstream revision `ccb5507cec1546dc88135c1139c811e6c59115ba`.
 
-Paperclip adapts the workflow to the existing repo-root `feature-map/`.
+Paperclip adapts the workflow to the sibling `maps/feature-map/` and
+`maps/agent-access-map/` directories and their shared access contract.
 It preserves the invocation policy in `agents/openai.yaml`, removes the
 Cursor-specific `disable-model-invocation` frontmatter field, and omits the
 separate runtime skill dependency because Paperclip supplies execution.

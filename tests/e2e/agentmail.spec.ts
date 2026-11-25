@@ -13,10 +13,6 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   request,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
-  const settings = await request.patch("/api/instance/settings/experimental", {
-    data: { enableChatConnectors: false },
-  });
-  expect(settings.ok()).toBeTruthy();
   const created = await request.post("/api/companies", {
     data: { name: `AgentMail browser ${Date.now()}` },
   });
@@ -264,6 +260,7 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   await expect(page.getByText("Internal server error", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Your agent’s email is ready" })).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath("agentmail-permission-denied.png"), fullPage: true });
+  await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   await page.getByRole("link", { name: "Connectors", exact: true }).click();
   await page.getByRole("button", { name: "Finish setup", exact: true }).click();
   await expect(page.getByText("mail-agent-free@verified.example.test", { exact: true })).toBeVisible();

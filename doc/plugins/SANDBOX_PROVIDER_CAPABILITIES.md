@@ -18,20 +18,34 @@ resolved config has no positive finite numeric `timeoutMs`. A positive numeric
 `bridgeRequestTimeoutMs` can extend that budget. The host adds 30 seconds for RPC
 overhead. This applies to both sandbox providers and generic plugin drivers.
 
-Daytona declares 300,000 milliseconds for the entire fresh acquisition. Creation,
-workspace setup, shell detection, expiry setup, and inline failure cleanup share
-that budget. Its host RPC can therefore wait 330 seconds instead of the worker's
-normal 30 seconds. On timeout the provider returns the attempt's scoped cleanup
-record for durable host reconciliation. Late SDK results cannot admit the lease
-or start the next setup phase.
+Daytona declares 300,000 milliseconds, and its host RPC can therefore wait 330
+seconds instead of the worker's normal 30 seconds. The worker itself caps one
+fresh acquisition at 180 seconds. Creation, workspace setup, shell detection,
+expiry setup, and inline failure cleanup share that cap. A create that has not
+returned after 90 seconds is looked up once by its creation name: a sandbox that
+has started is adopted and setup continues, one still preparing its snapshot
+keeps waiting within the cap, and any other state ends the attempt. On timeout
+the provider returns the attempt's scoped cleanup record and an acquisition
+diagnostic whose elapsed time has reached the expired budget. The host treats
+that diagnostic as a transient provider failure (`environment_provider_unavailable`),
+so the run is retried with the bounded bootstrap budget while the creation
+reconciler removes the abandoned allocation. Late SDK results cannot admit the
+lease or start the next setup phase, and a late SDK failure never deletes an
+adopted sandbox.
 Drivers that omit the declaration keep the existing fallback. The host does not
 infer this budget from config-schema defaults: a field named `timeoutMs` can
 describe sandbox lifetime instead of the time needed to acquire it.
 
-This declaration does not change provider config, lease expiry, the resume
-deadline, or other lifecycle calls. Providers must still enforce their operation
-timeouts and report uncertain allocations for cleanup. A bundled plugin must bump
-its manifest version when adding the field so existing installations receive it.
+For reusable sandbox acquisition, the host also uses this budget for
+`environmentResumeLease`, with the same explicit-config precedence, bridge
+extension, and RPC margin. Resume attempts and transient retries share one
+deadline. Without a configured or declared budget, resume keeps its one-minute
+host default. Generic plugin-driver resume keeps its existing behavior.
+
+This declaration does not change provider config, lease expiry, or other
+lifecycle calls. Providers must still enforce their operation timeouts and
+report uncertain allocations for cleanup. A bundled plugin must bump its
+manifest version when adding the field so existing installations receive it.
 
 ## How the host resolves an effective capability
 
@@ -207,3 +221,5 @@ reintroduce a concurrency capability when a runtime path enforces it.
 Native export recovery requires the separately discovered `environmentStopLease` RPC (`onEnvironmentStopLease`). It stops the exact allocation and preserves files regardless of its normal release policy. A failed or unconfirmed stop must throw and must never fall back to deletion. The host uses the recorded plugin ID and defers when that worker does not advertise the hook; a generic release method is insufficient evidence of stop-only support. Normal successful ephemeral release remains destructive after verified copyback.
 
 Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.
+
+A provider can refuse Stop while the allocation is in a provider error state. A stop-only hook may run one bounded provider recovery and then stop. When it cannot stop the allocation, it throws `PluginEnvironmentStopError` with a closed reason. The host treats `resource_unrecoverable` and `recovery_failed` as terminal: it escalates the pending cleanup at once and retries at its slowest interval. Deletion is never a fallback.

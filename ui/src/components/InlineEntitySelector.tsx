@@ -20,6 +20,8 @@ interface InlineEntitySelectorProps {
   noneAtTop?: boolean;
   /** Keep the no-selection action after the project choices. */
   noneAtEnd?: boolean;
+  /** Leave out the no-selection action, for a value that can be changed but not cleared. */
+  hideNone?: boolean;
   searchPlaceholder: string;
   emptyMessage: string;
   onChange: (id: string) => void;
@@ -76,6 +78,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       noneLabel,
       noneAtTop = false,
       noneAtEnd = false,
+      hideNone = false,
       searchPlaceholder,
       emptyMessage,
       onChange,
@@ -107,11 +110,12 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const isPointerDownRef = useRef(false);
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
+      if (hideNone) return orderItemsBySelectedAndRecent([...options], value, recentOptionIds);
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
       const ordered = orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
       if (noneAtTop) return [baseOptions[0]!, ...ordered.filter((option) => option.id)];
       return noneAtEnd ? [...ordered.filter((option) => option.id), baseOptions[0]!] : ordered;
-    }, [noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
+    }, [hideNone, noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
