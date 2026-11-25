@@ -7,9 +7,11 @@ import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
   isMissingOAuthStateMessage,
+  oauthCallbackErrorMessage,
   oauthFailureMessage,
   readConnectionIntentGitHubRecovery,
   readConnectionIntentOAuthFailureCode,
+  readConnectionIntentOAuthProviderError,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
   retainedReconnectMatches,
@@ -350,9 +352,26 @@ describe("connection intent OAuth failure reasons", () => {
   it("ignores malformed codes and never shows a raw code", () => {
     expect(readConnectionIntentOAuthFailureCode({ code: "<script>" })).toBeNull();
     expect(readConnectionIntentOAuthFailureCode(null)).toBeNull();
+    expect(readConnectionIntentOAuthProviderError({ providerError: "<script>" })).toBeNull();
+    expect(readConnectionIntentOAuthProviderError({ providerError: "invalid_scope" })).toBe("invalid_scope");
     const fallback = oauthFailureMessage("oauth_callback_http_500");
     expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
     expect(fallback).not.toContain("oauth_");
+  });
+
+  it("maps allowlisted callback providerError and Slack MCP error codes to actionable Paperclip copy", () => {
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "invalid_scope"))
+      .toMatch(/rejected the requested permissions/i);
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "invalid_redirect_uri"))
+      .toMatch(/rejected Paperclip’s callback URL/i);
+    expect(oauthCallbackErrorMessage("failed", "slack_mcp_access_disabled"))
+      .toMatch(/Slack MCP access is disabled/i);
+    expect(oauthCallbackErrorMessage("failed", "oauth_token_exchange_failed"))
+      .toMatch(/didn’t give Paperclip access/i);
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "access_denied"))
+      .toBe("Authorization was cancelled or declined. Your saved connection was not changed.");
+    expect(oauthCallbackErrorMessage("failed", "unknown_raw_code", "attacker_raw_text"))
+      .toBe("Authorization did not complete. Your saved connection is still here, so you can try again.");
   });
 });
 

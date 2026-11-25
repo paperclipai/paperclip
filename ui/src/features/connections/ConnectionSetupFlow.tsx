@@ -1,6 +1,6 @@
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { useAwsRoleSetupStep } from "./useAwsRoleSetupStep";
-import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
+import { readOAuthWindowFailureDetails, readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
@@ -190,12 +190,44 @@ function githubRecoveryUrl(value: string | null): string | null {
   }
 }
 
-function oauthCallbackErrorMessage(outcome: string | null, code: string | null): string {
-  if (outcome === "denied") {
-    return "Authorization was cancelled or declined. Your saved connection was not changed.";
+const OAUTH_PROVIDER_ERROR_COPY: Record<string, string> = {
+  invalid_scope: "The provider rejected the requested permissions. Check your OAuth app’s configured scopes and try again.",
+  invalid_redirect_uri: "The provider rejected Paperclip’s callback URL. Check that the callback URL in your OAuth app matches Paperclip and try again.",
+  invalid_client: "The provider rejected this OAuth app’s client credentials. Check your client ID and secret and try again.",
+  unauthorized_client: "The provider refused to authorize this OAuth app. Check your OAuth app configuration and try again.",
+  invalid_grant: "The provider rejected the authorization code. Try signing in again.",
+  invalid_request: "The provider rejected the sign-in request. Check your OAuth app settings and try again.",
+  invalid_client_metadata: "The provider rejected Paperclip’s client registration details. Try again or use your own OAuth app.",
+  invalid_software_statement: "The provider rejected Paperclip’s client registration details. Try again or use your own OAuth app.",
+  unapproved_software_statement: "The provider rejected Paperclip’s client registration details. Try again or use your own OAuth app.",
+  unsupported_grant_type: "The provider does not support the OAuth grant Paperclip uses.",
+  unsupported_response_type: "The provider does not support the OAuth sign-in flow Paperclip uses.",
+  server_error: "The provider reported an internal error. Try again shortly.",
+  temporarily_unavailable: "The provider is temporarily unavailable. Try again shortly.",
+  account_selection_required: "The provider requires you to select an account. Try connecting again.",
+  consent_required: "The provider requires consent to be granted. Try connecting again.",
+  interaction_required: "The provider requires interactive sign-in. Try connecting again.",
+  login_required: "The provider requires you to sign in first. Try connecting again.",
+};
+
+export function oauthCallbackErrorMessage(
+  outcome: string | null,
+  code: string | null,
+  providerError?: string | null,
+): string {
+  if (providerError && providerError !== "access_denied") {
+    const providerCopy = OAUTH_PROVIDER_ERROR_COPY[providerError];
+    if (providerCopy) return providerCopy;
   }
   if (code === "github_installation_required") {
     return "GitHub access is required. Install Paperclip and grant at least one repository, then try again.";
+  }
+  if (code && code !== "oauth_authorization_denied") {
+    const specific = oauthFailureMessage(code);
+    if (specific !== DEFAULT_OAUTH_FAILURE_MESSAGE) return specific;
+  }
+  if (outcome === "denied" || providerError === "access_denied") {
+    return "Authorization was cancelled or declined. Your saved connection was not changed.";
   }
   return "Authorization did not complete. Your saved connection is still here, so you can try again.";
 }
@@ -591,13 +623,27 @@ export function isMissingOAuthStateMessage(
     && message.code === "oauth_state_missing";
 }
 
+const DEFAULT_OAUTH_FAILURE_MESSAGE = "Authorization did not complete. Try again when you’re ready.";
+
 export function readConnectionIntentOAuthFailureCode(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
   const code = (data as { code?: unknown }).code;
   return typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
 }
 
-export function oauthFailureMessage(code: string | null): string {
+export function readConnectionIntentOAuthProviderError(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const providerError = (data as { providerError?: unknown }).providerError;
+  return typeof providerError === "string" && /^[a-z0-9_-]{1,64}$/.test(providerError)
+    ? providerError
+    : null;
+}
+
+export function oauthFailureMessage(code: string | null, providerError?: string | null): string {
+  if (providerError && providerError !== "access_denied") {
+    const providerCopy = OAUTH_PROVIDER_ERROR_COPY[providerError];
+    if (providerCopy) return providerCopy;
+  }
   switch (code) {
     case "oauth_state_expired":
     case "oauth_state_missing":
@@ -613,10 +659,12 @@ export function oauthFailureMessage(code: string | null): string {
     case "oauth_insufficient_scope":
     case "oauth_scope_grant_invalid":
       return "The provider didn’t grant the access Paperclip asked for. Try again and approve every requested permission.";
+    case "slack_mcp_access_disabled":
+      return "Slack MCP access is disabled for this app. Ask the Slack app owner to enable Model Context Protocol under Features → Agents & AI Apps, then try again.";
     case "github_installation_required":
       return "You signed in, but the Paperclip for GitHub app isn’t installed on any account you can use. Install it and choose at least one repository, then try again. An organization owner may need to approve the install.";
     default:
-      return "Authorization did not complete. Try again when you’re ready.";
+      return DEFAULT_OAUTH_FAILURE_MESSAGE;
   }
 }
 
@@ -761,6 +809,7 @@ function StandardConnectionSetupFlow({
   const resumeConnectionId = searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
+  const oauthCallbackProviderError = searchParams.get("provider_error");
   const githubInstallationUrl = githubRecoveryUrl(searchParams.get("installation_url"));
   const githubManagementUrl = githubRecoveryUrl(searchParams.get("management_url"));
   const reconnectConnectionId = configuredConnection?.id ?? (searchParams.get("reconnect")?.trim() || null);
@@ -860,7 +909,7 @@ function StandardConnectionSetupFlow({
   );
   const [oauthError, setOAuthError] = useState<string | null>(() => {
     if (!resumingAfterOAuthFailure) return null;
-    return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode);
+    return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode, oauthCallbackProviderError);
   });
   const [intentGitHubRecovery, setIntentGitHubRecovery] = useState<{ installationUrl: string | null; managementUrl: string | null } | null>(null);
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
@@ -1045,14 +1094,22 @@ function StandardConnectionSetupFlow({
       }
       if (outcome === "declined") {
         setOAuthPhase("error");
-        setOAuthError("Authorization was cancelled. You can try again.");
+        const providerError = readConnectionIntentOAuthProviderError(event.data);
+        setOAuthError(
+          providerError && providerError !== "access_denied"
+            ? oauthFailureMessage(readConnectionIntentOAuthFailureCode(event.data), providerError)
+            : "Authorization was cancelled. You can try again.",
+        );
         onPhaseChange?.("needs_retry");
         return;
       }
       if (outcome !== "failed") return;
       setOAuthPhase("error");
       setIntentGitHubRecovery(readConnectionIntentGitHubRecovery(event.data));
-      setOAuthError(oauthFailureMessage(readConnectionIntentOAuthFailureCode(event.data)));
+      setOAuthError(oauthFailureMessage(
+        readConnectionIntentOAuthFailureCode(event.data),
+        readConnectionIntentOAuthProviderError(event.data),
+      ));
     };
     window.addEventListener("message", receiveOAuthOutcome);
     return () => { disposed = true; window.removeEventListener("message", receiveOAuthOutcome); };
@@ -1079,9 +1136,14 @@ function StandardConnectionSetupFlow({
       const outcome = readOAuthWindowOutcome(popup, dialogOAuthConnectionId);
       if (outcome === "waiting") return;
       if (outcome !== "connected") {
+        const failure = readOAuthWindowFailureDetails(popup, dialogOAuthConnectionId);
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
-        setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
+        setOAuthError(
+          outcome === "denied" || outcome === "failed"
+            ? oauthCallbackErrorMessage(outcome, failure?.code ?? null, failure?.providerError ?? null)
+            : "Authorization did not complete. Finish setup in the sign-in window or try again.",
+        );
         return;
       }
       checking = true;
@@ -2048,7 +2110,7 @@ function StandardConnectionSetupFlow({
     // intentionally blank.
     if (oauthCallbackOutcome === "failed" || oauthCallbackOutcome === "denied") {
       setOAuthPhase("error");
-      setOAuthError(oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode));
+      setOAuthError(oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode, oauthCallbackProviderError));
     } else {
       setOAuthPhase("entry");
       setOAuthError(null);
@@ -2056,7 +2118,7 @@ function StandardConnectionSetupFlow({
     setStep("key");
     hydratedResumeConnectionIdRef.current = savedConnection.id;
     setHydratedResumeConnectionId(savedConnection.id);
-  }, [credentialSource, entry, oauthCallbackCode, oauthCallbackOutcome, resumeConnection, reconnectConnection]);
+  }, [credentialSource, entry, oauthCallbackCode, oauthCallbackOutcome, oauthCallbackProviderError, resumeConnection, reconnectConnection]);
 
   /**
    * Commit the connection: action defaults, agent reach, and installs.
@@ -2859,7 +2921,9 @@ function StandardConnectionSetupFlow({
           settingsValid={additionalSettingsValid && instructionsValid && !dedicatedAgentMissing}
           entry={entry}
           selfHostedGoogleApp={!cloudInstance && Boolean(getConnectableAppDefinition(entry.slug)?.methods.some(isCloudOnlyConnectionMethod))}
-          error={connectMutation.error ? describeError(connectMutation.error).body : null}
+          error={connectMutation.error ? describeError(connectMutation.error).body : oauthError}
+          authorizationUrl={oauthPhase === "error" ? authorizationFallbackUrl : null}
+          onOpenAuthorization={openAuthorizationTab}
           values={credentials}
           onChange={setCredentials}
           oauthClientId={curatedOAuthClientId}
@@ -2879,6 +2943,8 @@ function StandardConnectionSetupFlow({
           methodKey={connectionMethodKey}
           onMethodChange={(nextMethod) => {
             setConnectionMethodKey(nextMethod?.key ?? "");
+            setOAuthError(null);
+            setAuthorizationFallbackUrl(null);
             // Capability/auth changes must not broaden the audience selected
             // on Access (including choices restored after Cloud enrollment).
             if (
@@ -2944,9 +3010,10 @@ function StandardConnectionSetupFlow({
               startOAuth(resumableOAuthConnection);
               return;
             }
+            setOAuthError(null);
+            setAuthorizationFallbackUrl(null);
             if (selectedMethod && connectionMethodSupportsAutomaticOAuth(selectedMethod)) {
               directOAuthAccessConfirmedRef.current = true;
-              setOAuthError(null);
               setOAuthPhase("starting");
             }
             connectApp();
@@ -3531,6 +3598,8 @@ function KeyStep({
   entry,
   selfHostedGoogleApp = false,
   error,
+  authorizationUrl,
+  onOpenAuthorization,
   values,
   onChange,
   oauthClientId,
@@ -3561,6 +3630,8 @@ function KeyStep({
   entry: AppDefinition;
   selfHostedGoogleApp?: boolean;
   error?: string | null;
+  authorizationUrl?: string | null;
+  onOpenAuthorization?: () => void;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   oauthClientId: string;
@@ -3942,7 +4013,20 @@ function KeyStep({
           </div>
         ) : null}
 
-        {error ? <div role="alert"><InlineBanner tone="danger">{error}</InlineBanner></div> : null}
+        {error ? (
+          <div role="alert" className="space-y-2">
+            <InlineBanner tone="danger">{error}</InlineBanner>
+            {authorizationUrl ? (
+              <div>
+                <Button type="button" variant="outline" size="sm" asChild>
+                  <a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>
+                    Open sign-in in a new tab
+                  </a>
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {method?.settingsSchema && onPluginSettingsChange ? (
           <JsonSchemaForm
@@ -4091,6 +4175,9 @@ function OAuthClientFields({
             ? `${entry.name} does not let Paperclip register itself automatically, so this connector needs an OAuth app you create. Add the callback URL below in ${entry.name}, then paste the client details back here.`
             : `Register Paperclip's callback URI in ${entry.name}, then enter the customer-owned client details.`}
         </p>
+        {required && !method.oauthClientSecretRequired && method.guidanceMd ? (
+          <p className="mt-2 text-xs text-muted-foreground">{method.guidanceMd}</p>
+        ) : null}
         {method.consoleLinks?.register ? (
           <a
             href={method.consoleLinks.register}

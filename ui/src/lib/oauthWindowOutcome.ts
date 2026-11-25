@@ -24,3 +24,25 @@ export function readOAuthWindowOutcome(
     return "waiting";
   }
 }
+
+export function readOAuthWindowFailureDetails(
+  popup: Window | null,
+  connectionId: string,
+): { code: string | null; providerError: string | null } | null {
+  if (!popup || popup.closed) return null;
+  try {
+    const url = new URL(popup.location.href);
+    if (url.origin !== window.location.origin) return null;
+    if (!url.pathname.split("/").includes(connectionId)
+      && url.searchParams.get("resume") !== connectionId
+      && url.searchParams.get("reconnect") !== connectionId) return null;
+    const outcome = url.searchParams.get("oauth");
+    if (outcome !== "denied" && outcome !== "failed") return null;
+    return {
+      code: url.searchParams.get("code"),
+      providerError: url.searchParams.get("provider_error"),
+    };
+  } catch {
+    return null;
+  }
+}
