@@ -15,7 +15,7 @@ import { accessService, heartbeatService, issueReferenceService, issueService, l
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { responsibilityBarService } from "../services/responsibility-bars.js";
 import { responsibilityService } from "../services/responsibilities.js";
-import { assertBoard, assertBoardUser, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
@@ -95,7 +95,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     await svc.assertEnabled();
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return;
-    assertBoard(req);
+    assertBoardUser(req);
     await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     res.json(await svc.conversation(row));
   });

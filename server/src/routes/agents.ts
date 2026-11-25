@@ -7731,7 +7731,7 @@ export function agentRoutes(
   router.post(
     "/heartbeat-runs/:runId/provider-trace/reproject-workspace-diffs",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const runId = readHeartbeatRunId(req);
       const run = await getAccessibleResource(
         req,

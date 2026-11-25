@@ -18,6 +18,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { assertBoard, assertBoardUser, assertCompanyAccess, assertInstanceAdmin, boardAuthorityUserId } from "../routes/authz.js";
+import { attributeActivityToBoardOperator, withBoardOperatorOrigin } from "../services/board-operator-context.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -177,5 +178,20 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.update(companyMemberships).set({ status: "active" }).where(and(
         eq(companyMemberships.principalType, "agent"), eq(companyMemberships.principalId, operatorId)));
     }
+  });
+});
+
+describe("board operator activity attribution", () => {
+  const origin = { companyId: "company-1", agentId: "operator-1", runId: "run-1", responsibleUserId: "user-1" };
+
+  it("names the operator agent on board rows, and keeps an agent the row is about", () => {
+    const row = { companyId: "company-1", actorType: "user" as const, actorId: "board" };
+    expect(withBoardOperatorOrigin(origin, () => attributeActivityToBoardOperator({ ...row, agentId: null })))
+      .toMatchObject({ actorType: "agent", actorId: "operator-1", agentId: "operator-1", runId: "run-1",
+        details: { boardOperator: true } });
+    expect(withBoardOperatorOrigin(origin, () => attributeActivityToBoardOperator({ ...row, agentId: "worker-1" })))
+      .toMatchObject({ actorId: "operator-1", agentId: "worker-1" });
+    expect(withBoardOperatorOrigin(origin, () => attributeActivityToBoardOperator({ ...row, companyId: "company-2" })))
+      .toEqual({ ...row, companyId: "company-2" });
   });
 });

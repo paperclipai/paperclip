@@ -23,7 +23,7 @@ import {
   issueTreeControlService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, boardAuthorityUserId, getAccessibleResource, getActorInfo, isBoardOperatorAgent } from "./authz.js";
+import { assertBoardUser, getAccessibleResource, getActorInfo } from "./authz.js";
 
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -121,7 +121,7 @@ export function issueTreeControlRoutes(
   }
 
   router.post("/issues/:id/tree-control/preview", validate(previewIssueTreeControlSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
     if (!(await assertIssueReadAllowed(req, res, root))) return;
@@ -149,7 +149,7 @@ export function issueTreeControlRoutes(
   });
 
   router.post("/issues/:id/tree-holds", validate(createIssueTreeHoldSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
     if (!(await assertIssueReadAllowed(req, res, root))) return;
@@ -200,8 +200,7 @@ export function issueTreeControlRoutes(
               {
                 resultJson: {
                   cancelledByActorType: "user",
-                  cancelledByUserId: boardAuthorityUserId(req) ?? null,
-                  ...(isBoardOperatorAgent(req) ? { cancelledByAgentId: req.actor.agentId } : {}),
+                  cancelledByUserId: req.actor.userId ?? null,
                 },
               },
             );
@@ -399,7 +398,7 @@ export function issueTreeControlRoutes(
   });
 
   router.get("/issues/:id/tree-control/state", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issueId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, issuesSvc.getById(issueId), "Issue not found");
     if (!issue) return;
@@ -409,7 +408,7 @@ export function issueTreeControlRoutes(
   });
 
   router.get("/issues/:id/tree-holds", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
     if (!(await assertIssueReadAllowed(req, res, root))) return;
@@ -428,7 +427,7 @@ export function issueTreeControlRoutes(
   });
 
   router.get("/issues/:id/tree-holds/:holdId", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
     if (!(await assertIssueReadAllowed(req, res, root))) return;
@@ -451,7 +450,7 @@ export function issueTreeControlRoutes(
     "/issues/:id/tree-holds/:holdId/release",
     validate(releaseIssueTreeHoldSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const root = await getAccessibleResource(
         req,
         res,

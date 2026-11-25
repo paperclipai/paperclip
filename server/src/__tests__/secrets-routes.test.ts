@@ -169,6 +169,25 @@ describe("secret routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("keeps secret and provider management with board users when an agent is a board operator", async () => {
+    const app = createApp({
+      type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt",
+      keyScope: { kind: "standard" }, boardOperator: true, onBehalfOfUserId: "user-1",
+    });
+    const id = "11111111-1111-4111-8111-111111111111";
+
+    const responses = await Promise.all([
+      request(app).get("/api/companies/company-1/secret-proposals"),
+      request(app).post(`/api/companies/company-1/secret-proposals/${id}/reject`).send({}),
+      request(app).delete(`/api/secrets/${id}`),
+      request(app).delete(`/api/secret-provider-configs/${id}`),
+      request(app).post(`/api/secret-provider-configs/${id}/default`).send({}),
+    ]);
+
+    expect(responses.map((res) => res.status)).toEqual([403, 403, 403, 403, 403]);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("gives a denied agent safe response and saved-wait options without echoing the submitted value", async () => {
     const value = "private-denial-canary-value";
     const res = await request(createApp({

@@ -54,6 +54,7 @@ export function attributeActivityToBoardOperator<T extends AttributableActivity>
     ...input,
     actorType: "agent",
     actorId: origin.agentId,
+    agentId: input.agentId ?? origin.agentId,
     runId: input.runId ?? origin.runId ?? null,
     agentApiKeyId: input.agentApiKeyId ?? origin.agentApiKeyId ?? null,
     responsibleUserIdOverride: input.responsibleUserIdOverride !== undefined

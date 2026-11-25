@@ -503,7 +503,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.get("/:companyId/feedback-traces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
 
     const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
     const voteRaw = typeof req.query.vote === "string" ? req.query.vote : undefined;

@@ -56,7 +56,7 @@ PATCH /api/agents/{agentId}/permission-grants
 { "permissionKey": "board:operate", "enabled": true }
 ```
 
-The agent's own run JWT or API key then passes board-only routes in its company, acting with its responsible user's authority. Instance administration, permission and membership changes, approvals, budgets and a person's own settings stay with board users. Activity is attributed to the agent. See `doc/agent-permission-defaults.md`.
+The agent's own run JWT or API key then passes board-only routes in its company, acting with its responsible user's authority. Instance administration, permission and membership changes, approvals, secrets, budgets and costs, and a person's own settings stay with board users. Activity is attributed to the agent. See `doc/agent-permission-defaults.md`.
 
 ## Company Scoping
 

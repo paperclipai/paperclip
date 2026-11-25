@@ -31,7 +31,7 @@ import {
   heartbeatService,
   accessService,
 } from "../services/index.js";
-import { assertBoard, assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { attentionHandledDetails, attentionHandledFor } from "../services/attention-receipts.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -87,7 +87,7 @@ export function costRoutes(
   const access = accessService(db);
 
   function costReaderActor(req: Parameters<typeof assertCompanyAccess>[0], companyId: string) {
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     return { userId: getActorInfo(req).actorId,
       readOnly: req.actor.memberships?.some(member => member.companyId === companyId && member.membershipRole === "viewer") ?? false };
@@ -210,7 +210,7 @@ export function costRoutes(
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
 
     const actor = getActorInfo(req);
     const event = await finance.createEvent(companyId, {
@@ -442,7 +442,7 @@ export function costRoutes(
   // Operational accounting evidence and repairs are board-only. These payloads
   // can contain company-wide billing identifiers even for an agent's own run.
   router.use("/companies/:companyId/accounting", (req, _res, next) => {
-    assertCompanyAccess(req, req.params.companyId as string); assertBoard(req); next();
+    assertCompanyAccess(req, req.params.companyId as string); assertBoardUser(req); next();
   });
   router.post("/companies/:companyId/accounting/provider-costs/import", (req, _res, next) => {
     // Unlike ledger inspection, this operation discloses a stored credential

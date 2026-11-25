@@ -385,6 +385,31 @@ describe("issue tree control routes", () => {
     expect(mockTreeControlService.createHold).not.toHaveBeenCalled();
   });
 
+  it("keeps tree controls with board users when an agent is a board operator", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-2",
+      runId: null,
+      source: "agent_jwt",
+      boardOperator: true,
+      onBehalfOfUserId: "user-1",
+    });
+    const root = "/api/issues/11111111-1111-4111-8111-111111111111";
+
+    const responses = await Promise.all([
+      request(app).post(`${root}/tree-control/preview`).send({ mode: "pause" }),
+      request(app).post(`${root}/tree-holds`).send({ mode: "cancel" }),
+      request(app).get(`${root}/tree-control/state`),
+      request(app).get(`${root}/tree-holds`),
+    ]);
+
+    expect(responses.map((res) => res.status)).toEqual([403, 403, 403, 403]);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockTreeControlService.preview).not.toHaveBeenCalled();
+    expect(mockTreeControlService.createHold).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed tree hold IDs before querying the hold service", async () => {
     const app = await createApp({
       type: "board",

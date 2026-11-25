@@ -7,7 +7,7 @@ import {
   managedAgentProfileService,
   type ManagedAgentProfileInput,
 } from "../services/managed-agent-profiles.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function profileInput(value: unknown): ManagedAgentProfileInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -46,7 +46,7 @@ export function managedAgentProfileRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/managed-agent-profiles", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const profile = await profiles.upsert(companyId, profileInput(req.body));
