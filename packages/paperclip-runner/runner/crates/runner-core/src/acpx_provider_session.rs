@@ -1,4 +1,3 @@
-use crate::generated_acpx_profiles::acpx_release_profile;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -125,9 +124,10 @@ pub struct AcpxProviderSessionConfig {
 impl AcpxProviderSessionConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         self.transport.validate()?;
-        let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
-            LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
-        })?;
+        let profile =
+            crate::acpx_candidate_admission::release_profile(&self.agent).ok_or_else(|| {
+                LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
+            })?;
         if let Some(admission) = &self.candidate_admission {
             admission.validate_binding(
                 &self.agent,
@@ -2041,7 +2041,9 @@ fn with_cleanup_error(
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         ))
-        .with_provider_failure(error.provider_failure()),
+        .with_provider_failure(error.provider_failure())
+        .with_command_rejection(error.command_rejection())
+        .with_sidecar_rejection(error.sidecar_rejection()),
     }
 }
 
@@ -2514,7 +2516,13 @@ mod mode_tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
         let mut cfg = config();
         assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
@@ -2535,6 +2543,18 @@ mod mode_tests {
         );
         assert_eq!(
             session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        // A granted /swarm turn keeps the same grant and names its provider mode;
+        // the sidecar, not the Runner, decides which agent modes it accepts.
+        let mut swarm = cfg.clone();
+        swarm.mode = Some("swarm".to_owned());
+        swarm.validate().unwrap();
+        let open = session_open_params(&swarm, &[]);
+        assert_eq!(open["candidateAdmission"], json!(admission));
+        assert_eq!(open["mode"], json!("swarm"));
+        assert_eq!(
+            initialize_params(&swarm)["candidateAdmission"],
             json!(admission)
         );
         for (field, value) in [

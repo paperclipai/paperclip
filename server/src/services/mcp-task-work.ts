@@ -42,7 +42,7 @@ export function registerMcpTaskWork(
             mutation: "tool_task",
             wakeReason: "issue_commented",
             source: "mcp_task.settled",
-            toolTask: { tool: task.toolName, status: task.status },
+            toolTask: { tool: task.toolName, status: task.status, taskRecordId: task.taskRecordId },
           },
           issueStateGuard: { statuses: ["todo", "in_progress", "in_review", "blocked"], assigneeAgentId: task.agentId },
         });

@@ -154,7 +154,7 @@ export async function readWorkspaceGitLinkedRoots(source: WorkspaceGitSourceRoot
     const target = path.join(commonDirectory.path, "worktrees"), present = await entry(target);
     if (!present) { results.push({ commonDirectory, directory: null, links: [], metadata: [] }); continue; }
     const directory = await directoryIdentity(target), names = (await fs.readdir(directory.path)).sort();
-    if (names.length > 256) throw invalid();
+    if (names.length > 256) throw new Error("workspace_git_links_exceeded");
     const links: Array<{ root: Identity; gitDirectory: Identity }> = [], metadata: Metadata[] = [];
     for (const name of names) {
       const gitDirectory = await directoryIdentity(path.join(directory.path, name));
@@ -163,6 +163,7 @@ export async function readWorkspaceGitLinkedRoots(source: WorkspaceGitSourceRoot
       if (!backlink || !common || path.resolve(gitDirectory.path, metadataPath(common.text)) !== commonDirectory.path) throw invalid();
       const marker = path.resolve(gitDirectory.path, metadataPath(backlink.text));
       if (path.basename(marker) !== ".git") throw invalid();
+      if (!await entry(path.dirname(marker))) throw new Error("workspace_git_link_stale");
       const root = await directoryIdentity(path.dirname(marker)), pointer = await readMetadata(marker, 4096);
       if (marker !== path.join(root.path, ".git") || !pointer?.text.startsWith("gitdir: ")
         || path.resolve(root.path, metadataPath(pointer.text.slice(8))) !== gitDirectory.path) throw invalid();

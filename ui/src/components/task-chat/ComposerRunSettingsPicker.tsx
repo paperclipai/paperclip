@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
 import { aiRuntimeConnectionBindingSchema, agentHarnessType, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { queryKeys } from "@/lib/queryKeys";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "@/lib/native-model-catalog";
 import { cn } from "@/lib/utils";
@@ -106,7 +108,9 @@ export function ComposerRunSettingsPicker({
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
   const agentId = assigneeValue.startsWith("agent:") ? assigneeValue.slice(6) : "";
   const agent = agents.get(agentId);
-  const modelSupported = supportsComposerModel(agent);
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
+  const modelSupported = supportsComposerModel(agent) && (!cloud || Boolean(agent && harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig)));
   const view = (requestedView === "models" && !modelSupported) || (requestedView === "agents" && !allowAssigneeChange)
     ? "settings"
     : requestedView;

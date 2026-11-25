@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { nativeSha256 } from "./canonical.js";
@@ -16,7 +16,7 @@ export type SettledNativeHarnessBackupOwner = {
   kind: "settled_native_harness_backup";
   companyId: string; issueId: string; agentId: string; runId: string;
   sessionId: string; runnerInstanceId: string; scopeDigest: string; root: string; manifestSha256: string;
-  selectedSessionId: string; selectedLastRunId: string; sourceLeaseId: string; providerLeaseId: string;
+  selections: Array<{ id: string; lastRunId: string | null }>; sourceLeaseId: string; providerLeaseId: string;
   runDigest: string; coordinatorDigest: string; leaseDigest: string;
 };
 const runDigest = (run: Run) => nativeSha256({ status: run.status, finishedAt: run.finishedAt?.toISOString(),
@@ -31,6 +31,14 @@ const leaseDigest = (row: Lease) => nativeSha256({ heartbeatRunId: row.heartbeat
 const settled = (row: Coordinator) => row.leaseOwner === null && row.nextAttemptAt === null
   && (row.phase === "terminal_failure" || row.phase === "committed" && row.resultId !== null);
 const fail = (): never => { throw new Error("native_harness_preservation_source_unsettled"); };
+const sessionSelections = (db: Db, input: { companyId: string; agentId: string; issueId: string; sessionId: string }) =>
+  db.select({ id: agentTaskSessions.id, lastRunId: agentTaskSessions.lastRunId }).from(agentTaskSessions).where(and(
+    eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId),
+    eq(agentTaskSessions.adapterType, "paperclip_runner"),
+    sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${agentTaskSessions.lastRunId}
+      and ${heartbeatRuns.companyId} = ${agentTaskSessions.companyId} and ${heartbeatRuns.agentId} = ${agentTaskSessions.agentId}
+      and ${heartbeatRuns.nativeIssueId} = ${input.issueId} and ${heartbeatRuns.nativeSessionId} = ${input.sessionId})`,
+  )).orderBy(asc(agentTaskSessions.id));
 
 /** Copy sealed historical files without certifying provider termination, changing
  * a failed run, or taking an expired coordinator. Every publication rechecks it. */
@@ -38,17 +46,12 @@ export async function settledNativeHarnessBackupOwner(db: Db, input: {
   companyId: string; issueId: string; runId: string; sessionId: string; runnerInstanceId: string;
   scopeDigest: string; root: string; manifestSha256: string; providerLeaseId: string; signal: AbortSignal;
 }): Promise<{ owner: SettledNativeHarnessBackupOwner; reason?: never }
-  | { owner: null; reason: "coordinator_missing" | "coordinator_unsettled" | "session_not_selected" | "lease_missing" }> {
+  | { owner: null; reason: "coordinator_missing" | "coordinator_unsettled" | "lease_missing" }> {
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
     eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId)));
   if (!run || !coordinator || !settled(coordinator)) return { owner: null, reason: run && coordinator ? "coordinator_unsettled" : "coordinator_missing" };
-  const selected = await db.select({ id: agentTaskSessions.id, lastRunId: agentTaskSessions.lastRunId }).from(agentTaskSessions)
-    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, agentTaskSessions.companyId), eq(heartbeatRuns.agentId, agentTaskSessions.agentId),
-      eq(heartbeatRuns.id, agentTaskSessions.lastRunId))).where(and(eq(agentTaskSessions.companyId, input.companyId),
-      eq(agentTaskSessions.agentId, run.agentId), eq(agentTaskSessions.adapterType, "paperclip_runner"),
-      eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.nativeSessionId, input.sessionId))).limit(2);
-  if (selected.length !== 1 || !selected[0]!.lastRunId) return { owner: null, reason: "session_not_selected" };
+  const selections = await sessionSelections(db, { ...input, agentId: run.agentId });
   const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
     eq(environmentLeases.issueId, input.issueId), eq(environmentLeases.providerLeaseId, input.providerLeaseId),
     sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${input.manifestSha256}`));
@@ -57,7 +60,7 @@ export async function settledNativeHarnessBackupOwner(db: Db, input: {
   const owner: SettledNativeHarnessBackupOwner = { kind: "settled_native_harness_backup", companyId: input.companyId,
     issueId: input.issueId, agentId: run.agentId, runId: input.runId, sessionId: input.sessionId, runnerInstanceId: input.runnerInstanceId,
     scopeDigest: input.scopeDigest, root: input.root, manifestSha256: input.manifestSha256,
-    selectedSessionId: selected[0]!.id, selectedLastRunId: selected[0]!.lastRunId,
+    selections,
     sourceLeaseId: lease.id, providerLeaseId: input.providerLeaseId,
     runDigest: runDigest(run), coordinatorDigest: coordinatorDigest(coordinator), leaseDigest: leaseDigest(lease) };
   await db.transaction(tx => assertSettledNativeHarnessBackupSource(tx as unknown as Db, owner, input.signal));
@@ -74,18 +77,12 @@ export async function assertSettledNativeHarnessBackupSource(db: Db, owner: Sett
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, owner.companyId),
     eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.runId, owner.runId))).for("update");
   if (!coordinator || !settled(coordinator) || coordinatorDigest(coordinator) !== owner.coordinatorDigest) fail();
-  const [selection] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, owner.companyId),
-    eq(agentTaskSessions.agentId, owner.agentId), eq(agentTaskSessions.id, owner.selectedSessionId),
-    eq(agentTaskSessions.adapterType, "paperclip_runner"),
-    eq(agentTaskSessions.lastRunId, owner.selectedLastRunId))).for("share");
-  const [selectedRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
-    eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.id, owner.selectedLastRunId),
-    eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.nativeSessionId, owner.sessionId)));
+  const selections = await sessionSelections(db, owner).for("share");
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
     eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.id, owner.runId), eq(heartbeatRuns.nativeIssueId, owner.issueId),
     eq(heartbeatRuns.nativeSessionId, owner.sessionId), eq(heartbeatRuns.runnerInstanceId, owner.runnerInstanceId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
   const [clock] = await db.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
-  if (!selection || !selectedRun || !run?.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
+  if (JSON.stringify(selections) !== JSON.stringify(owner.selections) || !run?.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
     || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date(clock.now)
     || adapterExecutionControls.has(run.id) || run.runnerProfileJson?.nativeWorkspaceFinalizationOwner != null
     || runDigest(run) !== owner.runDigest) fail();

@@ -10,6 +10,8 @@ import { readDocumentAction } from "../protocol-actions/read-document.js";
 import { writeDocumentAction } from "../protocol-actions/write-document.js";
 import { listDocumentRevisionsAction } from "../protocol-actions/list-document-revisions.js";
 import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
+import { listRoutinesAction } from "../protocol-actions/list-routines.js";
+import { updateRoutineAction } from "../protocol-actions/update-routine.js";
 import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 
@@ -158,7 +160,7 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(50);
+    expect(operationIds).toHaveLength(64);
     expect(operationIds).toContain("set_task_monitor");
     expect(operationIds).toContain("send_chat_message");
     expect(new Set(operationIds).size).toBe(operationIds.length);
@@ -178,6 +180,13 @@ describe("semantic action catalog", () => {
     });
     expect(hire?.inputSchema.properties).not.toHaveProperty("adapterConfig");
     expect(hire?.inputSchema.properties).not.toHaveProperty("env");
+  });
+
+  it("keeps each live action's required claims in the catalog", () => {
+    for (const action of [listRoutinesAction, updateRoutineAction]) {
+      expect(paperclipSemanticAction(action.id)?.requiredClaims).toEqual(action.live.descriptor.requiredClaims);
+    }
+    expect(paperclipSemanticAction("list_routines")?.requiredClaims).toEqual(["routines:read"]);
   });
 
   it("compiles every operation input and output schema", () => {

@@ -5,8 +5,9 @@ import { Worker } from "node:worker_threads";
  * release refused. Saves that recovery exhausted under an older version are
  * retried once under the new one (workspace-recovery-capture-policy).
  * 2: absolute or escaping symlinks are dropped and recorded instead of refusing the save.
+ * 3: named pipes are excluded and recorded like sockets.
  */
-export const REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION = 2;
+export const REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION = 3;
 
 /**
  * A portable, streaming workspace archive. This function is intentionally
@@ -274,6 +275,7 @@ export async function workspaceArchive(input: {
         const stat = await handle.stat();
         if (!stat.isFile() || await fs.realpath(source) !== source) fail("changed");
         const digest = crypto.createHash("sha256"); let size = 0;
+        check();
         for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal, highWaterMark: 1024 * 1024 })) {
           check(); digest.update(bytes); size += bytes.length; await consume?.(bytes);
         }
@@ -308,7 +310,7 @@ export async function workspaceArchive(input: {
   };
   const assertGitSourceFence = async (repo: string) => {
     if (!input.gitSourceRoots) return null;
-    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 384
+    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 1536
       || input.gitSourceRoots.some(root => !path.isAbsolute(root) || path.resolve(root) !== root)) fail("online_source_git_requires_shared_fence");
     const directory = async (target: string) => {
       const actual = await fs.realpath(target), entry = await fs.lstat(target, { bigint: true });
@@ -467,7 +469,7 @@ export async function workspaceArchive(input: {
             if (!tracked) { excludedPaths.add(next); continue; }
           }
         }
-        if (stat.isSocket()) {
+        if (stat.isSocket() || stat.isFIFO()) {
           // Runtime IPC endpoints have no portable file contents. Record the
           // exclusion without removing the endpoint or dropping adjacent work.
           excludedPaths.add(next); continue;

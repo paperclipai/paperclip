@@ -2,6 +2,7 @@ import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-r
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { isAiKeyVerificationFailureCode } from "../services/ai-api-key-failures.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
@@ -169,9 +170,10 @@ async function verifyNativeAcpxApiKey(
   } catch (error) {
     const details = error && typeof error === "object" && "details" in error
       ? error.details as { code?: string } | undefined : undefined;
+    const code = isAiKeyVerificationFailureCode(details?.code) ? details.code : "ai_connection_verification_failed";
+    const reason = code !== "ai_connection_verification_failed" && error instanceof Error ? error.message : "Check the connection and try again.";
     return { ...result, status: "fail", checks: [...result.checks, {
-      code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
-      level: "error", message: `Could not verify the ${account.name} API key. Check the connection and try again.`,
+      code, level: "error", message: `Could not verify the ${account.name} API key. ${reason}`,
     }] };
   }
 }

@@ -181,7 +181,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
             />
           </div>
         ) : definitions.length === 0 && !definitionsQuery.isPending && definitionsView.kind !== "reconnecting" ? (
-          <EmptyState
+          <EmptyState placement="upper"
             icon={UserRound}
             message="No user secret definitions yet. Create one to require each member to supply their own credential."
             action="New user secret"

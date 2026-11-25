@@ -1,7 +1,7 @@
 import { PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS, resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import {
-  defaultsRemoteSandboxRunToWarm, defaultsToWarmFollowUp, supportsManagedNativeWarmSession,
+  defaultsRemoteSandboxRunToWarm, defaultsToWarmFollowUp, requiresPerTurnNativeSession, supportsManagedNativeWarmSession,
 } from "../native-runtime/native-warm-capability.js";
 
 export type NativeLifecyclePolicy = NonNullable<NativeExecutionInput["session"]["lifecyclePolicy"]>;
@@ -51,8 +51,12 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
     : { mode: "per_turn", idleTimeoutMs: null };
   const supportsManagedWarm = input.adapterType === "paperclip_runner" && (input.taskOwned ||
     supportsManagedNativeWarmSession(profile, input.managedAiAttribution));
+  // A harness qualified only per-turn runs per-turn even when a saved policy
+  // says warm: no release admitted a warm turn for it, so none can be live.
+  if (requiresPerTurnNativeSession(profile)) return { mode: "per_turn", idleTimeoutMs: null };
   return input.persistedPolicy ??
-    (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(input.backend) || input.managedAiSelected && !supportsManagedWarm
+    (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(input.backend)
+      || input.managedAiSelected && !supportsManagedWarm
       ? { mode: "per_turn", idleTimeoutMs: null }
       : input.environmentPolicy ?? agentPolicy);
 }

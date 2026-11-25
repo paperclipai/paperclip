@@ -204,9 +204,15 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
       data: JSON.stringify({ id: 99, companyId: "company-1", type: "activity.logged",
         createdAt: "2026-09-09T18:00:00.000Z", toastEligible: eligibility,
-        payload: { entityType: "issue", entityId: "other-task", action: "issue.comment_added", actorType: "user", actorId: "another-user" } }),
+        payload: { entityType: "issue", entityId: "other-task", action: "issue.comment_added", actorType: "user", actorId: "another-user",
+          actorName: "Nibbler", issueTitle: "Fix task notifications", issueIdentifier: "PAP-1234",
+          notificationDetails: { commentId: "comment-1", bodySnippet: "Ready **for review**" } } }),
     })));
     expect(pushToast).toHaveBeenCalledTimes(eligibility === true ? 1 : 0);
+    if (eligibility === true) expect(pushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Fix task notifications", body: "Nibbler: Ready for review",
+      action: { label: "View task", href: "/issues/PAP-1234" },
+    }));
   });
 
   it("keeps generic agent errors quiet even with eligibility metadata", async () => {

@@ -5,6 +5,7 @@ import { Plus } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { responsibilitiesApi, type ResponsibilityLinkResult } from "@/api/responsibilities";
 import { routinesApi } from "@/api/routines";
@@ -14,12 +15,12 @@ import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/compon
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { queryKeys } from "@/lib/queryKeys";
 
-export type ResponsibilityWorkKind = "project" | "task" | "routine";
+export type ResponsibilityWorkKind = "project" | "task" | "routine" | "skill";
 
 const TASK_SEARCH_LIMIT = 20;
 const TASK_SEARCH_DEBOUNCE_MS = 200;
 
-const NOUN: Record<ResponsibilityWorkKind, string> = { project: "project", task: "task", routine: "routine" };
+const NOUN: Record<ResponsibilityWorkKind, string> = { project: "project", task: "task", routine: "routine", skill: "skill" };
 
 interface PickerOption {
   id: string;
@@ -41,6 +42,7 @@ export function describeLinkError(error: unknown, kind: ResponsibilityWorkKind):
 function linkBody(kind: ResponsibilityWorkKind, id: string): LinkResponsibility {
   if (kind === "project") return { projectId: id };
   if (kind === "task") return { issueId: id };
+  if (kind === "skill") return { skillId: id };
   return { routineId: id };
 }
 
@@ -54,8 +56,8 @@ function useDebounced<T>(value: T, delayMs: number): T {
 }
 
 /**
- * "Add existing…": search the company's projects, tasks or routines and file
- * one under the responsibility (it stays wherever else it is filed). Lists
+ * "Add existing…": search the company's projects, tasks, routines or skills
+ * and file one under the responsibility (it stays wherever else it is filed). Lists
  * load only while the picker is open; tasks are searched on the server. Items
  * already directly under this responsibility are left out.
  *
@@ -99,6 +101,11 @@ export function AddExistingWorkPicker({
     queryFn: () => routinesApi.list(companyId),
     enabled: open && kind === "routine",
   });
+  const skills = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId),
+    enabled: open && kind === "skill",
+  });
   const tasks = useQuery({
     queryKey: queryKeys.issues.search(companyId, taskQuery, undefined, TASK_SEARCH_LIMIT),
     queryFn: () => issuesApi.list(companyId, { q: taskQuery || undefined, limit: TASK_SEARCH_LIMIT }),
@@ -112,11 +119,14 @@ export function AddExistingWorkPicker({
     if (kind === "routine") {
       return (routines.data ?? []).map((routine) => ({ id: routine.id, label: routine.title }));
     }
+    if (kind === "skill") {
+      return (skills.data ?? []).map((skill) => ({ id: skill.id, label: skill.name }));
+    }
     return (tasks.data ?? []).map((task) => ({ id: task.id, label: task.title, detail: task.identifier }));
-  }, [kind, projects.data, routines.data, tasks.data]);
+  }, [kind, projects.data, routines.data, skills.data, tasks.data]);
   const available = useMemo(() => options.filter((option) => !linkedIds.has(option.id)), [options, linkedIds]);
 
-  const source = kind === "project" ? projects : kind === "routine" ? routines : tasks;
+  const source = kind === "project" ? projects : kind === "routine" ? routines : kind === "skill" ? skills : tasks;
   const sourceView = useQueryView<unknown>({
     data: source.data,
     error: source.error,

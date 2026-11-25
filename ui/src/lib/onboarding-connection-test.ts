@@ -1,4 +1,16 @@
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, type AdapterEnvironmentTestResult } from "@paperclipai/shared";
+
 export const ONBOARDING_CONNECTION_TEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Whether an adapter environment test result blocks creating the onboarding
+ * agent. True on `status === "fail"` and on `warn`/`pass` results carrying
+ * `ADAPTER_AUTH_MISSING_CHECK_CODE`.
+ */
+export function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+  if (result.status === "fail") return true;
+  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+}
 
 /** Bound the entire check, including environment preparation and response parsing. */
 export async function runOnboardingConnectionTest<T>(
