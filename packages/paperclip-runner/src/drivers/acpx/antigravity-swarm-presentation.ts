@@ -1,4 +1,5 @@
 import type { AcpRuntimeEvent } from "acpx/runtime";
+import { ANTIGRAVITY_SWARM_UPDATE_TOOL, antigravityToolDetail, isAntigravityInternalRead } from "./antigravity-tool-identity.js";
 
 /**
  * The Antigravity CLI coordinator reports its swarm through its own tools
@@ -81,11 +82,18 @@ function swarmTitle(name: string, args: Json, workspace: string): string | null 
       return typeof args.brief === "string" && args.brief.trim()
         ? `Started helper ${helper || "(unnamed)"}: ${plain(args.brief, workspace)}`
         : `Started helper ${helper || "(unnamed)"}`;
-    case "title": return typeof args.title === "string" ? `Swarm: ${plain(args.title, workspace)}` : "Named the swarm";
+    case "title": return typeof args.title === "string" ? `Goal: ${plain(args.title, workspace)}` : "Named the swarm";
     case "remove": case "kill": case "stop": return helper ? `Stopped helper ${helper}` : "Stopped a helper";
     case "status": return "Checked on the helpers";
     default: return "Coordinated the helpers";
   }
+}
+
+/** A location inside the task folder as a task-relative path, the way the run record names files. */
+function taskRelative(location: unknown, workspace: string): unknown {
+  const value = record(location);
+  const prefix = `${workspace.replace(/\/+$/, "")}/`;
+  return typeof value.path === "string" && value.path.startsWith(prefix) ? { ...value, path: value.path.slice(prefix.length) } : location;
 }
 
 /** One ACP `session/update` as a runtime event, or null when it carries nothing to show. */
@@ -107,16 +115,31 @@ export function antigravitySwarmEvent(update: unknown, workspace: string): AcpRu
   const status = typeof value.status === "string" ? value.status : undefined;
   if (SWARM_TOOLS.has(name)) {
     const title = swarmTitle(name, args, workspace) ?? "Coordinated the helpers";
-    return { type: "tool_call", tag: kind, toolCallId: value.toolCallId, text: title, title, kind: "other", ...(status ? { status } : {}) };
+    return antigravitySwarmLine(value.toolCallId, title, kind, status);
   }
+  if (isAntigravityInternalRead(value)) return null;
   const title = typeof value.title === "string" ? value.title.split(workspace).join(".") : name || "Tool call";
+  const detail = antigravityToolDetail({ ...value, title });
   return {
-    type: "tool_call", tag: kind, toolCallId: value.toolCallId, text: title, title,
+    // A named call's title is display text (`Run mcp_paperclip_…`); its progress is its subject.
+    type: "tool_call", tag: kind, toolCallId: value.toolCallId, text: detail ? detail.subject ?? "" : title, title,
+    ...(detail ? { paperclipToolDetail: detail } : {}),
     ...(typeof value.kind === "string" ? { kind: value.kind as never } : {}),
     ...(status ? { status } : {}),
     ...(value.rawInput !== undefined ? { rawInput: value.rawInput } : {}),
     ...(value.rawOutput !== undefined ? { rawOutput: value.rawOutput } : {}),
     ...(Array.isArray(value.content) ? { content: value.content as never } : {}),
-    ...(Array.isArray(value.locations) ? { locations: value.locations as never } : {}),
+    ...(Array.isArray(value.locations) ? { locations: value.locations.map(location => taskRelative(location, workspace)) as never } : {}),
   };
+}
+
+/**
+ * One swarm progress line as a tool call with a neutral identity: the sentence
+ * is its subject, so it reads the same while the run is live and afterwards.
+ */
+export function antigravitySwarmLine(toolCallId: string, sentence: string, tag: "tool_call" | "tool_call_update" = "tool_call", status?: string): AcpRuntimeEvent {
+  return {
+    type: "tool_call", tag, toolCallId, text: sentence, title: sentence, kind: "other", ...(status ? { status } : {}),
+    paperclipToolDetail: { toolName: ANTIGRAVITY_SWARM_UPDATE_TOOL, subject: sentence },
+  } as AcpRuntimeEvent;
 }
