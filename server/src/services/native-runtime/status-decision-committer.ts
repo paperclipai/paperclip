@@ -2503,8 +2503,6 @@ export async function commitNativeStatusDecision(input: {
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
       }
-      // The REST issue route emits agent.task_completed for API completions;
-      // emit it here only for this committed transition into done.
       if (issue.status !== "done" && updated.status === "done" && originRun?.agentId) {
         completedTask = {
           companyId: input.companyId,
@@ -2794,7 +2792,6 @@ export async function commitNativeStatusDecision(input: {
   for (const publication of publications) publishActivity(publication);
   for (const terminalRun of terminalRunsToEmit)
     await emitAgentTaskRun(input.db, terminalRun);
-  // Telemetry must not hold run finalization; the send never throws.
   if (completedTask && !committed.replayed)
     void emitAgentTaskCompleted(input.db, completedTask);
   return committed;

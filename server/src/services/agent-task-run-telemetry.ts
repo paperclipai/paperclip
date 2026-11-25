@@ -321,16 +321,6 @@ export async function emitAgentTaskRunById(
   }
 }
 
-/**
- * Emits one `agent.task_completed` telemetry event for a task that an agent's
- * native run moved to done. The REST issue route emits the same event when an
- * agent sets a task to done through the API. Each caller emits only on its own
- * committed transition into done, so one completion never counts twice.
- *
- * Call this function after the status change commits. It never throws.
- * Telemetry enrichment does an awaited database lookup, so fire this call with
- * `void emitAgentTaskCompleted(...)` and never await it on the commit path.
- */
 export async function emitAgentTaskCompleted(
   db: Db,
   input: {
