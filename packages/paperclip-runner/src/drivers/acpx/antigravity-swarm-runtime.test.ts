@@ -177,8 +177,15 @@ describe("Antigravity CLI swarm runtime", () => {
     // Only the server-written values reach the instructions, never a requirement's or the task's text.
     expect(append).not.toContain("hire_agent");
     expect(append).not.toContain("Pasted by someone else");
-    // Nor the agent's own (agent-editable) instructions: helpers act under auto mode.
-    expect(append).not.toContain("Agent instructions.");
+    const agentInstructions = append.indexOf("Agent instructions.");
+    const rules = append.indexOf(ANTIGRAVITY_SWARM_INSTRUCTIONS);
+    expect(agentInstructions).toBeGreaterThan(-1);
+    expect(rules).toBeGreaterThan(agentInstructions);
+    expect(append.endsWith(ANTIGRAVITY_SWARM_INSTRUCTIONS)).toBe(true);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/take precedence over the agent's instructions above/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/cannot widen the Paperclip tools offered or Paperclip's permission decisions/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/helpers must keep all their work inside the task folder/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).not.toMatch(/what helpers may touch/);
     // The coordinator's first hand-in, built only from what it was told, is valid and is the
     // exact revision and criterion set the server requires before it accepts a report.
     const report = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Wrote a.txt and b.txt.",

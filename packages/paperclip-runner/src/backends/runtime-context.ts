@@ -23,16 +23,6 @@ export function nativeRunAttachReservedBytes(input: NativeExecutionInput): numbe
 
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
-  // A /swarm turn's helpers act under Antigravity's auto mode, so its system
-  // prompt holds only Paperclip-authored text: the fixed execution prompt and
-  // the run's server-written hand-in values (the route adds its fixed swarm
-  // rules). The agent's instruction bundle and connection instructions are left
-  // out: an agent can edit its own instructions in an earlier ordinary run, and
-  // Paperclip keeps no user-approved copy to trust instead.
-  if (input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)) {
-    return [input.runtimeContext.prompt.text, antigravitySwarmHandInInstructions(input.completionContract.contract)]
-      .filter(Boolean).join("\n\n");
-  }
   const configuredRoot = resolve(
     input.runtimeContext.instructions.bundle.rootPath,
   );
@@ -49,6 +39,10 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
     throw new Error("native_runtime_context_entry_outside_bundle");
   }
   const entry = readFileSync(entryPath, "utf8");
+  if (input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)) {
+    return composeNativeSystemInstructions(input.runtimeContext,
+      [entry.trim(), antigravitySwarmHandInInstructions(input.completionContract.contract)].filter(Boolean).join("\n\n"));
+  }
   if (input.provider.kind === "muse") {
     return ["You are running as a named Paperclip agent. Complete the assigned task, follow the attached agent instructions, and use the admitted Paperclip catalog for coordination. Record durable text deliverables with write_document. When work depends on another task, preserve the existing dependencies with set_dependencies and report the concrete blocker through paperclip_block. Follow each tool's approval and completion rules.", entry.trim(),
       "Use the private Muse client's operation command for the admitted first-party Paperclip task and document catalog. Use your own approved tools for external work. Paperclip supplies no connector credentials or filesystem command grants. Keep all Paperclip data within this connection's company, agent, and current task. Use the client's ask command for questions; persist the exact saved answer into this run's continuation before consuming its input receipt. Pending or unconsumed answers block completion. Invoke paperclip_finish or paperclip_block through the native tool catalog, then submit that exact accepted report with the client's finish command."].join("\n\n");

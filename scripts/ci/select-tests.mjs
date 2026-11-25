@@ -37,7 +37,7 @@ function runnerInventory(group) {
     { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
 }
 
-export async function createTestSelection(plan, head) {
+export async function createTestSelection(plan, head, { runnerProfile = process.env.CI_RUNNER_PROFILE || "aws" } = {}) {
   const reason = selectionEligibility(plan);
   if (reason) throw new Error(reason);
   const groups = new Set();
@@ -82,7 +82,7 @@ export async function createTestSelection(plan, head) {
     server.inventory, "Server inventory must be completely covered by existing lane ownership");
   }
   const excludedSuites = activeNightlySuitesForEnv();
-  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations(), excludedSuites }), graphs };
+  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations(), excludedSuites, runnerProfile }), graphs };
 }
 
 async function main() {
