@@ -1,15 +1,22 @@
-/**
- * SMI-233 — plugin http.fetch SSRF guard vs the local-privileged-bridge loopback URL.
- *
- * The bridge plugin legitimately POSTs to a loopback/docker-bridge address
- * (e.g. http://172.17.0.1:3721). The unconditional private-IP block made that
- * impossible. The fix: a manifest-derived `http.private-network` capability that
- * lifts *only* the private-IP filter — protocol whitelist, DNS pinning, timeout,
- * and size cap remain in force, and request data can never unlock it.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  return {
+    ...actual,
+    lookup: vi.fn((host: string, opts: unknown) => {
+      if (host === "mixed-dns-public-first.test") {
+        return Promise.resolve([{ address: "203.0.113.7", family: 4 }, { address: "192.168.1.5", family: 4 }]);
+      }
+      if (host === "mixed-dns-private-first.test") {
+        return Promise.resolve([{ address: "192.168.1.5", family: 4 }, { address: "203.0.113.7", family: 4 }]);
+      }
+      return actual.lookup(host, opts as never);
+    }),
+  };
+});
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
@@ -22,7 +29,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import { logger } from "../middleware/logger.js";
-import { buildHostServices } from "../services/plugin-host-services.js";
+import { buildHostServices, validateAndResolveFetchUrl } from "../services/plugin-host-services.js";
 
 type Manifest = { capabilities: string[] };
 
@@ -88,6 +95,27 @@ describe("plugin http.fetch private-network guard (SMI-233)", () => {
     ).rejects.toThrow(/private\/reserved ranges/);
   });
 
+  it("keeps denying link-local and cloud-metadata addresses even with the capability", async () => {
+    const services = servicesFor({ capabilities: ["http.outbound", "http.private-network"] });
+    await expect(
+      services.http.fetch({ url: "http://169.254.169.254/latest/meta-data/" }),
+    ).rejects.toThrow(/private\/reserved ranges/);
+  });
+
+  it("reports landsOnPrivateAddress from the connected address, not from every DNS answer", async () => {
+    const publicFirst = await validateAndResolveFetchUrl("http://mixed-dns-public-first.test/", {
+      allowPrivateNetwork: true,
+    });
+    expect(publicFirst.resolvedAddress).toBe("203.0.113.7");
+    expect(publicFirst.landsOnPrivateAddress).toBe(false);
+
+    const privateFirst = await validateAndResolveFetchUrl("http://mixed-dns-private-first.test/", {
+      allowPrivateNetwork: true,
+    });
+    expect(privateFirst.resolvedAddress).toBe("192.168.1.5");
+    expect(privateFirst.landsOnPrivateAddress).toBe(true);
+  });
+
   it("still enforces the protocol whitelist even with the capability granted", async () => {
     const services = servicesFor({ capabilities: ["http.outbound", "http.private-network"] });
     await expect(services.http.fetch({ url: "ftp://127.0.0.1:21/" })).rejects.toThrow(
@@ -143,6 +171,24 @@ describe("plugin http.fetch private-network guard (SMI-233)", () => {
         expect.objectContaining({ pluginId: "plugin-record-id", pluginKey: "paperclip.local-privileged-bridge" }),
         "plugin http.fetch allowed to private/reserved address via http.private-network capability",
       );
+    } finally {
+      server.close();
+    }
+  });
+
+  it("strips secret-bearing query and userinfo parts from the audit log URL", async () => {
+    const { server, port } = await listenOnLoopback(async () => "{}");
+    try {
+      const services = servicesFor({ capabilities: ["http.outbound", "http.private-network"] });
+      await services.http.fetch({ url: `http://127.0.0.1:${port}/deliver?token=supersecret&action=restart` });
+      const call = vi.mocked(logger.info).mock.calls.find(([, message]) =>
+        String(message).includes("allowed to private/reserved address"),
+      );
+      expect(call).toBeDefined();
+      const loggedUrl = (call?.[0] as { url?: string }).url;
+      expect(loggedUrl).toBeDefined();
+      expect(loggedUrl).not.toContain("supersecret");
+      expect(loggedUrl).toBe(`http://127.0.0.1:${port}/deliver`);
     } finally {
       server.close();
     }

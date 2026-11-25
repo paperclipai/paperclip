@@ -83,6 +83,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { stripSecretBearingUrlParts } from "../middleware/redact-sensitive.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
@@ -150,6 +151,19 @@ function isPrivateIP(ip: string): boolean {
   return false;
 }
 
+function isLinkLocalOrUnspecifiedIP(ip: string): boolean {
+  const lower = ip.toLowerCase();
+
+  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedMatch && v4MappedMatch[1]) return isLinkLocalOrUnspecifiedIP(v4MappedMatch[1]);
+
+  if (ip.startsWith("169.254.")) return true;
+  if (lower.startsWith("fe80")) return true;
+  if (ip === "0.0.0.0" || lower === "::") return true;
+
+  return false;
+}
+
 /**
  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
  *
@@ -172,15 +186,9 @@ interface ValidatedFetchTarget {
   hostHeader: string;
   tlsServername?: string;
   useTls: boolean;
-  /** True when the resolved target IP is in a private/reserved range (i.e. the fetch was allowed by `http.private-network`). */
   landsOnPrivateAddress?: boolean;
 }
 
-/**
- * Whether the plugin's installed manifest grants the `http.private-network`
- * capability. Deliberately manifest-derived only: a plugin cannot unlock
- * private-network fetching through init or request data.
- */
 export function pluginAllowsPrivateNetworkFetch(
   manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 | null,
 ): boolean {
@@ -188,7 +196,7 @@ export function pluginAllowsPrivateNetworkFetch(
     manifest.capabilities.includes("http.private-network");
 }
 
-async function validateAndResolveFetchUrl(
+export async function validateAndResolveFetchUrl(
   urlString: string,
   options?: { allowPrivateNetwork?: boolean },
 ): Promise<ValidatedFetchTarget> {
@@ -229,11 +237,9 @@ async function validateAndResolveFetchUrl(
 
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
-    // to both private and public addresses. A plugin with the
-    // `http.private-network` capability is exempt from the private-IP filter
-    // (the protocol whitelist, DNS pinning, timeout, and size cap still apply).
+    // to both private and public addresses.
     const safeResults = options?.allowPrivateNetwork
-      ? results
+      ? results.filter((entry) => !isLinkLocalOrUnspecifiedIP(entry.address))
       : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
@@ -250,7 +256,7 @@ async function validateAndResolveFetchUrl(
         ? originalHostname
         : undefined,
       useTls: parsed.protocol === "https:",
-      landsOnPrivateAddress: safeResults.some((entry) => isPrivateIP(entry.address)),
+      landsOnPrivateAddress: isPrivateIP(resolved.address),
     };
   } catch (err) {
     // Re-throw our own errors; wrap DNS failures
@@ -1811,14 +1817,11 @@ export function buildHostServices(
       async fetch(params) {
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        // The private-IP block is lifted only when the plugin's *installed
-        // manifest* declares the `http.private-network` capability — request
-        // data can never enable it.
         const allowPrivateNetwork = pluginAllowsPrivateNetworkFetch(options.manifest);
         const target = await validateAndResolveFetchUrl(params.url, { allowPrivateNetwork });
         if (target.landsOnPrivateAddress) {
           logger.info(
-            { pluginId, pluginKey, url: params.url },
+            { pluginId, pluginKey, url: stripSecretBearingUrlParts(params.url) },
             "plugin http.fetch allowed to private/reserved address via http.private-network capability",
           );
         }
