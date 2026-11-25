@@ -401,6 +401,9 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       const migration = await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
         "../../../../packages/db/src/migrations/0509_recover_exhausted_github_responses.sql"), "utf8");
       await db.$client.unsafe(migration);
+      // Recovery resets the attempt count so a temporary GitHub error can retry.
+      expect((await readChatActionsById(response.id))[0]).toMatchObject({ status: "processed",
+        result: { attempts: 0, code: "recovered_after_exhausted_retries" } });
       await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing");
       const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, response.id));
