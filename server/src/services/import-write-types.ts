@@ -21,6 +21,7 @@ export interface ImportIssueRow {
   id: string;
   /** Source slug, so the caller can correlate the row after the batch. */
   ref: string;
+  visibility?: "open" | "private";
   projectId: string | null;
   projectWorkspaceId: string | null;
   title: string;

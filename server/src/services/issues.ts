@@ -11387,6 +11387,7 @@ export function issueService(db: Db) {
           string,
           {
             goalId: string | null;
+            visibility: "open" | "private";
             defaultProjectWorkspaceId: string | null;
             defaultExecutionWorkspaceSettings: Record<string, unknown> | null;
           }
@@ -11397,6 +11398,7 @@ export function issueService(db: Db) {
           const projectRow = await tx
             .select({
               goalId: projects.goalId,
+              visibility: projects.visibility,
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
             })
             .from(projects)
@@ -11422,6 +11424,7 @@ export function issueService(db: Db) {
             ) as Record<string, unknown> | null;
           const derived = {
             goalId: projectRow?.goalId ?? null,
+            visibility: projectRow?.visibility === "private" ? "private" as const : "open" as const,
             defaultProjectWorkspaceId,
             defaultExecutionWorkspaceSettings,
           };
@@ -11431,6 +11434,7 @@ export function issueService(db: Db) {
 
         const validatedAgentIds = new Set<string>();
         const validatedWorkspaceKeys = new Set<string>();
+        const importedPrivacyRoots = new Map<string, string | null>();
         const issueRows: Array<Record<string, unknown>> = [];
         const labelRows: Array<{
           issueId: string;
@@ -11468,9 +11472,11 @@ export function issueService(db: Db) {
             ? (row.executionWorkspaceSettings ?? null)
             : null;
           let projectGoalId: string | null = null;
+          let projectVisibility: "open" | "private" = "open";
           if (projectId) {
             const derived = await loadProjectDerived(projectId);
             projectGoalId = derived.goalId;
+            projectVisibility = derived.visibility;
             if (!projectWorkspaceId)
               projectWorkspaceId = derived.defaultProjectWorkspaceId;
             if (executionWorkspaceSettings == null) {
@@ -11498,9 +11504,19 @@ export function issueService(db: Db) {
             defaultGoalId,
           });
 
+          const parentPrivacyRoot = row.parentId
+            ? importedPrivacyRoots.get(row.parentId) ?? null : null;
+          const visibility = row.visibility === "private"
+            || projectVisibility === "private" || parentPrivacyRoot ? "private" : "open";
+          const privacyRootIssueId = parentPrivacyRoot ?? (visibility === "private" ? row.id : null);
+          importedPrivacyRoots.set(row.id, privacyRootIssueId);
+
           issueRows.push({
             id: row.id,
             companyId,
+            visibility,
+            privacyRootIssueId,
+            privacyParentIssueId: row.parentId ?? null,
             issueNumber,
             identifier,
             title: row.title,

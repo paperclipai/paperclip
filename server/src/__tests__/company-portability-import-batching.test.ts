@@ -401,6 +401,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       projectId: null,
       projectWorkspaceId: null,
       title: "Carried-over work",
+      visibility: "private",
       description: null,
       assigneeAgentId: agentId,
       status: "in_progress",
@@ -414,10 +415,13 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     }]);
 
     const [imported] = await db
-      .select({ status: issues.status, startedAt: issues.startedAt })
+      .select({ id: issues.id, status: issues.status, startedAt: issues.startedAt,
+        visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId })
       .from(issues)
       .where(eq(issues.companyId, companyId));
     expect(imported?.status).toBe("in_progress");
+    expect(imported?.visibility).toBe("private");
+    expect(imported?.privacyRootIssueId).toBe(imported?.id);
     // An import-time startedAt would misrepresent carried-over work
     // as a newly started active episode.
     expect(imported?.startedAt).toBeNull();
