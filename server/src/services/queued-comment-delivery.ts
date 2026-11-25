@@ -45,7 +45,13 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
             /* A native turn bounds its history and keeps the complete envelope
                on the run. Only a message its sent prompt delivered whole counts. */
             and (jsonb_typeof(delivered_run.runner_profile_json->'nativeDeliveredContinuationMessages') is distinct from 'object'
-              or delivered_run.runner_profile_json->'nativeDeliveredContinuationMessages' ? ${issueComments.id}::text)
+              or delivered_run.runner_profile_json->'nativeDeliveredContinuationMessages' ? ${issueComments.id}::text
+              /* A failed resume submits the bootstrap envelope instead of the compact delta. */
+              or (delivered_run.runner_profile_json->'nativeBootstrapDeliveredContinuationMessages' ? ${issueComments.id}::text
+                and exists (select 1 from ${heartbeatRunEvents} submitted
+                  where submitted.company_id = ${companyId} and submitted.run_id = delivered_run.id
+                    and submitted.event_type = 'turn.submitted'
+                    and position('"schema":"paperclip.native-continuation.v1"' in left(coalesce(submitted.payload #>> '{prpEvent,payload,text}', ''), 200)) = 0)))
           or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text)))))
     or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)}

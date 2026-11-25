@@ -200,4 +200,14 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(bytes(bounded.completedWork)).toBeLessThanOrEqual(32_000 + 600);
     expect(bounded.coverage.omitted?.completedWork).toBe(1);
   });
+
+  it("budgets backslash-heavy history for the two further serializations of the runner command", () => {
+    const slashes = String.fromCharCode(92).repeat(2_000);
+    const messages = Array.from({ length: 60 }, (_, index) => message(`m-${index}`, slashes));
+    const bounded = boundExecutionContinuationForPrompt(envelope({ messages }));
+    // The envelope and the PRP command each stringify the prompt once more.
+    const command = JSON.stringify(JSON.stringify(JSON.stringify(bounded.messages)));
+    expect(Buffer.byteLength(command)).toBeLessThanOrEqual(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES + 4_096);
+    expect(bounded.coverage.omitted?.messages).toBeGreaterThan(0);
+  });
 });

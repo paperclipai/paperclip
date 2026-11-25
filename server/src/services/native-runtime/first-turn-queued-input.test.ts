@@ -173,6 +173,32 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     expect([...await deliveredQueuedCommentIds(db, ids)]).toEqual([comment!.id]);
   });
 
+  it("credits the bootstrap history only when a failed resume actually submitted the bootstrap envelope", async () => {
+    const f = await seed();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: USER, body: "older queued request" }).returning();
+    const ids = { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, commentIds: [comment!.id] };
+    const retry = async (submittedSchema: string) => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+        runtimeMode: "native", runtimeModeResolvedAt: new Date(), nativeIssueId: f.issueId, retryOfRunId: f.runId,
+        responsibleUserId: USER, startedAt: new Date(Date.now() + 1_000),
+        contextSnapshot: { issueId: f.issueId, executionContinuation: { messages: [{ id: comment!.id, body: "older queued request" }] } },
+        runnerProfileJson: {
+          nativeDeliveredContinuationMessages: {},
+          nativeBootstrapDeliveredContinuationMessages: { [comment!.id]: comment!.updatedAt.toISOString() },
+        } }).returning();
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: run!.id, agentId: f.agentId, eventType: "turn.submitted",
+        stream: "system", level: "info", message: "turn submitted",
+        payload: { prpEvent: { payload: { text: JSON.stringify({ schema: submittedSchema, events: "{}" }) } } } });
+    };
+    // The compact resume delta did not carry the older message.
+    await retry("paperclip.native-continuation.v1");
+    expect([...await deliveredQueuedCommentIds(db, ids)]).toEqual([]);
+    // The runner replaced the failed resume with the bootstrap envelope, which did.
+    await retry("paperclip.native-model-envelope.v3");
+    expect([...await deliveredQueuedCommentIds(db, ids)]).toEqual([comment!.id]);
+  });
+
   it("counts a message as delivered once the provider accepted the turn, even if the run later fails", async () => {
     const f = await seed();
     const message = await queueMessage(f, "ship it");

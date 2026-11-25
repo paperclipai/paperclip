@@ -60,7 +60,12 @@ const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
 /** Closed constructor: callers cannot spread legacy context or environment data. */
 export interface BuildNativeExecutionInput {
   /** Receives the task prompt and the continuation messages it delivers whole. */
-  onDeliveredContinuationMessages?: (prompt: string, delivered: Record<string, string>) => void;
+  /**
+   * Receives the task prompt, the continuation messages the turn delivers whole,
+   * and those the bootstrap prompt delivers whole. The runner can still replace
+   * a failed resume with the bootstrap envelope after this point.
+   */
+  onDeliveredContinuationMessages?: (prompt: string, delivered: Record<string, string>, bootstrapDelivered: Record<string, string>) => void;
   companyId: string;
   runId: string;
   issue: {
@@ -425,6 +430,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   // the compact resume delta when present, else the bounded bootstrap history.
   if (input.onDeliveredContinuationMessages) {
     const resumePrompt = (prepared as { continuationPrompt?: string | null }).continuationPrompt;
+    const bootstrapDelivered = renderedContinuation
+      ? continuationMessageRevisions((renderedContinuation as ExecutionContinuationEnvelope).messages ?? []) : {};
     let delivered: Record<string, string> = {};
     if (typeof resumePrompt === "string" && resumePrompt) {
       try {
@@ -433,10 +440,10 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
       } catch {
         delivered = {};
       }
-    } else if (renderedContinuation) {
-      delivered = continuationMessageRevisions((renderedContinuation as ExecutionContinuationEnvelope).messages ?? []);
+    } else {
+      delivered = bootstrapDelivered;
     }
-    input.onDeliveredContinuationMessages(prepared.task.prompt, delivered);
+    input.onDeliveredContinuationMessages(prepared.task.prompt, delivered, bootstrapDelivered);
   }
   return parseNativeExecutionInput(input.provider === "muse" ? { ...prepared,
     schema: "paperclip.native-execution-input.v8", provider: { kind: "muse", model: null, binding: input.museBinding, bridgeRevision: "muse-v1" },

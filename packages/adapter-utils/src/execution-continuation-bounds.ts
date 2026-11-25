@@ -31,13 +31,17 @@ type RecoveryOutcome = NonNullable<ExecutionContinuationEnvelope["recoveryOutcom
 
 export type ContinuationPromptOmissions = NonNullable<ExecutionContinuationEnvelope["coverage"]["omitted"]>;
 
-// Measure what the prompt delivers: its renderer escapes every < and > as a
-// six-character unicode escape, five bytes more than the character itself, and
-// fences each block with a backtick run longer than any run inside it.
+// Measure what the runner command carries. The renderer escapes every < and >
+// as a six-character unicode escape (five bytes more, and one more backslash)
+// and fences each block with a backtick run longer than any run inside it. The
+// prompt is then serialized twice more, in the model envelope and in the PRP
+// command; each layer doubles every quote and backslash, three bytes more in all.
 const bytes = (value: unknown) => {
   const json = JSON.stringify(value) ?? "";
   const longestBacktickRun = json.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
-  return Buffer.byteLength(json, "utf8") + 5 * (json.match(/[<>]/g)?.length ?? 0) + 2 * longestBacktickRun;
+  const angles = json.match(/[<>]/g)?.length ?? 0;
+  const quotesAndBackslashes = (json.match(/["\\]/g)?.length ?? 0) + angles;
+  return Buffer.byteLength(json, "utf8") + 5 * angles + 3 * quotesAndBackslashes + 2 * longestBacktickRun;
 };
 // One element in a JSON array costs its own bytes plus a separator.
 const elementBytes = (value: unknown) => bytes(value) + 1;

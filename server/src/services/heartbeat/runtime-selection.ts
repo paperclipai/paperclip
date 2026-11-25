@@ -341,7 +341,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   });
   let nativeExecution: NativeExecutionInput | null = null;
   // Delivered continuation messages per built task prompt, reported by the builder.
-  const deliveredContinuationByPrompt = new Map<string, Record<string, string>>();
+  const deliveredContinuationByPrompt = new Map<string, { delivered: Record<string, string>; bootstrap: Record<string, string> }>();
   let toolRefreshOnResume: boolean | undefined;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   let nativeRunnerInstanceId: string | null = null;
@@ -853,7 +853,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         });
       const buildExecution = ({ normalizedSessionId, resumedSession }: { normalizedSessionId: string; resumedSession: boolean }) =>
             buildNativeExecutionInput({
-              onDeliveredContinuationMessages: (prompt, delivered) => deliveredContinuationByPrompt.set(prompt, delivered),
+              onDeliveredContinuationMessages: (prompt, delivered, bootstrap) => deliveredContinuationByPrompt.set(prompt, { delivered, bootstrap }),
               agentKeyId: agentIdentity?.keyId,
               companyId: agent.companyId,
               runId: run.id,
@@ -1098,7 +1098,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             // trusts only these for a retry.
             nativeDeliveredContinuationMessages: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeDeliveredContinuationMessages ?? null
-              : deliveredContinuationByPrompt.get(String(parseObject(parseObject(nativeExecution).task).prompt ?? "")) ?? {},
+              : deliveredContinuationByPrompt.get(String(parseObject(parseObject(nativeExecution).task).prompt ?? ""))?.delivered ?? {},
+            // A failed resume can fall back to the bootstrap envelope in the
+            // runner; delivery then follows the turn it actually submitted.
+            nativeBootstrapDeliveredContinuationMessages: lockedProfile.nativeExecutionInput
+              ? lockedProfile.nativeBootstrapDeliveredContinuationMessages ?? null
+              : deliveredContinuationByPrompt.get(String(parseObject(parseObject(nativeExecution).task).prompt ?? ""))?.bootstrap ?? {},
             nativeToolRefreshOnResume: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeToolRefreshOnResume === true : toolRefreshOnResume === true,
             ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"
