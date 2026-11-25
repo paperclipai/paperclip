@@ -29,6 +29,7 @@ const MAX_EXCERPT_CHARS = 240;
 
 type RunTextRedactor = {
   redact: (text: string) => string;
+  redactObject: <T>(value: T) => T;
   maxSecretLen: number;
 };
 
@@ -55,7 +56,11 @@ function extractRedactedExcerpt(
   redactor: RunTextRedactor,
 ): string | undefined {
   if (!rawSource || findLiteralIndex(rawSource, needle, caseSensitive) < 0) return undefined;
-  const redacted = redactor.redact(rawSource);
+  // Remove complete registered secret values FIRST before structural redaction can
+  // alter any substring inside them, then apply structural redaction to catch any
+  // unregistered credentials/tokens before choosing or slicing the excerpt window.
+  const afterRegistered = redactor.redact(rawSource);
+  const redacted = String(redactEventPayload({ text: afterRegistered })?.text ?? afterRegistered);
   let idx = findLiteralIndex(redacted, needle, caseSensitive);
   if (idx < 0) {
     // Pattern overlapped a redacted secret; center around the redaction marker.
@@ -113,16 +118,20 @@ function findDecodedEventMatch(
   payload: unknown,
   pattern: string,
   caseSensitive: boolean,
+  redactor: RunTextRedactor | null = null,
 ): string | undefined {
-  // Apply the same structural event redaction as `list` on `runEvents` BEFORE
-  // matching or excerpting so secret-named fields, JWTs, and embedded command
-  // credentials can never be matched or leaked via excerpts.
-  const redactedEvent = redactEventPayload({
+  // Remove complete registered secret values FIRST (when excerpts are requested)
+  // before structural redaction runs, then apply structural event redaction so
+  // unregistered secret-named fields, JWTs, and embedded command credentials never
+  // match or leak via excerpts.
+  const rawEvent: Record<string, unknown> = {
     ...(typeof message === "string" ? { message } : {}),
     ...(payload && typeof payload === "object" && !Array.isArray(payload)
       ? { payload: payload as Record<string, unknown> }
       : {}),
-  });
+  };
+  const afterRegistered = redactor ? redactor.redactObject(rawEvent) : rawEvent;
+  const redactedEvent = redactEventPayload(afterRegistered);
   const safeMessage = typeof redactedEvent?.message === "string" ? redactedEvent.message : null;
   if (safeMessage && findLiteralIndex(safeMessage, pattern, caseSensitive) >= 0) {
     return safeMessage;
@@ -460,6 +469,7 @@ export async function searchCustomerSuccessRuns(
           const maxSecretLen = values.reduce((max, v) => Math.max(max, v.length), 0);
           redactor = {
             redact: (text: string) => redactRegisteredSecretValues(text, values),
+            redactObject: <T>(value: T): T => redactRegisteredSecretValues(value, values),
             maxSecretLen,
           };
           redactorsByRun.set(runId, redactor);
@@ -471,12 +481,19 @@ export async function searchCustomerSuccessRuns(
       for (const run of runs) {
         const hits = new Map<number, string | undefined>();
         const sanitizedError = typeof run.error === "string" ? withoutSqlStatementText(run.error) : null;
-        const safeRunFields = redactEventPayload({
+        const rawRunObj: Record<string, unknown> = {
           ...(sanitizedError ? { error: sanitizedError } : {}),
           ...(run.errorCode ? { errorCode: run.errorCode } : {}),
           ...(run.stderrExcerpt ? { stderrExcerpt: run.stderrExcerpt } : {}),
           ...(run.stdoutExcerpt ? { stdoutExcerpt: run.stdoutExcerpt } : {}),
-        });
+        };
+        const redactorForRow =
+          includeExcerpts && Object.keys(rawRunObj).length > 0
+            ? await getRedactor(run.companyId, run.id)
+            : null;
+        const safeRunFields = redactEventPayload(
+          redactorForRow ? redactorForRow.redactObject(rawRunObj) : rawRunObj,
+        );
         const runFields = [
           safeRunFields?.error,
           safeRunFields?.errorCode,
@@ -489,10 +506,11 @@ export async function searchCustomerSuccessRuns(
           for (let i = 0; i < patterns.length; i++) {
             const pattern = patterns[i]!;
             if (findLiteralIndex(runFields, pattern, caseSensitive) >= 0) {
-              const redactor = includeExcerpts ? await getRedactor(run.companyId, run.id) : null;
               hits.set(
                 i,
-                redactor ? extractRedactedExcerpt(runFields, pattern, caseSensitive, redactor) : undefined,
+                redactorForRow
+                  ? extractRedactedExcerpt(runFields, pattern, caseSensitive, redactorForRow)
+                  : undefined,
               );
             }
           }
@@ -599,16 +617,23 @@ export async function searchCustomerSuccessRuns(
             rowsSeenByRun.set(eventRow.runId, (rowsSeenByRun.get(eventRow.runId) ?? 0) + 1);
             const hits = matchedByRun.get(eventRow.runId);
             if (!hits || hits.has(i)) continue;
-            const decoded = findDecodedEventMatch(eventRow.message, eventRow.payload, pattern, caseSensitive);
+            const run = runById.get(eventRow.runId)!;
+            const redactor =
+              includeExcerpts && excerptsAdded < MAX_INSPECTION_SEARCH_SAMPLE_RUNS
+                ? await getRedactor(run.companyId, run.id)
+                : null;
+            const decoded = findDecodedEventMatch(
+              eventRow.message,
+              eventRow.payload,
+              pattern,
+              caseSensitive,
+              redactor,
+            );
             if (decoded === undefined) continue;
             let excerpt: string | undefined;
-            if (includeExcerpts && excerptsAdded < MAX_INSPECTION_SEARCH_SAMPLE_RUNS) {
-              const run = runById.get(eventRow.runId)!;
-              const redactor = await getRedactor(run.companyId, run.id);
-              if (redactor) {
-                excerpt = extractRedactedExcerpt(decoded, pattern, caseSensitive, redactor);
-                excerptsAdded += 1;
-              }
+            if (redactor) {
+              excerpt = extractRedactedExcerpt(decoded, pattern, caseSensitive, redactor);
+              excerptsAdded += 1;
             }
             hits.set(i, excerpt);
           }

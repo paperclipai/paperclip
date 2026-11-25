@@ -530,8 +530,9 @@ describe("customer-success runs.search", () => {
     expect(sqlSearch.patterns[1]!.sampleRuns[0]!.runId).toBe(sqlErrRun.id);
     expect(sqlSearch.patterns[1]!.sampleRuns[0]!.excerpt).not.toContain("unregistered-sql-param-secret");
 
-    // 6) Structural redaction (redactEventPayload) runs before matching or excerpting
-    // event payloads so unregistered credentials in secret-named keys never leak.
+    // 6) Complete registered secret values are removed FIRST before structural redaction
+    // can alter any substring inside them, and structural redaction (redactEventPayload)
+    // ALSO strips unregistered secret-named keys and bearer tokens.
     const [structRun] = await db
       .insert(schema.heartbeatRuns)
       .values({
@@ -543,6 +544,8 @@ describe("customer-success runs.search", () => {
         createdAt: new Date(Date.now() + 240_000),
       })
       .returning();
+    const compositeRegisteredSecret = "prefix-keep-out Bearer inner-token-123 suffix-keep-out";
+    await redactions.register(co.id, structRun.id, compositeRegisteredSecret);
     await db.insert(schema.heartbeatRunEvents).values({
       companyId: co.id,
       runId: structRun.id,
@@ -552,7 +555,9 @@ describe("customer-success runs.search", () => {
       stream: "system",
       payload: {
         apiKey: "unregistered-api-key-secret-value",
-        aggregatedOutput: "STRUCT_REDACT_MARKER authorization=Bearer unregistered-bearer-token-999",
+        aggregatedOutput:
+          `STRUCT_REDACT_MARKER ${compositeRegisteredSecret} ` +
+          `authorization=Bearer unregistered-bearer-token-999`,
       },
     });
     const structSearch = await searchCustomerSuccessRuns(db, {
@@ -566,6 +571,8 @@ describe("customer-success runs.search", () => {
     expect(structSearch.patterns[1]!.matchedRuns).toBe(1);
     const structExcerpt = structSearch.patterns[1]!.sampleRuns[0]!.excerpt ?? "";
     expect(structExcerpt).toContain("STRUCT_REDACT_MARKER");
+    expect(structExcerpt).not.toContain("prefix-keep-out");
+    expect(structExcerpt).not.toContain("suffix-keep-out");
     expect(structExcerpt).not.toContain("unregistered-bearer-token-999");
   });
 });
