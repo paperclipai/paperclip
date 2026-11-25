@@ -764,7 +764,7 @@ function Setup({
         (tested.checks.some(check => check.code === "environment_agent_approval_required") || !connectionAdapter ||
           tested.checks.some((check) =>
             check.code.endsWith("hello_probe_passed") || check.code === "ai_connection_api_key_reverified"
-            || (brandType === "antigravity_runtime" && check.code === "antigravity_metadata_verified"),
+            || (brandType === "antigravity_runtime" && (check.code === "antigravity_metadata_verified" || check.code === "antigravity_remote_runtime_ready")),
           ))
       ) ? config : null;
     } catch (cause) {
