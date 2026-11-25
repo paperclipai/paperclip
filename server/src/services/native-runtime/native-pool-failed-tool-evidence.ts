@@ -14,6 +14,18 @@ type ReplacementDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+function admittedEvent(run: SourceRun, row: ToolEvent) {
+  const event = record(record(row.payload).prpEvent);
+  if (!run.runnerInstanceId || !run.nativeSessionId || row.agentId !== run.agentId || row.protocolSchemaVersion !== 1 ||
+      event.schema !== "paperclip.prp.event.v1" || event.schemaVersion !== 1 || event.sourceKind !== "runner" ||
+      event.runId !== run.id || event.normalizedSessionId !== run.nativeSessionId ||
+      event.sourceInstanceId !== run.runnerInstanceId || row.sourceInstanceId !== run.runnerInstanceId ||
+      !row.sourceEventId || row.sourceEventId !== event.sourceEventId || row.sourceSeq == null ||
+      row.sourceSeq < 1 || row.sourceSeq !== event.sourceSeq || event.eventType !== row.eventType ||
+      row.sourcePayloadSha256 !== nativeSha256(event)) return null;
+  return event;
+}
+
 /** Claude's admitted runner reserves the paperclip MCP namespace. Prove both
  * events came from the same owned session before using the tool contract. */
 function failedClaudePaperclipTool(
@@ -21,21 +33,10 @@ function failedClaudePaperclipTool(
   started: ToolEvent,
   completed: ToolEvent,
 ) {
-  const admittedEvent = (row: ToolEvent) => {
-    const event = record(record(row.payload).prpEvent);
-    if (!run.runnerInstanceId || !run.nativeSessionId || row.agentId !== run.agentId || row.protocolSchemaVersion !== 1 ||
-        event.schema !== "paperclip.prp.event.v1" || event.schemaVersion !== 1 || event.sourceKind !== "runner" ||
-        event.runId !== run.id || event.normalizedSessionId !== run.nativeSessionId ||
-        event.sourceInstanceId !== run.runnerInstanceId || row.sourceInstanceId !== run.runnerInstanceId ||
-        !row.sourceEventId || row.sourceEventId !== event.sourceEventId || row.sourceSeq == null ||
-        row.sourceSeq < 1 || row.sourceSeq !== event.sourceSeq || event.eventType !== row.eventType ||
-        row.sourcePayloadSha256 !== nativeSha256(event)) return null;
-    return event;
-  };
   if (started.eventType !== "tool.execution.started" || completed.eventType !== "tool.execution.completed" ||
       completed.seq <= started.seq) return null;
-  const start = admittedEvent(started);
-  const end = admittedEvent(completed);
+  const start = admittedEvent(run, started);
+  const end = admittedEvent(run, completed);
   if (!start || !end || completed.sourceSeq! <= started.sourceSeq! ||
       typeof start.turnId !== "string" || !start.turnId || start.turnId !== end.turnId) return null;
   const a = record(start.payload);
@@ -78,6 +79,41 @@ export function failedPaperclipToolEffectSettled(
   return call.completion.outputTruncated === false &&
     typeof call.completion.output === "string" &&
     call.completion.output.startsWith("Invalid tool input: ");
+}
+
+/** An admitted MCP execution and the semantic call can describe the same tool
+ * use. Only reuse its effect proof for the exact correlated terminal result. */
+export function failedSemanticProjectionMatchesSettledMcp(
+  run: SourceRun,
+  input: ToolEvent,
+  result: ToolEvent,
+  settledMcpStarts: readonly ToolEvent[],
+): boolean {
+  if (input.eventType !== "semantic_tool.input" || result.eventType !== "semantic_tool.result" ||
+      result.seq <= input.seq || !input.sourceSeq || !result.sourceSeq || result.sourceSeq <= input.sourceSeq) return false;
+  const start = admittedEvent(run, input);
+  const end = admittedEvent(run, result);
+  if (!start || !end || typeof start.turnId !== "string" || !start.turnId || start.turnId !== end.turnId ||
+      typeof start.itemId !== "string" || !start.itemId || start.itemId !== end.itemId) return false;
+  const semantic = (event: Record<string, unknown>, phase: string) => {
+    const tool = record(record(event.payload).semantic_tool);
+    const scope = record(tool.correlation);
+    return tool.schema === "paperclip.prp.semantic_tool.v1" && tool.schemaVersion === 1 && tool.phase === phase &&
+      scope.runId === run.id && scope.normalizedSessionId === run.nativeSessionId &&
+      scope.turnId === event.turnId && scope.itemId === event.itemId ? tool : null;
+  };
+  const call = semantic(start, "input");
+  const outcome = semantic(end, "result");
+  if (!call || typeof call.callId !== "string" || typeof call.operationId !== "string" ||
+      !outcome || outcome.callId !== call.callId || outcome.operationId !== call.operationId ||
+      outcome.outcome !== "failed" || outcome.operationReceiptId !== "operation_" + call.callId) return false;
+  return settledMcpStarts.some(row => {
+    // The caller admitted this display start and its terminal result together.
+    const prp = record(record(row.payload).prpEvent);
+    const tool = record(prp.payload);
+    return prp.turnId === start.turnId && typeof tool.executionId === "string" &&
+      "tool-use:" + tool.executionId === call.callId && tool.name === call.operationId;
+  });
 }
 
 /** The artifact authority awaits a durable start before invoking the installer

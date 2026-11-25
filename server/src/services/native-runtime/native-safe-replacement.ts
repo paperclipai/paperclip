@@ -31,7 +31,7 @@ import {
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { isUndispatchedRunnerApiReceipt } from "../recovery-effect-receipts.js";
 import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
-import { artifactInstallHistorySettled, failedPaperclipToolEffectSettled } from "./native-pool-failed-tool-evidence.js";
+import { artifactInstallHistorySettled, failedPaperclipToolEffectSettled, failedSemanticProjectionMatchesSettledMcp } from "./native-pool-failed-tool-evidence.js";
 import { DOWNLOAD_ARTIFACT } from "./artifact-transfer.js";
 import { blockBelongsToRun, quotaBlockRestoredByAssignedWorkSweep, requalifiableQuotaHold,
   UNCERTAIN_PROVIDER_ACTION } from "./native-quota-requalification.js";
@@ -671,7 +671,9 @@ export async function reconcileSafeNativeReplacements(
         return event.eventType === "tool.execution.started" && payload.name === DOWNLOAD_ARTIFACT &&
           payload.namespace === "paperclip" && payload.transport === "mcp";
       }) && await artifactInstallHistorySettled(db, run, coordinator.issueId);
-      let provedFailedClaudeTool = false;
+      const settledFailedMcpStarts = verifyFailedClaudeTools ? events.filter(event =>
+        event.eventType === "tool.execution.started" && completedProviderActions.some(done =>
+          failedPaperclipToolEffectSettled(run, event, done, { apiReceipts, artifactInstallsSettled }))) : [];
       const uncertainProviderActions = events.flatMap((event) => {
         const p = eventPayload(event);
         if (["tool.execution.completed", "item.completed", "semantic_tool.result"].includes(event.eventType)) return [];
@@ -681,7 +683,8 @@ export async function reconcileSafeNativeReplacements(
           const settled = typeof call.callId === "string" && events.some(done => {
             const result = record(eventPayload(done).semantic_tool);
             return done.eventType === "semantic_tool.result" && result.callId === call.callId &&
-              result.operationId === call.operationId && result.outcome === "succeeded";
+              result.operationId === call.operationId && (result.outcome === "succeeded" ||
+                (settledFailedMcpStarts.length > 0 && failedSemanticProjectionMatchesSettledMcp(run, event, done, settledFailedMcpStarts)));
           });
           return settled ? [] : [String(call.callId ?? "unconfirmed semantic tool")];
         }
@@ -702,15 +705,11 @@ export async function reconcileSafeNativeReplacements(
           return [event.eventType];
         if (event.eventType === "tool.execution.started") {
           const name = typeof p.name === "string" ? p.name : "unknown tool";
+          if (settledFailedMcpStarts.includes(event)) return [];
           if (freshConversation && completedProviderActions.some(done => {
             const completed = eventPayload(done);
             const executionId = p.executionId;
             if (typeof executionId !== "string" || completed.executionId !== executionId || completed.name !== name) return false;
-            if (verifyFailedClaudeTools && completed.status === "failed" &&
-                failedPaperclipToolEffectSettled(run, event, done, { apiReceipts, artifactInstallsSettled })) {
-              provedFailedClaudeTool = true;
-              return true;
-            }
             // Claude's admitted MCP identity prefixes the provider tool-use ID.
             // A failed result alone cannot prove that a mutation was never dispatched.
             const settled = ["succeeded", "completed"].includes(String(completed.status)) ||
@@ -761,7 +760,7 @@ export async function reconcileSafeNativeReplacements(
           ? [String(p.kind ?? p.type)]
           : [];
       });
-      if (requalification && !provedFailedClaudeTool) continue;
+      if (requalification && settledFailedMcpStarts.length === 0) continue;
       const history = await replacementHistoryReady(db, run, coordinator.issueId);
       if (history === false) {
         if (Boolean(poolFailure)) await holdQuotaForOperator("continuation_evidence_incomplete", "Resolve the outstanding task interactions before continuing.");

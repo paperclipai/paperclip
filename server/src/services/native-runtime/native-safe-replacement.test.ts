@@ -358,6 +358,9 @@ const support = externalDatabaseUrl
       { scenario: "undispatched API mutation", blocked: null },
       { scenario: "failed task document read", blocked: null },
       { scenario: "failed task history read", blocked: null },
+      { scenario: "failed task history read with a semantic failure", blocked: null },
+      { scenario: "failed task history read with an unrelated semantic failure", blocked: "uncertain_provider_action" },
+      { scenario: "failed task history read with an untrusted semantic failure", blocked: "uncertain_provider_action" },
       { scenario: "failed cross-task read", blocked: null },
       { scenario: "failed cross-task comment with unknown outcome", blocked: "uncertain_provider_action" },
       { scenario: "cross-task comment rejected by the bridge schema", blocked: null },
@@ -465,6 +468,23 @@ const support = externalDatabaseUrl
               operation: "execute", readOnly: false, status, output, outputBytes: output?.length ?? 0, outputTruncated: false, outputDigest: null } };
           await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
             nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+        }
+        if (scenario.includes("semantic failure")) {
+          const itemId = "semantic-item";
+          const semanticCallId = scenario.includes("unrelated") ? "tool-use:another-call" : "tool-use:" + callId;
+          for (const [offset, phase] of (["input", "result"] as const).entries()) {
+            const eventType = phase === "input" ? "semantic_tool.input" : "semantic_tool.result";
+            const sourceInstanceId = phase === "result" && scenario.includes("untrusted") ? randomUUID() : runnerInstanceId;
+            const sourceSeq = offset + 3;
+            const prpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: source.runId,
+              sourceInstanceId, sourceEventId: "fixture:" + sourceSeq, sourceSeq, normalizedSessionId: nativeSessionId,
+              turnId: "provider-turn", itemId, eventType, emittedAt: new Date().toISOString(), priority: 0,
+              payload: { semantic_tool: { schema: "paperclip.prp.semantic_tool.v1", schemaVersion: 1, phase,
+                callId: semanticCallId, operationId: name, correlation: { runId: source.runId, normalizedSessionId: nativeSessionId,
+                  turnId: "provider-turn", itemId }, ...(phase === "input" ? { input: {} } : { outcome: "failed", operationReceiptId: "operation_" + semanticCallId }) } } };
+            await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
+              nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+          }
         }
         if (scenario.includes("pending mutation evidence")) {
           const key = createHash("sha256").update(`tool-use:${callId}`).digest("hex");
