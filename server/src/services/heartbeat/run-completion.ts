@@ -1352,9 +1352,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     });
-    // Log the error line only once the terminal write shows that this run
-    // failed. A run that was stopped, or that another path already moved out
-    // of `running`, did not fail, so it gets a warn line instead.
     const logLiveFailure = (errorCode: string) => logger.error({ err: redactedThrownError(), runId, agentId: agent.id,
       errorCode, failureCause: thrownFailureCause }, "heartbeat execution failed");
 
@@ -1431,7 +1428,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       logSha256: logSummary?.sha256,
       logCompressed: logSummary?.compressed ?? false,
     }, { error: err, phase: "execute", secretValues: readFailureReportSecrets() })).catch((writeErr: unknown) => {
-      // The write could not tell whether the run was still live.
       logLiveFailure(writtenErrorCode);
       throw writeErr;
     });
