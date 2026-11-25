@@ -36,7 +36,7 @@ A board operator passes the board-only route check (`assertBoard`), and it may c
 - **Audited as the agent.** Activity written while serving the request names the agent, with `details.boardOperator: true`, including entries that board-only code writes as a user.
 - **Person-only actions stay with a person** (`assertBoardUser`): permission grants, memberships, invites, join and hire approvals, approval and decision cards, agent API keys, budgets, company create, import, archive and delete, OAuth and identity consent, secrets and secret providers, tool-action approvals, remote and managed agent profiles, issue tree controls, the company-wide decision and feedback-trace lists, responsibility-bar conversations, costs and accounting, and a person's own settings, inbox and connections.
 
-Task-scoped keys (`task_bridge`, `skill_test`) and low-trust agents never act as board operators. Revoking the grant takes effect on the next request.
+Task-scoped keys (`task_bridge`, `skill_test`), low-trust agents and low-trust runs never act as board operators, and an agent cannot lift low-trust review. Revoking the grant takes effect on the next request.
 
 ## Exceptions and rollout
 

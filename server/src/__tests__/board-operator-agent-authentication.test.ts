@@ -10,6 +10,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { AgentApiKeyScope } from "@paperclipai/shared";
@@ -167,6 +168,25 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(response.status).toBe(200);
       expect(response.body).not.toHaveProperty("boardOperator");
     }
+  });
+
+  it("does not make a low-trust run a board operator, even for a granted agent", async () => {
+    await grant(operatorId);
+    const [standardRun, lowTrustRun] = [randomUUID(), randomUUID()];
+    await db.insert(heartbeatRuns).values([
+      { id: standardRun, companyId, agentId: operatorId, status: "running", responsibleUserId: ownerUserId },
+      { id: lowTrustRun, companyId, agentId: operatorId, status: "running", responsibleUserId: ownerUserId,
+        contextSnapshot: { executionPolicy: { trustPreset: "low_trust_review",
+          authorizationPolicy: { trustPreset: "low_trust_review", trustBoundary: { rootIssueId: randomUUID() } } } } },
+    ]);
+    const runJwt = (runId: string) => createLocalAgentJwt(operatorId, companyId, "process", runId, ownerUserId)!;
+
+    expect((await actor(runJwt(standardRun))).body).toMatchObject({ boardOperator: true });
+    expect((await actor(runJwt(lowTrustRun))).body).not.toHaveProperty("boardOperator");
+    expect((await post(runJwt(lowTrustRun), `/companies/${companyId}/board-action`)).status).toBe(403);
+    const key = await agentKey(operatorId);
+    const keyed = await request(app()).get("/actor").set("authorization", `Bearer ${key}`).set("x-paperclip-run-id", lowTrustRun);
+    expect(keyed.body).not.toHaveProperty("boardOperator");
   });
 
   it("lets only the grant route add or remove the key, so imports and member edits cannot", async () => {

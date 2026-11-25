@@ -18,7 +18,8 @@ export function agentRunAuthenticationQuery(db: Db, input: AgentRunAuthenticatio
       'freshContinuationSupersededAt', ${heartbeatRuns.resultJson}->'freshContinuationSupersededAt'
     )`,
     contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-      'conversationMode', ${heartbeatRuns.contextSnapshot}->'conversationMode'
+      'conversationMode', ${heartbeatRuns.contextSnapshot}->'conversationMode',
+      'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy'
     )`,
     ...requestRunIdentityFields,
   }).from(heartbeatRuns).where(and(

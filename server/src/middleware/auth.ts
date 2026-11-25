@@ -27,7 +27,7 @@ import {
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
-import { permissionsImplyLowTrust } from "../lib/agent-permissions.js";
+import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { withBoardOperatorActor } from "../services/board-operator-context.js";
 import { BOARD_OPERATOR_PERMISSION_KEY, isUuidLike, normalizeAgentApiKeyScope, type AgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -171,11 +171,28 @@ function isBoardOperator(actor: {
   onBehalfOfUserId: string | null;
   onBehalfOfMemberships: Array<{ companyId: string; status?: string | null }>;
   boardOperatorPermissions: unknown;
+  runExecutionPolicy: unknown;
 }) {
   if (actor.keyScope.kind !== "standard" || !actor.onBehalfOfUserId?.trim()) return false;
   if (!actor.onBehalfOfMemberships.some((item) => item.companyId === actor.companyId && item.status === "active")) return false;
   if (actor.boardOperatorPermissions == null) return false;
-  return !permissionsImplyLowTrust(actor.boardOperatorPermissions);
+  return resolveCoreTrustPreset({
+    companyId: actor.companyId,
+    agent: { companyId: actor.companyId, permissions: actor.boardOperatorPermissions },
+    run: { companyId: actor.companyId, executionPolicy: actor.runExecutionPolicy },
+  }).kind === "standard";
+}
+
+async function loadRunExecutionPolicy(db: Db, input: { runId: string; companyId: string; agentId: string }) {
+  const [run] = await db
+    .select({ executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'` })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+    ));
+  return run?.executionPolicy ?? null;
 }
 
 /**
@@ -569,6 +586,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const keyScope = normalizeAgentApiKeyScope(claims.key_scope);
       const boardOperator = isBoardOperator({
         companyId: claims.company_id, keyScope, onBehalfOfUserId, onBehalfOfMemberships, boardOperatorPermissions,
+        runExecutionPolicy: identityRun?.contextSnapshot?.executionPolicy ?? null,
       });
       req.actor = {
         type: "agent",
@@ -636,6 +654,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const boardOperator = isBoardOperator({
       companyId: key.companyId, keyScope, onBehalfOfUserId: responsibleUserId,
       onBehalfOfMemberships: keyResponsibleMemberships, boardOperatorPermissions,
+      runExecutionPolicy: boardOperatorPermissions != null && runIdHeader && isUuidLike(runIdHeader)
+        ? await loadRunExecutionPolicy(db, { runId: runIdHeader, companyId: key.companyId, agentId: key.agentId })
+        : null,
     });
     req.actor = {
       type: "agent",

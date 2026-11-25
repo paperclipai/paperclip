@@ -79,7 +79,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [row] = await loadAgentRunAuthentication(db, input);
     expect(contract(row)).toEqual(contract(await baseline()));
     expect(row.resultJson).toEqual({ executionCancellation: { state: null }, freshContinuationSupersededAt: null });
-    expect(row.contextSnapshot).toEqual({ conversationMode: true });
+    expect(row.contextSnapshot).toEqual({ conversationMode: true, executionPolicy: null });
     expect(Buffer.byteLength(JSON.stringify(row))).toBeLessThan(512);
     await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
       .where(eq(heartbeatRuns.id, runId));
