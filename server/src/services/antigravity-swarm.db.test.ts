@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, antigravitySwarmQuotaScope, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
+import { ANTIGRAVITY_SWARM_REQUESTED_ACTION, antigravitySwarmCommentRefusal, antigravitySwarmQuotaScope, recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "./antigravity-swarm.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
@@ -41,6 +41,17 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
   const resolve = (f: Awaited<ReturnType<typeof seed>>, overrides: Partial<Parameters<typeof resolveAntigravitySwarmRun>[1]> = {}) =>
     resolveAntigravitySwarmRun(db, { companyId: f.company.id, issueId: f.issue.id, runId: randomUUID(), agent: f.agent,
       context: { antigravitySwarmCommentId: f.comment.id }, remote: false, planning: false, ...overrides });
+
+  it("refuses /swarm on a task whose mode does not allow changes, at comment time and at run time", async () => {
+    const f = await seed();
+    for (const workMode of ["ask", "skill_test"]) {
+      expect(await antigravitySwarmCommentRefusal(db, { companyId: f.company.id, assigneeAgentId: f.agent.id, workMode }))
+        .toMatch(/^Swarm works only in a standard task/);
+      await expect(resolve(f, { runId: (await insertRun(f, {})).id, workMode })).rejects
+        .toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/^Swarm works only in a standard task/) });
+    }
+    expect(await antigravitySwarmCommentRefusal(db, { companyId: f.company.id, assigneeAgentId: f.agent.id, workMode: "standard" })).toBeNull();
+  });
 
   it("selects the swarm for the user's recorded request and logs that it started", async () => {
     const f = await seed();

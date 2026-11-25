@@ -15,6 +15,13 @@ describe("trusted /swarm for Google Antigravity", () => {
       .toMatch(/Google Antigravity agent/);
     expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, remote: true })).toMatch(/this computer/);
     expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, planning: true })).toMatch(/Plan mode/);
+    // Helpers change files: only a standard task runs a swarm (allow-list), never ask or skill_test.
+    expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, workMode: "standard" })).toBeNull();
+    expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, workMode: "planning" })).toMatch(/Plan mode/);
+    for (const workMode of ["ask", "skill_test", "something_new", null]) {
+      expect(antigravitySwarmRefusal({ enabled: true, agent: antigravity, workMode }))
+        .toBe("Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.");
+    }
   });
 
   it("reads a swarm request only from the wake's structured marker, never from comment text", () => {

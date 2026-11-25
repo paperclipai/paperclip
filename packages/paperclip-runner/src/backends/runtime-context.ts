@@ -23,6 +23,16 @@ export function nativeRunAttachReservedBytes(input: NativeExecutionInput): numbe
 
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
+  // A /swarm turn's helpers act under Antigravity's auto mode, so its system
+  // prompt holds only Paperclip-authored text: the fixed execution prompt and
+  // the run's server-written hand-in values (the route adds its fixed swarm
+  // rules). The agent's instruction bundle and connection instructions are left
+  // out: an agent can edit its own instructions in an earlier ordinary run, and
+  // Paperclip keeps no user-approved copy to trust instead.
+  if (input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)) {
+    return [input.runtimeContext.prompt.text, antigravitySwarmHandInInstructions(input.completionContract.contract)]
+      .filter(Boolean).join("\n\n");
+  }
   const configuredRoot = resolve(
     input.runtimeContext.instructions.bundle.rootPath,
   );
@@ -51,12 +61,7 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
       "When you receive a Paperclip assignment or message, use your own available tools, apps, plugins, skills, and capabilities to complete the requested work, then return the result to Paperclip. For example, use your existing Slack connection when the task calls for Slack. Paperclip's app catalog describes what this connection exposes; it is not a list of everything you can use in your own runtime. A missing Paperclip app connection does not make your own connection unavailable. Respect each tool's existing permissions, approvals, and the user's current instructions. Keep Paperclip data and actions within this connection's authorized company, agent, and task. Never use another Paperclip connection or identity to bypass a denial. Setup or test restrictions apply only to their stated scope; do not carry them into later requests unless the user explicitly says they continue.\n\nUse the assignment catalog through paperclip_dot_tool for Paperclip operations. Use your native tools directly for the rest of the work; they do not need to appear in that catalog. Record useful results and deliverables on the task and follow the Paperclip completion instructions.".replaceAll("paperclip_dot_", grok ? "paperclip_grok_" : "paperclip_dot_"),
       `Assigned Paperclip skills: ${input.runtimeContext.skills.map(skill => skill.runtimeName).join(", ") || "none"}.`].join("\n\n");
   }
-  // A /swarm turn's prompt is only the user's request, so its hand-in values travel
-  // here. They follow the entry, inside the composer's framing, so retargeting
-  // the instruction paths for another host still recognizes the block.
-  const handIn = input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)
-    ? antigravitySwarmHandInInstructions(input.completionContract.contract) : null;
-  return composeNativeSystemInstructions(input.runtimeContext, handIn ? `${entry.trim()}\n\n${handIn}` : entry);
+  return composeNativeSystemInstructions(input.runtimeContext, entry);
 }
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {

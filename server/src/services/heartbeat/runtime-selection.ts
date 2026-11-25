@@ -841,7 +841,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const antigravitySwarm = agent.adapterType === "paperclip_runner"
         && await resolveAntigravitySwarmRun(db, {
           companyId: agent.companyId, issueId: issueRef.id, runId: run.id, agent,
-          context, remote: executionTarget?.kind === "remote", planning: executionMode === "plan",
+          context, remote: executionTarget?.kind === "remote", planning: executionMode === "plan", workMode: issueRef.workMode ?? null,
         });
       const buildExecution = ({ normalizedSessionId, resumedSession }: { normalizedSessionId: string; resumedSession: boolean }) =>
             buildNativeExecutionInput({

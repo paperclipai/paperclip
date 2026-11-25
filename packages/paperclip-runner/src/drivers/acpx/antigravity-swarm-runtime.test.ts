@@ -172,6 +172,8 @@ describe("Antigravity CLI swarm runtime", () => {
     // Only the server-written values reach the instructions, never a requirement's or the task's text.
     expect(append).not.toContain("hire_agent");
     expect(append).not.toContain("Pasted by someone else");
+    // Nor the agent's own (agent-editable) instructions: helpers act under auto mode.
+    expect(append).not.toContain("Agent instructions.");
     // The coordinator's first hand-in, built only from what it was told, is valid and is the
     // exact revision and criterion set the server requires before it accepts a report.
     const report = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Wrote a.txt and b.txt.",

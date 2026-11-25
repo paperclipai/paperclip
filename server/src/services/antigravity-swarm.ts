@@ -39,12 +39,17 @@ export function antigravitySwarmRefusal(input: {
   agent: { adapterType: string; adapterConfig: unknown } | null;
   remote?: boolean;
   planning?: boolean;
+  /** The task's work mode. Helpers change files, so only a standard task runs a swarm (an allow-list). */
+  workMode?: string | null;
 }): string | null {
   if (!input.enabled) {
     return "Swarm is not turned on for this Paperclip. An instance admin can turn on \"Google Antigravity swarm\" in Settings, Experimental.";
   }
   if (!isAntigravityAgent(input.agent)) return "Swarm works only for tasks assigned to a Google Antigravity agent.";
-  if (input.planning) return "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
+  if (input.planning || input.workMode === "planning") return "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
+  if (input.workMode !== undefined && input.workMode !== "standard") {
+    return "Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.";
+  }
   if (input.remote) return "Swarm is not available for this agent: it runs only on this computer, not in a cloud or remote environment.";
   return null;
 }
@@ -84,7 +89,7 @@ export async function antigravitySwarmCommentRefusal(db: Db, issue: { companyId:
     ? await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents)
       .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
     : [];
-  return antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: agent ?? null, planning: issue.workMode === "planning" });
+  return antigravitySwarmRefusal({ enabled: await swarmEnabled(db), agent: agent ?? null, workMode: issue.workMode ?? null });
 }
 
 /**
@@ -147,6 +152,8 @@ export async function resolveAntigravitySwarmRun(db: Db, input: {
   context: unknown;
   remote: boolean;
   planning: boolean;
+  /** The task's work mode at dispatch; only a standard task runs a swarm. */
+  workMode?: string | null;
 }): Promise<AntigravitySwarmSelection | null> {
   // Most runs carry no swarm request: a cheap look without the task lock lets
   // them through. A request's record commits with its comment, so a run that
@@ -280,7 +287,8 @@ async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
   if (!manual && attempts.filter(run => ["failed", "timed_out"].includes(run.status)).length >= ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS) {
     return { refusal: "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one." };
   }
-  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx), agent: input.agent, remote: input.remote, planning: input.planning });
+  const refusal = antigravitySwarmRefusal({ enabled: await swarmEnabled(tx), agent: input.agent, remote: input.remote, planning: input.planning,
+    ...(input.workMode !== undefined ? { workMode: input.workMode } : {}) });
   if (refusal) return { refusal };
   await queueCommentsTheSwarmDoesNotSend(tx, { ...input, commentId });
   // The one stored fact every later decision reads: this run serves this request.

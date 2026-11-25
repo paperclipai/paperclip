@@ -278,8 +278,11 @@ The endpoint refuses these requests with `422` and `{ "error": "<message>", "cod
 | The instance setting is off | `Swarm is not turned on for this Paperclip. An instance admin can turn on "Google Antigravity swarm" in Settings, Experimental.` |
 | The assignee is not a Google Antigravity agent | `Swarm works only for tasks assigned to a Google Antigravity agent.` |
 | The task is in Plan mode | `Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.` |
+| The task is in any mode other than Standard (for example Ask) | `Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.` |
 | `body` is empty or only whitespace | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
 | `body` is longer than 16,000 characters | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
+
+The swarm runs without the agent's own instructions: its system prompt holds only Paperclip's fixed execution prompt, the swarm rules, and the task's completion revision and criterion IDs. The agent's instruction files and connection instructions are left out because an agent can edit its own instructions, and the swarm's helpers act without asking.
 
 Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
