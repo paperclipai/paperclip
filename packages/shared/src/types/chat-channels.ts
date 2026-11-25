@@ -511,7 +511,6 @@ export interface ChatActivityItem {
   replayable?: boolean;
   resolutionActions?: Array<"mark_delivered" | "retry_anyway" | "cancel">;
   fileTransfer?: ChatFileTransferSummary;
-  /** Non-secret GitHub context for a delivery that the bot policy filtered. */
   github?: ChatActivityGitHubContext;
 }
 

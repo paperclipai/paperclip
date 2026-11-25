@@ -64,8 +64,6 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
         normalizedEvent: {
           providerEventId, kind: "message",
           filtering: { contentRetained: false, reason: reason ?? "automatic_policy_unavailable" },
-          // Non-secret identifiers only, so an operator can match the row to
-          // GitHub Recent Deliveries. Titles, bodies and comments stay out.
           github: githubSkipActivityContext(context, reason),
         },
       }).onConflictDoNothing();

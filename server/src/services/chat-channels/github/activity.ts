@@ -47,7 +47,6 @@ export async function githubRecoveryActivity(
   });
 }
 
-/** Reads the stored non-secret context of a policy-filtered GitHub delivery. Old rows have none. */
 export function githubFilteredDeliveryContext(value: unknown): ChatActivityGitHubContext | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;

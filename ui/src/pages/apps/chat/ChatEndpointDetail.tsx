@@ -220,7 +220,6 @@ export function isIndividuallyToggleableResource(
   );
 }
 
-/** One line of non-secret GitHub identifiers for a policy-filtered delivery. */
 export function activityGitHubContextLine(item: ChatActivityItem): string | null {
   const github = item.github;
   if (!github) return null;
