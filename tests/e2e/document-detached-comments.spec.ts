@@ -56,17 +56,21 @@ test("finds comments detached by a document revision", async ({ page, request })
     await comments.click();
 
     const toggle = page.getByRole("button", { name: "Include detached comments (2)", exact: true });
-    const feedback = page.getByText("List the rollout reviewers.", { exact: true });
+    const openCard = page.getByRole("article", { name: "Approve the staged rollout.", exact: true });
+    const resolvedCard = page.getByRole("article", { name: "Confirm the owner.", exact: true });
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await expect(feedback).toBeHidden();
+    await expect(openCard).toBeHidden();
+    await expect(resolvedCard).toBeHidden();
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
-    await expect(feedback).toBeVisible();
-    await expect(page.getByText("Approve the staged rollout.", { exact: true })).toBeVisible();
     await expect(page.getByText("Detached · selected in revision 1", { exact: true })).toHaveCount(2);
-    await expect(page.getByText("Record the named owner.", { exact: true })).toBeVisible();
+    await openCard.click();
+    await expect(openCard.getByText("List the rollout reviewers.", { exact: true })).toBeVisible();
+    await resolvedCard.click();
+    await expect(resolvedCard.getByText("Record the named owner.", { exact: true })).toBeVisible();
     await toggle.click();
-    await expect(feedback).toBeHidden();
+    await expect(openCard).toBeHidden();
+    await expect(resolvedCard).toBeHidden();
   } finally {
     await request.delete(`/api/companies/${company.id}`);
   }
