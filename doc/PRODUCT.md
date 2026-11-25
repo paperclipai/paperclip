@@ -310,6 +310,8 @@ External package storage keeps repository contents out of the control-plane data
 per-turn checks reuse verified local files while rechecking current skill access.
 See [automatic storage and recovery](skill-package-storage.md).
 
+Skills may also have an optional recipient agent, independent of assignment. Other agents cannot discover or load that content. Recipient deletion is restricted; termination denies access. Unrestricted skills retain their current behavior. Board operators retain company administration. See [recipient access](../docs/api/company-skills.md).
+
 Project-derived skills inherit current project access. Access through any originating
 project is sufficient, including the responsible-user restrictions on agent execution.
 Existing explicit company imports retain their visibility. Editable copies inherit

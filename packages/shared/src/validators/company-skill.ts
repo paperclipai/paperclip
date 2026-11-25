@@ -20,6 +20,7 @@ export const companySkillVersionFileInventoryEntrySchema = companySkillFileInven
 });
 
 export const companySkillSchema = z.object({
+  recipientAgentId: z.string().guid().nullable().optional(),
   id: z.string().guid(),
   companyId: z.string().guid(),
   folderId: z.string().guid().nullable().optional(),
@@ -219,6 +220,7 @@ export const companySkillRenameResultSchema = z.object({
 });
 
 export const companySkillUpdateSchema = z.object({
+  recipientAgentId: z.string().guid().nullable().optional(),
   description: z.string().nullable().optional(),
   iconUrl: z.string().nullable().optional(),
   color: z.string().nullable().optional(),
@@ -367,6 +369,7 @@ export const companySkillProjectScanResultSchema = z.object({
 });
 
 export const companySkillCreateSchema = z.object({
+  recipientAgentId: z.string().guid().nullable().optional(),
   idempotencyKey: z.string().min(1).max(240).optional(),
   folderId: z.string().guid().nullable().optional(),
   name: z.string().min(1),

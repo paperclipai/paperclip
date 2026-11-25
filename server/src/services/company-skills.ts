@@ -10,7 +10,7 @@ import type { SkillPackageFileMapping } from "@paperclipai/db";
 import { ensureSkillCacheDirectory, protectedVersions, withSkillVersionCacheLock } from "./skill-version-cache.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
-import { retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
+import { currentSkillActor, retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
 import { assertLocalImportOutsideSkillPackageCache } from "./skill-local-import-boundary.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -172,6 +172,7 @@ type CompanySkillListDbRow = Pick<
   | "authorName"
   | "homepageUrl"
   | "categories"
+  | "recipientAgentId"
   | "sharingScope"
   | "publicShareToken"
   | "forkedFromSkillId"
@@ -206,6 +207,7 @@ type CompanySkillListRow = Pick<
   | "authorName"
   | "homepageUrl"
   | "categories"
+  | "recipientAgentId"
   | "sharingScope"
   | "publicShareToken"
   | "forkedFromSkillId"
@@ -270,6 +272,7 @@ type ImportedSkillPersistValues = Pick<
   | "authorName"
   | "homepageUrl"
   | "categories"
+  | "recipientAgentId"
   | "sharingScope"
   | "installCount"
 > & {
@@ -489,6 +492,7 @@ function selectCompanySkillColumns() {
     homepageUrl: companySkills.homepageUrl,
     categories: companySkills.categories,
     accessSourceId: companySkills.accessSourceId,
+    recipientAgentId: companySkills.recipientAgentId,
     sharingScope: companySkills.sharingScope,
     publicShareToken: companySkills.publicShareToken,
     forkedFromSkillId: companySkills.forkedFromSkillId,
@@ -1839,6 +1843,7 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     authorName: row.authorName ?? null,
     homepageUrl: row.homepageUrl ?? null,
     categories: normalizeCategoryList(row.categories),
+    recipientAgentId: row.recipientAgentId ?? null,
     sharingScope: normalizeSharingScope(row.sharingScope),
     publicShareToken: row.publicShareToken ?? null,
     forkedFromSkillId: row.forkedFromSkillId ?? null,
@@ -1867,6 +1872,7 @@ function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow 
     authorName: row.authorName ?? null,
     homepageUrl: row.homepageUrl ?? null,
     categories: normalizeCategoryList(row.categories),
+    recipientAgentId: row.recipientAgentId ?? null,
     sharingScope: normalizeSharingScope(row.sharingScope),
     publicShareToken: row.publicShareToken ?? null,
     forkedFromSkillId: row.forkedFromSkillId ?? null,
@@ -3059,7 +3065,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     // snapshots or their materialized copies, even for an authorized reader.
     const restricted = await db.select({ id: companySkills.id, key: companySkills.key, slug: companySkills.slug,
       sourceType: companySkills.sourceType, sourceLocator: companySkills.sourceLocator }).from(companySkills).where(and(
-      eq(companySkills.companyId, companyId), isNotNull(companySkills.accessSourceId)));
+      eq(companySkills.companyId, companyId), or(isNotNull(companySkills.accessSourceId), isNotNull(companySkills.recipientAgentId))));
     for (const skill of restricted) {
       const localRoot = skill.sourceType === "local_path" || skill.sourceType === "catalog" ? normalizeSourceLocatorDirectory(skill.sourceLocator) : null;
       const protectedRoots = [path.join(resolveManagedSkillsRoot(companyId), "__versions__", skill.id),
@@ -3355,6 +3361,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         homepageUrl: companySkills.homepageUrl,
         categories: companySkills.categories,
         accessSourceId: companySkills.accessSourceId,
+        recipientAgentId: companySkills.recipientAgentId,
         sharingScope: companySkills.sharingScope,
         publicShareToken: companySkills.publicShareToken,
         forkedFromSkillId: companySkills.forkedFromSkillId,
@@ -3450,7 +3457,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), keys ? inArray(companySkills.key, [...keys]) : undefined, unrestrictedOnly ? isNull(companySkills.accessSourceId) : await visibility().condition(companyId)))
+      .where(and(eq(companySkills.companyId, companyId), keys ? inArray(companySkills.key, [...keys]) : undefined, unrestrictedOnly ? and(isNull(companySkills.accessSourceId), visibility().recipientCondition(companyId)) : await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key));
     return rows.map((row) => toCompanySkill(row));
   }
@@ -4186,7 +4193,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     await ensureSkillInventoryCurrent(companyId);
     const source = await getById(companyId, skillId);
     if (!source) throw notFound("Skill not found");
-    if (source.accessSourceId && input.sharingScope === "public_link") throw forbidden("Project skills cannot be published through a public link.");
+    if ((source.accessSourceId || source.recipientAgentId) && input.sharingScope === "public_link") throw forbidden((source.recipientAgentId ? "Recipient-restricted" : "Project") + " skills cannot be published through a public link.");
     const existing = await db.select({ slug: companySkills.slug }).from(companySkills)
       .where(eq(companySkills.companyId, companyId));
     const usedSlugs = new Set(existing.map((skill) => normalizeSkillSlug(skill.slug) ?? skill.slug));
@@ -4599,6 +4606,16 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     };
   }
 
+  async function validateRecipient(companyId: string, recipientAgentId: string | null | undefined) {
+    if ((options.actor ?? currentSkillActor())?.type !== "board") {
+      throw forbidden("Only board operators can change a skill recipient.");
+    }
+    if (!recipientAgentId) return;
+    const [recipient] = await db.select({ id: agentsTable.id }).from(agentsTable).where(and(
+      eq(agentsTable.companyId, companyId), eq(agentsTable.id, recipientAgentId), ne(agentsTable.status, "terminated")));
+    if (!recipient) throw unprocessable("Recipient must be an active agent in this company.");
+  }
+
   async function updateSkill(
     companyId: string,
     skillId: string,
@@ -4608,7 +4625,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const skill = await getById(companyId, skillId);
     if (!skill) throw notFound("Skill not found");
 
-    if (skill.accessSourceId && input.sharingScope === "public_link") throw forbidden("Project skills cannot be published through a public link.");
+    if ((skill.accessSourceId || skill.recipientAgentId) && input.sharingScope === "public_link") throw forbidden((skill.recipientAgentId ? "Recipient-restricted" : "Project") + " skills cannot be published through a public link.");
     const sharingScope = Object.prototype.hasOwnProperty.call(input, "sharingScope")
       ? normalizeMutableSharingScope(input.sharingScope)
       : null;
@@ -4616,6 +4633,13 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       updatedAt: new Date(),
     };
 
+    if (Object.prototype.hasOwnProperty.call(input, "recipientAgentId")) {
+      await validateRecipient(companyId, input.recipientAgentId);
+      if (input.recipientAgentId && (input.sharingScope ?? skill.sharingScope) === "public_link") {
+        throw forbidden("Recipient-restricted skills cannot be published through a public link.");
+      }
+      values.recipientAgentId = input.recipientAgentId ?? null;
+    }
     if (Object.prototype.hasOwnProperty.call(input, "description")) {
       values.description = normalizeStoreText(input.description, 2000);
     }
@@ -4663,8 +4687,18 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const key = `company/${companyId}/${slug}`;
     const forkSource = input.forkedFromSkillId ? await getById(companyId, input.forkedFromSkillId) : null;
     if (input.forkedFromSkillId && !forkSource) throw notFound("Fork source skill not found");
-    if (forkSource?.accessSourceId && input.sharingScope === "public_link") {
-      throw forbidden("Project skills cannot be published through a public link.");
+    if ((forkSource?.accessSourceId || forkSource?.recipientAgentId) && input.sharingScope === "public_link") {
+      throw forbidden((forkSource?.recipientAgentId ? "Recipient-restricted" : "Project") + " skills cannot be published through a public link.");
+    }
+    if (Object.prototype.hasOwnProperty.call(input, "recipientAgentId")) {
+      await validateRecipient(companyId, input.recipientAgentId);
+      if (forkSource?.recipientAgentId && input.recipientAgentId !== forkSource.recipientAgentId) {
+        throw forbidden("A fork must retain its recipient restriction.");
+      }
+    }
+    const recipientAgentId = forkSource?.recipientAgentId ?? input.recipientAgentId ?? null;
+    if (recipientAgentId && input.sharingScope === "public_link") {
+      throw forbidden("Recipient-restricted skills cannot be published through a public link.");
     }
     const files = forkSource ? await collectVersionFileInventory(companyId, forkSource) : [];
     const fallbackMarkdown = ["---", stringifyFrontmatter({ name: input.name,
@@ -4689,6 +4723,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       authorName: normalizeStoreText(input.authorName, 200) ?? forkSource?.authorName ?? store.authorName,
       homepageUrl: normalizeStoreText(input.homepageUrl, 2000) ?? forkSource?.homepageUrl ?? store.homepageUrl,
       categories: input.categories ? normalizeCategoryList(input.categories) : forkSource?.categories ?? store.categories,
+      recipientAgentId,
       folderId: input.folderId ?? null, sharingScope: normalizeMutableSharingScope(input.sharingScope) ?? "company",
       forkedFromSkillId: forkSource?.id ?? null, forkedFromCompanyId: forkSource?.companyId ?? null,
       metadata: { sourceKind: "managed", ...(forkSource ? {
@@ -4704,11 +4739,13 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         if (input.folderId) await folderService(tx as unknown as Db).validateSkillFolder(companyId, input.folderId);
         if (forkSource) {
           await visibility(tx).assertSkill(companyId, forkSource.id);
-          const [currentSource] = await tx.select({ accessSourceId: companySkills.accessSourceId }).from(companySkills)
+          const [currentSource] = await tx.select({ accessSourceId: companySkills.accessSourceId, recipientAgentId: companySkills.recipientAgentId }).from(companySkills)
             .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, forkSource.id))).for("update");
-          if (!currentSource || currentSource.accessSourceId !== (forkSource.accessSourceId ?? null)) {
+          if (!currentSource || (currentSource.accessSourceId !== (forkSource.accessSourceId ?? null)
+            || currentSource.recipientAgentId !== (forkSource.recipientAgentId ?? null))) {
             throw conflict("Fork source access changed. Reload before retrying.");
           }
+          values.recipientAgentId = currentSource.recipientAgentId;
           values.accessSourceId = await retainProjectSkillAccess(tx as unknown as Db, companyId, currentSource.accessSourceId);
         }
       },
@@ -6053,7 +6090,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       return { status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill), detail: buildMissingRuntimeSourceDetail(skill) };
     }
     const selectedVersionId = options.versionSelections?.get(skill.key)
-      ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null);
+      ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId || skill.recipientAgentId ? skill.currentVersionId : null);
     if (selectedVersionId) {
       const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
       const version = await measureRunPhase("skills.version.read", () => readVersionMetadata(companyId, skill.id, selectedVersionId));
@@ -6173,10 +6210,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const requested = options.onlyKeys ?? (options.selectionConfig && !options.includeLegacy
       ? new Set(readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills) : null);
     const columns = { key: companySkills.key, slug: companySkills.slug, sourceLocator: companySkills.sourceLocator,
-      sourceKind: sql<string>`${companySkills.metadata}->>'sourceKind'`, accessSourceId: companySkills.accessSourceId };
+      sourceKind: sql<string>`${companySkills.metadata}->>'sourceKind'`, accessSourceId: companySkills.accessSourceId, recipientAgentId: companySkills.recipientAgentId };
     let installed = requested?.size && visibility().canReadCompany(companyId) ? await db.select(columns)
       .from(companySkills).where(and(eq(companySkills.companyId, companyId), inArray(companySkills.key, [...requested]))) : [];
-    if (requested && installed.some(skill => skill.accessSourceId !== null)) {
+    if (requested && installed.some(skill => skill.accessSourceId !== null || skill.recipientAgentId !== null)) {
       installed = await db.select(columns).from(companySkills).where(and(eq(companySkills.companyId, companyId),
         inArray(companySkills.key, [...requested]), await visibility().condition(companyId)));
     }
@@ -6189,7 +6226,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       // the probe and consumption must fail closed.
       const runtimeOptions = preparedSelection ? { ...selected, onlyKeys: requested } : selected;
       const entries = await listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
-        Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null)));
+        Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null && skill.recipientAgentId === null)));
       return measureRunPhase("skills.consume", () => consume(entries));
     };
     // Saved versions only: nothing is published to or pinned in the cache, so
@@ -6269,7 +6306,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         } else installedResolution = installed;
       }
       const versionId = options.versionSelections?.get(skill.key)
-        ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || skill.accessSourceId ? skill.currentVersionId : null);
+        ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || skill.accessSourceId || skill.recipientAgentId ? skill.currentVersionId : null);
       if (skill.sourceType === "managed" && !versionId) throw unprocessable("Managed skill has no committed version.");
       selected.push({ skill, installedResolution, selection: {
         companyId, skillId: skill.id, key: skill.key, runtimeName: buildSkillRuntimeName(skill.key, skill.slug),

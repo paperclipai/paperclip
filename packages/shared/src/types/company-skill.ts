@@ -34,6 +34,7 @@ export interface CompanySkillVersionFileInventoryEntry extends CompanySkillFileI
 }
 
 export interface CompanySkill {
+  recipientAgentId?: string | null;
   id: string;
   companyId: string;
   folderId?: string | null;
@@ -70,6 +71,7 @@ export interface CompanySkill {
 }
 
 export interface CompanySkillListItem {
+  recipientAgentId?: string | null;
   id: string;
   companyId: string;
   folderId?: string | null;
@@ -275,6 +277,7 @@ export interface CompanySkillRenameResult {
 }
 
 export interface CompanySkillUpdateRequest {
+  recipientAgentId?: string | null;
   description?: string | null;
   iconUrl?: string | null;
   color?: string | null;
@@ -435,6 +438,7 @@ export interface CompanySkillProjectScanResult {
 }
 
 export interface CompanySkillCreateRequest {
+  recipientAgentId?: string | null;
   idempotencyKey?: string;
   folderId?: string | null;
   name: string;

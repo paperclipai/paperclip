@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequestHandler } from 'express';
 import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { activityLog, companySkills, companySkillSources, projectSkillSources, projects, type Db } from '@paperclipai/db';
+import { activityLog, agents, companySkills, companySkillSources, projectSkillSources, projects, type Db } from '@paperclipai/db';
 import { authorizationService, projectReadSqlCondition, type AuthorizationActor } from './authorization.js';
 import { notFound } from '../errors.js';
 
@@ -43,8 +43,18 @@ export function skillAccessService(db: Db, actor = currentSkillActor()) {
   async function condition(companyId: string) {
     if (!canReadCompany(companyId)) return sql`false`;
     const ids = await visibleSourceIds(companyId);
-    if (ids === null) return sql`true`;
-    return or(isNull(companySkills.accessSourceId), ids.length ? inArray(companySkills.accessSourceId, ids) : sql`false`)!;
+    const source = ids === null ? sql`true`
+      : or(isNull(companySkills.accessSourceId), ids.length ? inArray(companySkills.accessSourceId, ids) : sql`false`)!;
+    return and(source, recipientCondition(companyId))!;
+  }
+  function recipientCondition(companyId: string) {
+    if (!canReadCompany(companyId)) return sql`false`;
+    if (actor?.type === 'board') return sql`true`;
+    return or(isNull(companySkills.recipientAgentId), actor?.type === 'agent' && actor.agentId
+      ? and(eq(companySkills.recipientAgentId, actor.agentId), sql`exists (
+          select 1 from ${agents} where ${agents.id} = ${companySkills.recipientAgentId}
+            and ${agents.companyId} = ${companyId} and ${agents.status} != 'terminated')`)
+      : sql`false`)!;
   }
   async function assertSkill(companyId: string, skillId: string) {
     const [row] = await db.select({ id: companySkills.id }).from(companySkills)
@@ -69,7 +79,7 @@ export function skillAccessService(db: Db, actor = currentSkillActor()) {
         select 1 from ${projects} where ${projects.companyId} = ${companyId}
           and ${projects.id}::text = ${activityLog.entityId} and ${projectCondition})))`;
   }
-  return { canReadCompany, condition, projectIds, visibleSourceIds, assertSkill, assertSource, activityCondition };
+  return { canReadCompany, condition, recipientCondition, projectIds, visibleSourceIds, assertSkill, assertSource, activityCondition };
 }
 
 /** Independent editable forks retain the originating project set at creation.

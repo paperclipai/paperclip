@@ -8,6 +8,7 @@ import {
   index,
   integer,
   uniqueIndex,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
@@ -42,6 +43,7 @@ export const companySkills = pgTable(
     sharingScope: text("sharing_scope").$type<CompanySkillSharingScope>().notNull().default("company"),
     // Source access is inherited by editable copies too. Orphaned sources fail closed.
     accessSourceId: uuid("access_source_id"),
+    recipientAgentId: uuid("recipient_agent_id"),
     publicShareToken: text("public_share_token"),
     forkedFromSkillId: uuid("forked_from_skill_id").references((): AnyPgColumn => companySkills.id, { onDelete: "set null" }),
     forkedFromCompanyId: uuid("forked_from_company_id").references(() => companies.id, { onDelete: "set null" }),
@@ -54,6 +56,12 @@ export const companySkills = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    recipientCompanyFk: foreignKey({
+      name: "company_skills_recipient_company_fk",
+      columns: [table.companyId, table.recipientAgentId],
+      foreignColumns: [agents.companyId, agents.id],
+    }).onDelete("restrict"),
+    recipientIdx: index("company_skills_recipient_idx").on(table.companyId, table.recipientAgentId),
     companyKeyUniqueIdx: uniqueIndex("company_skills_company_key_idx").on(table.companyId, table.key),
     companyNameIdx: index("company_skills_company_name_idx").on(table.companyId, table.name),
     companyFolderIdx: index("company_skills_company_folder_idx").on(table.companyId, table.folderId),

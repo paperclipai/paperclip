@@ -3935,6 +3935,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
     const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
+    if (companySkillRowsRaw.some(skill => skill.recipientAgentId)) {
+      throw unprocessable("Recipient-restricted skills cannot be exported until the package can preserve their audience.");
+    }
     if (companySkillRowsRaw.some(skill => skill.accessSourceId)) {
       throw unprocessable("Project-restricted skills cannot be exported until the package can preserve their project access.");
     }

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const mockPersistActivity = vi.hoisted(() => vi.fn());
 const mockCaptureRunIdentity = vi.hoisted(() => vi.fn());
 
 const mockSkillSourceService = vi.hoisted(() => ({ sourceForSkill: vi.fn(), importFromUrl: vi.fn(), discover: vi.fn(), branches: vi.fn() }));
@@ -160,7 +161,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
-    persistActivity: vi.fn(),
+    persistActivity: mockPersistActivity,
     publishActivity: vi.fn(),
     logActivity: mockLogActivity,
   }));
@@ -1601,6 +1602,34 @@ describe("company skill mutation permissions", () => {
         sharingScope: "company",
       },
     }));
+  });
+
+  it("records recipient changes in the mutation transaction and rejects agent changes", async () => {
+    const recipientAgentId = "ba890097-36dd-47a1-8b92-c431145099fa";
+    const database = { transaction: vi.fn() };
+    database.transaction.mockImplementation(callback => callback(database));
+    mockCompanySkillService.updateSkill.mockResolvedValueOnce({ id: "skill-1", slug: "signup", recipientAgentId });
+    mockPersistActivity.mockResolvedValueOnce({ publication: null });
+    const app = await createApp(boardActor(), undefined, database);
+    await request(app).patch("/api/companies/company-1/skills/skill-1").send({ recipientAgentId }).expect(200);
+    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(mockPersistActivity).toHaveBeenCalledWith(database, expect.objectContaining({
+      action: "company.skill_updated", details: { slug: "signup", recipientAgentId },
+    }));
+    const calls = mockCompanySkillService.updateSkill.mock.calls.length;
+    const agentApp = await createApp(assignedAgentActor(), undefined, database);
+    await request(agentApp).patch("/api/companies/company-1/skills/skill-1").send({ recipientAgentId: null }).expect(403);
+    expect(mockCompanySkillService.updateSkill).toHaveBeenCalledTimes(calls);
+  });
+
+  it("does not acknowledge a recipient update when its audit write fails", async () => {
+    const database = { transaction: vi.fn() };
+    database.transaction.mockImplementation(callback => callback(database));
+    mockPersistActivity.mockRejectedValueOnce(new Error("Audit unavailable"));
+    const app = await createApp(boardActor(), undefined, database);
+    await request(app).patch("/api/companies/company-1/skills/skill-1")
+      .send({ recipientAgentId: "ba890097-36dd-47a1-8b92-c431145099fa" }).expect(500);
+    expect(database.transaction).toHaveBeenCalledTimes(1);
   });
 
   it("creates skill versions and logs the mutation", async () => {

@@ -1293,7 +1293,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
         companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
         runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, issueId: runContext?.issue.id,
         action: "company.skill_created", entityType: "company_skill", entityId: skill.id,
-        details: { slug: skill.slug, name: skill.name, description: skill.description,
+        details: { slug: skill.slug, name: skill.name, description: skill.description, recipientAgentId: skill.recipientAgentId ?? null,
           sourceIssueId: runContext?.issue.id ?? null, versionId: skill.currentVersionId },
       });
       const receiptKey = idempotencyKey
@@ -1370,6 +1370,22 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
+      if (Object.prototype.hasOwnProperty.call(req.body, "recipientAgentId")) {
+        if (req.actor.type !== "board") throw forbidden("Only board operators can change a skill recipient.");
+        let publication: ActivityPublication | null = null;
+        const result = await db.transaction(async tx => {
+          const database = tx as unknown as Db;
+          const updated = await companySkillService(database, { actor: req.actor, packageDb: db }).updateSkill(companyId, skillId, req.body);
+          publication = (await persistActivity(database, {
+            companyId, ...getActorInfo(req), action: "company.skill_updated", entityType: "company_skill", entityId: updated.id,
+            details: { slug: updated.slug, recipientAgentId: updated.recipientAgentId ?? null },
+          })).publication;
+          return updated;
+        });
+        if (publication) publishCommittedActivity(publication);
+        res.json(result);
+        return;
+      }
       const result = await svc.updateSkill(companyId, skillId, req.body);
 
       const actor = getActorInfo(req);

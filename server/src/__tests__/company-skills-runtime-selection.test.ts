@@ -5,7 +5,10 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, companyMemberships, companySkillSources, companySkills, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, projectAccessMembers, projects, projectSkillSources } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import { PAPERCLIP_FEEDBACK_SKILL_KEYS, PAPERCLIP_OPERATIONAL_SKILL_KEY } from "@paperclipai/adapter-utils/server-utils";
+import { PAPERCLIP_FEEDBACK_SKILL_KEYS, PAPERCLIP_OPERATIONAL_SKILL_KEY, readPaperclipRuntimeSkillEntries, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
+import { applyConnectorSkills } from "../services/connector-runtime.js";
+import { readAssignedSkill } from "../services/native-runtime/runner-bridge-tools.js";
 import { companySkillService } from "../services/company-skills.js";
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
 import { skillAccessService, withSkillActor } from "../services/skill-access.js";
@@ -181,4 +184,111 @@ describeDatabase("selected runtime skill reconciliation", () => {
     } finally { select.mockRestore(); }
     expect(counts[1]).toBeLessThanOrEqual(counts[0]! + 2);
   }, 30_000);
+  it("enforces recipient isolation through catalogs, known IDs, pinned content and runtime delivery", async () => {
+    const names = ["marketing-loops", "product-marketing", "aso", "paywalls", "signup"];
+    const ownerId = "ba890097-36dd-47a1-8b92-c431145099fa";
+    const fixtureAgents = await db.insert(agents).values([
+      { id: ownerId, companyId, name: "Publishing owner", adapterType: "claude_local" },
+      ...["claude_local", "codex_local", "paperclip_runner"].map(adapterType => ({
+        companyId, name: `Other ${adapterType}`, adapterType,
+      })),
+    ]).returning();
+    const actorFor = (agentId: string): AuthorizationActor => ({ type: "agent", agentId, companyId, source: "agent_jwt" });
+    const serviceFor = (agentId: string) => companySkillService(db, { actor: actorFor(agentId) });
+    const runtime = async (agent: typeof fixtureAgents[number], keys: string[] = []) => {
+      const config = writePaperclipSkillSyncPreference({}, keys);
+      return withSkillActor(actorFor(agent.id), () => serviceFor(agent.id).withRuntimeSkillEntries(companyId, {
+        selectionConfig: config, includeLegacy: agent.adapterType !== "paperclip_runner", snapshotLatest: true,
+      }, async entries => {
+        const delivered = await applyConnectorSkills(config, entries, []);
+        const inventory = await readPaperclipRuntimeSkillEntries(delivered, home);
+        return { keys: inventory.map(entry => entry.key),
+          instructions: buildSkillLibraryManifestMarkdown({ entries: inventory, desiredSkillKeys: new Set(inventory.map(entry => entry.key)) }),
+          files: await Promise.all(inventory.map(entry => fs.readFile(path.join(entry.source, "SKILL.md"), "utf8"))),
+        };
+      }));
+    };
+    const peers = (await db.select().from(agents).where(eq(agents.companyId, companyId))).filter(agent => agent.id !== ownerId);
+    const before = await Promise.all(peers.map(async agent => ({
+      catalog: await serviceFor(agent.id).list(companyId), runtime: await runtime(agent), permissions: agent.permissions,
+    })));
+    const board = companySkillService(db, { actor: { type: "board", source: "local_implicit" } });
+    const fixtures = [];
+    for (const name of names) {
+      const skill = await board.createLocalSkill(companyId, { name, slug: name,
+        markdown: `---\nname: ${name}\n---\nSafe fixture content for ${name}.\n`,
+      });
+      await db.update(companySkills).set({ recipientAgentId: ownerId }).where(eq(companySkills.id, skill.id));
+      fixtures.push(skill);
+    }
+    const keys = fixtures.map(skill => skill.key);
+    expect((await serviceFor(ownerId).list(companyId)).filter(skill => keys.includes(skill.key))).toHaveLength(5);
+    for (const skill of fixtures) {
+      expect((await serviceFor(ownerId).getById(companyId, skill.id))?.id).toBe(skill.id);
+      expect((await serviceFor(ownerId).readFile(companyId, skill.id, "SKILL.md"))?.content).toContain("Safe fixture content");
+    }
+    expect((await runtime(fixtureAgents[0]!, keys)).keys.filter(key => keys.includes(key))).toHaveLength(5);
+    expect((await runtime(fixtureAgents[0]!)).keys.some(key => keys.includes(key))).toBe(false);
+    for (const [index, peer] of peers.entries()) {
+      expect(await serviceFor(peer.id).list(companyId)).toEqual(before[index]!.catalog);
+      expect(await runtime(peer)).toEqual(before[index]!.runtime);
+      expect(await runtime(peer, keys)).toEqual(before[index]!.runtime);
+      for (const skill of fixtures) {
+        expect(await serviceFor(peer.id).getById(companyId, skill.id)).toBeNull();
+        expect(await serviceFor(peer.id).getByKey(companyId, skill.key)).toBeNull();
+        expect(await serviceFor(peer.id).readFile(companyId, skill.id, "SKILL.md")).toBeNull();
+        await expect(readAssignedSkill({ skills: [] } as never, { skill: skill.key, path: "SKILL.md", offset: 0 }))
+          .rejects.toThrow("runner_skill_not_assigned");
+      }
+      const [current] = await db.select({ permissions: agents.permissions }).from(agents).where(eq(agents.id, peer.id));
+      expect(current!.permissions).toEqual(before[index]!.permissions);
+    }
+    const changed = fixtures[0]!;
+    await db.update(companySkills).set({ recipientAgentId: peers[0]!.id }).where(eq(companySkills.id, changed.id));
+    const stale = await serviceFor(ownerId).listRuntimeSkillEntries(companyId, {
+      onlyKeys: new Set([changed.key]), versionSelections: new Map([[changed.key, changed.currentVersionId]]),
+    });
+    expect(stale).toEqual([]);
+    expect(await serviceFor(ownerId).readFile(companyId, changed.id, "SKILL.md")).toBeNull();
+    await db.update(companySkills).set({ recipientAgentId: ownerId }).where(eq(companySkills.id, changed.id));
+    await expect(db.delete(agents).where(eq(agents.id, ownerId))).rejects.toThrow();
+    const foreignCompany = randomUUID();
+    await db.insert(companies).values({ id: foreignCompany, name: "Foreign fixture", issuePrefix: `RF${foreignCompany.slice(0, 6)}` });
+    const [foreign] = await db.insert(agents).values({ companyId: foreignCompany, name: "Foreign recipient" }).returning();
+    await expect(db.update(companySkills).set({ recipientAgentId: foreign!.id }).where(eq(companySkills.id, changed.id))).rejects.toThrow();
+    expect(await companySkillService(db, { actor: { type: "agent", agentId: foreign!.id, companyId: foreignCompany } })
+      .getById(companyId, changed.id)).toBeNull();
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, ownerId));
+    expect(await serviceFor(ownerId).getById(companyId, changed.id)).toBeNull();
+    const [retained] = await db.select({ recipient: companySkills.recipientAgentId }).from(companySkills).where(eq(companySkills.id, changed.id));
+    expect(retained!.recipient).toBe(ownerId);
+    console.info(JSON.stringify({ rehearsal: "recipient-boundary", targetSkills: 5, unchangedPeers: peers.length,
+      paths: ["catalog", "known-id", "file", "runtime-content", "native-reader", "stale-pin", "deletion", "cross-company"],
+      liveWrites: false }));
+  }, 60_000);
+
+  it("creates restricted skills atomically and preserves the recipient on forks", async () => {
+    const [recipient] = await db.insert(agents).values({ companyId, name: "Recipient authoring fixture" }).returning();
+    const board = companySkillService(db, { actor: { type: "board", source: "local_implicit" } });
+    const skill = await board.createLocalSkill(companyId, { name: "marketing-loops", slug: "marketing-loops-authoring",
+      markdown: "---\nname: marketing-loops\n---\nSafe authoring fixture.\n", recipientAgentId: recipient!.id });
+    expect(skill.recipientAgentId).toBe(recipient!.id);
+    const recipientService = companySkillService(db, { actor: { type: "agent", companyId, agentId: recipient!.id } });
+    const fork = await recipientService.forkSkill(companyId, skill.id);
+    expect(fork.skill.recipientAgentId).toBe(recipient!.id);
+    expect(await companySkillService(db).getById(companyId, skill.id)).toBeNull();
+    await expect(recipientService.updateSkill(companyId, skill.id, { recipientAgentId: null })).rejects.toThrow("Only board");
+    await expect(recipientService.createLocalSkill(companyId, { name: "signup", recipientAgentId: recipient!.id }))
+      .rejects.toThrow("Only board");
+    await expect(board.updateSkill(companyId, skill.id, { recipientAgentId: randomUUID() }))
+      .rejects.toThrow("Recipient must be an active agent in this company");
+    await expect(recipientService.forkSkill(companyId, skill.id, { sharingScope: "public_link" })).rejects.toThrow("Recipient-restricted skills");
+    await expect(board.createLocalSkill(companyId, { name: "signup", recipientAgentId: recipient!.id, sharingScope: "public_link" }))
+      .rejects.toThrow("Recipient-restricted skills");
+    await expect(board.createLocalSkill(companyId, { name: "signup", forkedFromSkillId: skill.id, recipientAgentId: null }))
+      .rejects.toThrow("A fork must retain");
+    const old = await board.createLocalSkill(companyId, { name: "Unscoped fixture" });
+    expect((await recipientService.getById(companyId, old.id))?.id).toBe(old.id);
+  });
+
 });
