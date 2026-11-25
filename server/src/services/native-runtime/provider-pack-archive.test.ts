@@ -9,6 +9,7 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { providerPackReusePlan } from "./provider-pack-layers.js";
+import { requiredProviderAssetNames, toPackProvider } from "./provider-pack-compatibility.js";
 import { canonicalProviderPackJson, verifyRemoteProviderPack } from "./remote-provider-pack-verification.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
@@ -739,7 +740,16 @@ it.skipIf(!tar || !hasZstd)("e2e: uploads and verifies a provider-scoped pack, c
   expect(claudeBytes).toBeLessThan(256 * 1024);
   expect(fullBytes - claudeBytes).toBeGreaterThanOrEqual(6 * 1024 * 1024);
 
-  // 3. Switching to Cursor on the same workspace fails staged verification (missing cursor assets) and re-stages ONLY Cursor (2 MiB, excluding Kimi + Pi).
+  // 3. Switching to Cursor on the same workspace supplements ONLY Cursor in place without removing core files.
+  const verifyStagedCore = async () => {
+    const stat = await fs.lstat(targetPath).catch(() => null);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    try {
+      await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: { kind: "opencode" }, seal });
+      return true;
+    } catch { return false; }
+  };
+  const sidecarBefore = (await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino;
   const cursor = { kind: "acpx" as const, agent: "cursor" };
   await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal }))
     .rejects.toMatchObject({ failureCheck: "candidate_digest" });
@@ -747,11 +757,39 @@ it.skipIf(!tar || !hasZstd)("e2e: uploads and verifies a provider-scoped pack, c
     root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest, provider: cursor,
     runner: remote, cwd: root, targetPath, reuseRoots: [],
     verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyStagedCore,
     verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal }); },
   });
   const cursorBytes = await directoryBytes(targetPath);
   expect(cursorBytes).toBeGreaterThanOrEqual(2 * 1024 * 1024);
   expect(cursorBytes).toBeLessThan(3 * 1024 * 1024);
+  expect((await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino).toBe(sidecarBefore);
   await expect(fs.lstat(path.join(targetPath, "provider-assets/kimi"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(fs.lstat(path.join(targetPath, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
+
+  // 4. Adding Kimi on the same workspace preserves Cursor's files and inodes so both providers remain usable concurrently.
+  const cursorAgentIno = (await fs.lstat(path.join(targetPath, `${cursorPath}/agent`))).ino;
+  const kimi = { kind: "acpx" as const, agent: "kimi" };
+  await uploadVerifiedProviderPack({
+    root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest, provider: kimi,
+    runner: remote, cwd: root, targetPath, reuseRoots: [],
+    verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyStagedCore,
+    verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: kimi, seal }); },
+  });
+  expect((await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino).toBe(sidecarBefore);
+  expect((await fs.lstat(path.join(targetPath, `${cursorPath}/agent`))).ino).toBe(cursorAgentIno);
+  await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal })).resolves.toEqual(manifest);
+  await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: kimi, seal })).resolves.toEqual(manifest);
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
 }, 60_000);
+
+it("narrows native execution providers safely and fails open when manifest is absent for an unknown agent", () => {
+  expect(toPackProvider({ kind: "opencode" })).toEqual({ kind: "opencode" });
+  expect(toPackProvider({ kind: "acpx", agent: "cursor" })).toEqual({ kind: "acpx", agent: "cursor" });
+  expect(toPackProvider({ kind: "codex" })).toBeUndefined();
+  expect(toPackProvider({ kind: "claude_managed" })).toBeUndefined();
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "claude" })).toEqual([]);
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "cursor" })).toEqual(["cursor"]);
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "future-provider" })).toBeNull();
+});

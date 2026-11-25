@@ -160,6 +160,35 @@ export function providerPackReusePlan(
   });
 }
 
+type SelectedFileLayer = { file: FileLayer; index: number };
+
+function selectProviderPackFiles(
+  files: readonly FileLayer[],
+  required: readonly string[] | null,
+  options?: { assetsOnly?: boolean },
+): SelectedFileLayer[] {
+  return files
+    .map((file, index) => ({ file, index }))
+    .filter(({ file }) => isProviderAssetPathIncluded(file.path, required, options));
+}
+
+function buildProviderPackLayersSpec(
+  archive: ProviderPackLayers,
+  targetPath: string,
+  reuseRoots: readonly string[],
+  provider?: PackProvider,
+  manifest?: Pick<ProviderPackIdentity, "payload">,
+  options?: { assetsOnly?: boolean },
+): { spec: string | null; selectedEntries: SelectedFileLayer[]; required: string[] | null } {
+  const required = requiredProviderAssetNames(provider, manifest);
+  const selectedEntries = selectProviderPackFiles(archive.files, required, options);
+  const selectedFiles = selectedEntries.map(entry => entry.file);
+  const plan = providerPackReusePlan(selectedFiles, archive.files);
+  const files = selectedFiles.map((file, index) => ({ ...file, ...plan[index] }));
+  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files })).toString("base64");
+  return { spec: Buffer.byteLength(spec) > 120_000 ? null : spec, selectedEntries, required };
+}
+
 export function providerPackLayersArgument(
   archive: ProviderPackLayers,
   targetPath: string,
@@ -167,12 +196,7 @@ export function providerPackLayersArgument(
   provider?: PackProvider,
   manifest?: Pick<ProviderPackIdentity, "payload">,
 ) {
-  const required = requiredProviderAssetNames(provider, manifest);
-  const selected = archive.files.filter(file => isProviderAssetPathIncluded(file.path, required));
-  const plan = providerPackReusePlan(selected, archive.files);
-  const files = selected.map((file, index) => ({ ...file, ...plan[index] }));
-  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files })).toString("base64");
-  return Buffer.byteLength(spec) > 120_000 ? null : spec;
+  return buildProviderPackLayersSpec(archive, targetPath, reuseRoots, provider, manifest).spec;
 }
 
 export async function stageProviderPackLayers(input: {
@@ -183,15 +207,23 @@ export async function stageProviderPackLayers(input: {
   trace?: NativeRunTrace;
   provider?: PackProvider;
   manifest?: Pick<ProviderPackIdentity, "payload">;
+  /** When true, add only the required `provider-assets/<name>` subtrees into an existing verified pack. */
+  supplementAssetsOnly?: boolean;
 }): Promise<boolean> {
   const { archive, runner } = input;
   if (!runner.syncIn) throw Error("runner_remote_provider_archive_transport_unavailable");
   const measure = <T>(name: string, fn: () => Promise<T>) => input.trace ? input.trace.measure(name, fn) : fn();
-  const required = requiredProviderAssetNames(input.provider, input.manifest);
-  const selectedEntries = archive.files
-    .map((file, index) => ({ file, index }))
-    .filter(({ file }) => isProviderAssetPathIncluded(file.path, required));
-  const spec = providerPackLayersArgument(archive, input.targetPath, input.reuseRoots, input.provider, input.manifest);
+  const supplement = input.supplementAssetsOnly === true;
+  const stageDir = supplement ? `${input.targetPath}.assets-${randomUUID()}` : input.targetPath;
+  const { spec, selectedEntries, required } = buildProviderPackLayersSpec(
+    archive,
+    stageDir,
+    input.reuseRoots,
+    input.provider,
+    input.manifest,
+    supplement ? { assetsOnly: true } : undefined,
+  );
+  if (supplement && (!required || required.length === 0)) return false;
   // Respect the per-argument Linux limit; unusual packs retain directory staging.
   if (spec === null) return false;
   const capability = await measure("provider_pack.archive.probe", () => runner.execute({
@@ -199,33 +231,33 @@ export async function stageProviderPackLayers(input: {
     bypassSession: true, timeoutMs: 10_000,
   }));
   if (capability.exitCode !== 0 || capability.timedOut) return false;
-  const reused = await measure("provider_pack.archive.reuse", () => runner.execute({
-    command: "node", args: ["-e", reuseScript, spec], bypassSession: true, timeoutMs: 60_000,
-  }));
-  if (reused.exitCode !== 0 || reused.timedOut) throw Error("runner_remote_provider_archive_reuse_failed");
-  let missing: number[];
-  try { missing = JSON.parse(reused.stdout); } catch { throw Error("runner_remote_provider_archive_reuse_failed"); }
-  if (!Array.isArray(missing) || new Set(missing).size !== missing.length
-    || missing.some(index => !Number.isSafeInteger(index) || index < 0 || index >= selectedEntries.length)) {
-    throw Error("runner_remote_provider_archive_reuse_failed");
-  }
-  const layers = [
-    ...missing.map(selectedIndex => {
-      const entry = selectedEntries[selectedIndex]!;
-      return { name: `${entry.index}.tar.zst`, ...entry.file.archive };
-    }),
-    { name: "overlay.tar.zst", ...archive.overlay },
-  ];
-  const excludeFlags = providerAssetExcludeArgs({
-    provider: input.provider,
-    manifest: input.manifest,
-    filePaths: archive.files.map(file => file.path),
-  }).map(quote).join(" ");
+  const scratch = `${input.targetPath}.upload-${randomUUID()}`;
   const temporary = await mkdtemp(join(tmpdir(), "paperclip-provider-layers-"));
   const bundlePath = join(temporary, "selected.tar.zst");
-  const scratch = `${input.targetPath}.upload-${randomUUID()}`;
   const remoteArchive = `${scratch}/selected.tar.zst`;
   try {
+    const reused = await measure("provider_pack.archive.reuse", () => runner.execute({
+      command: "node", args: ["-e", reuseScript, spec], bypassSession: true, timeoutMs: 60_000,
+    }));
+    if (reused.exitCode !== 0 || reused.timedOut) throw Error("runner_remote_provider_archive_reuse_failed");
+    let missing: number[];
+    try { missing = JSON.parse(reused.stdout); } catch { throw Error("runner_remote_provider_archive_reuse_failed"); }
+    if (!Array.isArray(missing) || new Set(missing).size !== missing.length
+      || missing.some(index => !Number.isSafeInteger(index) || index < 0 || index >= selectedEntries.length)) {
+      throw Error("runner_remote_provider_archive_reuse_failed");
+    }
+    const layers = [
+      ...missing.map(selectedIndex => {
+        const entry = selectedEntries[selectedIndex]!;
+        return { name: `${entry.index}.tar.zst`, ...entry.file.archive };
+      }),
+      { name: "overlay.tar.zst", ...archive.overlay },
+    ];
+    const excludeFlags = providerAssetExcludeArgs({
+      provider: input.provider,
+      manifest: input.manifest,
+      filePaths: archive.files.map(file => file.path),
+    }).map(quote).join(" ");
     // Concatenate independent zstd frames without recompression. One upload
     // avoids a provider round trip for every small missing layer.
     const hash = createHash("sha256");
@@ -248,19 +280,33 @@ export async function stageProviderPackLayers(input: {
       operationId: `runner-provider-layers-${randomUUID()}`,
       files: [{ kind: "file", sourcePath: bundlePath, targetPath: remoteArchive, mode: 0o600 }],
     }]));
+    const installCommands = supplement
+      ? [
+          `test ! -L ${quote(input.targetPath)}; test -d ${quote(input.targetPath)};`,
+          `mkdir -p ${quote(`${input.targetPath}/provider-assets`)};`,
+          `test ! -L ${quote(`${input.targetPath}/provider-assets`)};`,
+          ...required!.map(name => [
+            `test -d ${quote(`${stageDir}/provider-assets/${name}`)};`,
+            `test ! -L ${quote(`${stageDir}/provider-assets/${name}`)};`,
+            `rm -rf -- ${quote(`${input.targetPath}/provider-assets/${name}`)};`,
+            `mv -- ${quote(`${stageDir}/provider-assets/${name}`)} ${quote(`${input.targetPath}/provider-assets/${name}`)};`,
+          ].join(" ")),
+        ]
+      : [`chmod 700 ${quote(input.targetPath)};`];
     const result = await measure("provider_pack.archive.extract", () => runner.execute({
       command: "sh", args: ["-c", ["set -eu; umask 077;",
-        `test ! -L ${quote(input.targetPath)}; test -d ${quote(input.targetPath)};`,
+        `test ! -L ${quote(stageDir)}; test -d ${quote(stageDir)};`,
         `test ! -L ${quote(remoteArchive)}; test "$(sha256sum -- ${quote(remoteArchive)} | cut -d ' ' -f 1)" = ${quote(sha256)};`,
-        `tar --zstd --ignore-zeros${excludeFlags ? ` ${excludeFlags}` : ""} -xf ${quote(remoteArchive)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(input.targetPath)};`,
-        `chmod 700 ${quote(input.targetPath)};`,
+        `tar --zstd --ignore-zeros${excludeFlags ? ` ${excludeFlags}` : ""} -xf ${quote(remoteArchive)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(stageDir)};`,
+        ...installCommands,
       ].join(" ")], bypassSession: true, timeoutMs: 120_000,
     }));
     if (result.exitCode !== 0 || result.timedOut) throw Error("runner_remote_provider_archive_extract_failed");
     return true;
   } finally {
     await rm(temporary, { recursive: true, force: true });
-    await runner.execute({ command: "sh", args: ["-c", `rm -rf -- ${quote(scratch)}`],
+    const cleanupPaths = supplement ? `${quote(scratch)} ${quote(stageDir)}` : quote(scratch);
+    await runner.execute({ command: "sh", args: ["-c", `rm -rf -- ${cleanupPaths}`],
       bypassSession: true, timeoutMs: 10_000 }).catch(() => undefined);
   }
 }

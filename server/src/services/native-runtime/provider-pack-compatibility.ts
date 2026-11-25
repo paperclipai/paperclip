@@ -37,11 +37,24 @@ export type AdmittedProviderPackReceipt = {
 };
 
 const KNOWN_NATIVE_ASSET_PROVIDERS = ["cursor", "copilot", "pi", "kimi", "antigravity"] as const;
+const BUILTIN_NON_ASSET_ACPX_PROVIDERS = ["claude", "codex", "grok"] as const;
 const SAFE_PROVIDER_ASSET_NAME = /^[a-z0-9-]+$/;
+
+/** Narrows a native execution provider to a PackProvider when applicable. */
+export function toPackProvider(
+  provider: { kind: string; agent?: string } | undefined,
+): PackProvider | undefined {
+  if (!provider) return undefined;
+  if (provider.kind === "opencode") return { kind: "opencode" };
+  if (provider.kind === "acpx" && typeof provider.agent === "string" && provider.agent.length > 0) {
+    return { kind: "acpx", agent: provider.agent };
+  }
+  return undefined;
+}
 
 /**
  * Returns the provider-asset subdirectory names needed for `provider`, or `null`
- * when no provider filter was supplied (stage/verify every declared asset tree).
+ * when no safe filter applies (stage/verify every declared asset tree).
  */
 export function requiredProviderAssetNames(
   provider?: PackProvider,
@@ -50,17 +63,25 @@ export function requiredProviderAssetNames(
   if (!provider) return null;
   if (provider.kind === "opencode") return [];
   const agent = provider.agent;
-  if (!SAFE_PROVIDER_ASSET_NAME.test(agent)) return [];
+  if (!SAFE_PROVIDER_ASSET_NAME.test(agent)) return null;
   if (manifest) {
     const declared = Object.hasOwn(manifest.payload.providers ?? {}, agent)
       || Object.hasOwn(manifest.payload.candidateProviders ?? {}, agent);
     return declared ? [agent] : [];
   }
-  return (KNOWN_NATIVE_ASSET_PROVIDERS as readonly string[]).includes(agent) ? [agent] : [];
+  if ((KNOWN_NATIVE_ASSET_PROVIDERS as readonly string[]).includes(agent)) return [agent];
+  if ((BUILTIN_NON_ASSET_ACPX_PROVIDERS as readonly string[]).includes(agent)) return [];
+  return null;
 }
 
 /** True when a pack-relative path belongs to the staged subset for `required`. */
-export function isProviderAssetPathIncluded(relativePath: string, required: readonly string[] | null): boolean {
+export function isProviderAssetPathIncluded(
+  relativePath: string,
+  required: readonly string[] | null,
+  options?: { assetsOnly?: boolean },
+): boolean {
+  const isAssetTree = relativePath === "provider-assets" || relativePath.startsWith("provider-assets/");
+  if (options?.assetsOnly && !isAssetTree) return false;
   if (required === null) return true;
   if (relativePath === "provider-assets") return required.length > 0;
   if (!relativePath.startsWith("provider-assets/")) return true;
