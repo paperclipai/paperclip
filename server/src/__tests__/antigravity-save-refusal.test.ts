@@ -175,7 +175,7 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     const saved = await readAgent();
     expect(saved.defaultEnvironmentId).toBe(warmTasks.id);
 
-    const runEnvironment = resolveRunnerEnvironmentForRun(warmTasks, saved.adapterType, saved.adapterConfig, undefined, "google:api-key:1");
+    const runEnvironment = resolveRunnerEnvironmentForRun({ ...warmTasks, driver: "plugin" as const }, saved.adapterType, saved.adapterConfig, undefined, "google:api-key:1");
     expect(runEnvironment.config.runnerLifecycleMode).toBe("per_turn");
     const session = resolveHeartbeatNativeLifecyclePolicy({ adapterType: saved.adapterType, backend: "acpx_runtime", acpxAgent: "antigravity",
       agentMode: saved.adapterConfig.lifecycleMode, agentIdleTimeoutMs: undefined, managedAiSelected: true, taskOwned: true,

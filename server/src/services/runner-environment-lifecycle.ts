@@ -2,7 +2,7 @@ import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils"
 import type { Environment } from "@paperclipai/shared";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 import {
-  defaultsRemoteSandboxRunToWarm, requiresPerTurnNativeSession, resolveWarmProviderSelection,
+  defaultsRemoteSandboxRunToWarm, requiresPerTurnNativeSessionForConfig, resolveWarmProviderSelection,
 } from "./native-runtime/native-warm-capability.js";
 
 /** Facts the remote-sandbox warm default needs beyond the configuration. */
@@ -13,19 +13,15 @@ export interface RunnerLifecycleDefaultContext {
   managedAiCredentialIdentity?: string;
 }
 
-function harnessRequiresPerTurn(adapterConfig: Record<string, unknown>): boolean {
-  const profile = resolveWarmProviderSelection(adapterConfig) ?? (adapterConfig.provider === "acpx"
-    ? { backend: "acpx_runtime" as const, acpxAgent: adapterConfig.acpxAgent ?? "claude" } : null);
-  return profile !== null && requiresPerTurnNativeSession(profile);
-}
-
 function explicitLifecycleMode(
   config: Record<string, unknown>,
   adapterConfig: Record<string, unknown>,
   admittedLifecycleMode?: "warm" | "per_turn",
 ): "warm" | "per_turn" | undefined {
+  // Matches resolveHeartbeatNativeLifecyclePolicy: harnesses qualified only per-turn
+  // never keep a warm task or reusable sandbox lease, even over a saved warm admission.
+  if (requiresPerTurnNativeSessionForConfig(adapterConfig)) return "per_turn";
   if (admittedLifecycleMode) return admittedLifecycleMode;
-  if (harnessRequiresPerTurn(adapterConfig)) return "per_turn";
   if (config.runnerLifecycleMode === "warm" || config.runnerLifecycleMode === "per_turn") return config.runnerLifecycleMode;
   if (adapterConfig.lifecycleMode === "warm" || adapterConfig.lifecycleMode === "per_turn") return adapterConfig.lifecycleMode;
   return undefined;
@@ -95,14 +91,29 @@ export function resolveRunnerEnvironmentForRun<T extends Pick<Environment, "driv
 ): T {
   if (adapterType !== "paperclip_runner" || !["sandbox", "plugin"].includes(environment.driver)) return environment;
   const config = environment.config ?? {};
+  const perTurnOnly = requiresPerTurnNativeSessionForConfig(adapterConfig);
   const lifecycleMode = resolveRunnerLifecycleModeForRun(environment, adapterConfig, admittedLifecycleMode,
     { ...defaultContext, managedAiCredentialIdentity });
-  // Warm tasks need a managed credential identity; recovery keeps its admitted policy.
+  // Warm tasks need a managed credential identity; recovery keeps its admitted policy,
+  // except per-turn-only harnesses which never retain a warm task or reusable sandbox.
   if (environment.driver === "plugin") return { ...environment, config: { ...config,
-    runnerLifecycleMode: admittedLifecycleMode ?? (managedAiCredentialIdentity && lifecycleMode !== "per_turn" ? "warm" : "per_turn"),
+    runnerLifecycleMode: perTurnOnly
+      ? "per_turn"
+      : (admittedLifecycleMode ?? (managedAiCredentialIdentity && lifecycleMode !== "per_turn" ? "warm" : "per_turn")),
     runnerIdleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(config.runnerIdleTimeoutMs ?? adapterConfig.idleTimeoutMs),
   } };
-  if (lifecycleMode !== "warm") return environment;
+  if (lifecycleMode !== "warm") {
+    if (perTurnOnly && config.reuseLease === true) {
+      return {
+        ...environment,
+        config: {
+          ...config,
+          reuseLease: false,
+        },
+      };
+    }
+    return environment;
+  }
   return {
     ...environment,
     config: {
