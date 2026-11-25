@@ -57,8 +57,9 @@ export function neutralizeAntigravityLocalLinks(text: string, roots: readonly st
     return code(insideRoot(roots, decoded.path) ?? basename(decoded.path)) + match.slice(url.length);
   });
   for (const root of roots) {
-    // The task folder itself (with or without a trailing slash, not followed by more of a path), then its children.
-    value = value.replace(new RegExp(`${escapeRegExp(root)}/?(?![\\w/-]|\\.\\w)`, "g"), "the task folder");
+    // The task folder itself (optional trailing slash) only where the text then ends, breaks or closes
+    // a sentence; anything else after it is a child path, handled next.
+    value = value.replace(new RegExp(`${escapeRegExp(root)}/?(?=$|\\s|[.,;:!?)\\]}"'\`]+(?:\\s|$))`, "g"), "the task folder");
     value = value.split(`${root}/`).join("");
   }
   return value;
@@ -79,6 +80,9 @@ function holdFrom(value: string, roots: readonly string[]): number {
     for (let length = Math.min(prefix.length, value.length); length >= 1; length--) {
       if (value.endsWith(prefix.slice(0, length))) { keep(value.length - length); break; }
     }
+    // The folder then punctuation at the very end: a sentence end, or the start of a dot-file name.
+    const ending = new RegExp(`${escapeRegExp(root)}/?[.,;:!?)\\]}"'\`]+$`).exec(value);
+    if (ending) keep(ending.index);
   }
   return start;
 }

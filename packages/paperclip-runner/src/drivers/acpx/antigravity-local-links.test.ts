@@ -45,6 +45,11 @@ describe("Antigravity replies never link local task-folder paths", () => {
     expect(through([task], [`It ran in ${task}/.`])).toBe("It ran in the task folder.");
     expect(through([task], [`It ran in ${task}/`])).toBe("It ran in the task folder");
     expect(through([task], [`Wrote ${task}.`])).toBe("Wrote the task folder.");
+    // Child names that start with a letter outside ASCII or with punctuation stay whole, whole or split.
+    for (const name of ["报告.txt", "(notes).md", "_draft.md", ".env.example"]) {
+      const reply = `Wrote ${task}/${name} now.`;
+      for (let at = 0; at <= reply.length; at++) expect(through([task], [reply.slice(0, at), reply.slice(at)])).toBe(`Wrote ${name} now.`);
+    }
     expect(through([task], [`Wrote file://${task}/a.txt. Then file://${task}/b.txt, and file://${root}/x.json!`])).toBe("Wrote `a.txt`. Then `b.txt`, and `x.json`!");
     expect(through([task], ["Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1)."])).toBe("Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1).");
   });
