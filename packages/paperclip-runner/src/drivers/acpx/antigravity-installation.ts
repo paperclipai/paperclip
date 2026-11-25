@@ -1,7 +1,7 @@
 import { assertAcpxExecutionAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { lstatSync } from "node:fs";
 import { userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "./generated-profiles.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
@@ -16,18 +16,37 @@ export function antigravityRuntimeCachePath(closure: string, platform: string, a
   return realRuntimeCachePath(home, "antigravity", `${platform}-${architecture}`, closure, "Antigravity runtime cache must contain real directories");
 }
 
-export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch): NativeAcpxDistributionInput {
+function realDirectoryExists(path: string, message: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(message);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+function providerPackDistribution(pack: string, key: string): string | undefined {
+  if (!isAbsolute(pack) || pack.includes("\0") || resolve(pack) !== pack) throw new Error("Antigravity provider pack root must be a normalized absolute path");
+  let directory = pack;
+  for (const part of ["", "provider-assets", "antigravity", key]) {
+    directory = join(directory, part);
+    if (!realDirectoryExists(directory, "Antigravity provider pack runtime must contain real directories")) return undefined;
+  }
+  return directory;
+}
+
+export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch,
+  options: { providerPackRoot?: string } = {}): NativeAcpxDistributionInput {
   const key = `${platform}-${architecture}`;
   if (!Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, key)) throw new Error(`Antigravity has no admitted complete runtime closure for ${key}`);
   const pin = ANTIGRAVITY_DISTRIBUTION_PINS[key as keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS];
   const packaged = join(resolveRunnerProviderAssetsRoot(import.meta.url, "antigravity"), key);
   let distributionRoot = packaged;
-  try {
-    const stat = lstatSync(packaged);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Antigravity packaged runtime must be a real directory");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    distributionRoot = antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
+  if (!realDirectoryExists(packaged, "Antigravity packaged runtime must be a real directory")) {
+    distributionRoot = (options.providerPackRoot === undefined ? undefined : providerPackDistribution(options.providerPackRoot, key))
+      ?? antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
   }
   return { distributionRoot, manifestPath: join(distributionRoot, ".paperclip-antigravity-closure.json"), expectedClosureSha256: pin.closureSha256,
     executable: pin.executable, fixedArguments: [...pin.args], storeFamily: "antigravity" };

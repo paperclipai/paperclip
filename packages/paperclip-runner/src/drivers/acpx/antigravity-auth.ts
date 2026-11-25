@@ -21,6 +21,8 @@ const MAX_USED_CODE_DIGESTS = 1024;
 const REDIRECT_LOOPBACK_TIMEOUT_MS = 5_000;
 const DISALLOWED_PRINTABLE_ASCII = /[^\x21-\x7E]/;
 const LOGIN_ERROR = "Google sign-in did not complete. Start sign-in again.";
+const RUNTIME_UNAVAILABLE_ERROR = "This server does not have the current Google Antigravity runtime, so Google sign-in cannot start. Use a Google API key instead, or update Paperclip on this server.";
+const START_ERROR = "Google sign-in could not start on this server. Start sign-in again.";
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const verifiedCredentials = new Map<string, { credential: string; accountEmail: string }>();
 const activeBrowserHomes = new Set<string>();
@@ -170,7 +172,7 @@ export async function verifyAntigravityCredential(home: string, options: { signa
  * initialize/authenticate; pending provider qualification remains enforced for
  * every session and prompt by the ordinary runtime installation path.
  */
-export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLoginState {
+export function startAntigravityBrowserLogin(home: string, options: { providerPackRoot?: string } = {}): AntigravityBrowserLoginState {
   const controller = new AbortController();
   activeBrowserHomes.add(home);
   let resolveStopped: () => void;
@@ -180,9 +182,12 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
     let lease: VerifiedAcpxCommandLease | undefined;
     let child: ChildProcessWithoutNullStreams | undefined, closed: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, failPending: ((error: Error) => void) | undefined;
+    let installing = false, started = false;
     try {
       await checkAntigravityPrivateHome(home);
-      const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec());
+      installing = true;
+      const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec(process.platform, process.arch, options));
+      installing = false;
       lease = await installation.openCommand({ signal: controller.signal });
       const environment = await antigravityPrivateEnvironment(home);
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
@@ -212,7 +217,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
               if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION
                 || record(record(record(initialized.agentCapabilities)._meta).antigravity).paperclipAdmission !== 1
                 || !Array.isArray(initialized.authMethods) || !initialized.authMethods.some(method => record(method).id === "oauth-personal")) { fail(); return; }
-              phase = 2; send(2);
+              phase = 2; started = true; send(2);
             } else { phase = 3; state.submitRedirect = undefined; resolve(); }
           }
         });
@@ -347,7 +352,8 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
       state.outcome = "success";
     } catch {
-      state.outcome = "failure"; state.error = LOGIN_ERROR;
+      state.outcome = "failure";
+      state.error = controller.signal.aborted || started ? LOGIN_ERROR : installing ? RUNTIME_UNAVAILABLE_ERROR : START_ERROR;
     } finally {
       state.submitRedirect = undefined;
       if (timeout) clearTimeout(timeout);

@@ -49,7 +49,10 @@ sys.exit(os.waitstatus_to_exitcode(status))
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
-  if (provider === "google") return startAntigravityBrowserLogin(home);
+  if (provider === "google") {
+    const providerPackRoot = process.env.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim();
+    return startAntigravityBrowserLogin(home, providerPackRoot ? { providerPackRoot: path.resolve(providerPackRoot) } : {});
+  }
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
