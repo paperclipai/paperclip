@@ -85,10 +85,13 @@ const SENSITIVE_KEYS = new Set<string>([
   "webhookkey",
   "webhookurl",
   "paperclip_capability",
-  // The Claude setup-token login fields. `browserCode` carries the one-time
-  // sign-in code and `authorization_code` carries the OAuth code; neither may
-  // reach a log line.
+  // The Claude setup-token and hosted Google redirect login fields.
+  // `browserCode` carries a one-time sign-in code or loopback redirect URL,
+  // `redirectUrl` carries an OAuth callback URL, and `authorization_code`
+  // carries the OAuth code; none may reach a log line.
   "browsercode",
+  "redirecturl",
+  "redirect_url",
   "authorization_code",
   "code_verifier",
   "codeverifier",

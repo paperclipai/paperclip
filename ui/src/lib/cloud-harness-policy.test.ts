@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCloudHarnessPolicy } from "./cloud-harness-policy";
 import { isNewAgentAdapterAllowed } from "./new-agent-adapters";
 
@@ -22,11 +22,10 @@ describe("configured Cloud harness choices", () => {
     expect(changed.isCloudRunnerProviderAllowed("copilot")).toBe(false);
   });
 
-  it("keeps qualification gates when the deployment allows a candidate", () => {
+  it("allows qualified Antigravity when the deployment policy enables it, without a candidate grant", () => {
     const policy = createCloudHarnessPolicy(["antigravity_runtime"]);
-    const options = { cloud: true, harnessPolicy: policy, nativeRunnerEnabled: true, runnerProvider: "antigravity" };
-    expect(isNewAgentAdapterAllowed("paperclip_runner", options)).toBe(false);
-    expect(isNewAgentAdapterAllowed("paperclip_runner", { ...options, candidateHarnesses: [{ agent: "antigravity", model: "candidate-model" }] })).toBe(true);
+    const options = { cloud: true, harnessPolicy: policy, nativeRunnerEnabled: false, runnerProvider: "antigravity" };
+    expect(isNewAgentAdapterAllowed("paperclip_runner", options)).toBe(true);
   });
 
   it.each(["claude_local", "codex_local", "grok_local", "opencode_local", "copilot_runtime"])("offers %s", type => {
@@ -66,5 +65,36 @@ describe("configured Cloud harness choices", () => {
     expect(isNewAgentAdapterAllowed("paperclip_runner", { cloud: false, nativeRunnerEnabled: true, runnerProvider: "antigravity", candidateHarnesses: [{ agent: "antigravity", model: "candidate-model" }] })).toBe(true);
     expect(isNewAgentAdapterAllowed("paperclip_runner", { cloud: true, harnessPolicy, nativeRunnerEnabled: false, runnerProvider: "codex" })).toBe(false);
     expect(isNewAgentAdapterAllowed("paperclip_runner", { cloud: true, harnessPolicy, nativeRunnerEnabled: false, runnerProvider: "copilot" })).toBe(true);
+  });
+
+  it("offers a released Antigravity profile on Cloud without nativeRunnerEnabled or candidateHarnesses", async () => {
+    vi.resetModules();
+    vi.doMock("@paperclipai/adapter-utils", async importOriginal => {
+      const actual = await importOriginal<typeof import("@paperclipai/adapter-utils")>();
+      return {
+        ...actual,
+        PAPERCLIP_RUNNER_ACPX_PROFILES: actual.PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile =>
+          profile.value === "antigravity" ? { ...profile, qualified: true } : profile),
+      };
+    });
+    try {
+      const { isNewAgentAdapterAllowed: allowed } = await import("./new-agent-adapters");
+      const policy = createCloudHarnessPolicy(["antigravity_runtime"]);
+      expect(allowed("paperclip_runner", {
+        cloud: true,
+        harnessPolicy: policy,
+        nativeRunnerEnabled: false,
+        runnerProvider: "antigravity",
+      })).toBe(true);
+      expect(allowed("paperclip_runner", {
+        cloud: true,
+        harnessPolicy,
+        nativeRunnerEnabled: true,
+        runnerProvider: "antigravity",
+      })).toBe(false);
+    } finally {
+      vi.doUnmock("@paperclipai/adapter-utils");
+      vi.resetModules();
+    }
   });
 });

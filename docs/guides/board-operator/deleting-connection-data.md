@@ -28,7 +28,7 @@ When Paperclip's access to a Google account ends, Paperclip deletes what agents 
 
 Deletion starts at once. Runs that are still working keep their data until they finish; Paperclip then deletes it too. While work is still running, Paperclip checks again every few minutes, and every hour after the first day. If a step fails, Paperclip keeps trying until it succeeds, also after a restart. The connection's activity shows when the deletion started and when it finished.
 
-The deletion covers everything listed under "What is deleted" for that connection, for all people who used it. If you connect Google again later, Paperclip saves new data from new calls only. Data that was deleted does not come back. Agents also do not resume the conversations of those runs; their next run starts a new one.
+The connection then shows **Needs attention**, and agents are not offered its tools until someone signs in to Google again. The deletion covers everything listed under "What is deleted" for that connection, for all people who used it. If you connect Google again later, Paperclip saves new data from new calls only. Data that was deleted does not come back. Agents also do not resume the conversations of those runs; their next run starts a new one.
 
 ## Technical details from Google
 
@@ -64,6 +64,7 @@ Deletion starts right away and continues in the background. It finishes even if 
 - Approval previews, arguments and results for those calls, on the approval card and in what was passed back to the agent
 - Interactive app views from those calls
 - The whole transcript of every run that called the connection or received an approved action's result, including that run's other steps and its final summary
+- The final answer that run reported and the evidence it gave for it, such as links, quoted text and check details. The run page still shows the run's status and outcome.
 - Tool results too large to pass to the agent directly, which Paperclip saved as files for those runs
 - Error messages the app returned for those calls
 - The saved conversation that agents resume in later runs, for the runs whose transcript is deleted. The agent's next run starts a new conversation.

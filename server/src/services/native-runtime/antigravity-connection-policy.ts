@@ -38,11 +38,6 @@ export function antigravityConnectionRefusal(input: {
     return { code: ANTIGRAVITY_REMOTE_UNAVAILABLE,
       message: "Google Antigravity runs only on the Paperclip host for now. Choose the Paperclip host as this agent's environment." };
   }
-  if (input.apiKey) return null;
-  if (input.remote) {
-    return { code: ANTIGRAVITY_REMOTE_SIGN_IN_UNSUPPORTED,
-      message: "Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead." };
-  }
   return null;
 }
 

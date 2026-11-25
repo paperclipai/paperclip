@@ -79,6 +79,7 @@ export interface ToolActivityPresentation {
   technicalName?: string;
   confidence: ToolClassificationConfidence;
   summaryGroup: ToolSummaryGroup;
+  sentenceSubject?: boolean;
 }
 
 /** Families whose rows read as "<verb> <subject>", for example "Read README.md". */
@@ -93,6 +94,10 @@ export function subjectRowLabel(label: string, settledCommand: boolean): string 
   if (settledCommand) return "";
   const [action, marker] = label.split(" · ");
   return `${action!.split(" ")[0]}${marker ? ` · ${marker}` : ""}`;
+}
+
+export function sentenceRowLabel(label: string): string {
+  return label.includes(" · ") ? label : "";
 }
 
 /** "Read · failed" → "Read · retried", for a failure a later call of the same tool recovered. */
@@ -167,9 +172,10 @@ interface ExactAction {
   completed?: string;
   group?: ToolSummaryGroup;
   family?: ToolFamily;
+  sentence?: boolean;
 }
 
-const group = (key: string, singular: string, plural: string): ToolSummaryGroup => ({ key, singular, plural });
+const group =(key: string, singular: string, plural: string): ToolSummaryGroup => ({ key, singular, plural });
 
 const EXACT_ACTIONS: Record<string, ExactAction> = {
   bash: { action: "run" },
@@ -227,7 +233,7 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   // With the file as its subject the row reads "Attached u1.txt".
   register_deliverable: { action: "create", running: "Attaching a file", completed: "Attached a file" },
   // Antigravity's swarm progress lines; the subject is the whole plain sentence.
-  swarm_update: { action: "other", running: "Swarm", completed: "Swarm", family: "agent", group: group("swarm_update", "swarm update", "swarm updates") },
+  swarm_update: { action: "other", running: "Swarm", completed: "Swarm", family: "agent", sentence: true, group: group("swarm_update", "swarm update", "swarm updates") },
   finish_task: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
   paperclip_finish: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
   block_task: { action: "block", running: "Reporting a blocker", completed: "Reported a blocker" },
@@ -439,6 +445,7 @@ export function toolActivityPresentation(input: ToolActivityPresentationInput): 
     technicalName: rawName || undefined,
     confidence,
     summaryGroup,
+    ...(exact?.sentence ? { sentenceSubject: true } : {}),
   };
 }
 

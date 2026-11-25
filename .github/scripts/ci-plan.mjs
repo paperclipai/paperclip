@@ -9,6 +9,80 @@ const releaseNote = /^releases\/(beta\/)?v[^/]+\.md$/;
 const validPath = (file) => typeof file === "string" && file.length > 0
   && !file.startsWith("/") && !file.split("/").includes("..") && !file.includes("\0");
 
+export const HOSTED_SHARD_COUNTS = {
+  "ci:server": 8,
+  "ci:chat": 1,
+  "ci:workspaces-a": 1,
+  "ci:workspaces-b": 1,
+  "ci:serialized": 4,
+  "ci:e2e": 4,
+  "ci:runner-e2e-support": 2,
+  "ci:runner-package": 3,
+  "ci:runner-vitest": 1,
+};
+
+const packageLanePattern = /--package-lane=\d+\/\d+/;
+const nativeServerLanePattern = /--native-server=\d+\/\d+/;
+const labelFractionPattern = /\(\d+\/\d+\)/;
+
+export function compactHostedEntries(entries, hostedShardCounts = HOSTED_SHARD_COUNTS) {
+  const segments = [];
+  const byKey = new Map();
+  for (const entry of entries) {
+    const isSharded = Number.isInteger(entry.shard_count) && entry.shard_count > 1;
+    const isPackageLane = !isSharded && typeof entry.command === "string" && packageLanePattern.test(entry.command);
+    const isNativeServerLane = !isSharded && !isPackageLane && typeof entry.command === "string" && nativeServerLanePattern.test(entry.command);
+    if (!isSharded && !isPackageLane && !isNativeServerLane) {
+      segments.push({ kind: "single", entry });
+      continue;
+    }
+    const kind = isSharded ? "shard" : isPackageLane ? "package-lane" : "native-server-lane";
+    const key = isSharded ? `shard:${entry.task}:${entry.group ?? ""}` : `${kind}:${entry.task}`;
+    let segment = byKey.get(key);
+    if (!segment) {
+      segment = { kind, task: entry.task, entries: [] };
+      byKey.set(key, segment);
+      segments.push(segment);
+    }
+    segment.entries.push(entry);
+  }
+  const compact = [];
+  for (const segment of segments) {
+    if (segment.kind === "single") {
+      compact.push(segment.entry);
+      continue;
+    }
+    const awsCount = segment.entries.length;
+    const configured = hostedShardCounts[segment.task];
+    const target = Number.isInteger(configured) && configured >= 1 ? configured : Math.floor(awsCount / 2);
+    const hostedCount = Math.min(awsCount, Math.max(1, target));
+    const template = segment.entries[0];
+    for (let index = 0; index < hostedCount; index += 1) {
+      const entry = { ...template };
+      if (segment.kind === "shard") {
+        entry.shard_index = index;
+        entry.shard_count = hostedCount;
+        if (entry.shard_label) entry.shard_label = `${index + 1}/${hostedCount}`;
+        if (entry.group_label) entry.group_label = entry.group_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
+      } else if (segment.kind === "package-lane") {
+        entry.command = entry.command.replace(packageLanePattern, `--package-lane=${index + 1}/${hostedCount}`);
+        if (entry.lane_label) entry.lane_label = entry.lane_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
+      } else {
+        entry.command = hostedCount === 1
+          ? entry.command.replace(nativeServerLanePattern, "--native-server")
+          : entry.command.replace(nativeServerLanePattern, `--native-server=${index + 1}/${hostedCount}`);
+        if (entry.lane_label) {
+          entry.lane_label = hostedCount === 1
+            ? entry.lane_label.replace(/\s*\(\d+\/\d+\)$/, "")
+            : entry.lane_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
+        }
+      }
+      compact.push(entry);
+    }
+  }
+  return compact;
+}
+
 function validateGlobs(globs) {
   if (!Array.isArray(globs) || globs.some((glob) => !validPath(glob) || /[!{}[\]?$\\]/.test(glob))) {
     throw new Error("Unsupported task input pattern");
@@ -86,15 +160,28 @@ export function planTasks({ config, lanes, paths, mode = "enabled", forceReason 
   const jobs = Object.fromEntries(Object.entries(lanes).map(([job, entries]) => {
     const affected = entries.filter((entry) => reasons[entry.task].length > 0);
     const selected = mode === "shadow" ? entries : affected;
+    const hostedAll = compactHostedEntries(entries);
+    const hostedSelected = compactHostedEntries(selected);
+    const hosted = hostedAll.length < entries.length
+      ? {
+          hosted_matrix: { include: selected.length ? hostedSelected : hostedAll },
+          hosted_selected: hostedSelected.length,
+          hosted_total: hostedAll.length,
+        }
+      : {};
     return [job, { run: selected.length > 0, matrix: { include: selected.length ? selected : entries },
-      selected: selected.length, proposed: affected.length, total: entries.length }];
+      selected: selected.length, proposed: affected.length, total: entries.length, ...hosted }];
   }));
   return { version: 1, mode, forceReason, changed, documentation: changed.filter(documentationInput), reasons, jobs };
 }
 
 export function planSummary(plan) {
-  const rows = Object.entries(plan.jobs).map(([job, lane]) =>
-    `| ${job} | ${lane.proposed}/${lane.total} | ${lane.selected}/${lane.total} |`);
+  const rows = Object.entries(plan.jobs).map(([job, lane]) => {
+    const scheduled = lane.hosted_total !== undefined
+      ? `${lane.selected}/${lane.total} (hosted: ${lane.hosted_selected}/${lane.hosted_total})`
+      : `${lane.selected}/${lane.total}`;
+    return `| ${job} | ${lane.proposed}/${lane.total} | ${scheduled} |`;
+  });
   return ["### Incremental CI", "", `Mode: **${plan.mode}**${plan.forceReason ? ` — ${plan.forceReason}` : ""}`,
     ...(plan.diff ? [`Diff: \`${plan.diff.base}\` → \`${plan.diff.head}\` (complete Git tree comparison)`, ""] : []),
     `Documentation inputs: ${(plan.documentation ?? []).join(", ") || "none"}`,

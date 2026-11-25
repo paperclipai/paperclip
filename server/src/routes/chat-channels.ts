@@ -125,33 +125,28 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     assertBoard(req);
     const userId = actorUserId(req);
     if (!userId) throw badRequest("A signed-in Paperclip user is required");
-    // Enforce rollout here: invited nonmembers cannot read the board's
-    // experimental-settings API. A private token never bypasses this gate.
+    // Enforce rollout per provider after resolving the token: invited nonmembers
+    // cannot read the board's experimental-settings API, and GitHub/AgentMail
+    // links remain available while experimental chat connectors are off.
     const experimental = await instanceSettingsService(db).getExperimental();
-    if (!experimental.enableChatConnectors && !experimental.enableGitHubReviewBots) {
-      throw forbidden("Chat connectors are not enabled on this instance");
-    }
     return { userId, experimental };
   }
 
   function assertIdentityProviderEnabled(
     provider: string,
-    experimental: { enableChatConnectors: boolean; enableGitHubReviewBots: boolean },
+    experimental: { enableChatConnectors: boolean },
   ) {
-    const enabled = provider === "agentmail" || (provider === "github"
-      ? experimental.enableGitHubReviewBots
-      : experimental.enableChatConnectors);
+    const enabled = provider === "agentmail" || provider === "github" || experimental.enableChatConnectors;
     if (!enabled) throw forbidden("This connector is not enabled on this instance");
   }
 
   function assertChatProviderEnabledForCreate(
     provider: string,
-    experimental: { enableChatConnectors: boolean; enableGitHubReviewBots: boolean },
+    experimental: { enableChatConnectors: boolean },
   ) {
-    if (provider === "agentmail") return;
-    if (provider === "github" ? experimental.enableGitHubReviewBots : experimental.enableChatConnectors) return;
-    const setting = provider === "github" ? "GitHub review bots" : "Chat connectors";
-    throw forbidden(`${setting} is turned off on this instance, so this chat endpoint cannot be created. An instance admin turns it on in Experimental settings at /<prefix>/company/settings/instance/experimental. Agents cannot change instance settings.`);
+    if (provider === "agentmail" || provider === "github") return;
+    if (experimental.enableChatConnectors) return;
+    throw forbidden("Chat connectors is turned off on this instance, so this chat endpoint cannot be created. An instance admin turns it on in Experimental settings at /<prefix>/company/settings/instance/experimental. Agents cannot change instance settings.");
   }
 
   async function assertConnectionManager(

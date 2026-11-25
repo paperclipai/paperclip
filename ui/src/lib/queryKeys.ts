@@ -324,6 +324,9 @@ export const queryKeys = {
     detail: (issueId: string, viewId: string) => ["mcp-app-views", issueId, "detail", viewId] as const,
   },
   toolCallProgress: (issueId: string) => ["tool-call-progress", issueId] as const,
+  cloudInference: {
+    status: (companyId: string) => ["cloud-inference", companyId, "status"] as const,
+  },
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,

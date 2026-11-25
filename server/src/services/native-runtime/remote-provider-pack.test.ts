@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { createNativeRunTrace } from "./native-run-trace.js";
 import { COPILOT_CLOSURE_SHA256 } from "../../vendor/paperclip-runner/index.js";
 import { readFileSync } from "node:fs";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, COPILOT_PROVIDER_PACK_CLOSURES, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, type RemoteProviderPackRelease, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, COPILOT_PROVIDER_PACK_CLOSURES, isMissingProviderPackBinaryError, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, type RemoteProviderPackRelease, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets, verifiedProviderPackAdmissionReceipt } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -297,5 +297,74 @@ describe("standard remote provider pack discovery", () => {
     const verifyAndLink = vi.fn().mockRejectedValue(new Error("manifest mismatch"));
     await expect(useVerifiedPreinstalledRemoteProviderPack({ candidates: roots, verifyAndLink })).resolves.toBe(false);
     expect(verifyAndLink).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("durable provider-pack admission receipt validation", () => {
+  const identity = {
+    companyId: "company-1", agentId: "agent-1", runId: "run-1", sessionId: "session-1",
+    runnerInstanceId: "runner-1", environmentLeaseId: "lease-1",
+  };
+  const validState = {
+    schema: "paperclip.native-provider-pack-admission-state.v1",
+    state: "verified",
+    admissionEpoch: "12345678-1234-1234-1234-1234567890ab",
+  };
+  const validReceipt = {
+    schema: "paperclip.native-provider-pack-admission.v1",
+    stage: "session_admitted",
+    authority: "core_verified_selection",
+    companyId: identity.companyId,
+    agentId: identity.agentId,
+    runId: identity.runId,
+    sessionId: identity.sessionId,
+    runnerInstanceId: identity.runnerInstanceId,
+    runnerEnvironmentLeaseId: identity.environmentLeaseId,
+    providerPackDigest: `sha256:${"a".repeat(64)}`,
+    opencodeProxySha256: `sha256:${"b".repeat(64)}`,
+    sourceRevision: "c".repeat(40),
+  };
+
+  it("extracts exact digests from a verified matching admission receipt", () => {
+    expect(verifiedProviderPackAdmissionReceipt({ ...identity, receipt: validReceipt, state: validState })).toEqual({
+      providerPackDigest: validReceipt.providerPackDigest,
+      opencodeProxySha256: validReceipt.opencodeProxySha256,
+      sourceRevision: validReceipt.sourceRevision,
+    });
+  });
+
+  it.each([
+    ["pending state", { state: { ...validState, state: "pending" } }],
+    ["unknown state", { state: { ...validState, state: "unknown" } }],
+    ["missing state", { state: null }],
+    ["extra state key", { state: { ...validState, extra: true } }],
+    ["different runId", { receipt: { ...validReceipt, runId: "other-run" } }],
+    ["different runnerInstanceId", { receipt: { ...validReceipt, runnerInstanceId: "other-runner" } }],
+    ["different lease", { receipt: { ...validReceipt, runnerEnvironmentLeaseId: "other-lease" } }],
+    ["different session", { receipt: { ...validReceipt, sessionId: "other-session" } }],
+    ["extra receipt key", { receipt: { ...validReceipt, extra: true } }],
+    ["dirty sourceRevision", { receipt: { ...validReceipt, sourceRevision: `${"c".repeat(40)}-dirty` } }],
+    ["malformed digest", { receipt: { ...validReceipt, providerPackDigest: "sha256:short" } }],
+  ])("refuses %s", (_label, override) => {
+    expect(verifiedProviderPackAdmissionReceipt({ ...identity, receipt: validReceipt, state: validState, ...override })).toBeNull();
+  });
+
+  it("identifies only exitCode=127 pack_verifier_failed errors as a missing staged pack binary", () => {
+    const missing = Object.assign(
+      new Error("runner_remote_provider_artifact_incompatible: provider pack verification failed (exitCode=127; timedOut=false; signal=none; env: '/w/node': No such file or directory)"),
+      { failureCheck: "pack_verifier_failed" },
+    );
+    const mismatch = Object.assign(
+      new Error("runner_remote_provider_artifact_incompatible: provider pack verification failed (exitCode=3; timedOut=false; signal=none; manifest mismatch)"),
+      { failureCheck: "manifest_mismatch:runnerSourceRevision" },
+    );
+    const unavailable = Object.assign(
+      new Error("runner_remote_provider_verification_unavailable: provider pack verification unavailable after 2 verification attempts"),
+      { failureCheck: "pack_verifier_unavailable" },
+    );
+    expect(isMissingProviderPackBinaryError(missing)).toBe(true);
+    expect(isMissingProviderPackBinaryError(mismatch)).toBe(false);
+    expect(isMissingProviderPackBinaryError(unavailable)).toBe(false);
+    expect(isMissingProviderPackBinaryError(new Error("other"))).toBe(false);
   });
 });

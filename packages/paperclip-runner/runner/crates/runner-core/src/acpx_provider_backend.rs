@@ -1049,8 +1049,13 @@ pub struct AcpxCommandExecutor {
     restore_checked: bool,
     restore_error: Option<DurableRunnerError>,
     persistence_error: Option<DurableRunnerError>,
+    /// Provider outputs read in the current poll changed the in-memory state
+    /// after its last save. The poll saves them once before it returns.
+    polled_state_unsaved: bool,
     #[cfg(test)]
     fail_after_state_rename: bool,
+    #[cfg(test)]
+    state_writes: std::cell::Cell<usize>,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
     parked_relaunch: bool,
@@ -1104,8 +1109,11 @@ impl AcpxCommandExecutor {
             turn_accepts_provider_turns: false,
             restore_error: None,
             persistence_error: None,
+            polled_state_unsaved: false,
             #[cfg(test)]
             fail_after_state_rename: false,
+            #[cfg(test)]
+            state_writes: std::cell::Cell::new(0),
             launch_profile: config.acpx_launch_profile.clone(),
         }
     }
@@ -1693,7 +1701,28 @@ impl AcpxCommandExecutor {
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))
             .and_then(|state| self.write_state(state));
-        self.record_state_write(result)
+        self.record_state_write(result)?;
+        self.polled_state_unsaved = false;
+        Ok(())
+    }
+
+    /// Keeps the effects of one provider output in memory until the poll
+    /// saves. It applies the same state transition as `save_state`, so the
+    /// event order does not depend on when the save occurs.
+    fn stage_polled_state(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        if let Some(state) = self.state.as_mut() {
+            state.leave_finished_provider_turn_wait()?;
+        }
+        self.polled_state_unsaved = true;
+        Ok(())
+    }
+
+    fn save_polled_state(&mut self) -> Result<(), DurableRunnerError> {
+        if self.polled_state_unsaved {
+            self.save_state()?;
+        }
+        Ok(())
     }
 
     fn commit_staged_state(&mut self, state: AcpxDurableState) -> Result<(), DurableRunnerError> {
@@ -1741,6 +1770,8 @@ impl AcpxCommandExecutor {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to protect ACPX provider state: {error}"))
         })?;
+        #[cfg(test)]
+        self.state_writes.set(self.state_writes.get() + 1);
         Ok(())
     }
 
@@ -2969,7 +3000,75 @@ impl AcpxCommandExecutor {
         }
     }
 
+    /// Reads up to `count` provider outputs and saves their state once, before
+    /// any event derived from them can leave this executor. An output that
+    /// ends a turn, calls a tool, or reports a lost provider turn is saved at
+    /// once, as is a provider failure. A tool rejection that the session sends
+    /// to the provider waits until the outputs read before it are saved.
     fn poll_provider_events(
+        &mut self,
+        count: usize,
+        disconnected: bool,
+    ) -> Result<(), DurableRunnerError> {
+        if let Some(session) = self.session.as_mut() {
+            session.hold_tool_rejections();
+        }
+        let polled = self.poll_provider_outputs(count, disconnected);
+        let saved = self.save_polled_state();
+        let released = if saved.is_ok() {
+            self.release_tool_rejections(false).map(|_| ())
+        } else {
+            Ok(())
+        };
+        polled?;
+        saved?;
+        released
+    }
+
+    /// Sends held provider tool rejections. Returns `true` when the provider
+    /// failed and the poll must stop.
+    fn release_tool_rejections(&mut self, keep_holding: bool) -> Result<bool, DurableRunnerError> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(false);
+        };
+        match session.release_tool_rejections(keep_holding) {
+            Ok(()) => Ok(false),
+            Err(error) => {
+                self.fail_polled_provider(&error)?;
+                Ok(true)
+            }
+        }
+    }
+
+    fn fail_polled_provider(
+        &mut self,
+        error: &crate::local_runner::LocalRunnerError,
+    ) -> Result<(), DurableRunnerError> {
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX failed provider has durable state");
+        state.expire_runtime_requests("provider_process_lost", false)?;
+        let failed_turn = state.active_turn_id.take();
+        state.lifecycle = "closed".to_owned();
+        state.provider_exit_unconfirmed = true;
+        if let Some(turn_id) = failed_turn {
+            let message = crate::durable::redact_text(&error.to_string());
+            state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
+                payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
+                    "code":"acpx_provider_transport_failed","message":message,
+                    "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
+            state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
+                payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
+        }
+        self.context.provider_turn_id = None;
+        // A failed transport cannot attest escaped provider cleanup.
+        // Drop the closed process owner; later cleanup must prove the lifetime fence.
+        self.session = None;
+        self.save_state()
+    }
+
+    fn poll_provider_outputs(
         &mut self,
         count: usize,
         disconnected: bool,
@@ -2992,28 +3091,7 @@ impl AcpxCommandExecutor {
             let events = match events {
                 Ok(events) => events,
                 Err(error) => {
-                    let state = self
-                        .state
-                        .as_mut()
-                        .expect("ACPX failed provider has durable state");
-                    state.expire_runtime_requests("provider_process_lost", false)?;
-                    let failed_turn = state.active_turn_id.take();
-                    state.lifecycle = "closed".to_owned();
-                    state.provider_exit_unconfirmed = true;
-                    if let Some(turn_id) = failed_turn {
-                        let message = crate::durable::redact_text(&error.to_string());
-                        state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
-                            payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
-                                "code":"acpx_provider_transport_failed","message":message,
-                                "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
-                        state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
-                            payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
-                    }
-                    self.context.provider_turn_id = None;
-                    // A failed transport cannot attest escaped provider cleanup.
-                    // Drop the closed process owner; later cleanup must prove the lifetime fence.
-                    self.session = None;
-                    self.save_state()?;
+                    self.fail_polled_provider(&error)?;
                     return Ok(());
                 }
             };
@@ -3021,7 +3099,12 @@ impl AcpxCommandExecutor {
                 break;
             };
             let mut provider_turn_settled = false;
+            let mut gates_effect = false;
             for event in events {
+                gates_effect |= matches!(
+                    &event,
+                    crate::acpx_provider_state::AcpxProviderStateEvent::ToolCall { .. }
+                );
                 if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
                     turn_id,
                 } = &event
@@ -3110,6 +3193,7 @@ impl AcpxCommandExecutor {
                     accepted.push(event);
                 }
                 let turn_ended = terminal.is_some();
+                gates_effect |= turn_ended || provider_lost;
                 let mut run_terminal = None;
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
@@ -3171,7 +3255,18 @@ impl AcpxCommandExecutor {
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
-            self.save_state()?;
+            let session_holds_rejections = self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::has_held_tool_rejections);
+            if gates_effect || session_holds_rejections {
+                self.save_state()?;
+                if self.release_tool_rejections(true)? {
+                    return Ok(());
+                }
+            } else {
+                self.stage_polled_state()?;
+            }
         }
         Ok(())
     }
@@ -3591,12 +3686,16 @@ pub(crate) fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRu
 #[path = "tests/acpx_park_relaunch.rs"]
 pub(crate) mod park_relaunch_tests;
 
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_poll_state_saves.rs"]
+mod poll_state_save_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temporary_directory(label: &str) -> PathBuf {
+    pub(super) fn temporary_directory(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3628,7 +3727,7 @@ mod tests {
         }
     }
 
-    fn test_config(
+    pub(super) fn test_config(
         state_dir: &Path,
         launch_profile: Option<AcpxLaunchProfile>,
     ) -> DurableRunnerConfig {
@@ -6262,17 +6361,16 @@ mod tests {
             config.validate().map_err(|error| error.to_string())?;
             Ok::<_, String>(config)
         };
-        // Pending: an ordinary launch is refused until an operator grant.
-        let pending = launch(profile).unwrap_err();
-        assert!(pending.contains("qualification is pending"), "{pending}");
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
         let mut granted = profile.clone();
         granted.candidate_admission = Some(antigravity_grant("run-1"));
         let mut candidate_config = config.clone();
         candidate_config.acpx_launch_profile = Some(granted.clone());
-        candidate_config.validate().unwrap();
-        launch(&granted).unwrap();
 
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         // Released: the ordinary launch needs no grant ...
         let ordinary = launch(profile).unwrap();
         assert!(ordinary.candidate_admission.is_none());
@@ -6288,7 +6386,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn released_antigravity_without_grant_restores_suspends_and_attaches_a_prior_activation() {
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         let (directory, config, value, sentinel) =
             ordinary_antigravity_fixture("antigravity-released-cold", "run-2");
         let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
@@ -6322,7 +6419,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn released_antigravity_without_grant_rotates_a_live_runner_authority() {
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         let (directory, config, value, sentinel) =
             ordinary_antigravity_fixture("antigravity-released-warm", "run-1");
         let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);

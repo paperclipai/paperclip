@@ -256,6 +256,7 @@ export interface ConnectionGrant {
       repositorySelection: "all" | "selected" | "mixed" | "none";
       installationIds: string[];
       installationOwnerLogins: string[];
+      suspendedInstallationOwnerLogins?: string[];
       /** Repository metadata visible to this credential; refreshed from GitHub. */
       repositories?: Array<{
         id: string;
@@ -429,6 +430,13 @@ export interface ToolConnectionRemovalSummary {
     manageUrl: string;
   } | null;
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
+}
+
+export interface AiSignInRemoval {
+  provider: "google";
+  savedSignIn: "deleted" | "kept_shared" | "not_deleted";
+  providerSignIn: "still_valid";
 }
 
 export type ManagedGoogleRevocationOutcome =
@@ -452,6 +460,7 @@ export interface ManagedGoogleAccessRemoval {
 
 export type ConnectionGrantRevocationResult = ConnectionGrant & {
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
 };
 
 export interface ToolConnectionRemovalResult {
@@ -1584,6 +1593,7 @@ export type ToolAccessReasonCode =
   | "deny_policy_block"
   | "deny_run_context_mismatch"
   | "deny_missing_agent"
+  | "github_repo_outside_app_installations"
   | "rate_limited";
 
 export interface ToolAccessSelector {

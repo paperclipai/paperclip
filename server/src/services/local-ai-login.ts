@@ -6,10 +6,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, isNotNull, lte, notInArray, sql } from "drizzle-orm";
 import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, databaseWorkScopeKey, environments, type Db } from "@paperclipai/db";
-import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
+import { browserCodeSchema, type AiConnectionLoginIntent, type LocalAiLoginAttempt, type LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
+import { environmentService } from "./environments.js";
 import { readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
 import { logActivity } from "./activity-log.js";
 import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-browser-login.js";
@@ -240,8 +241,22 @@ export function localAiLoginService(db: Db) {
           entityType: "adapter_auth_session", entityId: existing.id, details: { provider: intent.provider },
         });
       }
-      const [environment] = await tx.select().from(environments)
+      let [environment] = await tx.select().from(environments)
         .where(and(eq(environments.driver, "local"), eq(environments.status, "active"))).limit(1);
+      if (!environment && intent.provider === "google") {
+        // Hosted Google sign-in runs inside Paperclip's pinned ACP closure rather
+        // than a host CLI, so stacks without an active `local` environment row
+        // (for example managed-sandbox-only Cloud stacks) still record an owning
+        // environment FK without mutating unrelated execution routing.
+        [environment] = await tx.select().from(environments)
+          .where(eq(environments.status, "active")).limit(1);
+        if (!environment) {
+          const ensured = await tx.transaction((savepoint) =>
+            environmentService(savepoint as unknown as Db).ensureLocalEnvironment(companyId),
+          );
+          environment = { id: ensured.id } as typeof environment;
+        }
+      }
       if (!environment) throw unprocessable("No active local environment is available.");
       const id = randomUUID();
       const directory = loginHome(id);
@@ -311,7 +326,55 @@ export function localAiLoginService(db: Db) {
     }
   }
 
-  async function submitCode(companyId: string, userId: string, id: string, code: string) {
+  async function submitCode(
+    companyId: string,
+    userId: string,
+    id: string,
+    code: string,
+    policy: { allowLocalProviders?: boolean; allowHostedGoogle?: boolean } = {},
+  ) {
+    const allowLocalProviders = policy.allowLocalProviders ?? true;
+    const allowHostedGoogle = policy.allowHostedGoogle ?? true;
+    const [existing] = await db.select().from(adapterAuthSessions).where(and(
+      eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
+      eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+    ));
+    if (!existing) throw notFound("Local sign-in attempt not found.");
+    const isClaude = existing.adapterType === "claude_local";
+    const isGoogle = existing.adapterType === "paperclip_runner" && existing.aiConnection?.provider === "google";
+    if (!isClaude && !isGoogle) throw notFound("Local sign-in attempt not found.");
+    if (isClaude && !allowLocalProviders) {
+      throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+    }
+    if (isGoogle && !allowLocalProviders && !allowHostedGoogle) {
+      throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+    }
+
+    if (isGoogle) {
+      if (existing.status !== "waiting_for_user" || existing.failureReason === RETIREMENT_PENDING || !existing.expiresAt || existing.expiresAt.getTime() <= Date.now()) {
+        throw unprocessable("This sign-in attempt has expired or was cancelled. Start sign-in again.");
+      }
+      const login = browserLogins.get(id);
+      if (!login?.authorizationUrl || !login.submitRedirect || login.outcome) {
+        throw unprocessable("This sign-in attempt cannot accept a redirect URL. Start sign-in again.");
+      }
+      // Run the loopback relay outside any database transaction so a slow or
+      // stalled loopback listener can never hold a PostgreSQL row lock open.
+      try {
+        await login.submitRedirect(code);
+      } catch (error) {
+        throw unprocessable(error instanceof Error ? error.message : "Google sign-in did not complete. Start sign-in again.");
+      }
+      await logActivity(db, {
+        companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_code_submitted",
+        entityType: "adapter_auth_session", entityId: id, details: { provider: "google" },
+      });
+      return;
+    }
+
+    if (!browserCodeSchema.safeParse(code).success) {
+      throw unprocessable("The browser code is invalid.");
+    }
     await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -319,7 +382,7 @@ export function localAiLoginService(db: Db) {
         eq(adapterAuthSessions.adapterType, "claude_local"),
       )).for("update");
       if (!session) throw notFound("Local sign-in attempt not found.");
-      if (session.status !== "waiting_for_user" || !session.expiresAt || session.expiresAt.getTime() <= Date.now())
+      if (session.status !== "waiting_for_user" || session.failureReason === RETIREMENT_PENDING || !session.expiresAt || session.expiresAt.getTime() <= Date.now())
         throw unprocessable("This sign-in attempt has expired or was cancelled. Start sign-in again.");
       const login = browserLogins.get(id);
       if (!login?.authorizationUrl || !login.submitCode || login.outcome)

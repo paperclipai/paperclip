@@ -1492,7 +1492,7 @@ describe("AppDefinition catalog", () => {
   });
   it("mints AWS credentials instead of placing stored keys in headers", () => {
     const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
-    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    expect(aws.experimentalFeatureKey).toBeUndefined();
     for (const method of aws.methods) {
       expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
       expect(method.keyPlacement).toBeUndefined();
@@ -1672,4 +1672,14 @@ it("limits explicit DCR registration preference to remote MCP OAuth methods with
   const nonMcp = structuredClone(entry);
   nonMcp.methods[0]!.transport = "rest_api";
   expect(appDefinitionSchema.safeParse(nonMcp).success).toBe(false);
+});
+
+it("uses Slack MCP user OAuth endpoints and includes user-scope and MCP prerequisites", () => {
+  const slack = getConnectableAppDefinition("slack")!;
+  const mcpOAuth = slack.methods.find((method) => method.key === "mcp-oauth")!;
+  expect(mcpOAuth.defaults?.authorizationEndpoint).toBe("https://slack.com/oauth/v2_user/authorize");
+  expect(mcpOAuth.defaults?.tokenEndpoint).toBe("https://slack.com/api/oauth.v2.user.access");
+  expect(mcpOAuth.defaults?.scopesHint).toContain("search:read.public");
+  expect(mcpOAuth.guidanceMd).toContain("User Token Scopes");
+  expect(mcpOAuth.guidanceMd).toContain("Model Context Protocol");
 });

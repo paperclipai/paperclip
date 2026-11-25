@@ -1,4 +1,5 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
+import { normalizeOAuthProviderError } from "../services/tool-access/oauth/provider-errors.js";
 import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
@@ -218,17 +219,24 @@ export function githubInstallationRecovery(code: string | null | undefined, deta
   return installationUrl || managementUrl ? { installationUrl, managementUrl } : null;
 }
 
+function safeOAuthProviderErrorCode(value: unknown): string | null {
+  const normalized = normalizeOAuthProviderError(value);
+  return normalized && normalized !== "unrecognized" ? normalized : null;
+}
+
 export function connectionIntentOAuthOutcomeHtml(input: {
   interactionId: string | null;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
   openerOrigin?: string | null;
   code?: string | null;
+  providerError?: string | null;
   recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
 }) {
   // The callback window is only a signal. Connection identity and every
   // authorization URL stay server-side; the opener refreshes the task from the
   // interaction id instead of trusting provider-window data.
+  const safeProviderError = input.outcome === "connected" ? null : safeOAuthProviderErrorCode(input.providerError);
   const message = JSON.stringify({
     type: "paperclip.connection-intent.oauth",
     ...(input.interactionId ? { interactionId: input.interactionId } : {}),
@@ -236,6 +244,7 @@ export function connectionIntentOAuthOutcomeHtml(input: {
     ...(input.outcome === "failed" && input.code && OAUTH_FAILURE_CODE_PATTERN.test(input.code)
       ? { code: input.code }
       : {}),
+    ...(safeProviderError ? { providerError: safeProviderError } : {}),
     ...(input.outcome === "failed" && input.code === "github_installation_required" && input.recovery
       ? { recovery: input.recovery }
       : {}),
@@ -370,6 +379,7 @@ export function toolAccessRoutes(
       outcome: "connected" | "declined" | "failed";
       openerOrigin?: string | null;
       code?: string | null;
+      providerError?: string | null;
       recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
     },
   ) {
@@ -561,10 +571,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
     outcome: "failed" | "denied",
     code?: string | null,
     providerRecovery?: { installationUrl?: unknown; managementUrl?: unknown },
+    providerError?: string | null,
   ) {
     const detailPermissionsPath = await oauthAppPath(connection.companyId, connection.id);
     const params = new URLSearchParams({ oauth: outcome });
     if (code) params.set("code", code);
+    const safeProviderError = safeOAuthProviderErrorCode(providerError);
+    if (safeProviderError) params.set("provider_error", safeProviderError);
     const addGitHubRecoveryUrls = (target: URLSearchParams) => {
       if (code !== "github_installation_required") return;
       for (const [key, value] of [
@@ -598,6 +611,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       oauth: outcome,
     });
     if (code) setupParams.set("code", code);
+    if (safeProviderError) setupParams.set("provider_error", safeProviderError);
     addGitHubRecoveryUrls(setupParams);
     const setupRoute = connection.credentialSource === "vercel_connect"
       ? "/apps/vercel-connect"
@@ -1658,6 +1672,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? callbackError.details as Record<string, unknown>
         : null;
       const callbackErrorCode = typeof details?.code === "string" ? details.code : null;
+      const callbackProviderError = safeOAuthProviderErrorCode(details?.providerError);
       const callbackFailureCode = callbackErrorCode
         ?? (callbackError instanceof HttpError ? `oauth_callback_http_${callbackError.status}` : "oauth_callback_failed");
       await logActivity(db, {
@@ -1669,6 +1684,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         entityId: pendingState.connectionId,
         details: {
           code: callbackFailureCode,
+          ...(callbackProviderError ? { providerError: callbackProviderError } : {}),
           status: callbackError instanceof HttpError ? callbackError.status : 500,
           // HttpError messages are Paperclip-authored. Provider-authored
           // error_description/error_uri values are never read above and cannot
@@ -1693,6 +1709,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           outcome,
           openerOrigin: pendingState.returnTo,
           code: callbackFailureCode,
+          providerError: callbackProviderError,
           recovery: githubInstallationRecovery(callbackErrorCode, details),
         });
         return;
@@ -1701,6 +1718,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
         pendingConnection,
         callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
         callbackFailureCode,
+        undefined,
+        callbackProviderError,
       ));
       return;
     }
@@ -2113,7 +2132,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
-      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}) },
+      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}), ...(grant.signInRemoval ? { signInRemoval: grant.signInRemoval } : {}) },
     });
     res.json(grant);
   });

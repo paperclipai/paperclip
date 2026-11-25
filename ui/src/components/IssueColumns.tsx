@@ -21,6 +21,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { issueUpdatedTime } from "../lib/issue-filters";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Badge } from "@/components/ui/badge";
@@ -66,7 +67,7 @@ export function issueColumnDescription(
 }
 
 export function issueActivityTimestamp(issue: Issue): string {
-  return timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
+  return timeAgo(issueUpdatedTime(issue));
 }
 
 export function issueActivityText(issue: Issue): string {

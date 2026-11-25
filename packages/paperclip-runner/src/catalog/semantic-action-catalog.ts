@@ -30,6 +30,10 @@ import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
 import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
+import {
+  REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH,
+  REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH,
+} from "../protocol-actions/request-human-input.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -261,8 +265,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
             "item_verdicts",
           ],
         },
-        title: text("Interaction card title.", 300),
-        prompt: text("Question or decision prompt.", 10_000),
+        title: text("Interaction card title.", REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH),
+        prompt: text("Question or decision prompt.", REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH),
         payload: openObject,
         resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
         targetRevisionId: nullableText(

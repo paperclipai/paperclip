@@ -28,12 +28,13 @@ import {
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
-import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
+import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate, restoreHoldPredicate, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
@@ -293,6 +294,7 @@ export async function admitExplicitNativeContinuation(input: {
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate(),
+      restoreHoldPredicate(),
       blocker?.recoveryActionId ? eq(issueRecoveryActions.id, blocker.recoveryActionId) : undefined) : undefined,
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(executionBlockerPredicate(), and(
@@ -424,8 +426,9 @@ export async function admitExplicitNativeContinuation(input: {
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||
         (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
+    let historicalAdapter: string | null = null;
     if (legacyUserTurn && !failedPreparation) {
-      const historicalAdapter = await historicalAdapterType(db, run);
+      historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
@@ -581,7 +584,14 @@ export async function admitExplicitNativeContinuation(input: {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
         // A missing process identity is not evidence that a provider exited.
+        // Remote HTTP gateway adapters (hermes_gateway) never spawn a local OS child process;
+        // require a saved terminal response from the gateway before clearing the hold so an
+        // unconfirmed timeout cannot overlap with a still-running remote run.
+        const remoteGatewayStopped = legacyUserTurn
+          && historicalAdapter === "hermes_gateway"
+          && hasHermesGatewayTerminalStopProof(run.resultJson);
         if (!run.processPid && !run.processGroupId &&
+            !remoteGatewayStopped &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run) &&
             !await nativeRunNeverLaunched(db, run) &&
