@@ -283,7 +283,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: appName, href: appTabHref(connectionId, "permissions") },
       { label: appTabLabel(activeTab) },
     ]);

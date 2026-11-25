@@ -342,7 +342,7 @@ test.describe("native chat adapter UI", () => {
     });
 
     await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible(
+    await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible(
       { timeout: 30_000 },
     );
     const connector = await findConnectorBySearch(page, "GitHub", "github");
@@ -367,7 +367,7 @@ test.describe("native chat adapter UI", () => {
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=github`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
     await expect(
-      page.getByRole("heading", { name: "Connectors" }),
+      page.getByRole("heading", { name: "Plugins" }),
     ).toBeVisible();
     await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));

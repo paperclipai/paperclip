@@ -148,7 +148,7 @@ export const ConnectFromExistingCatalog: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByLabelText("AI account settings")).toBeVisible();
     await expect(canvas.getByRole("heading", { name: "My additional Claude account" })).toBeVisible();
-    await userEvent.click(canvas.getByRole("link", { name: "Connectors" }));
+    await userEvent.click(canvas.getByRole("link", { name: "Plugins" }));
     await expect(await canvas.findByRole("button", { name: "Open My additional Claude account permissions" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Open My Claude subscription permissions" })).toBeVisible();
   },

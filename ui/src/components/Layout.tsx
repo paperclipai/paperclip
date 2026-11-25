@@ -70,6 +70,7 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
   "browse",
   "connections",
   "assistant-connection",

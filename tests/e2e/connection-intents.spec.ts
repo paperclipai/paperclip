@@ -288,7 +288,7 @@ test("store setup and task connection intent share one fake provider through con
 
     // Entry point one: connect and test the provider through the Connections store.
     await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({
       timeout: 30_000,
     });
     const customConnector = page

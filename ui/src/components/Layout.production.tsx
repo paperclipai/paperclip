@@ -91,6 +91,7 @@ function getCompanyPathSegments(
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
   "browse",
   "connections",
   "connect",

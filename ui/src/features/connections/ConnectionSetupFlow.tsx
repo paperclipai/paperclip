@@ -1186,7 +1186,7 @@ function StandardConnectionSetupFlow({
   useEffect(() => {
     if (host !== "page") return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: vercelConnectMode ? "Vercel Connect" : byoOnly ? "Connect your own tool" : "Connect an app" },
     ]);
     return () => setBreadcrumbs([]);

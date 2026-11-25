@@ -14,7 +14,7 @@ function pageFixture(missing?: string, connectorsInFlyout = false) {
       const locator = {
         filter: () => locator,
         first: () => locator,
-        isVisible: async () => !(connectorsInFlyout && name === "Connectors" && !actions.includes("More workspace pages")),
+        isVisible: async () => !(connectorsInFlyout && name === "Plugins" && !actions.includes("More workspace pages")),
         getByRole: (_r: string, o: { name: string }) => ({
           click: async () => {
             if (o.name === missing) throw new Error("Missing real control");
@@ -44,7 +44,7 @@ describe("finite held external diagnostics and visible entry correction", () => 
     const { page, actions } = pageFixture();
     await enterGenericMcpThroughCatalog(page, "RUN");
     expect(actions).toEqual([
-      "Connectors",
+      "Plugins",
       "Connect",
       "Connect your own MCP server",
       "actual /RUN/apps/byo",
@@ -55,7 +55,7 @@ describe("finite held external diagnostics and visible entry correction", () => 
     await enterGenericMcpThroughCatalog(page, "RUN");
     expect(actions).toEqual([
       "More workspace pages",
-      "Connectors",
+      "Plugins",
       "Connect",
       "Connect your own MCP server",
       "actual /RUN/apps/byo",
@@ -63,7 +63,7 @@ describe("finite held external diagnostics and visible entry correction", () => 
   });
   it("does not rescue a missing catalog entry with direct navigation", async () => {
     for (const name of [
-      "Connectors",
+      "Plugins",
       "Connect",
       "Connect your own MCP server",
     ]) {

@@ -9,9 +9,9 @@ export function ConnectorsToolbar({ query, onQueryChange, source, onSourceChange
   onSourceChange: (value: CatalogSource) => void;
 }) {
   return <header data-canonical-toolbar="connectors" role="toolbar" aria-label="Connectors controls" className="flex flex-wrap items-center gap-3">
-    <div className="w-full">
+    <CatalogSourceFilters source={source} onChange={onSourceChange} />
+    <div className="ml-auto w-full sm:w-80">
       <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search connectors" placeholder="Search connectors…" inputType="search" />
     </div>
-    <CatalogSourceFilters source={source} onChange={onSourceChange} />
   </header>;
 }

@@ -156,7 +156,7 @@ test.describe("native chat adapter UI catalog and management", () => {
 
       await page.goto(`/${seed.prefix}/apps`);
       await expect(
-        page.getByRole("heading", { name: "Connectors" }),
+        page.getByRole("heading", { name: "Plugins" }),
       ).toBeVisible({ timeout: 30_000 });
       let connector = await findConnectorBySearch(page, provider.name, provider.slug);
       if (provider.provider === "github") {

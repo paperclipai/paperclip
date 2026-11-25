@@ -19,7 +19,7 @@ export function AppsReview() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Review" },
     ]);
     return () => setBreadcrumbs([]);

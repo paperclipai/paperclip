@@ -57,7 +57,7 @@ export function AppsSidebar() {
         </Link>
         <div className="flex items-center gap-2 px-2 py-1">
           <AppWindow className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">Connectors</span>
+          <span className="flex-1 truncate text-sm font-bold text-foreground">Plugins</span>
         </div>
       </div>
 

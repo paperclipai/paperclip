@@ -115,7 +115,7 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
   const customConnector = page
     .getByRole("list", { name: "Connector list" })
     .getByRole("listitem")
@@ -248,7 +248,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
