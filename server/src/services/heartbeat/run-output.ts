@@ -1,6 +1,7 @@
 import { notifyActiveRunSilence } from "../live-run-recovery-notifications.js";
 import { retryThroughStorageOutage, storageOutageWaitFor } from "../../storage/storage-unavailable.js";
 import { eq } from "drizzle-orm";
+import { logger } from "../../middleware/logger.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterInvocationMeta, AdapterRuntimeEvent } from "../../adapters/index.js";
 import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../log-redaction.js";
@@ -85,6 +86,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
   let persistedLogBytes = Number(run.logBytes ?? 0);
   let progressWrite: Promise<void> | null = null;
   let recordingFailureReported = false;
+  let progressFailureStreak = false;
   let deferredLogRecovery: Promise<void> | null = null;
   const flushOutputProgress = async (opts?: { force?: boolean }) => {
     if (progressWrite) {
@@ -206,7 +208,21 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           stream,
           bytes: persistedLogBytes,
         };
-        await flushOutputProgress();
+        // The chunk is already committed. A failed throttled progress write
+        // must not reject onLog: the progress stays pending, and the next
+        // chunk or the forced flush at finalization writes it.
+        await flushOutputProgress().then(
+          () => {
+            progressFailureStreak = false;
+          },
+          (error: unknown) => {
+            if (!progressFailureStreak) {
+              progressFailureStreak = true;
+              logger.warn({ err: error, runId: run.id }, "Failed to record run output progress; will retry");
+            }
+            void reportRecordingFailure();
+          },
+        );
 
         // Streamed CLI output is real run activity: keep the in-memory
         // runtime status ("Working... / X ago") fresh between structured

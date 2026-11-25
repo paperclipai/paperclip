@@ -475,6 +475,59 @@ describe("object-backed diagnostic recording", () => {
   });
 });
 
+describe("run output progress write failures", () => {
+  it("resolves onLog and keeps the progress pending when the throttled progress write fails", async () => {
+    const { publishLiveEvent } = await import("../live-events.js");
+    vi.mocked(publishLiveEvent).mockClear();
+    const row = { ...newRunRow };
+    const base = createRunRowDb(row);
+    let databaseDown = true;
+    const db = {
+      ...base,
+      async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> {
+        if (databaseDown) {
+          throw Object.assign(new Error("the database system is shutting down"), { code: "57P03" });
+        }
+        return write(base);
+      },
+    } as unknown as Db;
+    const events = vi.fn(async () => undefined);
+    const output = createHeartbeatRunOutput(db, {
+      run: row as Run,
+      runId: row.id!,
+      issueId: null,
+      runLogStore: {
+        begin: async () => ({ store: "local_file", logRef: "company/agent/run.ndjson" }),
+        append: async (_handle, event) => Buffer.byteLength(event.chunk),
+        enqueue: undefined,
+        flush: async () => undefined,
+      },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      secretKeys: new Set(),
+      appendRunEvent: events,
+      getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    const handlers = await output.begin(row as Run);
+
+    await expect(handlers.onLog("stdout", "first\n")).resolves.toBeUndefined();
+    await expect(handlers.onLog("stderr", "second\n")).resolves.toBeUndefined();
+
+    const logEvents = vi.mocked(publishLiveEvent).mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === "heartbeat.run.log");
+    expect(logEvents.map(event => event.payload.seq)).toEqual([1, 2]);
+    expect(output.outputProgressState.pending).toMatchObject({ seq: 2, stream: "stderr", bytes: 13 });
+    expect(row.lastOutputSeq).toBe(0);
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }),
+      expect.objectContaining({ level: "warn", message: "Run log persistence is incomplete" }));
+
+    databaseDown = false;
+    await output.flushOutputProgress({ force: true });
+    expect(row).toMatchObject({ lastOutputSeq: 2, lastOutputBytes: 13, lastOutputStream: "stderr" });
+    expect(output.outputProgressState.pending).toBeNull();
+  });
+});
+
 describe("secret-bound environment values in local run output", () => {
   it("masks resolved secret values in the stored log, excerpt, live event, and adapter events", async () => {
     const { publishLiveEvent } = await import("../live-events.js");
