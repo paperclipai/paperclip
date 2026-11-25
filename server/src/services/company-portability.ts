@@ -5050,7 +5050,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
-    const existingProjectNameToProject = new Map<string, { id: string; name: string }>();
+    const existingProjectNameToProject = new Map<string, { id: string; name: string } | null>();
     const existingProjectSlugs = new Set<string>();
 
     if (input.target.mode === "existing_company") {
@@ -5067,8 +5067,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
         }
         const nameKey = projectNameMatchKey(existing.name);
-        if (nameKey && !existingProjectNameToProject.has(nameKey)) {
-          existingProjectNameToProject.set(nameKey, { id: existing.id, name: existing.name });
+        if (nameKey) {
+          existingProjectNameToProject.set(
+            nameKey,
+            existingProjectNameToProject.has(nameKey) ? null : { id: existing.id, name: existing.name },
+          );
         }
         existingProjectSlugs.add(existing.urlKey);
       }
@@ -5151,10 +5154,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.projects) {
+      const matchedExistingProjectIds = new Set<string>();
       for (const manifestProject of manifest.projects) {
-        const existing = existingProjectSlugToProject.get(manifestProject.slug)
-          ?? existingProjectNameToProject.get(projectNameMatchKey(manifestProject.name))
-          ?? null;
+        const bySlug = existingProjectSlugToProject.get(manifestProject.slug);
+        if (bySlug) matchedExistingProjectIds.add(bySlug.id);
+      }
+      for (const manifestProject of manifest.projects) {
+        const bySlug = existingProjectSlugToProject.get(manifestProject.slug) ?? null;
+        const byName = bySlug ? null : existingProjectNameToProject.get(projectNameMatchKey(manifestProject.name)) ?? null;
+        const existing = bySlug ?? (byName && !matchedExistingProjectIds.has(byName.id) ? byName : null);
+        if (byName && existing) matchedExistingProjectIds.add(byName.id);
         if (!existing) {
           projectPlans.push({
             slug: manifestProject.slug,
@@ -6018,20 +6027,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const unclaimedWorkspaces = planProject.action === "update"
             ? [...await projects.listWorkspaces(projectId)]
             : [];
-          const reusedWorkspaceByKey = new Map<string, (typeof unclaimedWorkspaces)[number]>();
-          const claimWorkspace = (key: string, matches: (existing: (typeof unclaimedWorkspaces)[number]) => boolean) => {
+          type ManifestWorkspace = (typeof manifestProject.workspaces)[number];
+          const reusedWorkspaceByEntry = new Map<ManifestWorkspace, (typeof unclaimedWorkspaces)[number]>();
+          const claimWorkspace = (entry: ManifestWorkspace, matches: (existing: (typeof unclaimedWorkspaces)[number]) => boolean) => {
             const index = unclaimedWorkspaces.findIndex(matches);
-            if (index >= 0) reusedWorkspaceByKey.set(key, unclaimedWorkspaces.splice(index, 1)[0]!);
+            if (index >= 0) reusedWorkspaceByEntry.set(entry, unclaimedWorkspaces.splice(index, 1)[0]!);
           };
           for (const workspace of manifestProject.workspaces) {
-            claimWorkspace(workspace.key, (existing) => existing.name === workspace.name);
+            claimWorkspace(workspace, (existing) => existing.name === workspace.name);
           }
           for (const workspace of manifestProject.workspaces) {
-            if (reusedWorkspaceByKey.has(workspace.key) || !workspace.repoUrl) continue;
-            claimWorkspace(workspace.key, (existing) => existing.repoUrl === workspace.repoUrl);
+            if (reusedWorkspaceByEntry.has(workspace) || !workspace.repoUrl) continue;
+            claimWorkspace(workspace, (existing) => existing.repoUrl === workspace.repoUrl);
           }
           for (const workspace of manifestProject.workspaces) {
-            const reused = reusedWorkspaceByKey.get(workspace.key) ?? null;
+            const reused = reusedWorkspaceByEntry.get(workspace) ?? null;
             const workspaceInput = reused
               ? {
                 name: workspace.name,

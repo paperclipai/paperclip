@@ -1826,6 +1826,99 @@ describe("company portability", () => {
     expect(projectSvc.createWorkspace).toHaveBeenCalledWith("project-existing", expect.objectContaining({ name: "Develop" }));
   });
 
+  async function exportProjects(names: string[]) {
+    const portability = companyPortabilityService({} as any);
+    projectSvc.list.mockResolvedValue(names.map((name, index) => ({
+      id: `project-${index + 1}`,
+      name,
+      urlKey: `exported-${index + 1}`,
+      description: null,
+      leadAgentId: null,
+      targetDate: null,
+      color: null,
+      icon: null,
+      status: "planned",
+      executionWorkspacePolicy: null,
+      workspaces: [],
+      archivedAt: null,
+    })));
+    issueSvc.list.mockResolvedValue([]);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: true, issues: false },
+    });
+    return { portability, exported };
+  }
+
+  async function replaceProjects(
+    exported: Awaited<ReturnType<typeof exportProjects>>,
+    existingProjects: Array<{ id: string; name: string; urlKey: string }>,
+  ) {
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue(existingProjects);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    projectSvc.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => ({
+      id: `created-${projectSvc.create.mock.calls.length}`,
+      urlKey: `created-${projectSvc.create.mock.calls.length}`,
+      ...data,
+    }));
+    projectSvc.update.mockImplementation(async (projectId: string, data: Record<string, unknown>) => ({
+      id: projectId,
+      urlKey: projectId,
+      ...data,
+    }));
+    projectSvc.create.mockClear();
+    projectSvc.update.mockClear();
+    await exported.portability.importBundle({
+      source: { type: "inline", rootPath: exported.exported.rootPath, files: exported.exported.files },
+      include: { company: false, agents: false, projects: true, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "replace",
+    }, "user-1");
+  }
+
+  it("does not match by name when several existing projects share it", async () => {
+    const exported = await exportProjects(["Café", "Café"]);
+    await replaceProjects(exported, [
+      { id: "project-a", name: "Café", urlKey: "caf-0f1e2d3c" },
+      { id: "project-b", name: "Café", urlKey: "caf-4b5a6978" },
+    ]);
+
+    expect(projectSvc.update).not.toHaveBeenCalled();
+    expect(projectSvc.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("matches an existing project by name for one package project only", async () => {
+    const exported = await exportProjects(["Café", "Café"]);
+    await replaceProjects(exported, [
+      { id: "project-a", name: "Café", urlKey: "caf-0f1e2d3c" },
+    ]);
+
+    expect(projectSvc.update).toHaveBeenCalledTimes(1);
+    expect(projectSvc.update).toHaveBeenCalledWith("project-a", expect.anything());
+    expect(projectSvc.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates each existing workspace once when package workspace keys differ only in case", async () => {
+    const exported = await exportProjectPackage("Launch", [
+      { name: "Main", repoUrl: "https://github.com/paperclipai/a.git" },
+      { name: "main", repoUrl: "https://github.com/paperclipai/b.git" },
+    ]);
+    const yaml = String(exported.exported.files[".paperclip.yaml"]);
+    exported.exported.files[".paperclip.yaml"] = yaml
+      .replace(/^(\s+)main:$/m, "$1Main:")
+      .replace(/^(\s+)main-2:$/m, "$1main:");
+    expect(exported.exported.files[".paperclip.yaml"]).toMatch(/^\s+Main:$/m);
+    await replaceIntoExistingProject(exported, { id: "project-existing", name: "Launch", urlKey: "launch" }, [
+      { id: "workspace-upper", projectId: "project-existing", name: "Main", repoUrl: "https://github.com/paperclipai/a.git", isPrimary: true },
+      { id: "workspace-lower", projectId: "project-existing", name: "main", repoUrl: "https://github.com/paperclipai/b.git", isPrimary: false },
+    ]);
+
+    expect(projectSvc.createWorkspace).not.toHaveBeenCalled();
+    expect(projectSvc.updateWorkspace).toHaveBeenCalledTimes(2);
+    expect(projectSvc.updateWorkspace).toHaveBeenCalledWith("project-existing", "workspace-upper", expect.objectContaining({ name: "Main" }));
+    expect(projectSvc.updateWorkspace).toHaveBeenCalledWith("project-existing", "workspace-lower", expect.objectContaining({ name: "main" }));
+  });
+
   it("normalizes invalid imported project icon names to null", async () => {
     const portability = companyPortabilityService({} as any);
 
