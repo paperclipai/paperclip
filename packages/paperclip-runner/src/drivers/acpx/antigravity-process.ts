@@ -1,6 +1,7 @@
-import { execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { readProcessTable } from "./antigravity-process-lineage.js";
 
 export async function checkAntigravityPrivateHome(home: string): Promise<void> {
   if (!isAbsolute(home) || home.includes("\0") || resolve(home) !== home || await realpath(home) !== home) throw new Error("Invalid Antigravity private home");
@@ -44,12 +45,9 @@ export async function retireAntigravityProcess(child: ChildProcessWithoutNullStr
         else if (code === "EPERM" && process.platform === "darwin") {
           // Darwin reports EPERM for some groups containing only orphaned
           // zombies. Read numeric state only; never process arguments/env.
-          const output = await new Promise<string>((resolve, reject) => execFile("/bin/ps", ["-axo", "pid=,pgid=,stat="], {
-            encoding: "utf8", timeout: 1_000, maxBuffer: 1024 * 1024, env: { PATH: "/usr/bin:/bin", LANG: "C" },
-          }, (error, stdout) => error ? reject(error) : resolve(stdout)));
-          const rows = output.trim().split("\n").filter(Boolean).map(line => line.trim().split(/\s+/));
-          if (rows.some(row => row.length !== 3 || !/^\d+$/.test(row[0]!) || !/^\d+$/.test(row[1]!) || !/^[A-Za-z+<>NLsWX-]+$/.test(row[2]!))) throw new Error("Antigravity process retirement could not be confirmed");
-          groupAlive = rows.some(row => Number(row[1]) === child.pid && !row[2]!.startsWith("Z"));
+          const table = await readProcessTable("darwin").catch(() => null);
+          if (!table || table.unreadable.length > 0) throw new Error("Antigravity process retirement could not be confirmed");
+          groupAlive = table.entries.some(entry => entry.pgid === child.pid && !entry.zombie);
         } else throw error;
       }
     }
