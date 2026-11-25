@@ -18,6 +18,7 @@ function isChatPublicationCommitEventType(eventType: string): boolean {
 export function isChatPublicationCommitSignal(
   event: Pick<LiveEvent, "type" | "payload">,
 ): boolean {
+  if (event.type === "activity.logged" && event.payload.action === "issue.comment_added" && (event.payload.details as Record<string, unknown> | undefined)?.origin === "fast_response") return true;
   if (event.type !== "heartbeat.run.event") return false;
   const eventType = event.payload.eventType;
   if (typeof eventType !== "string") return false;

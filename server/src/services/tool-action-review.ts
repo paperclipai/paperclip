@@ -1,3 +1,6 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import {
   issues,
@@ -8,7 +11,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
-import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
+import { assertHumanToolReviewResolution } from "./issue-thread-interaction-resolution.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
@@ -31,8 +34,9 @@ export async function commitToolActionReview(
     actor: { agentId?: string | null; userId?: string | null };
   },
 ) {
-  if (input.actor.agentId)
-    throw forbidden("Only a human can resolve a tool review");
+  if (input.actor.agentId || !input.actor.userId)
+    throw forbidden("Only a human can resolve a tool review", { code: "human_review_required" });
+  const userId = input.actor.userId;
   const [source] = await db
     .select()
     .from(toolActionRequests)
@@ -114,7 +118,7 @@ export async function commitToolActionReview(
       !invocation ||
       invocation.issueId !== current.issueId ||
       (current.requestedByAgentId &&
-        invocation.agentId !== current.requestedByAgentId)
+        (invocation.actorType === "agent" ? invocation.actorId : invocation.agentId) !== current.requestedByAgentId)
     )
       throw conflict("Tool invocation context does not match");
     if (current.expiresAt && current.expiresAt <= new Date())
@@ -130,21 +134,24 @@ export async function commitToolActionReview(
         payload.toolAction.invocationId !== current.invocationId
       )
         throw conflict("Tool review context does not match");
-      assertIssueThreadInteractionResolverAudience({
-        actor: { type: "user", userId: input.actor.userId ?? "board" },
+      if (!issue) throw conflict("Tool review context does not match");
+      assertHumanToolReviewResolution({
+        userId,
+        issue,
         interaction,
-        governedAction: true,
       });
       if (interaction.status !== "pending")
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
+    if (interaction && issue) await notifyChatRunMilestones(tx, interaction);
+    await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
         status: input.decision,
-        resolvedByUserId: input.actor.userId ?? "board",
-        decidedByUserId: input.actor.userId ?? "board",
+        resolvedByUserId: userId,
+        decidedByUserId: userId,
         decidedAt: now,
         resolvedAt: now,
         updatedAt: now,
@@ -160,7 +167,7 @@ export async function commitToolActionReview(
         companyId: input.companyId,
         actionRequestId: current.id,
         body: { approvalThreshold: 1, priority: 40, argumentMode: "action" },
-        actor: { userId: input.actor.userId ?? "board" },
+        actor: { userId: userId },
       });
     }
     await tx
@@ -188,7 +195,7 @@ export async function commitToolActionReview(
         .update(issueThreadInteractions)
         .set({
           status: input.decision === "approved" ? "accepted" : "rejected",
-          resolvedByUserId: input.actor.userId ?? "board",
+          resolvedByUserId: userId,
           resolvedAt: now,
           updatedAt: now,
           result:
@@ -206,6 +213,7 @@ export async function commitToolActionReview(
               : { version: 1, outcome: "rejected", reason: input.reason },
         })
         .where(eq(issueThreadInteractions.id, interaction.id));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolAction);
       await tx
         .insert(toolActionDeliveries)
         .values({
@@ -220,7 +228,7 @@ export async function commitToolActionReview(
         {
           companyId: input.companyId,
           actorType: "user",
-          actorId: input.actor.userId ?? "board",
+          actorId: userId,
           action:
             input.decision === "approved"
               ? "issue.thread_interaction_accepted"

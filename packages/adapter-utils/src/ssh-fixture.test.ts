@@ -14,13 +14,27 @@ import {
   runSshCommand,
   syncDirectoryFromSsh,
   syncDirectoryToSsh,
+  shellQuote,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
   type SshEnvLabFixtureState,
 } from "./ssh.js";
+import { runChildProcess } from "./server-utils.js";
+import { startAdapterExecutionTargetProcessSessionBridge } from "./execution-target.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { managedRemoteHomeEnvironment } from "./remote-execution-env.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
+const UNREACHABLE_SSH_SPEC = {
+  host: "127.0.0.1",
+  port: 1,
+  username: "nobody",
+  remoteWorkspacePath: "/nonexistent",
+  remoteCwd: "/nonexistent",
+  privateKey: null,
+  knownHosts: null,
+  strictHostKeyChecking: false,
+} as const;
 let sshEnvLabUnsupportedReason: string | null = null;
 
 // One entry per fixture root directory, registered at creation time so
@@ -192,6 +206,71 @@ describe("ssh env-lab fixture", () => {
 
     const stopped = await readSshEnvLabFixtureStatus(statePath);
     expect(stopped.running).toBe(false);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("isolates managed agent credentials over real SSH and copies refreshes back before cleanup", async context => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "managed SSH account test");
+    if (!started) { context.skip();return; }
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    const selected = path.join(rootDir, "selected-account"), other = path.join(rootDir, "other-account");
+    await mkdir(selected, { mode: 0o700 });await mkdir(other, { mode: 0o700 });
+    await writeFile(path.join(selected, "auth.json"), '{"account":"configured-agent","token":"fixture-before"}', { mode: 0o600 });
+    await writeFile(path.join(other, "auth.json"), '{"account":"another-agent"}', { mode: 0o600 });
+    const first = await prepareRemoteManagedRuntime({ spec, runId: "selected", adapterKey: "codex", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true,
+      assets: [{ key: "home", localDir: selected, restore: async ({ assetDir, readFile }) => { await writeFile(path.join(selected, "auth.json"), await readFile(path.posix.join(assetDir, "auth.json")), { mode: 0o600 }); } }] });
+    let second: Awaited<ReturnType<typeof prepareRemoteManagedRuntime>> | undefined;
+    try {
+      second = await prepareRemoteManagedRuntime({ spec, runId: "other", adapterKey: "codex", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true, assets: [{ key: "home", localDir: other }] });
+      expect(second.runtimeRootDir).not.toBe(first.runtimeRootDir);
+      expect((await stat(first.runtimeRootDir)).mode & 0o777).toBe(0o700);
+      const read = await runSshCommand(spec, 'cat "$CODEX_HOME/auth.json"', { env: { ...managedRemoteHomeEnvironment(first.runtimeRootDir), CODEX_HOME: first.assetDirs.home! } });
+      expect(JSON.parse(read.stdout).account).toBe("configured-agent");
+      const provider = await runChildProcess("selected-account-fixture", "sh", ["-c", 'cat "$CODEX_HOME/auth.json"; printf "\\n"; cat'], {
+        cwd: started.workspaceDir, env: { ...managedRemoteHomeEnvironment(first.runtimeRootDir), CODEX_HOME: first.assetDirs.home! },
+        remoteExecution: spec, stdin: "provider-input\n", timeoutSec: 10, graceSec: 1, onLog: async () => {},
+      });
+      expect(provider.exitCode).toBe(0);
+      expect(provider.stdout).toBe('{"account":"configured-agent","token":"fixture-before"}\nprovider-input\n');
+      const refreshed = '{"account":"configured-agent","token":"fixture-refreshed"}';
+      await runSshCommand(spec, `printf '%s' ${shellQuote(refreshed)} > ${shellQuote(path.posix.join(first.assetDirs.home!, "auth.json"))}`);
+      await first.restoreWorkspace();
+      expect(await readFile(path.join(selected, "auth.json"), "utf8")).toBe(refreshed);
+      await expect(stat(first.runtimeRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await readFile(path.join(second.assetDirs.home!, "auth.json"), "utf8")).account).toBe("another-agent");
+    } finally {
+      try {
+        await Promise.all([first.restoreWorkspace(), second?.restoreWorkspace()]);
+      } finally {
+        await stopSshEnvLabFixture(started);
+      }
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("runs the ACP process bridge through real SSH with the selected account's home", async context => {
+    const root = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(root, "state.json"), "SSH ACP bridge test");
+    if (!started) { context.skip(); return; }
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    const runtime = await prepareRemoteManagedRuntime({ spec, runId: "acp", adapterKey: "custom", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true });
+    let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetProcessSessionBridge>>;
+    try {
+      bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "acp-ssh-fixture", target: { kind: "remote", transport: "ssh", spec, remoteCwd: spec.remoteCwd },
+        runtimeRootDir: runtime.runtimeRootDir, adapterKey: "custom", cwd: spec.remoteCwd, command: "node",
+        args: ["-e", 'process.stdin.on("data", data => { process.stdout.write(JSON.stringify({home:process.env.HOME, input:data.toString()})+"\\n"); process.exit(0); });'],
+        env: managedRemoteHomeEnvironment(runtime.runtimeRootDir), timeoutSec: 15, onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+      const result = await runChildProcess("acp-proxy-fixture", "sh", ["-c", bridge!.agentCommand], {
+        cwd: root, env: {}, stdin: "hello\n", timeoutSec: 15, graceSec: 1, onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ home: runtime.runtimeRootDir, input: "hello\n" });
+    } finally {
+      try { await bridge!?.stop(); }
+      finally { await runtime.restoreWorkspace(); await stopSshEnvLabFixture(started); }
+    }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("resolves a relative statePath to the same absolute state across start, status, and stop", async () => {
@@ -464,11 +543,11 @@ describe("ssh env-lab fixture", () => {
       env: { FOO: "bar" },
     });
 
-    // The remote script rides the last ssh argument. The SSH target is an
+    // The remote script travels through stdin. The SSH target is an
     // operator-configured host that can expose `node` only through a login
     // profile, so the wrapper sources the profiles. It no longer sources
     // `nvm.sh`; a profile that adds nvm still runs.
-    const remoteScript = String(target.args.at(-1) ?? "");
+    const remoteScript = Buffer.from(target.stdinPrefix.trim(), "base64").toString("utf8");
     expect(remoteScript).not.toContain("nvm.sh");
     expect(remoteScript).not.toContain("NVM_DIR");
     // Source /etc/profile so a host that exposes the PATH through
@@ -480,8 +559,6 @@ describe("ssh env-lab fixture", () => {
     // Fall back to .bashrc when no .bash_profile exists, so a host that adds
     // nvm in .bashrc still resolves node under a non-login SSH command.
     expect(remoteScript).toContain(".bashrc");
-    // The last ssh argument wraps the script as `sh -c '...'`, so the inner
-    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
     expect(remoteScript).toContain("cd ");
     expect(remoteScript).toContain("/srv/paperclip/workspace");
     expect(remoteScript).toContain("exec env ");
@@ -850,6 +927,205 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("round-trips project repositories nested in .paperclip-repositories across consecutive SSH runs", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+    const nestedRelative = ".paperclip-repositories/frontend-0123456789ab";
+    const nestedRepo = path.join(localRepo, nestedRelative);
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "backend.txt"), "backend base\n", "utf8");
+    await git(localRepo, ["add", "backend.txt"]);
+    await git(localRepo, ["commit", "-m", "backend initial"]);
+    await writeFile(path.join(localRepo, ".git", "info", "exclude"), "\n/.paperclip-repositories/\n", { flag: "a" });
+
+    await mkdir(nestedRepo, { recursive: true });
+    await git(nestedRepo, ["init"]);
+    await git(nestedRepo, ["checkout", "-b", "main"]);
+    await git(nestedRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(nestedRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(nestedRepo, "frontend.txt"), "frontend base\n", "utf8");
+    await writeFile(path.join(nestedRepo, "obsolete.txt"), "tracked\n", "utf8");
+    await git(nestedRepo, ["add", "frontend.txt", "obsolete.txt"]);
+    await git(nestedRepo, ["commit", "-m", "frontend initial"]);
+    await writeFile(path.join(nestedRepo, "frontend.txt"), "frontend dirty local\n", "utf8");
+    await rm(path.join(nestedRepo, "obsolete.txt"));
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH nested project repositories test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const first = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-1",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const remoteNested = path.posix.join(first.workspaceRemoteDir, nestedRelative);
+
+    const remoteNestedStatus = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(remoteNested)} && git log -1 --pretty=%s && git status --short`,
+    );
+    expect(remoteNestedStatus.stdout).toContain("frontend initial");
+    expect(remoteNestedStatus.stdout).toContain("M frontend.txt");
+    expect(remoteNestedStatus.stdout).toContain("D obsolete.txt");
+    const remoteAnchorStatus = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(first.workspaceRemoteDir)} && git status --short --untracked-files=all`,
+    );
+    expect(remoteAnchorStatus.stdout).not.toContain(".paperclip-repositories");
+
+    await runSshCommand(
+      config,
+      [
+        `cd ${JSON.stringify(remoteNested)}`,
+        `git config user.name "Paperclip SSH"`,
+        `git config user.email "ssh@paperclip.dev"`,
+        `git add frontend.txt`,
+        `git commit -m "remote frontend update" >/dev/null`,
+        `printf "frontend remote dirty\\n" > frontend.txt`,
+        `cd ${JSON.stringify(first.workspaceRemoteDir)}`,
+        `git config user.name "Paperclip SSH"`,
+        `git config user.email "ssh@paperclip.dev"`,
+        `printf "backend remote\\n" > backend.txt`,
+        `git add backend.txt`,
+        `git commit -m "remote backend update" >/dev/null`,
+      ].join(" && "),
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await first.restoreWorkspace();
+
+    await expect(stat(path.join(nestedRepo, ".git"))).resolves.toBeDefined();
+    expect(await git(nestedRepo, ["log", "-1", "--pretty=%s"])).toBe("remote frontend update");
+    await expect(readFile(path.join(nestedRepo, "frontend.txt"), "utf8")).resolves.toBe("frontend remote dirty\n");
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote backend update");
+    expect(await git(localRepo, ["status", "--short", "--untracked-files=all"])).not.toContain(".paperclip-repositories");
+
+    const second = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-2",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const secondNestedLog = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(path.posix.join(second.workspaceRemoteDir, nestedRelative))} && git log -1 --pretty=%s`,
+    );
+    expect(secondNestedLog.stdout.trim()).toBe("remote frontend update");
+    await second.restoreWorkspace();
+    await expect(stat(path.join(nestedRepo, ".git"))).resolves.toBeDefined();
+    await expect(readFile(path.join(nestedRepo, "frontend.txt"), "utf8")).resolves.toBe("frontend remote dirty\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS * 2);
+
+  it("restores project repositories through the direct SSH restore path", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+    const nestedRelative = ".paperclip-repositories/frontend-0123456789ab";
+    const nestedRepo = path.join(localRepo, nestedRelative);
+
+    for (const repo of [localRepo, nestedRepo]) {
+      await mkdir(repo, { recursive: true });
+      await git(repo, ["init"]);
+      await git(repo, ["checkout", "-b", "main"]);
+      await git(repo, ["config", "user.name", "Paperclip Test"]);
+      await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+      await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+      await git(repo, ["add", "tracked.txt"]);
+      await git(repo, ["commit", "-m", "initial"]);
+    }
+    await writeFile(path.join(localRepo, ".git", "info", "exclude"), "\n/.paperclip-repositories/\n", { flag: "a" });
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH direct restore with project repositories test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const prepared = await prepareWorkspaceForSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+    });
+    expect(prepared).toEqual({ gitBacked: true, repositories: [nestedRelative] });
+
+    await runSshCommand(
+      config,
+      [
+        `cd ${JSON.stringify(path.posix.join(started.workspaceDir, nestedRelative))}`,
+        `git config user.name "Paperclip SSH"`,
+        `git config user.email "ssh@paperclip.dev"`,
+        `printf "remote\\n" > tracked.txt`,
+        `git commit -am "remote nested update" >/dev/null`,
+      ].join(" && "),
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await restoreWorkspaceFromSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+      repositories: (prepared.repositories ?? []).map((repository) => ({ path: repository })),
+    });
+
+    await expect(stat(path.join(nestedRepo, ".git"))).resolves.toBeDefined();
+    expect(await git(nestedRepo, ["log", "-1", "--pretty=%s"])).toBe("remote nested update");
+    await expect(readFile(path.join(nestedRepo, "tracked.txt"), "utf8")).resolves.toBe("remote\n");
+    expect(await git(localRepo, ["status", "--short", "--untracked-files=all"])).toBe("");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS * 2);
+
+  it("fails closed when .paperclip-repositories holds something other than a git checkout", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localRepo, ".paperclip-repositories", "not-a-repo"), { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    await expect(prepareWorkspaceForSshExecution({ spec: UNREACHABLE_SSH_SPEC, localDir: localRepo, remoteDir: "/nonexistent" }))
+      .rejects.toThrow("Project repository is not a Git checkout: .paperclip-repositories/not-a-repo");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("rejects inconsistent project repository restores before any SSH connection", async () => {
+    const localDir = await createFixtureRootDir();
+    const repositoryBaseline = { exclude: [".git", ".git/*", ".paperclip-runtime"], entries: new Map() };
+    const restore = (input: Partial<Parameters<typeof restoreWorkspaceFromSshExecution>[0]>) =>
+      restoreWorkspaceFromSshExecution({
+        spec: UNREACHABLE_SSH_SPEC,
+        localDir,
+        remoteDir: "/nonexistent",
+        baselineSnapshot: { exclude: [".git", ".git/*", ".paperclip-runtime", ".paperclip-repositories"], entries: new Map() },
+        restoreGitHistory: true,
+        ...input,
+      });
+
+    await expect(restore({ repositories: [{ path: "../outside", baselineSnapshot: repositoryBaseline }] }))
+      .rejects.toThrow("Invalid project repository path: ../outside");
+    await expect(restore({ repositories: [{ path: ".paperclip-repositories/frontend-0123456789ab" }] }))
+      .rejects.toThrow("Project repository has no workspace baseline: .paperclip-repositories/frontend-0123456789ab");
+    await expect(restore({
+      baselineSnapshot: { exclude: [".git", ".git/*", ".paperclip-runtime"], entries: new Map() },
+      repositories: [{ path: ".paperclip-repositories/frontend-0123456789ab", baselineSnapshot: repositoryBaseline }],
+    })).rejects.toThrow("Workspace baseline must exclude .paperclip-repositories");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("preserves nested per-run files across sequential SSH restores with stale baselines", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");
@@ -944,6 +1220,8 @@ describe("ssh env-lab fixture", () => {
 
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("dirty remote\n");
+    // The index follows the imported HEAD: only the remote's uncommitted edit shows, unstaged.
+    expect(await git(localRepo, ["diff", "--cached", "--name-status"])).toBe("");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("propagates remote commits to the local worktree with no git remote configured (no-remote-git contract)", async () => {
