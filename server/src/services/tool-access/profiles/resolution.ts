@@ -1,8 +1,8 @@
 import { and, asc, eq, inArray, or, sql, type AnyColumn } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, toolCatalogEntries, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
+import { agents, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolCatalogEntry, ToolConnection, ToolProfileEffectiveSummary, ToolProfileWithDetails } from "@paperclipai/shared";
-import { effectiveToolProfileBindings, profileIdsInBindingOrder } from "../../tool-profile-binding-precedence.js";
+import { effectiveToolProfileBindings, isConnectionAccessProfile, profileIdsInBindingOrder } from "../../tool-profile-binding-precedence.js";
 import { buildProfileDetails, profileCatalogColumns, profileCatalogMatcher, toProfileBinding, toProfileEntry, type ProfileCatalogEntry, type ProfileEntryMatch, type ProfileCatalogMatch } from "./projection.js";
 type ProfileAssignmentDependencies = {
   assertOptionalAgent(companyId: string, agentId: string | null | undefined, label: string): Promise<void>;
@@ -108,6 +108,97 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
     return { bindings, activeProfiles };
   }
 
+  async function filterCatalogByConnectionInstalls<T extends { connectionId: string }>(
+    companyId: string,
+    catalog: T[],
+    installedConnections: ToolConnection[],
+  ): Promise<T[]> {
+    if (catalog.length === 0) return catalog;
+    const installedIds = new Set(installedConnections.map((connection) => connection.id));
+    const uninstalledConnectionIds = [...new Set(
+      catalog
+        .map((entry) => entry.connectionId)
+        .filter((connectionId) => !installedIds.has(connectionId)),
+    )];
+    if (uninstalledConnectionIds.length === 0) return catalog;
+    const [connectionRows, installRows, managedProfileRows] = await Promise.all([
+      db
+        .select({
+          id: toolConnections.id,
+          transport: toolConnections.transport,
+          mcpAgentAccessConfigured: sql<boolean>`coalesce((${toolConnections.config} ->> 'mcpAgentAccessConfigured') = 'true', false)`,
+        })
+        .from(toolConnections)
+        .where(and(
+          eq(toolConnections.companyId, companyId),
+          inArray(toolConnections.id, uninstalledConnectionIds),
+        )),
+      db
+        .selectDistinct({ connectionId: toolConnectionInstalls.connectionId })
+        .from(toolConnectionInstalls)
+        .where(and(
+          eq(toolConnectionInstalls.companyId, companyId),
+          inArray(toolConnectionInstalls.connectionId, uninstalledConnectionIds),
+        )),
+      db
+        .select({
+          id: toolProfiles.id,
+          profileKey: toolProfiles.profileKey,
+          metadata: toolProfiles.metadata,
+        })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, companyId),
+          eq(toolProfiles.status, "active"),
+          or(
+            inArray(toolProfiles.profileKey, uninstalledConnectionIds.map((id) => `app:${id}`)),
+            sql`${toolProfiles.metadata}->>'source' = 'connection_intent' and (${toolProfiles.metadata}->>'connectionId') = any(${sql.param(uninstalledConnectionIds)}::text[])`,
+          ),
+        )),
+    ]);
+    const connectionsWithAnyInstalls = new Set(installRows.map((row) => row.connectionId));
+    const managedProfileCandidates = managedProfileRows.flatMap((row) => {
+      const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+        ? row.metadata as Record<string, unknown>
+        : null;
+      const connectionId = typeof metadata?.connectionId === "string" ? metadata.connectionId : null;
+      return connectionId && isConnectionAccessProfile(row, connectionId) ? [{ id: row.id, connectionId }] : [];
+    });
+    const boundManagedProfileIds = managedProfileCandidates.length > 0
+      ? new Set(
+          (await db
+            .selectDistinct({ profileId: toolProfileBindings.profileId })
+            .from(toolProfileBindings)
+            .where(and(
+              eq(toolProfileBindings.companyId, companyId),
+              inArray(toolProfileBindings.profileId, managedProfileCandidates.map((profile) => profile.id)),
+            ))
+          ).map((row) => row.profileId),
+        )
+      : new Set<string>();
+    const managedProfilesByConnection = new Map<string, Array<{ hasBinding: boolean }>>();
+    for (const profile of managedProfileCandidates) {
+      const list = managedProfilesByConnection.get(profile.connectionId) ?? [];
+      list.push({ hasBinding: boundManagedProfileIds.has(profile.id) });
+      managedProfilesByConnection.set(profile.connectionId, list);
+    }
+    const blockedConnectionIds = new Set<string>();
+    for (const connection of connectionRows) {
+      const managedProfiles = managedProfilesByConnection.get(connection.id) ?? [];
+      const hasUnboundManagedProfile = managedProfiles.length > 0 && managedProfiles.every((profile) => !profile.hasBinding);
+      if (
+        connection.transport === "plugin"
+        || connectionsWithAnyInstalls.has(connection.id)
+        || connection.mcpAgentAccessConfigured
+        || hasUnboundManagedProfile
+      ) {
+        blockedConnectionIds.add(connection.id);
+      }
+    }
+    if (blockedConnectionIds.size === 0) return catalog;
+    return catalog.filter((entry) => !blockedConnectionIds.has(entry.connectionId));
+  }
+
   async function resolveEffectiveProfiles<TEntry extends ProfileCatalogEntry, TAllowedTool>(
     companyId: string,
     agentId: string,
@@ -130,7 +221,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       };
     }
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
-    const [entries, catalog, companyAgents] = await Promise.all([
+    const [entries, catalog, companyAgents, installedConnections] = await Promise.all([
       db
         .select()
         .from(toolProfileEntries)
@@ -146,6 +237,10 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         .select({ id: agents.id })
         .from(agents)
         .where(eq(agents.companyId, companyId)),
+      resolveInstalledConnectionsForAgent(
+        companyId,
+        agentId,
+      ),
     ]);
     const entriesByProfile = new Map<
       string,
@@ -156,7 +251,8 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       list.push(entry);
       entriesByProfile.set(entry.profileId, list);
     }
-    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, catalog);
+    const eligibleCatalog = await filterCatalogByConnectionInstalls(companyId, catalog, installedConnections);
+    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, eligibleCatalog);
     const agentIds = companyAgents.map((agent) => agent.id);
     const details: ToolProfileWithDetails[] = activeProfiles.map((profile) =>
       buildProfileDetails({
@@ -169,7 +265,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         agentIds,
       }),
     );
-    const allowedTools = catalog
+    const allowedTools = eligibleCatalog
       .filter((entry) => allowedCatalogIds.has(entry.id))
       .map(toAllowedTool);
     return {
@@ -181,10 +277,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       allowedToolNames: [...allowedToolNames].sort((a, b) =>
         a.localeCompare(b),
       ),
-      installedConnections: await resolveInstalledConnectionsForAgent(
-        companyId,
-        agentId,
-      ),
+      installedConnections,
     };
   }
   async function getConnectionAssignmentsForAgent(companyId: string, agentId: string, connectionIds: string[]) {
@@ -192,15 +285,18 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
     if (activeProfiles.length === 0 || connectionIds.length === 0) {
       return { allowedConnectionIds: [], installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId) };
     }
-    const catalog = await db.select({
-      id: toolCatalogEntries.id,
-      applicationId: toolCatalogEntries.applicationId,
-      connectionId: toolCatalogEntries.connectionId,
-      toolName: toolCatalogEntries.toolName,
-      riskLevel: toolCatalogEntries.riskLevel,
-    }).from(toolCatalogEntries).where(and(
-      eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"), inArray(toolCatalogEntries.connectionId, connectionIds),
-    ));
+    const [catalog, installedConnections] = await Promise.all([
+      db.select({
+        id: toolCatalogEntries.id,
+        applicationId: toolCatalogEntries.applicationId,
+        connectionId: toolCatalogEntries.connectionId,
+        toolName: toolCatalogEntries.toolName,
+        riskLevel: toolCatalogEntries.riskLevel,
+      }).from(toolCatalogEntries).where(and(
+        eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"), inArray(toolCatalogEntries.connectionId, connectionIds),
+      )),
+      resolveInstalledConnectionsForAgent(companyId, agentId),
+    ]);
     const entries = catalog.length === 0 ? [] : await db.select({
       profileId: toolProfileEntries.profileId,
       effect: toolProfileEntries.effect,
@@ -220,10 +316,11 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         and(eq(toolProfileEntries.selectorType, "risk_level"), catalogValuesContain(toolProfileEntries.riskLevel, catalog.map(entry => entry.riskLevel))),
       ),
     ));
-    const { allowedCatalogIds } = resolveCatalogAccess(activeProfiles, entries, catalog);
+    const eligibleCatalog = await filterCatalogByConnectionInstalls(companyId, catalog, installedConnections);
+    const { allowedCatalogIds } = resolveCatalogAccess(activeProfiles, entries, eligibleCatalog);
     return {
-      allowedConnectionIds: [...new Set(catalog.filter(entry => allowedCatalogIds.has(entry.id)).map(entry => entry.connectionId))],
-      installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId),
+      allowedConnectionIds: [...new Set(eligibleCatalog.filter(entry => allowedCatalogIds.has(entry.id)).map(entry => entry.connectionId))],
+      installedConnections,
     };
   }
 

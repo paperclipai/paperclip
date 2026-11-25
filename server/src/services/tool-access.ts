@@ -2274,6 +2274,9 @@ export function toolAccessService(
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...(transport === "mcp_remote" && asRecord(retainedConnection?.config).mcpAgentAccessConfigured === true
+            ? { mcpAgentAccessConfigured: true }
+            : {}),
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
@@ -2315,6 +2318,9 @@ export function toolAccessService(
         }
       : {
           ...baseConfig,
+          ...(transport === "mcp_remote" && asRecord(retainedConnection?.config).mcpAgentAccessConfigured === true
+            ? { mcpAgentAccessConfigured: true }
+            : {}),
           quarantineNewEntries: false,
           unverifiedServer: true,
           // Peer tool prefix, fixed when the identity is created. A retained

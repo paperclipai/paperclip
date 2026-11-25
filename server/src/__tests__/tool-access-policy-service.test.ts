@@ -1,11 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecrets,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   issues,
@@ -16,6 +20,7 @@ import {
   toolApplications,
   toolCatalogEntries,
   toolCallEvents,
+  toolConnectionInstalls,
   toolConnections,
   toolInvocations,
   toolMcpGateways,
@@ -33,6 +38,9 @@ import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
+import { toolAccessRoutes } from "../routes/tool-access.js";
+import { errorHandler } from "../middleware/index.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../lib/agent-permissions.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_POLICY_TEST_DATABASE_URL");
@@ -236,10 +244,13 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.delete(toolMcpGateways);
     await db.delete(toolProfiles);
     await db.delete(toolCatalogEntries);
+    await db.delete(toolConnectionInstalls);
+    await db.delete(connectionGrants);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companySecrets);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(activityLog);
@@ -1891,5 +1902,373 @@ describeEmbeddedPostgres("tool access policy service", () => {
         configPath: "headers.Authorization",
       }],
     })).rejects.toThrow(/same company/);
+  });
+
+  async function grantStandardAgentDefaults(companyId: string, agentId: string) {
+    await db.insert(principalPermissionGrants).values(
+      NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+        companyId,
+        principalType: "agent" as const,
+        principalId: agentId,
+        permissionKey,
+        scope: newStandardAgentGrantScope(permissionKey, agentId),
+      })),
+    );
+  }
+
+  it.each([
+    { label: "remote MCP", transport: "mcp_remote" as const, appType: "mcp_http" as const },
+    { label: "OAuth REST API", transport: "rest_api" as const, appType: "rest_api" as const },
+    { label: "local stdio", transport: "local_stdio" as const, appType: "mcp_stdio" as const },
+  ])("denies uninstalled agents with default tools:use on an agent-scoped $label connection while allowing the installed agent", async ({ transport, appType }) => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `isolated-${randomUUID()}`,
+      name: `Isolated ${transport}`,
+      type: appType,
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: `Agent A ${transport}`,
+      uid: `test/${randomUUID()}`,
+      transport,
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: transport === "local_stdio" ? { templateId: "fixture" } : { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "read_mailbox",
+      toolName: "read_mailbox",
+      riskLevel: "read",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db);
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    const policySvc = toolAccessPolicyService(db);
+    const decideFor = (agentId: string) => policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentId, agentId },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_mailbox" },
+    });
+
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // An agent created after the connection was installed for Agent A must also be denied.
+    const agentC = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentC.id);
+    expect(await decideFor(agentC.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Uninstalling all agents denies everyone, including Agent A.
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [] },
+    });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Company-wide install allows existing and newly created agents.
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    for (const agent of [agentA, agentB, agentC]) {
+      expect(await decideFor(agent.id)).toMatchObject({
+        allowed: true,
+        decision: "allow",
+        reasonCode: "allow_profile",
+      });
+    }
+  });
+
+  it("aligns policy/test route, live gateway execution, and Effective Access for agent-installed connections and newly created agents", async () => {
+    const company = await createCompany(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "admin",
+    });
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    // Give Agent B a general allow-by-default profile to ensure Effective Access
+    // still respects connection installation boundaries and agrees with policy/test.
+    const [generalProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `general-allow-${randomUUID()}`,
+      name: "General Allow",
+      status: "active",
+      defaultAction: "allow",
+    }).returning();
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: generalProfile!.id,
+      targetType: "agent",
+      targetId: agentB.id,
+      priority: 100,
+    });
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `mailbox-${randomUUID()}`,
+      name: "Mailbox MCP",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Agent A Mailbox",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      credentialPolicy: "shared",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection!.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+    });
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "list_messages",
+      toolName: "list_messages",
+      riskLevel: "read",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db);
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    const remoteCalls: string[] = [];
+    const gateway = createToolGatewayService(db, {
+      toolActionSigningSecret: "conn-install-e2e-secret",
+      remoteHttpRequest: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "tools/call") remoteCalls.push(body.params.name);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: body.method === "initialize"
+              ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "mailbox", version: "1" } }
+              : { content: [{ type: "text", text: "secret-mail" }] },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "board-user",
+        userName: "Board User",
+        userEmail: null,
+        isInstanceAdmin: true,
+        source: "local_implicit",
+      };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db, { toolGateway: gateway }));
+    app.use(errorHandler);
+
+    const agentC = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentC.id);
+
+    const policyTest = (agentId: string) =>
+      request(app)
+        .post(`/api/companies/${company.id}/tools/policy/test`)
+        .send({
+          companyId: company.id,
+          actor: { actorType: "agent", actorId: agentId, agentId },
+          request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "list_messages", arguments: {} },
+        });
+    const effectiveAccess = (agentId: string) =>
+      request(app).get(`/api/companies/${company.id}/tools/profiles/effective/agents/${agentId}`);
+
+    // 1. POST /companies/:companyId/tools/policy/test
+    const testA = await policyTest(agentA.id).expect(200);
+    expect(testA.body.decision).toMatchObject({ allowed: true, decision: "allow", reasonCode: "allow_profile" });
+    const testB = await policyTest(agentB.id).expect(200);
+    expect(testB.body.decision).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
+    const testC = await policyTest(agentC.id).expect(200);
+    expect(testC.body.decision).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
+
+    // 2. Effective Access view agrees with policy/test for all three agents
+    const effA = await effectiveAccess(agentA.id).expect(200);
+    expect(effA.body.allowedTools.map((t: { id: string }) => t.id)).toContain(catalogEntry!.id);
+    const effB = await effectiveAccess(agentB.id).expect(200);
+    expect(effB.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
+    const effC = await effectiveAccess(agentC.id).expect(200);
+    expect(effC.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
+
+    // 3. Live gateway listing + tool execution
+    const runA = await createRun(db, company.id, agentA.id);
+    const runB = await createRun(db, company.id, agentB.id);
+    const runC = await createRun(db, company.id, agentC.id);
+    const sessionA = await gateway.createSession({ companyId: company.id, agentId: agentA.id, runId: runA.id });
+    const sessionB = await gateway.createSession({ companyId: company.id, agentId: agentB.id, runId: runB.id });
+    const sessionC = await gateway.createSession({ companyId: company.id, agentId: agentC.id, runId: runC.id });
+
+    const toolA = (await gateway.listToolsForSession(sessionA.token)).find((t) => t.connectionId === connection!.id);
+    expect(toolA).toBeDefined();
+    expect((await gateway.listToolsForSession(sessionB.token)).filter((t) => t.connectionId === connection!.id)).toEqual([]);
+    expect((await gateway.listToolsForSession(sessionC.token)).filter((t) => t.connectionId === connection!.id)).toEqual([]);
+
+    const execA = await gateway.executeTool({ sessionToken: sessionA.token, tool: toolA!.name, parameters: {} });
+    expect(execA.status).toBe("completed");
+    expect(remoteCalls).toEqual(["list_messages"]);
+
+    await expect(gateway.executeTool({ sessionToken: sessionB.token, tool: toolA!.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "deny_connection_not_installed" });
+    await expect(gateway.executeTool({ sessionToken: sessionC.token, tool: toolA!.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "deny_connection_not_installed" });
+    expect(remoteCalls).toEqual(["list_messages"]);
+  });
+
+  it("does not widen agent-scoped connection installs when catalog default access rebuilds the app profile on reconnect", async () => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `reconnect-${randomUUID()}`,
+      name: "Reconnect MCP",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Reconnect Connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "read_record",
+      toolName: "read_record",
+      riskLevel: "read",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db, {
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      remoteHttpRequest: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: body.method === "initialize"
+            ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "reconnect", version: "1" } }
+            : { tools: [{ name: "read_record", description: "Read", inputSchema: { type: "object" } }] },
+        });
+      },
+    });
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    // Archive the app profile to simulate a retained/revived profile rebuild during reconnect refresh.
+    await db
+      .update(toolProfiles)
+      .set({ status: "archived" })
+      .where(eq(toolProfiles.profileKey, `app:${connection!.id}`));
+
+    await accessSvc.refreshCatalog(connection!.id, undefined, { enableAllByDefault: true, restoreDraftDefaults: true });
+
+    const [rebuiltProfile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(eq(toolProfiles.profileKey, `app:${connection!.id}`));
+    const rebuiltBindings = await db
+      .select()
+      .from(toolProfileBindings)
+      .where(eq(toolProfileBindings.profileId, rebuiltProfile!.id));
+    expect(rebuiltBindings.map((b) => ({ targetType: b.targetType, targetId: b.targetId }))).toEqual([
+      { targetType: "agent", targetId: agentA.id },
+    ]);
+
+    const policySvc = toolAccessPolicyService(db);
+    expect(await policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentA.id, agentId: agentA.id },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_record" },
+    })).toMatchObject({ allowed: true, decision: "allow" });
+    expect(await policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentB.id, agentId: agentB.id },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_record" },
+    })).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
   });
 });

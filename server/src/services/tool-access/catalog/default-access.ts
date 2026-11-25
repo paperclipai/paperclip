@@ -4,7 +4,7 @@ import { lockManagedAppPolicies, lockToolAssignmentAgents } from "../assignment-
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
+import { toolCatalogEntries, toolConnectionInstalls, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolPolicy } from "@paperclipai/shared";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -72,6 +72,28 @@ export function createCatalogDefaultAccess(db: Db) {
     const createdProfile = !profile;
     const resetToRecommendedDefaults = !profile || profile.status !== "active";
     if (resetToRecommendedDefaults) await lockToolAssignmentAgents(dbClient, input.connection.companyId, [{ targetType: "company", targetId: input.connection.companyId }]);
+    const defaultBindingTargets = async () => {
+      const existingInstalls = await dbClient
+        .select({ targetType: toolConnectionInstalls.targetType, targetId: toolConnectionInstalls.targetId })
+        .from(toolConnectionInstalls)
+        .where(and(
+          eq(toolConnectionInstalls.companyId, input.connection.companyId),
+          eq(toolConnectionInstalls.connectionId, input.connection.id),
+        ));
+      if (existingInstalls.length > 0) {
+        if (existingInstalls.some((install) => install.targetType === "company" && install.targetId === input.connection.companyId)) {
+          return [{ targetType: "company" as const, targetId: input.connection.companyId }];
+        }
+        return existingInstalls
+          .filter((install) => install.targetType === "agent")
+          .map((install) => ({ targetType: "agent" as const, targetId: install.targetId }));
+      }
+      if (asRecord(input.connection.config).mcpAgentAccessConfigured === true) {
+        return [];
+      }
+      return [{ targetType: "company" as const, targetId: input.connection.companyId }];
+    };
+
     if (!profile) {
       const [sameName] = await dbClient
         .select({ id: toolProfiles.id })
@@ -101,25 +123,30 @@ export function createCatalogDefaultAccess(db: Db) {
           },
         })
         .returning();
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     } else if (resetToRecommendedDefaults) {
       // Removing an app may retain its profile row when another record still
       // references it (for example, an MCP gateway). Reconnecting revives the
-      // same connection id, so restore that retained profile as a fresh
-      // all-agents assignment instead of leaving every read action Off.
+      // same connection id, so restore that retained profile without widening
+      // any saved install boundaries.
       [profile] = await dbClient
         .update(toolProfiles)
         .set({
@@ -151,20 +178,25 @@ export function createCatalogDefaultAccess(db: Db) {
             eq(toolProfileEntries.profileId, profile.id),
           ),
         );
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     }
 
     if (resetToRecommendedDefaults) {
