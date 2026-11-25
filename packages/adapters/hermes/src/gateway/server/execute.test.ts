@@ -1147,6 +1147,9 @@ describe("mapFinalResultForTest", () => {
     ["HTTP 429: Rate limit exceeded: new-account-rpm/requests", "transient_upstream"],
     ["API Error: 529 overloaded_error", "transient_upstream"],
     ["HTTP 503 Service Unavailable", "transient_upstream"],
+    ["HTTP/1.1 502", "transient_upstream"],
+    ["502 Bad Gateway", "transient_upstream"],
+    ["504 Gateway Timeout", "transient_upstream"],
   ])("classifies terminal provider failure %j as %s", (error, expectedFamily) => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1267,6 +1270,7 @@ describe("mapFinalResultForTest", () => {
     { status: "failed", error: "HTTP 400: rate_limit_error header invalid" },
     { status: "failed", error: "HTTP 403: API key limit denied" },
     { status: "failed", error: "HTTP 403: overloaded project key" },
+    { status: "failed", error: "HTTP/1.1 403: overloaded project key" },
     { status: "failed", error: "Validation error: maximum 500 tokens exceeded" },
     { status: "failed", error: { status_code: 403, message: "Forbidden" } },
   ])("keeps non-transient terminal error %j unclassified", (payload) => {

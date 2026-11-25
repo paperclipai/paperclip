@@ -26,10 +26,10 @@ const TERMINAL_PROVIDER_QUOTA_RE =
   /(?:insufficient_quota|usage\s+limit\s+reached|usage\s+cap\s+reached|quota\s+exceeded|exceeded\s+your\s+(?:current\s+)?quota|you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|servicequotaexceededexception)/i;
 
 const MESSAGE_HTTP_STATUS_RE =
-  /(?:^|[^\w])(?:http|status(?:[_\s-]?code)?|api\s+error)\s*[:=]?\s*(\d{3})\b/i;
+  /(?:^|[^\w])(?:http(?:\/\d+(?:\.\d+)?)?|status(?:[_\s-]?code)?|api\s+error)\s*[:=]?\s*(\d{3})\b/i;
 
 const TERMINAL_TRANSIENT_UPSTREAM_RE =
-  /(?:\b(?:http|status(?:[_\s-]?code)?|api\s+error)\s*[:=]?\s*(?:429|500|502|503|504|529)\b|rate[-\s_]?limit(?:ed|_error)?|too\s+many\s+requests|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|temporarily\s+unavailable|high\s+demand|try\s+again\s+later|throttl(?:ed|ing)|throttlingexception)/i;
+  /(?:\b(?:http(?:\/\d+(?:\.\d+)?)?|status(?:[_\s-]?code)?|api\s+error)\s*[:=]?\s*(?:429|500|502|503|504|529)\b|rate[-\s_]?limit(?:ed|_error)?|too\s+many\s+requests|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|bad\s+gateway|gateway\s+timeout|temporarily\s+unavailable|high\s+demand|try\s+again\s+later|throttl(?:ed|ing)|throttlingexception)/i;
 
 const TERMINAL_GATEWAY_SHUTDOWN_RE =
   /(?:gateway\s+(?:shutdown|restart)|(?:shutdown|restart)\s+interrupted\s+the\s+run)/i;
