@@ -7,6 +7,10 @@ export type QuestionPath = "provider" | "semantic" | "api";
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const questions = (c?: ContinuationCheckpoint): Row[] =>
   (c?.interactions ?? []).filter((i: any) => i.kind === "ask_user_questions") as Row[];
+// The board answers "Use <marker>."; agents may save the instruction or only the
+// reference, so a document passes when it holds the complete marker token.
+export const includesSubmittedReference = (body: unknown, marker: string) =>
+  typeof body === "string" && new RegExp(`(?<![A-Za-z0-9])${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`).test(body);
 export const resumeQuestionFields = (i?: Row): Row[] =>
   Array.isArray(i?.payload?.questionSet?.questions) ? i.payload.questionSet.questions : [];
 
@@ -156,7 +160,7 @@ export function gradeQuestionResume(checkpoints: ContinuationCheckpoint[], marke
         r.issueId === final.issue.id && r.agentId === final.issue.assigneeAgentId &&
         typeof r.runnerProfileJson?.nativeExecutionInput?.task?.prompt === "string") &&
       final.documents.length === 1 && !!final.documents[0].latestRevisionId &&
-      final.documents[0].body.includes(`Use ${marker}.`) && /\bafternoon\b/i.test(final.documents[0].body),
+      includesSubmittedReference(final.documents[0].body, marker) && /\bafternoon\b/i.test(final.documents[0].body),
     detail: "Retain all three checkpoints, every native input and exactly one saved document containing the choice and the complete submitted reference.",
   });
   return checks.map(c => ({ ...c, passed: Boolean(c.passed) }));

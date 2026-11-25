@@ -181,8 +181,17 @@ describe("native question/resume path qualification", () => {
     expect(gradeLifecycleBaseline(r).filter(c => !c.passed)).toEqual([]);
   });
   it.each([
-    "Welcome to the afternoon meetup, AMBERnonce.",
+    "Welcome to the club meetup this afternoon; reference: AMBERnonce.",
     "Welcome to the afternoon meetup. Use AMBERnonce",
+  ])("accepts the complete supplied reference without the answer's instruction wording: %s", body => {
+    const r = recording();
+    r[2].documents[0].body = body;
+    expect(failed(r)).toEqual([]);
+  });
+  it.each([
+    "Welcome to the afternoon meetup, AMBERnonc.",
+    "Welcome to the afternoon meetup, AMBERnonce2.",
+    "Welcome to the afternoon meetup, xAMBERnonce.",
   ])("rejects a shortened supplied reference in the saved document: %s", body => {
     const r = recording();
     r[2].documents[0].body = body;
