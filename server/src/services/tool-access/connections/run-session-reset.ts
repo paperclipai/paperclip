@@ -68,3 +68,12 @@ export async function forgetSessionsOfDeletedRun(db: Db, run: { id: string; comp
   if (!row?.deletedAt) return false;
   return db.transaction(async (tx) => forgetRunSessions(tx as unknown as Db, run.companyId, run.id, row));
 }
+
+export async function runContentDeleted(db: Pick<Db, "select">, companyId: string, runId: string | null | undefined): Promise<boolean> {
+  if (!runId) return false;
+  const [row] = await db
+    .select({ deletedAt: sql<string | null>`${heartbeatRuns.resultJson}->>${RUN_CONTENT_DELETED_MARKER}` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+  return Boolean(row?.deletedAt);
+}
