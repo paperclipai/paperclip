@@ -215,13 +215,14 @@ Reuse the Claude delivery for the token and the Codex path for write-back:
 2. **Delivery:** a typed task credential that the Launcher puts in the task's
    private environment, as `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`. What
    exists: the Runner writes it to `<agentHomeDirectory>/antigravity-acp/acp_token.json`
-   (directory 0700, file 0600, owner-checked) and scrubs it after the turn
-   (`packages/paperclip-runner/src/drivers/acpx/antigravity-credentials.ts:22-40`).
+   (directory 0700, file 0600, owner-checked;
+   `packages/paperclip-runner/src/drivers/acpx/antigravity-credentials.ts:22-40`)
+   and removes it when the lease closes (`antigravity-credentials.ts:51-90`).
    `agentHomeDirectory` sits under the Runner's runtime root
    (`packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts:406-421`).
    What is missing: on the Agent Computer that root must be task-private, not
-   shared by the agent's other tasks (see the isolation row below; owned by
-   item 9, checked in item 2).
+   shared by the agent's other tasks (see the isolation row below; owned and
+   tested by item 9).
 3. **Refresh:** the Runner refreshes access tokens itself. A rotated refresh
    token returns through a `credentials` snapshot (as Codex), and Core applies
    it with the existing identity check and epoch guard.
@@ -250,7 +251,7 @@ Reuse the Claude delivery for the token and the Codex path for write-back:
 | --- | --- |
 | Token never logged | The credential only travels in typed task credentials and private task environment. The Launcher must reject `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET` (exact name) and the `GEMINI_` and `GOOGLE_` prefixes in any configured or project environment, as it does for Copilot's `COPILOT_` prefix. Add a test that searches the run log and Launcher logs for the token after a run. |
 | Scoped to the run | One task credential per task, bound to the account binding and session (Cloud `task_credentials.go:64-70` `credentialBinding`); per-turn only. |
-| Not readable by other tasks | Today's mechanism: each agent has its own computer or sandbox (the task drivers declare `requiresAgent: true`, Cloud `extensions/plugin-agent-computer/src/manifest.ts:26-48`), so other agents' tasks never share it. Inside one computer, every task of that agent runs as the **same** UID/GID 1000 on a shared kernel; each task gets its own private mount namespace and user namespace, and `/home/agent` is shared (Cloud `agent-computer/launcher/README.md`, "Namespace isolation" and the task entry row). Same-UID tasks are therefore not a boundary by themselves. The implementation must add: the credential home under the task's private path (`/run/paperclip-runner-tasks/<task-id>`), never `/home/agent` or a profile slot; removal when the task ends; and proof that a concurrent task of the same agent cannot read it, neither the file nor `/proc/<pid>/environ` or memory of the Runner process. If that proof fails, pass the token through a file in the private task mount instead of the environment, or run Antigravity tasks one at a time per computer. Keep the cross-task read test as a regression test. Owner: item 9 (the Launcher gives the Runner a runtime root under the private task path, so `agentHomeDirectory` is task-private); item 2 adds a Core Runner test that the staged home is never under a shared home. |
+| Not readable by other tasks | Today's mechanism: each agent has its own computer or sandbox (the task drivers declare `requiresAgent: true`, Cloud `extensions/plugin-agent-computer/src/manifest.ts:26-48`), so other agents' tasks never share it. Inside one computer, every task of that agent runs as the **same** UID/GID 1000 on a shared kernel; each task gets its own private mount namespace and user namespace, and `/home/agent` is shared (Cloud `agent-computer/launcher/README.md`, "Namespace isolation" and the task entry row). Same-UID tasks are therefore not a boundary by themselves. The implementation must add: the credential home under the task's private path (`/run/paperclip-runner-tasks/<task-id>`), never `/home/agent` or a profile slot; removal when the task ends; and proof that a concurrent task of the same agent cannot read it, neither the file nor `/proc/<pid>/environ` or memory of the Runner process. If that proof fails, pass the token through a file in the private task mount instead of the environment, or run Antigravity tasks one at a time per computer. Keep the cross-task read test as a regression test. Owner: item 9 alone (the Launcher gives the Runner a runtime root under the private task path, so `agentHomeDirectory` is task-private, and item 9's acceptance carries the cross-task read test). |
 | Revoked on disconnect | New: on disconnect or reconnect, call Google's token revocation for the stored refresh token, then retire it. Running tasks fail at their next refresh. Record an activity log entry. |
 
 ## 4. The qualification flip
