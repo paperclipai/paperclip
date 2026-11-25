@@ -22,6 +22,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type {
+  AdapterBillingType,
   AdapterExecutionContext,
   AdapterExecutionResult,
   UsageSummary,
@@ -60,6 +61,23 @@ import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 function cfgString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+// The billing types an operator can set for a Hermes agent. Hermes does not
+// report how its provider bills a run, so a subscription-backed model (for
+// example an Ollama Cloud `:cloud` model) is otherwise recorded as unpriced.
+export const HERMES_CONFIG_BILLING_TYPES = [
+  "api",
+  "metered_api",
+  "subscription",
+  "subscription_included",
+  "subscription_overage",
+  "credits",
+  "fixed",
+] as const satisfies readonly AdapterBillingType[];
+function cfgBillingType(v: unknown): AdapterBillingType | undefined {
+  return typeof v === "string" && (HERMES_CONFIG_BILLING_TYPES as readonly string[]).includes(v)
+    ? (v as AdapterBillingType)
+    : undefined;
 }
 function cfgNumber(v: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;
@@ -623,6 +641,13 @@ export async function execute(
 
   if (parsed.costUsd !== undefined) {
     executionResult.costUsd = parsed.costUsd;
+  }
+
+  const billingType = cfgBillingType(config.billingType);
+  if (billingType) {
+    executionResult.billingType = billingType;
+    const biller = cfgString(config.biller)?.trim();
+    if (biller) executionResult.biller = biller.slice(0, 120);
   }
 
   // Summary from agent response
