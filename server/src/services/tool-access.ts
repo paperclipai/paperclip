@@ -2271,9 +2271,18 @@ export function toolAccessService(
     const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
       : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
         : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
+    const preservedAccessMarkers = retainedConnection && retainedConnection.status !== "archived"
+      ? {
+          ...(asRecord(retainedConnection.config).agentAccessConfigured === true ? { agentAccessConfigured: true } : {}),
+          ...(transport === "mcp_remote" && asRecord(retainedConnection.config).mcpAgentAccessConfigured === true
+            ? { mcpAgentAccessConfigured: true }
+            : {}),
+        }
+      : {};
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...preservedAccessMarkers,
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
@@ -2315,6 +2324,7 @@ export function toolAccessService(
         }
       : {
           ...baseConfig,
+          ...preservedAccessMarkers,
           quarantineNewEntries: false,
           unverifiedServer: true,
           // Peer tool prefix, fixed when the identity is created. A retained
@@ -3786,10 +3796,15 @@ export function toolAccessService(
         .update(toolConnections)
         .set({
           status: "active", enabled: true,
-          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
-            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-          } : {}),
+          ...(connection.connectionPurpose === "tool" ? (() => {
+            const accessMarker = connection.transport === "mcp_remote"
+              ? '{"agentAccessConfigured":true,"mcpAgentAccessConfigured":true}'
+              : '{"agentAccessConfigured":true}';
+            return {
+              config: sql`${toolConnections.config} || ${accessMarker}::jsonb`,
+              transportConfig: sql`${toolConnections.transportConfig} || ${accessMarker}::jsonb`,
+            };
+          })() : {}),
           ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
           updatedAt: new Date(),
         })
