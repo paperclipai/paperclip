@@ -88,6 +88,7 @@ const routineSvc = {
 };
 
 const companySkillSvc = {
+  hasRecipientRestrictions: vi.fn(async () => false),
   list: vi.fn(),
   listFull: vi.fn(),
   readFile: vi.fn(),
@@ -633,6 +634,16 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("rejects a partial export before reading skills hidden from the exporter", async () => {
+    companySkillSvc.hasRecipientRestrictions.mockResolvedValueOnce(true);
+    companySkillSvc.listFull.mockResolvedValue([]);
+    const portability = companyPortabilityService({} as any);
+    await expect(portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false, skills: true },
+    })).rejects.toThrow("Recipient-restricted skills cannot be exported");
+    expect(companySkillSvc.listFull).not.toHaveBeenCalled();
   });
 
   it("does not load or emit skills when agents are included but skills are disabled", async () => {

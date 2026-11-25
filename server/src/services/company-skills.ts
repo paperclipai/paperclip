@@ -3446,6 +3446,13 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     return items;
   }
 
+  async function hasRecipientRestrictions(companyId: string): Promise<boolean> {
+    if (!visibility().canReadCompany(companyId)) return false;
+    const rows = await db.select({ id: companySkills.id }).from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), isNotNull(companySkills.recipientAgentId))).limit(1);
+    return rows.length > 0;
+  }
+
   async function listFull(companyId: string): Promise<CompanySkill[]> {
     if (!visibility().canReadCompany(companyId)) return [];
     await ensureSkillInventoryCurrent(companyId);
@@ -3714,7 +3721,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.forkedFromSkillId, sourceSkillId)))
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.forkedFromSkillId, sourceSkillId), await visibility().condition(companyId)))
       .orderBy(desc(companySkills.updatedAt), asc(companySkills.name));
     const summaries: CompanySkillForkSummary[] = [];
     for (const row of rows) {
@@ -4745,7 +4752,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
             || currentSource.recipientAgentId !== (forkSource.recipientAgentId ?? null))) {
             throw conflict("Fork source access changed. Reload before retrying.");
           }
-          values.recipientAgentId = currentSource.recipientAgentId;
+          values.recipientAgentId = recipientAgentId;
           values.accessSourceId = await retainProjectSkillAccess(tx as unknown as Db, companyId, currentSource.accessSourceId);
         }
       },
@@ -7593,6 +7600,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   return {
     list,
     listFull,
+    hasRecipientRestrictions,
     listAssignedToAgents,
     getById,
     getByKey,

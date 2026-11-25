@@ -289,6 +289,25 @@ describeDatabase("selected runtime skill reconciliation", () => {
       .rejects.toThrow("A fork must retain");
     const old = await board.createLocalSkill(companyId, { name: "Unscoped fixture" });
     expect((await recipientService.getById(companyId, old.id))?.id).toBe(old.id);
+    const restrictedCopy = await board.createLocalSkill(companyId, { name: "signup", slug: "signup-restricted-copy",
+      forkedFromSkillId: old.id, recipientAgentId: recipient!.id });
+    expect(restrictedCopy.recipientAgentId).toBe(recipient!.id);
+    expect(await companySkillService(db).getById(companyId, restrictedCopy.id)).toBeNull();
+    expect(await companySkillService(db).hasRecipientRestrictions(companyId)).toBe(true);
+  });
+
+  it("hides a restricted fork from original detail and fork-precheck responses", async () => {
+    const [recipient, peer] = await db.insert(agents).values([
+      { companyId, name: "Fork summary recipient" }, { companyId, name: "Fork summary peer" },
+    ]).returning();
+    const board = companySkillService(db, { actor: { type: "board", source: "local_implicit" } });
+    const original = await board.createLocalSkill(companyId, { name: "signup", slug: "signup-original" });
+    const { skill: fork } = await board.forkSkill(companyId, original.id);
+    await board.updateSkill(companyId, fork.id, { recipientAgentId: recipient!.id });
+    const peerService = companySkillService(db, { actor: { type: "agent", companyId, agentId: peer!.id } });
+    expect((await peerService.detail(companyId, original.id))!.existingForks).toEqual([]);
+    expect((await peerService.forkPrecheck(companyId, original.id))!.existingForks).toEqual([]);
+    expect((await board.forkPrecheck(companyId, original.id))!.existingForks.map(item => item.id)).toContain(fork.id);
   });
 
 });
