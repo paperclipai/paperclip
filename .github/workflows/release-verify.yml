@@ -352,7 +352,9 @@ jobs:
           - lane: protocol (4/4)
             vitest_lane: 4/4
           - lane: rust
-            checks: check:runner check:api-authority
+            checks: check:runner
+          - lane: api-authority
+            checks: check:api-authority
           - lane: server-integration
 
     steps:
