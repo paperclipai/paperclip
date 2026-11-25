@@ -60,7 +60,7 @@ import {
 import { connectionIntentService } from "../connection-intents.js";
 import {
   CONVERSATION_CONTINUATION_POLICY,
-  isConversationAdapter,
+  isConversationContinuationEligible,
 } from "../conversation-continuation.js";
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { retryTransientLockContention } from "../transient-lock-contention.js";
@@ -2957,7 +2957,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       parseObject(result?.executionCancellation).state === "acknowledged";
     return options?.conversationContinuationEligible !== false && outcome !== "succeeded" &&
       (outcome !== "cancelled" || cancellationAcknowledged) &&
-      isConversationAdapter(agent.adapterType)
+      isConversationContinuationEligible(agent.adapterType, result)
       ? { ...result, conversationContinuation: CONVERSATION_CONTINUATION_POLICY }
       : result;
   }

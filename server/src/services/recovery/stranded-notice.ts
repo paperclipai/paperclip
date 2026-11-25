@@ -1,6 +1,11 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type { PluginWorkspaceOperationFailureReason } from "@paperclipai/plugin-sdk";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import {
+  workspaceProviderFailureMessage,
+  type WorkspaceProviderFailureSummary,
+} from "../workspace-provider-failure.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -97,15 +102,24 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
 
 export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
 
+export type StrandedWorkspaceProviderFailureInput =
+  | WorkspaceProviderFailureSummary
+  | PluginWorkspaceOperationFailureReason
+  | null
+  | undefined;
+
 export function buildNoRunningExecutionNoticeSeed(input: {
   status: "todo" | "in_progress";
   attempts?: number;
+  workspaceProviderFailure?: StrandedWorkspaceProviderFailureInput;
 }): StrandedRecoveryNoticeSeed {
   const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  const resolvedReason = workspaceProviderFailureMessage(input.workspaceProviderFailure);
+  const detail = resolvedReason ? ` ${resolvedReason.replace(/[.!?]+$/, "")}.` : "";
   return {
     body: input.status === "todo"
-      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
-      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+      ? `Paperclip tried to start this task again, but it still could not start${tries}.${detail} Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}.${detail} `
         + "Press Retry to start it again from the saved work.",
     title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
     tone: "danger",
@@ -114,6 +128,7 @@ export function buildNoRunningExecutionNoticeSeed(input: {
 
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
+  workspaceProviderFailure?: StrandedWorkspaceProviderFailureInput;
 }): StrandedRecoveryNoticeSeed {
   return buildNoRunningExecutionNoticeSeed(input);
 }
