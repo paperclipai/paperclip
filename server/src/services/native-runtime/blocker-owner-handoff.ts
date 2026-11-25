@@ -2,6 +2,7 @@ import { agents, chatConversations, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { HttpError } from "../../errors.js";
 import { isConversation } from "../../lib/conversation-wake-policy.js";
+import { resolveExternalRunAuthorizingUser } from "../../modules/external-agents/index.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { agentInteractionDenial } from "../agent-interaction-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -21,50 +22,6 @@ export type BlockerHandoffEligibility =
         | "interaction_denied";
       message: string;
     };
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
-}
-
-async function resolveExternalAuthorizingUserId(
-  db: Db,
-  input: {
-    companyId: string;
-    actorAgentId: string;
-    driverKind?: string | null;
-    runnerProfileJson?: unknown;
-  },
-): Promise<{ ok: true; authorizingUserId?: string } | { ok: false }> {
-  const execution = record(record(input.runnerProfileJson).nativeExecutionInput);
-  const provider = record(execution.provider);
-  const isMuse = input.driverKind === "muse_external"
-    || execution.schema === "paperclip.native-execution-input.v8"
-    || provider.kind === "muse";
-  if (!isMuse) return { ok: true };
-  const binding = record(provider.binding);
-  if (
-    binding.companyId !== input.companyId ||
-    binding.agentId !== input.actorAgentId ||
-    typeof binding.bindingId !== "string" ||
-    typeof binding.bindingGeneration !== "number"
-  ) {
-    return { ok: false };
-  }
-  try {
-    const { museRunnerBroker } = await import("../muse-runner-broker.js");
-    const authorizingUserId = await museRunnerBroker(db).authorizingUserIdForBinding({
-      companyId: binding.companyId,
-      agentId: binding.agentId,
-      bindingId: binding.bindingId,
-      bindingGeneration: binding.bindingGeneration,
-    });
-    return { ok: true, authorizingUserId };
-  } catch (error) {
-    if (error instanceof HttpError) return { ok: false };
-    throw error;
-  }
-}
 
 /** Tasks bound to an external chat channel lock their agent assignment (`chat_binding_agent_locked`). */
 export async function hasExternalChatBinding(
@@ -162,13 +119,13 @@ export async function evaluateBlockerAgentHandoff(
     }
     throw error;
   }
-  const externalAuthorizer = await resolveExternalAuthorizingUserId(db, {
+  const externalAuthorizer = await resolveExternalRunAuthorizingUser(db, {
     companyId: input.companyId,
-    actorAgentId: input.actorAgentId,
+    agentId: input.actorAgentId,
     driverKind: input.driverKind,
     runnerProfileJson: input.runnerProfileJson,
   });
-  if (!externalAuthorizer.ok) {
+  if (externalAuthorizer.status === "unavailable") {
     return {
       allowed: false,
       reason: "unauthorized",
@@ -187,8 +144,8 @@ export async function evaluateBlockerAgentHandoff(
       workMode: input.issue.workMode,
       contextSnapshot: input.contextSnapshot,
     }),
-    ...(externalAuthorizer.authorizingUserId
-      ? { authorizingUserId: externalAuthorizer.authorizingUserId }
+    ...(externalAuthorizer.status === "authorized"
+      ? { authorizingUserId: externalAuthorizer.userId }
       : {}),
   };
   const authDecision = await authorizationService(db).decide(

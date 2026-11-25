@@ -21,3 +21,4 @@ export function createDotPrincipalHttp(oauth: Parameters<typeof dotPrincipalCont
 }
 
 export { notifyMuseContactVerification, pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope } from "./muse-verification-work.js";
+export { resolveExternalRunAuthorizingUser, type ExternalRunAuthorizingUser } from "./run-authorizer.js";
