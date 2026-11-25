@@ -16,6 +16,7 @@ const reasons = {
   harness_auth_failed: "Authentication failed. Check the agent's AI connection or sign in to its execution tool, then retry.",
   harness_model_unavailable: "The selected model is unavailable. Choose a model supported by the agent's AI connection in Configuration, then retry.",
   harness_command_unavailable: "The execution command was not found. Check the command and its installation in the agent's environment, then retry.",
+  harness_custom_command_unverified: "Paperclip skipped the verification probe for the custom Claude command. Use the claude command in Configuration, then retry.",
   harness_cwd_invalid: "The working directory is unavailable. Check the working directory in Configuration, then retry.",
   harness_probe_timed_out: "The execution test timed out. Paperclip will retry automatically. If this continues, run the agent test in Configuration.",
   harness_probe_unexpected_output: "The execution test did not return the expected response. Run the agent test in Configuration to inspect the failed checks.",
@@ -28,7 +29,7 @@ const reasons = {
 const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
 const configurationFailures = new Set([
   "ai_connection_required", "harness_auth_failed", "harness_model_unavailable",
-  "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output",
+  "harness_command_unavailable", "harness_custom_command_unverified", "harness_cwd_invalid", "harness_probe_unexpected_output",
 ]);
 
 export function lifecycleVerificationNeedsRetry(context: LifecycleFailure, error: unknown): boolean {

@@ -104,6 +104,16 @@ describe("lifecycle failure diagnostics", () => {
     expect(lifecycleVerificationNeedsRetry(context, { code: reason })).toBe(false);
   });
 
+  it("asks for a configuration change when the custom Claude command cannot be verified", () => {
+    const context = { stage: "host" as const, phase: "verifying" as const };
+    const error = Object.assign(new Error("private command"), { code: "harness_custom_command_unverified" });
+    expect(lifecycleVerificationNeedsRetry(context, error)).toBe(true);
+    const message = lifecycleFailureMessage(context, error);
+    expect(message).toContain("Use the claude command in Configuration");
+    expect(message).toContain("Automatic verification is paused");
+    expect(message).not.toContain("private command");
+  });
+
   it("allows two automatic retries of a generic failed test before waiting for repair", () => {
     for (const verificationFailures of [1, 2, 3, 8_000]) {
       const context = { stage: "host" as const, phase: "verifying" as const, attempts: 8_000, verificationFailures };
