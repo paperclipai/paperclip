@@ -9,7 +9,7 @@ You can run a review bot on any agent, harness, or model supported by Paperclip�
 
 ## 1. Quickstart
 
-GitHub Review Bots are generally available with no experimental flag and require zero GitHub Actions YAML in your repository.
+Enable **GitHub review bots** in instance **Experimental** settings before starting setup (this default-off setting is independent of **Chat connectors**, and hiding either feature does not pause existing provider delivery). Setup requires zero GitHub Actions YAML in your repository.
 
 ### Step 1: Choose an agent
 
@@ -155,8 +155,8 @@ Under **Settings → Review results**, **Passing score** defaults to `5` out of 
 | Agent actively reviewing | `In progress` |
 | Complete assessment meets passing score | `Success` |
 | Complete assessment falls below passing score | `Failure` |
-| Incomplete assessment, execution error, or manual review required | `Action required` (non-passing) |
-| Complete assessment in **Report only** mode | `Neutral` |
+| Incomplete assessment, execution error, or manual review required, with a passing score configured | `Action required` (non-passing) |
+| Any completed check in **Report only** mode, including an incomplete assessment, execution error, or manual review required | `Neutral` |
 
 ### Commit-bound guarantees and inline findings
 
@@ -220,11 +220,16 @@ Local and private self-hosted instances do not need a public URL, reverse proxy,
 
 If you operate a self-hosted instance on a public HTTPS domain and prefer direct delivery without the Cloud connector, Paperclip supports direct GitHub webhook ingress (`POST /api/chat-webhooks/:publicId/github`) and the expiring, single-use manifest callback (`GET /api/chat-github/manifest/callback`), verifying raw webhook signatures on every request.
 
-If you already created a GitHub App manually—or need to recover or rotate credentials—select **I already have an App** (or **Use existing App credentials** on recovery) and provide the App ID and PEM private key. If an unconsumed Cloud registration handoff expires before you create the App on GitHub, you can check **I haven't created this App on GitHub** and restart registration inside the same draft.
+If you already created a GitHub App manually—or need to recover or rotate credentials—select **I already have an App** (or **Use existing App credentials** on recovery) and provide the requested credentials. Connecting an existing App for the first time requires the App ID, PEM private key, and webhook secret; the webhook secret must match the value configured in GitHub App settings. If an unconsumed Cloud registration handoff expires before you create the App on GitHub, you can check **I haven't created this App on GitHub** and restart registration inside the same draft.
 
 ### Runtime prerequisites
 
-The GitHub Review Bot connector uses your agent's existing Paperclip runtime and does not install new model or harness packages into your server image. Run a quick test PR or `@mention` after setup to verify that your chosen harness and provider execute cleanly in the selected environment.
+The GitHub Review Bot connector uses your agent's existing Paperclip runtime and does not install new model or harness packages into your server image:
+
+- Codex with managed MCP tools and the native Runner Codex backend do not require a server-side remote provider pack.
+- Remote native ACPX (including Claude Code) and OpenCode currently require an operator-supplied, build-owned provider pack configured through `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` on self-hosted instances (the standard Cloud server image does not supply one, and a pack installed only inside the sandbox does not satisfy this requirement).
+
+Run a quick test PR or `@mention` after setup to verify that your chosen harness and provider execute cleanly in the selected environment.
 
 ### Bot avatar and renaming the GitHub App
 
