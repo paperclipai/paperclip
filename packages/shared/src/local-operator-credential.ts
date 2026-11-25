@@ -46,10 +46,19 @@ export function readLocalOperatorKey(keyPath: string): Buffer | null {
   }
 }
 
+/** Keeps an existing key file readable by its owner only, whatever mode it was restored or copied with. */
+function restrictToOwner(keyPath: string): void {
+  if (process.platform === "win32") return;
+  if ((fs.statSync(keyPath).mode & 0o077) !== 0) fs.chmodSync(keyPath, 0o600);
+}
+
 /** Returns the operator key, creating it with owner-only permissions on first use. */
 export function ensureLocalOperatorKey(keyPath: string): Buffer {
   const existing = readLocalOperatorKey(keyPath);
-  if (existing) return existing;
+  if (existing) {
+    restrictToOwner(keyPath);
+    return existing;
+  }
   fs.mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
   const key = randomBytes(KEY_BYTES);
   try {
@@ -125,10 +134,19 @@ export function verifyLocalOperatorSignInLink(
 
 export type LocalOperatorCredentialMode = "required" | "off";
 
-export function parseLocalOperatorCredentialMode(value: string | undefined): LocalOperatorCredentialMode | null {
+const REQUIRED_VALUES = new Set(["required", "require", "on", "true", "1", "yes"]);
+const OFF_VALUES = new Set(["off", "false", "0", "no"]);
+
+/**
+ * Reads the setting. An unset value returns null. Any other value that is not
+ * an explicit "off" returns "required", so a typo never removes the protection.
+ */
+export function parseLocalOperatorCredentialMode(value: string | undefined): {
+  mode: LocalOperatorCredentialMode;
+  recognized: boolean;
+} | null {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return null;
-  if (normalized === "required" || normalized === "on" || normalized === "true") return "required";
-  if (normalized === "off" || normalized === "false") return "off";
-  return null;
+  if (OFF_VALUES.has(normalized)) return { mode: "off", recognized: true };
+  return { mode: "required", recognized: REQUIRED_VALUES.has(normalized) };
 }

@@ -11,6 +11,7 @@ import {
 import { openUrl } from "../client/board-auth.js";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
 import { readRuntimeInfo } from "../runtime-info.js";
+import { readConfig } from "../config/store.js";
 import { inferApiBaseFromConfig, normalizeApiBase } from "./client/common.js";
 
 interface OpenOptions {
@@ -77,6 +78,15 @@ export function localBoardEntryUrl(dashboardUrl: string, instanceId = resolvePap
   }
 }
 
+/** Boards that use accounts sign in on their own page, so they open without a link. */
+export function configDeploymentMode(configPath?: string): string | null {
+  try {
+    return readConfig(configPath)?.server?.deploymentMode ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerOpenCommand(program: Command): void {
   program
     .command("open")
@@ -88,10 +98,10 @@ export function registerOpenCommand(program: Command): void {
     .option("--no-browser", "Print the sign-in link instead of opening a browser")
     .action(async (opts: OpenOptions) => {
       const instanceId = resolveOpenInstanceId(opts);
-      const url = buildLocalBoardSignInUrl(
-        resolveOpenApiBase(opts, instanceId),
-        resolveLocalOperatorKeyPath({ instanceId }),
-      );
+      const apiBase = resolveOpenApiBase(opts, instanceId);
+      const url = configDeploymentMode(opts.config) === "authenticated"
+        ? apiBase
+        : buildLocalBoardSignInUrl(apiBase, resolveLocalOperatorKeyPath({ instanceId }));
       if (opts.browser !== false && await openUrl(url)) {
         console.error(pc.dim("Opened the Paperclip board in your browser."));
         return;

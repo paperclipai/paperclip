@@ -54,3 +54,15 @@ describe("paperclipai open instance selection", () => {
     }
   });
 });
+
+describe("paperclipai open on a board with accounts", () => {
+  it("reads the board's mode from its config", async () => {
+    const { configDeploymentMode } = await import("../commands/open.js");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-open-config-"));
+    try {
+      expect(configDeploymentMode(path.join(dir, "missing.json"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -45,3 +45,16 @@ describe("local operator sign-in in the board page", () => {
     expect(withLocalOperatorSocketToken("ws://elsewhere.test/ws")).toBe("ws://elsewhere.test/ws");
   });
 });
+
+describe("a board opened on a wildcard address", () => {
+  it("still adds the token to its live-events socket", () => {
+    window.localStorage.setItem("paperclip.localOperatorToken", "v1.token");
+    vi.stubGlobal("location", { ...window.location, host: "0.0.0.0:3100", hostname: "0.0.0.0", port: "3100", href: "http://0.0.0.0:3100/", protocol: "http:" });
+    try {
+      const url = new URL(withLocalOperatorSocketToken("ws://localhost:3100/api/companies/c/events/ws"));
+      expect(url.searchParams.get("operator")).toBe("v1.token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

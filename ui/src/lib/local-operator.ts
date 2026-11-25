@@ -3,6 +3,7 @@ import {
   LOCAL_OPERATOR_HEADER,
   LOCAL_OPERATOR_SOCKET_PARAM,
 } from "@paperclipai/shared/local-operator-constants";
+import { browserReachableHost } from "./websocket-url";
 
 /**
  * A local board that requires the operator credential signs a browser in
@@ -69,7 +70,7 @@ export function withLocalOperatorSocketToken(url: string): string {
   const token = localOperatorToken();
   if (!token) return url;
   const parsed = new URL(url, window.location.href);
-  if (parsed.host !== window.location.host) return url;
+  if (parsed.host !== browserReachableHost(window.location)) return url;
   parsed.searchParams.set(LOCAL_OPERATOR_SOCKET_PARAM, token);
   return parsed.toString();
 }

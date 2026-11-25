@@ -41,6 +41,10 @@ function startServer(operator: LocalOperatorCredential): Promise<{ server: Serve
   app.post("/api/whoami", whoami);
   app.get("/api/attachments/:id/content", whoami);
   app.get("/api/issues/:id/file-resources/content", whoami);
+  app.get("/api/assets/:id/content", whoami);
+  app.get("/api/heartbeat-runs/:id/provider-trace/download", whoami);
+  app.get("/api/companies/:id/audit/agent-actions.csv", whoami);
+  app.get("/api/plugins/:id/bridge/stream/:channel", whoami);
   app.post("/api/attachments/:id/content", whoami);
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
@@ -182,7 +186,14 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
 
   it("lets the browser load a file it was shown with the cookie alone", async () => {
     const { cookie } = await signIn();
-    for (const file of ["/api/attachments/a1/content", "/api/issues/i1/file-resources/content?path=a.txt"]) {
+    for (const file of [
+      "/api/attachments/a1/content",
+      "/api/assets/s1/content",
+      "/api/issues/i1/file-resources/content?path=a.txt",
+      "/api/heartbeat-runs/r1/provider-trace/download",
+      "/api/companies/c1/audit/agent-actions.csv",
+      "/api/plugins/p1/bridge/stream/updates?companyId=c1",
+    ]) {
       const response = await fetch(`${base}${file}`, { headers: { cookie } });
       expect(await response.json()).toEqual({ type: "board", source: "local_implicit" });
     }

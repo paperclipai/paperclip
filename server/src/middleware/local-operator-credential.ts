@@ -64,8 +64,14 @@ export interface LocalOperatorCredentialOptions {
 }
 
 export function createLocalOperatorCredential(options: LocalOperatorCredentialOptions = {}) {
-  const configured = parseLocalOperatorCredentialMode(process.env[LOCAL_OPERATOR_CREDENTIAL_ENV]);
-  const mode = options.mode ?? configured ?? DEFAULT_MODE;
+  const configured = options.mode ? null : parseLocalOperatorCredentialMode(process.env[LOCAL_OPERATOR_CREDENTIAL_ENV]);
+  if (configured && !configured.recognized) {
+    logger.warn(
+      { value: process.env[LOCAL_OPERATOR_CREDENTIAL_ENV] },
+      `${LOCAL_OPERATOR_CREDENTIAL_ENV} has an unrecognized value; requiring the operator credential. Use "required" or "off".`,
+    );
+  }
+  const mode = options.mode ?? configured?.mode ?? DEFAULT_MODE;
   let key = options.key ?? null;
   const usedNonces = new Map<string, number>();
 

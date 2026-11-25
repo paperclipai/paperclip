@@ -2194,9 +2194,14 @@ async function startServerWithDatabaseTeardown(
   });
   if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
-    const boardUrl = `http://${openHost}:${listenPort}`;
+    const boardUrl = `http://${openHost.includes(":") ? `[${openHost}]` : openHost}:${listenPort}`;
     const operator = config.deploymentMode === "local_trusted" ? localOperatorCredential() : null;
-    const url = operator?.required ? operator.signInUrl(boardUrl) : boardUrl;
+    let url = boardUrl;
+    try {
+      if (operator?.required) url = operator.signInUrl(boardUrl);
+    } catch (err) {
+      logger.warn({ err }, "Could not make a board sign-in link; run `paperclipai open` to sign in");
+    }
     void import("open")
       .then((mod) => mod.default(url))
       .then(() => {
