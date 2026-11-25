@@ -353,7 +353,7 @@ function readAcceptedSemanticSummary(resultJson: Record<string, unknown>) {
   return null;
 }
 
-function semanticResultCandidates(resultJson: Record<string, unknown>) {
+export function semanticResultCandidates(resultJson: Record<string, unknown>) {
   return [
     record(resultJson.nativeResult),
     record(resultJson.acceptedResult),

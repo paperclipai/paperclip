@@ -60,10 +60,10 @@ describe("issue continuation summaries", () => {
 
   it("opens the next session after a swarm with what the swarm did, never with where Paperclip keeps its records", () => {
     const swarmRunId = "6a1f0c2e-0000-4000-8000-00000000a001";
-    const deliverable = (filename: string, attachmentId: string, contentRef = filename) => ({
+    const deliverable = (filename: string, attachmentId: string, contentRef = filename, disposition = "applied") => ({
       operationId: "register_deliverable",
       input: { title: `${filename} deliverable`, filename, contentRef, contentType: "text/plain", byteSize: 3, sha256: "0".repeat(64) },
-      result: { disposition: "applied", attachmentId, contentPath: `/api/attachments/${attachmentId}/content` },
+      result: { disposition, attachmentId, contentPath: `/api/attachments/${attachmentId}/content` },
     });
     const body = buildContinuationSummaryMarkdown({
       issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", description: "Please wait for the request in a comment.",
@@ -72,11 +72,11 @@ describe("issue continuation summaries", () => {
         id: swarmRunId, status: "succeeded", error: null, finishedAt: new Date("2026-11-25T07:49:36.000Z"),
         resultJson: {
           summary: "Successfully created v1.txt containing \"one\" and v2.txt containing \"two\" using dedicated swarm helpers per file, and verified both files.",
-          nativeResult: { verification: [{ status: "passed", commandOrCheck: "verifier check",
+          acceptedResult: { verification: [{ status: "passed", commandOrCheck: "verifier check",
             detail: "Both files verified successfully: v1.txt exists and contains \"one\", and v2.txt exists and contains \"two\"." }] },
           semanticToolReceipts: {
             "register-v1-txt": deliverable("v1.txt", "6a1f0c2e-0000-4000-8000-00000000b001"),
-            "register-v2-txt": deliverable("v2.txt", "6a1f0c2e-0000-4000-8000-00000000b002", "out/v2.txt"),
+            "register-v2-txt": deliverable("v2.txt", "6a1f0c2e-0000-4000-8000-00000000b002", "out/v2.txt", "duplicate"),
           },
         },
       },

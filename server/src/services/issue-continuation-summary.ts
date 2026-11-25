@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, readRunFailureCause, withoutSqlStatementText, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
-import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
+import { semanticResultCandidates, summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -80,7 +80,7 @@ function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefin
   const files = new Set<string>();
   for (const value of Object.values(receipts)) {
     const receipt = asRecord(value);
-    if (receipt?.operationId !== "register_deliverable" || asRecord(receipt.result)?.disposition !== "applied") continue;
+    if (receipt?.operationId !== "register_deliverable" || !["applied", "duplicate"].includes(String(asRecord(receipt.result)?.disposition))) continue;
     const filename = asNonEmptyString(asRecord(receipt.input)?.filename);
     if (filename && filename.length <= 200 && !/[`\u0000-\u001f]/.test(filename)) files.add(filename);
     if (files.size >= 12) break;
@@ -89,8 +89,8 @@ function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefin
 }
 
 function readVerification(resultJson: Record<string, unknown> | null | undefined): string[] {
-  const checks = asRecord(resultJson?.nativeResult)?.verification;
-  if (!Array.isArray(checks)) return [];
+  const checks = semanticResultCandidates(resultJson ?? {}).map((candidate) => candidate.verification).find(Array.isArray);
+  if (!checks) return [];
   return checks.slice(0, 6).flatMap((value) => {
     const check = asRecord(value);
     const name = asNonEmptyString(check?.commandOrCheck);

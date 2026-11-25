@@ -77,7 +77,7 @@ import {
 } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
-import { classifySendFailure, isInlineSendRefusal } from "../lib/pending-send";
+import { showsSendFailureToast } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 import { SubtaskCancellationError, TaskCancellationDismissedError, useTaskCancellation } from "../hooks/useTaskCancellation";
 import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
@@ -5323,7 +5323,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       // A comment that is not known to be saved stays in the composer and
       // resends with the same request ID; its notice replaces this toast.
-      if (classifySendFailure(err) === "pending" || isInlineSendRefusal(err)) return;
+      if (!showsSendFailureToast(err, { explainsRefusalInline: !classicTaskInterfaceEnabled })) return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
     },
@@ -5754,7 +5754,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       // A comment that is not known to be saved stays in the composer and
       // resends with the same request ID; its notice replaces this toast.
-      if (classifySendFailure(err) === "pending" || isInlineSendRefusal(err)) return;
+      if (!showsSendFailureToast(err, { explainsRefusalInline: !classicTaskInterfaceEnabled })) return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
     },

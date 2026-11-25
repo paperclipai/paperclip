@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ApiError } from "@/api/client";
 import { ApiUnavailableError } from "@/api/response";
 import { CommentSubmissionUnknownError } from "./comment-submit-result";
-import { classifySendFailure, clearPendingSend, isInlineSendRefusal, readPendingSend, writePendingSend, PendingSendAccountChangedError } from "./pending-send";
+import { classifySendFailure, clearPendingSend, isInlineSendRefusal, showsSendFailureToast, readPendingSend, writePendingSend, PendingSendAccountChangedError } from "./pending-send";
 
 const isText = (value: unknown): value is string => typeof value === "string";
 
@@ -49,6 +49,23 @@ describe("isInlineSendRefusal", () => {
     ["a plain error from the caller", new Error("try again")],
   ])("is false for %s, which keeps its toast", (_label, error) => {
     expect(isInlineSendRefusal(error)).toBe(false);
+  });
+});
+
+describe("showsSendFailureToast", () => {
+  const refusal = new ApiError("Swarm is not available while the task is in Plan mode", 422, null);
+
+  it("leaves a refusal to the task chat composer, which explains it inline", () => {
+    expect(showsSendFailureToast(refusal, { explainsRefusalInline: true })).toBe(false);
+  });
+
+  it("keeps the toast for the classic composer, which has no inline reason", () => {
+    expect(showsSendFailureToast(refusal, { explainsRefusalInline: false })).toBe(true);
+  });
+
+  it("keeps the toast for other failures and never for a pending send", () => {
+    expect(showsSendFailureToast(new Error("try again"), { explainsRefusalInline: true })).toBe(true);
+    expect(showsSendFailureToast(new ApiError("x", 503, null), { explainsRefusalInline: false })).toBe(false);
   });
 });
 

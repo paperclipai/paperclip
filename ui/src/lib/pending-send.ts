@@ -58,6 +58,11 @@ export function isInlineSendRefusal(error: unknown): boolean {
   return status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected";
 }
 
+export function showsSendFailureToast(error: unknown, composer: { explainsRefusalInline: boolean }): boolean {
+  if (classifySendFailure(error) === "pending") return false;
+  return !(composer.explainsRefusalInline && isInlineSendRefusal(error));
+}
+
 // --- Persisted records ------------------------------------------------------------
 
 export interface PendingSend<T> {
