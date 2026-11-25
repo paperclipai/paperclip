@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 183,
+    "measured": 185,
     "withSetup": 180,
-    "inventory": 183
+    "inventory": 185
   },
   "durations": {
     "server/src/__tests__/access-routes-hidden-floor.test.ts": 6639,
@@ -23,7 +23,8 @@
     "server/src/__tests__/adapter-routes-authz.test.ts": 17641,
     "server/src/__tests__/adapter-routes.test.ts": 6099,
     "server/src/__tests__/agent-action-audit-routes.test.ts": 22215,
-    "server/src/__tests__/agent-adapter-validation-routes.test.ts": 97660,
+    "server/src/__tests__/agent-adapter-validation-routes.test.ts": 44100,
+    "server/src/__tests__/agent-adapter-validation-runner-routes.test.ts": 39800,
     "server/src/__tests__/agent-cross-tenant-authz-routes.test.ts": 6495,
     "server/src/__tests__/agent-device-login-routes.test.ts": 21994,
     "server/src/__tests__/agent-hire-auth-inheritance-routes.test.ts": 14680,
@@ -84,9 +85,13 @@
     "server/src/__tests__/folders-routes.test.ts": 5714,
     "server/src/__tests__/health-dev-server-token.test.ts": 6574,
     "server/src/__tests__/health.test.ts": 5679,
-    "server/src/__tests__/heartbeat-dependency-scheduling.test.ts": 78007,
+    "server/src/__tests__/heartbeat-dependency-native-wakes.test.ts": 65300,
+    "server/src/__tests__/heartbeat-dependency-scheduling.test.ts": 21300,
     "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts": 54768,
-    "server/src/__tests__/heartbeat-process-recovery.test.ts": 344017,
+    "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts": 88511,
+    "server/src/__tests__/heartbeat-process-recovery-part-2.test.ts": 102168,
+    "server/src/__tests__/heartbeat-process-recovery-part-3.test.ts": 72141,
+    "server/src/__tests__/heartbeat-process-recovery-part-4.test.ts": 81197,
     "server/src/__tests__/heartbeat-run-privacy-routes.test.ts": 28486,
     "server/src/__tests__/inbox-agent-policy-routes.test.ts": 6628,
     "server/src/__tests__/inbox-archive-routes.test.ts": 11396,

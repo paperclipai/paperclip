@@ -91,7 +91,7 @@ const meta = {
   title: "Apps, channels, and extensions/External chat and email/Connections/GitHub and Code Review Bot",
   component: GitHubConnections,
   play: async ({ canvasElement }) => {
-    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search connectors" }), "GitHub");
+    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search plugins" }), "GitHub");
   },
   parameters: {
     layout: "fullscreen",

@@ -12,7 +12,8 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsSidebar, AppsMobileNav } from "./AppsSidebar";
+import { AppsSidebar, useAppsDeveloperTabs } from "./AppsSidebar";
+import { appsRouteHasRail } from "../pages/apps/apps-rail";
 import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
 import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
@@ -70,6 +71,8 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
+  "category",
   "browse",
   "connections",
   "assistant-connection",
@@ -152,6 +155,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appsDeveloperTabs = useAppsDeveloperTabs();
   const appDetailConnectionId =
     isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
       ? companyPathSegments[1]
@@ -209,7 +213,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
-  ) : isAppsRoute || isToolsRoute ? (
+  ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0) ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
     streamlinedUiEnabled ? (
@@ -657,7 +661,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
-              {isMobile && isAppsRoute && (!companyPathSegments[1] || companyPathSegments[1] === "review") ? <AppsMobileNav /> : null}
               {hasUnknownCompanyPrefix ? (
                 <NotFoundPage
                   scope="invalid_company_prefix"

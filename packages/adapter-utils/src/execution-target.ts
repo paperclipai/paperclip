@@ -1856,6 +1856,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
   broker?: { url: string; token: string };
+  anonymous?: boolean;
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
@@ -1875,7 +1876,7 @@ export async function prepareGitHubOperationLaunchers(input: {
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined })] as const),
+    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined, anonymous: input.anonymous })] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
     ...(input.broker ? [["broker.json", `${JSON.stringify({ url: input.broker.url, token: input.broker.token })}\n`] as const] : []),
   ]);
