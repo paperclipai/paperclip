@@ -1247,6 +1247,105 @@ describe("customer-success read authority", () => {
     expect(slowResult.truncated).toBe(true);
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(slowLogRun.id).toBeTruthy();
+
+    // 3) Truncated search (limit: 1 with >1 runs in window) MUST still load redactors
+    // and redact registered secrets from fallback RunLogStore excerpts.
+    const logSecret = "sk-truncated-log-secret-9876543210";
+    const [newestLogRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId: co.id,
+        agentId: agent.id,
+        status: "succeeded",
+        runtimeMode: "legacy",
+        driverKind: "codex",
+        logStore: "local_file",
+        logRef: "truncated-secret.ndjson",
+        createdAt: new Date(Date.now() + 60_000),
+      })
+      .returning();
+    await redactions.register(co.id, newestLogRun.id, logSecret);
+    const secretNdjson = `${JSON.stringify({
+      ts: "2026-11-25T00:00:00Z",
+      stream: "stderr",
+      chunk: `TRUNCATED_MARKER leaked=${logSecret}`,
+    })}\n`;
+    const truncatedRedacted = await searchCustomerSuccessRuns(
+      db,
+      {
+        operation: "runs.search",
+        companyId: co.id,
+        patterns: ["TRUNCATED_MARKER"],
+        limit: 1,
+        includeExcerpts: true,
+      },
+      {
+        logStore: {
+          begin: async () => ({ store: "local_file", logRef: "unused" }),
+          append: async () => 0,
+          finalize: async () => ({ bytes: 0, compressed: false }),
+          read: async (handle) =>
+            handle.logRef === "truncated-secret.ndjson" ? { content: secretNdjson } : { content: "" },
+        },
+      },
+    );
+    expect(truncatedRedacted.truncated).toBe(true);
+    expect(truncatedRedacted.patterns[0]!.matchedRuns).toBe(1);
+    const truncExcerpt = truncatedRedacted.patterns[0]!.sampleRuns[0]!.excerpt ?? "";
+    expect(truncExcerpt).toContain("TRUNCATED_MARKER");
+    expect(truncExcerpt).not.toContain(logSecret);
+
+    // 4) Matches after early JSON-key-only hits (e.g. searching "output" when early
+    // events have key "aggregatedOutput" without "output" in their values) are found
+    // consistently both with and without includeExcerpts.
+    const [lateMatchRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId: co.id,
+        agentId: agent.id,
+        status: "succeeded",
+        runtimeMode: "native",
+        driverKind: "codex",
+        createdAt: new Date(Date.now() + 120_000),
+      })
+      .returning();
+    await db.insert(schema.heartbeatRunEvents).values([
+      ...Array.from({ length: 5 }, (_, idx) => ({
+        companyId: co.id,
+        runId: lateMatchRun.id,
+        agentId: agent.id,
+        seq: idx + 1,
+        eventType: "item.completed",
+        stream: "system",
+        payload: { aggregatedOutput: `benign line ${idx}` },
+      })),
+      {
+        companyId: co.id,
+        runId: lateMatchRun.id,
+        agentId: agent.id,
+        seq: 6,
+        eventType: "item.completed",
+        stream: "system",
+        payload: { aggregatedOutput: "real output match on event 6" },
+      },
+    ]);
+    const withoutExcerpts = await searchCustomerSuccessRuns(db, {
+      operation: "runs.search",
+      companyId: co.id,
+      patterns: ["output"],
+      limit: 1,
+      includeExcerpts: false,
+    });
+    const withExcerpts = await searchCustomerSuccessRuns(db, {
+      operation: "runs.search",
+      companyId: co.id,
+      patterns: ["output"],
+      limit: 1,
+      includeExcerpts: true,
+    });
+    expect(withoutExcerpts.patterns[0]!.matchedRuns).toBe(1);
+    expect(withExcerpts.patterns[0]!.matchedRuns).toBe(1);
+    expect(withExcerpts.patterns[0]!.sampleRuns[0]!.excerpt).toContain("real output match on event 6");
   });
   it("the operation contract has no writes, credentials or unknown parameters", () => {
     for (const value of [

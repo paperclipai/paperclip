@@ -437,23 +437,37 @@ export async function searchCustomerSuccessRuns(
         .where(inArray(schema.heartbeatRunEvents.runId, runIds));
       const runsWithEvents = new Set(eventRunRows.map((r) => r.runId));
 
-      // Push literal substring pre-filtering into PostgreSQL, supporting both raw
-      // and JSON-escaped literal forms.
+      // Push literal substring pre-filtering into PostgreSQL (raw + JSON-escaped
+      // forms) and verify against decoded JSON string values in bounded batches so
+      // counts are identical with or without excerpts and genuine matches behind
+      // JSON-key hits are never silently dropped.
+      const EVENT_CANDIDATE_BATCH_SIZE = 10;
+      const MAX_EVENT_CANDIDATES_PER_RUN = 100;
+      const runById = new Map(runs.map((r) => [r.id, r]));
+
       for (let i = 0; i < patterns.length; i++) {
         if (now() >= deadlineMs) {
           truncated = true;
           break;
         }
         const pattern = patterns[i]!;
-        const candidateIds = runIds.filter((id) => !matchedByRun.get(id)!.has(i) && runsWithEvents.has(id));
-        if (candidateIds.length === 0) continue;
+        let remainingIds = runIds.filter((id) => !matchedByRun.get(id)!.has(i) && runsWithEvents.has(id));
+        if (remainingIds.length === 0) continue;
 
         const matchCondition = buildEventMatchCondition(pattern, caseSensitive);
-        const needsDecodedVerification = JSON.stringify(pattern).slice(1, -1) !== pattern;
+        let excerptsAdded = runs.filter((r) => matchedByRun.get(r.id)!.has(i)).length;
+
         try {
-          if (needsDecodedVerification || includeExcerpts) {
-            // Bound to at most 3 matching events per run via a window function so one
-            // noisy run cannot starve other candidate runs in the same query.
+          for (
+            let batchStart = 1;
+            remainingIds.length > 0 && batchStart <= MAX_EVENT_CANDIDATES_PER_RUN;
+            batchStart += EVENT_CANDIDATE_BATCH_SIZE
+          ) {
+            if (now() >= deadlineMs) {
+              truncated = true;
+              break;
+            }
+            const batchEnd = Math.min(batchStart + EVENT_CANDIDATE_BATCH_SIZE - 1, MAX_EVENT_CANDIDATES_PER_RUN);
             const ranked = tx
               .select({
                 runId: schema.heartbeatRunEvents.runId,
@@ -464,7 +478,7 @@ export async function searchCustomerSuccessRuns(
                 ),
               })
               .from(schema.heartbeatRunEvents)
-              .where(and(inArray(schema.heartbeatRunEvents.runId, candidateIds), matchCondition))
+              .where(and(inArray(schema.heartbeatRunEvents.runId, remainingIds), matchCondition))
               .as("ranked_events");
 
             const eventRows = await tx
@@ -474,13 +488,11 @@ export async function searchCustomerSuccessRuns(
                 payload: ranked.payload,
               })
               .from(ranked)
-              .where(sql`${ranked.rn} <= 3`);
+              .where(sql`${ranked.rn} >= ${batchStart} and ${ranked.rn} <= ${batchEnd}`);
 
-            const sampleCountForPattern = runs.filter((r) => matchedByRun.get(r.id)!.has(i)).length;
-            let excerptsAdded = sampleCountForPattern;
-            const runById = new Map(runs.map((r) => [r.id, r]));
-
+            const rowsSeenByRun = new Map<string, number>();
             for (const eventRow of eventRows) {
+              rowsSeenByRun.set(eventRow.runId, (rowsSeenByRun.get(eventRow.runId) ?? 0) + 1);
               const hits = matchedByRun.get(eventRow.runId);
               if (!hits || hits.has(i)) continue;
               const decoded = findDecodedEventMatch(eventRow.message, eventRow.payload, pattern, caseSensitive);
@@ -496,14 +508,17 @@ export async function searchCustomerSuccessRuns(
               }
               hits.set(i, excerpt);
             }
-          } else {
-            const eventMatches = await tx
-              .selectDistinct({ runId: schema.heartbeatRunEvents.runId })
-              .from(schema.heartbeatRunEvents)
-              .where(and(inArray(schema.heartbeatRunEvents.runId, candidateIds), matchCondition));
-            for (const match of eventMatches) {
-              matchedByRun.get(match.runId)!.set(i, undefined);
-            }
+
+            const expectedFullBatch = batchEnd - batchStart + 1;
+            // Only keep runs that have not yet matched AND filled the entire batch
+            // (meaning more SQL-matching events may exist for that run).
+            remainingIds = remainingIds.filter(
+              (id) => !matchedByRun.get(id)!.has(i) && (rowsSeenByRun.get(id) ?? 0) >= expectedFullBatch,
+            );
+          }
+
+          if (remainingIds.length > 0) {
+            truncated = true;
           }
         } catch (err) {
           if (isStatementTimeoutError(err)) {
@@ -514,9 +529,10 @@ export async function searchCustomerSuccessRuns(
         }
       }
 
-      // Pre-resolve secret redactors inside the tx for any runs that will need
-      // RunLogStore fallback scanning when excerpts are requested.
-      if (includeExcerpts && !truncated) {
+      // Always pre-resolve secret redactors inside the tx for any runs that will need
+      // RunLogStore fallback scanning when excerpts are requested, even when `truncated`
+      // is already true (e.g. runsTotalInWindow > limit).
+      if (includeExcerpts) {
         for (const run of runs) {
           if (!run.logRef || !isRunLogStoreType(run.logStore)) continue;
           const needsLogScan = run.runtimeMode !== "native" || !runsWithEvents.has(run.id);
@@ -603,7 +619,8 @@ export async function searchCustomerSuccessRuns(
       patterns,
       caseSensitive,
       remaining,
-      includeExcerpts ? (redactorsByRun.get(run.id) ?? ((s: string) => s)) : null,
+      // Fail closed: never use an identity fallback when includeExcerpts is true.
+      includeExcerpts ? (redactorsByRun.get(run.id) ?? null) : null,
       logBudget,
     );
     if (scanned.truncated) truncated = true;
