@@ -706,7 +706,10 @@ describe("PaperclipRunnerToolAuthority", () => {
           arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
         offset = page.nextOffset;
       }
-      expect(await taskHistoryReadsForRun(db, { companyId, runId })).toEqual([]);
+      // Other tests in this file share the run and record their own history reads.
+      const continuationReads = async () => (await taskHistoryReadsForRun(db, { companyId, runId }))
+        .map((read) => read.commentId).filter((id) => id.startsWith("m-"));
+      expect(await continuationReads()).toEqual([]);
       // A restarted controller continues from the progress the first page saved.
       const restarted = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
       let text = first.jsonText;
@@ -719,8 +722,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       }
       expect(JSON.parse(text).executionContinuation).toEqual(continuation);
       // Reading the final page records the recovered messages like get_task_history.
-      const reads = await taskHistoryReadsForRun(db, { companyId, runId });
-      expect(reads.map((read) => read.commentId)).toEqual(expect.arrayContaining(["m-0", "m-119"]));
+      expect(await continuationReads()).toEqual(expect.arrayContaining(["m-0", "m-119"]));
     } finally {
       await db.update(heartbeatRuns).set({ contextSnapshot: saved?.contextSnapshot ?? {} }).where(eq(heartbeatRuns.id, runId));
     }
