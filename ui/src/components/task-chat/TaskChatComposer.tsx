@@ -394,8 +394,6 @@ export function TaskChatComposer({
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [takeoverError, setTakeoverError] = useState<string | null>(null);
   const [takeoverHeaderClaimed, setTakeoverHeaderClaimed] = useState(false);
-  // Collapsing only hides the card so the thread above it can be read; the
-  // request stays pending and its body stays mounted, keeping partial answers.
   const [takeoverCollapsed, setTakeoverCollapsed] = useState(false);
   const [takeoverHeaderSlot, setTakeoverHeaderSlot] =
     useState<HTMLElement | null>(null);
