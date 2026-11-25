@@ -12,6 +12,7 @@ import { agents, connectionGrantMembers, connectionGrantDelegations, connectionG
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -581,6 +582,7 @@ replaceConnectionGrantMembers: async (
           )
           .returning();
         if (!updated) throw notFound("Connection grant not found");
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "access_revoked", contentDeletionActor(actor));
         if (removedDelegations.length > 0) {
           await tx.insert(toolAccessAuditEvents).values(
             removedDelegations.map((delegation) => ({

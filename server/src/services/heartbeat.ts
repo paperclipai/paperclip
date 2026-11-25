@@ -59,6 +59,7 @@ import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
+import { runContentDeleted } from "./tool-access/connections/run-session-reset.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
@@ -2280,6 +2281,7 @@ export function heartbeatService(
         return;
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
+      if (runtime.sessionId && await runContentDeleted(db, agent.companyId, runtime.lastRunId)) runtime.sessionId = null;
       const context = parseObject(run.contextSnapshot);
       // Workspace recovery can restart the failed run's sandbox to save its
       // files while this replay prepares. Wait for that stop to settle; the

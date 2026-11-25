@@ -3529,6 +3529,13 @@
       "when": 1795544784796,
       "tag": "0505_nice_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 506,
+      "version": "7",
+      "when": 1795560008849,
+      "tag": "0506_nappy_agent_brand",
+      "breakpoints": true
     }
   ]
 }
