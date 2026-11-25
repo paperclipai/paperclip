@@ -85,7 +85,12 @@ export function AgentProviderConnection({
   const canUseLocalLogin = adapterType === "antigravity_runtime"
     ? (hostedGoogleAiLoginSupported || (localEnvironment && localAiLoginSupported))
     : (localEnvironment && localAiLoginSupported);
-  const useHostedGoogleRedirect = adapterType === "antigravity_runtime" && !localAiLoginSupported && hostedGoogleAiLoginSupported;
+  // Keep the loopback redirect paste option available whenever relay sign-in is
+  // supported, including private/trusted-host servers where `localAiLoginSupported`
+  // is true but the user's browser may be on another machine.
+  const googleHostedRedirect: boolean | "optional" = adapterType === "antigravity_runtime" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -422,7 +427,7 @@ export function AgentProviderConnection({
                 }}
               />
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
-              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={useHostedGoogleRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data

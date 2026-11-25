@@ -496,7 +496,7 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login, hostedRedirect = false }: {
   adapterType: string;
-  hostedRedirect?: boolean;
+  hostedRedirect?: boolean | "optional";
   login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
@@ -516,7 +516,8 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
-  const hostedGoogleRedirect = adapterType === "antigravity_runtime" && hostedRedirect;
+  const hostedGoogleRedirect = adapterType === "antigravity_runtime" && Boolean(hostedRedirect);
+  const optionalHostedGoogleRedirect = adapterType === "antigravity_runtime" && hostedRedirect === "optional";
   async function submitBrowserCode(value = browserCode) {
     if (!value.trim() || !login?.submitCode || codeSubmissionRef.current) return;
     const submission = Symbol();
@@ -564,7 +565,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     {browserLogin && !ready && !submitting && !codeSubmitted && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
-      mode={hostedGoogleRedirect ? "hosted_redirect" : adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
+      mode={hostedGoogleRedirect && !optionalHostedGoogleRedirect ? "hosted_redirect" : adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
       {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
         <OnboardingCardField
@@ -577,7 +578,9 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
       </div> : hostedGoogleRedirect ? <div className="flex flex-col gap-2">
         <p className="px-2 text-xs text-muted-foreground">
-          After signing in with Google, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.
+          {optionalHostedGoogleRedirect
+            ? <>Finish signing in in the Google browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
+            : <>After signing in with Google, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
         </p>
         <OnboardingCardField
           label="Google redirect URL"

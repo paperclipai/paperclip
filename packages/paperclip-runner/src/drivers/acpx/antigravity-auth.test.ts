@@ -338,8 +338,9 @@ reader.on('close', () => {
 
     // Check first 4 invalid pastes stay retryable without touching the loopback server or leaking secrets.
     for (const bad of invalidInputs.slice(0, 4)) {
-      const err = await login.submitRedirect!(bad).catch((e: Error) => e);
+      const err = await login.submitRedirect!(bad).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(Error);
+      if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
       expect(err.message).not.toContain(expectedState);
       expect(err.message).not.toContain("secret-code-canary");
       expect(err.message).not.toContain("wrong_state_canary");
@@ -371,8 +372,9 @@ reader.on('close', () => {
       `${redirectUri2}?state=${expectedState2}&state=${expectedState2}&code=unique-1`,
       `http://user:pass@127.0.0.1:${port2}/?state=${expectedState2}&code=unique-2`,
     ]) {
-      const err = await login2.submitRedirect!(bad).catch((e: Error) => e);
+      const err = await login2.submitRedirect!(bad).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(Error);
+      if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
       expect(err.message).not.toContain("do-not-echo-canary");
       expect(err.message).not.toContain(usedCode);
       expect(err.message).not.toContain(expectedState2);
@@ -393,8 +395,9 @@ reader.on('close', () => {
     const parsedAuth = new URL(login.authorizationUrl!);
     const redirectUri = parsedAuth.searchParams.get("redirect_uri")!;
     const expectedState = parsedAuth.searchParams.get("state")!;
-    const err = await login.submitRedirect!(`${redirectUri}?state=${expectedState}&code=4/0non-200-code-${Date.now()}`).catch((e: Error) => e);
+    const err = await login.submitRedirect!(`${redirectUri}?state=${expectedState}&code=4/0non-200-code-${Date.now()}`).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
+    if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
     expect(err.message).not.toContain("sensitive-loopback-error-body");
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
     await login.abort();

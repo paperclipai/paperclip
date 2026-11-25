@@ -115,6 +115,22 @@ describe("AgentProviderConnection hosted Google sign-in gating", () => {
     expect(host.textContent).toContain("127.0.0.1");
   });
 
+  it("still exposes the Google redirect paste field when local login is also supported (remote private/trusted host)", async () => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      localAiLoginSupported: true,
+      hostedGoogleAiLoginSupported: true,
+    });
+    renderConnection("antigravity_runtime", true);
+
+    await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Google redirect URL"]')).not.toBeNull());
+    expect(host.textContent).toContain("another machine");
+    expect(host.textContent).toContain("127.0.0.1");
+  });
+
   it.each(["claude_local", "codex_local"] as const)("keeps local login disabled for %s on hosted instances", async (adapterType) => {
     mocks.healthGet.mockResolvedValue({
       status: "ok",
