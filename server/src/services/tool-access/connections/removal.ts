@@ -21,14 +21,14 @@ import { browserUseService } from "../../browser-use.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, connectionTokenIssuances, companySecretBindings, companySecrets, userSecretDefinitions, userSecretDeclarations, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolOauthStates, toolGatewaySessions, toolMcpGateways, toolMcpGatewayTokens, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots } from "@paperclipai/db";
+import { connectionGrants, connectionTokenIssuances, companySecretBindings, companySecrets, userSecretDefinitions, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolOauthStates, toolGatewaySessions, toolMcpGateways, toolMcpGatewayTokens, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "@paperclipai/shared";
 import { notFound } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
-import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
+import { findSecretConsumers } from "../../connection-secret-consumers.js";
 import { createToolRuntimeSupervisor } from "../../tool-runtime-supervisor.js";
 import { vercelConnectIntegrationStatus, vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -143,63 +143,15 @@ async function classifyConnectionSecrets(
       );
     const byId = new Map(secretRows.map((row) => [row.id, row]));
 
-    const referencedElsewhere = await connectionSecretsUsedByOtherConsumers(db, unique);
-    const foreignBindings = await db
-      .select({ secretId: companySecretBindings.secretId })
-      .from(companySecretBindings)
-      .where(
-        and(
-          eq(companySecretBindings.companyId, connection.companyId),
-          inArray(companySecretBindings.secretId, unique),
-          sql`not (${companySecretBindings.targetType} = 'tool_connection' and ${companySecretBindings.targetId} = ${connection.id})`,
-        ),
-      );
-    for (const row of foreignBindings) referencedElsewhere.add(row.secretId);
-
-    // Bindings are the authority, but read the sibling refs too: a row written
-    // before `syncCredentialBindings` existed — or by hand — can reference a
-    // secret with no binding to prove it.
-    const siblingConnections = await db
-      .select({
-        credentialRefs: toolConnections.credentialRefs,
-        credentialSecretRefs: toolConnections.credentialSecretRefs,
-      })
-      .from(toolConnections)
-      .where(
-        and(
-          eq(toolConnections.companyId, connection.companyId),
-          ne(toolConnections.id, connection.id),
-        ),
-      );
-    for (const row of siblingConnections) {
-      for (const ref of row.credentialRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-      for (const ref of row.credentialSecretRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-    }
-    const siblingGrants = await db
-      .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
-      .from(connectionGrants)
-      .where(
-        and(
-          eq(connectionGrants.companyId, connection.companyId),
-          ne(connectionGrants.connectionId, connection.id),
-        ),
-      );
-    for (const row of siblingGrants) {
-      for (const ref of row.credentialSecretRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-    }
+    const referencedElsewhere = await findSecretConsumers(db, {
+      companyId: connection.companyId, connectionId: connection.id, secretIds: unique,
+      removingConnection: true, liveOnly: false,
+    });
 
     const definitionIds = secretRows.flatMap((row) => row.userSecretDefinitionId ? [row.userSecretDefinitionId] : []);
     const definitions = definitionIds.length ? await db.select().from(userSecretDefinitions)
       .where(and(eq(userSecretDefinitions.companyId, connection.companyId), inArray(userSecretDefinitions.id, definitionIds))) : [];
     const dedicatedDefinitions = new Set(definitions.filter((row) => row.key.startsWith(CONNECTION_OWNED_SECRET_KEY_PREFIX) || row.key.startsWith(`tool_oauth.${connection.id}.`)).map((row) => row.id));
-    const foreignDeclarations = definitionIds.length ? await db.select().from(userSecretDeclarations).where(and(
-      inArray(userSecretDeclarations.userSecretDefinitionId, definitionIds),
-      sql`not (${userSecretDeclarations.targetType} = 'tool_connection' and ${userSecretDeclarations.targetId} = ${connection.id})`,
-    )) : [];
-    const sharedDefinitions = new Set(foreignDeclarations.map((row) => row.userSecretDefinitionId));
     const owned: string[] = [];
     const retained: string[] = [];
     for (const secretId of unique) {
@@ -212,7 +164,7 @@ async function classifyConnectionSecrets(
         continue;
       }
       const dedicated = row.scope === "user" && row.userSecretDefinitionId
-        ? dedicatedDefinitions.has(row.userSecretDefinitionId) && !sharedDefinitions.has(row.userSecretDefinitionId)
+        ? dedicatedDefinitions.has(row.userSecretDefinitionId)
         : row.scope === "company" && row.userSecretDefinitionId === null
           && row.key.startsWith(CONNECTION_OWNED_SECRET_KEY_PREFIX);
       if (dedicated && !referencedElsewhere.has(secretId)) owned.push(secretId);
@@ -298,7 +250,7 @@ async function removeConnection(
         if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
       },
     });
-    const signInRemoval = await antigravitySignIn.prepare(connection, grantRows);
+    const signInRemoval = await antigravitySignIn.prepare(connection, grantRows, { removingConnection: true });
     const releasedWaitPublications: ActivityPublication[] = [];
     await db.transaction(async (tx) => {
       if (grantsToRevoke.length > 0) await tx

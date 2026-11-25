@@ -1,22 +1,20 @@
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
-  companySecretBindings,
   companySecrets,
   connectionGrants,
-  toolConnections,
-  userSecretDeclarations,
   userSecretDefinitions,
   type Db,
+  type toolConnections,
 } from "@paperclipai/db";
 import { aiConnectionMetadataSchema, type AiSignInRemoval } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
-import { connectionSecretsUsedByOtherConsumers } from "./connection-credentials.js";
+import { findSecretConsumers } from "./connection-secret-consumers.js";
 import { quotaCredentialRecovery } from "./quota-credential-recovery.js";
 import type { secretService } from "./secrets.js";
 
 type RemovedGrant = Pick<typeof connectionGrants.$inferSelect, "id" | "kind" | "credentialSecretRefs">;
 type Connection = typeof toolConnections.$inferSelect;
-type Target = { grantId: string; secretId: string; expectedVersion: number; definitionId: string | null };
+type Target = { grantId: string; secretId: string; expectedVersion: number; definitionId: string | null; state: "live" | "claimed" | "gone" };
 type CredentialResult = AiSignInRemoval["savedSignIn"] | "reconnected";
 
 export type PreparedAiSignInRemoval = {
@@ -47,47 +45,33 @@ export function createAntigravitySignInRemoval(db: Db, deps: {
         name: companySecrets.name,
         scope: companySecrets.scope,
         latestVersion: companySecrets.latestVersion,
+        deletedAt: companySecrets.deletedAt,
         definitionId: userSecretDefinitions.id,
         definitionKey: userSecretDefinitions.key,
       })
       .from(companySecrets)
       .leftJoin(userSecretDefinitions, eq(userSecretDefinitions.id, companySecrets.userSecretDefinitionId))
-      .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, secretId), isNull(companySecrets.deletedAt)));
-    if (!row) return null;
+      .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, secretId)));
+    if (!row) return { grantId: grant.id, secretId, expectedVersion: 0, definitionId: null, state: "gone" };
     const personal = grant.kind === "user";
+    const claimed = row.deletedAt !== null;
+    const name = `ai-${grant.id}`;
     const owned = personal
       ? row.scope === "user" && row.definitionKey === `ai_${grant.id.replaceAll("-", "_")}`
-      : row.scope === "company" && row.name === `ai-${grant.id}`;
+      : row.scope === "company" && (row.name === name || (claimed && row.name === `${name}__deleted__${row.id}`));
     if (!owned) return null;
-    return { grantId: grant.id, secretId: row.id, expectedVersion: row.latestVersion, definitionId: personal ? row.definitionId : null };
+    return {
+      grantId: grant.id, secretId: row.id, expectedVersion: row.latestVersion,
+      definitionId: personal ? row.definitionId : null, state: claimed ? "claimed" : "live",
+    };
   }
 
-  async function usedElsewhere(connection: Connection, target: Target): Promise<boolean> {
-    if ((await connectionSecretsUsedByOtherConsumers(db, [target.secretId])).size > 0) return true;
-    const grants = await db.select({ id: connectionGrants.id, refs: connectionGrants.credentialSecretRefs })
-      .from(connectionGrants)
-      .where(and(eq(connectionGrants.companyId, connection.companyId), ne(connectionGrants.id, target.grantId)));
-    if (grants.some((row) => (row.refs ?? []).some((ref) => ref.secretId === target.secretId))) return true;
-    const connections = await db.select({ refs: toolConnections.credentialRefs, secretRefs: toolConnections.credentialSecretRefs })
-      .from(toolConnections)
-      .where(and(eq(toolConnections.companyId, connection.companyId), ne(toolConnections.id, connection.id)));
-    if (connections.some((row) => [...(row.refs ?? []), ...(row.secretRefs ?? [])].some((ref) => ref.secretId === target.secretId))) return true;
-    const bindings = await db.select({ id: companySecretBindings.id }).from(companySecretBindings)
-      .where(and(
-        eq(companySecretBindings.companyId, connection.companyId),
-        eq(companySecretBindings.secretId, target.secretId),
-        sql`not (${companySecretBindings.targetType} = 'tool_connection' and ${companySecretBindings.targetId} = ${connection.id})`,
-      ))
-      .limit(1);
-    if (bindings.length > 0) return true;
-    if (!target.definitionId) return false;
-    const declarations = await db.select({ id: userSecretDeclarations.id }).from(userSecretDeclarations)
-      .where(and(
-        eq(userSecretDeclarations.userSecretDefinitionId, target.definitionId),
-        sql`not (${userSecretDeclarations.targetType} = 'tool_connection' and ${userSecretDeclarations.targetId} = ${connection.id})`,
-      ))
-      .limit(1);
-    return declarations.length > 0;
+  async function usedElsewhere(connection: Connection, target: Target, removingConnection: boolean): Promise<boolean> {
+    const held = await findSecretConsumers(db, {
+      companyId: connection.companyId, connectionId: connection.id, secretIds: [target.secretId],
+      excludeGrantIds: [target.grantId], removingConnection, liveOnly: true,
+    });
+    return held.has(target.secretId);
   }
 
   async function clearRevokedRef(connection: Connection, target: Target) {
@@ -112,13 +96,19 @@ export function createAntigravitySignInRemoval(db: Db, deps: {
     return rows.length > 0;
   }
 
-  async function retire(connection: Connection, target: Target): Promise<CredentialResult> {
+  async function retire(connection: Connection, target: Target, removingConnection: boolean): Promise<CredentialResult> {
     if (!(await stillRevoked(connection, target))) return "reconnected";
-    if (await usedElsewhere(connection, target)) {
+    if (await usedElsewhere(connection, target, removingConnection)) {
       await clearRevokedRef(connection, target);
       return "kept_shared";
     }
-    const removed = await deps.secrets.remove(target.secretId, { expectedVersion: target.expectedVersion });
+    if (target.state === "gone") {
+      await clearRevokedRef(connection, target);
+      return "deleted";
+    }
+    const removed = target.state === "claimed"
+      ? await deps.secrets.remove(target.secretId)
+      : await deps.secrets.remove(target.secretId, { expectedVersion: target.expectedVersion });
     if (!removed && await secretStillStored(connection, target)) {
       return (await stillRevoked(connection, target)) ? "not_deleted" : "reconnected";
     }
@@ -127,7 +117,7 @@ export function createAntigravitySignInRemoval(db: Db, deps: {
     return "deleted";
   }
 
-  async function prepare(connection: Connection, grants: RemovedGrant[]): Promise<PreparedAiSignInRemoval | null> {
+  async function prepare(connection: Connection, grants: RemovedGrant[], scope: { removingConnection: boolean }): Promise<PreparedAiSignInRemoval | null> {
     if (!isAntigravitySubscriptionConnection(connection)) return null;
     const targets: Target[] = [];
     for (const grant of grants) {
@@ -145,7 +135,7 @@ export function createAntigravitySignInRemoval(db: Db, deps: {
         for (const target of targets) {
           let result: CredentialResult;
           try {
-            result = await retire(connection, target);
+            result = await retire(connection, target, scope.removingConnection);
           } catch (error) {
             logger.warn(
               { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },

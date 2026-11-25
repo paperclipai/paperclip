@@ -520,7 +520,7 @@ replaceConnectionGrantMembers: async (
         removingConnection: false,
         removeSecret: (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }),
       });
-      const signInRemoval = await antigravitySignIn.prepare(connection, [currentGrant]);
+      const signInRemoval = await antigravitySignIn.prepare(connection, [currentGrant], { removingConnection: false });
       if (
         connection.credentialSource === "vercel_connect" &&
         connection.externalCredential

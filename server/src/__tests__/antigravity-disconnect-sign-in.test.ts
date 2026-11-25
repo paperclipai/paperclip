@@ -10,10 +10,15 @@ import {
   activityLog,
   companies,
   companyMemberships,
+  companySecretBindings,
   companySecrets,
   connectionGrants,
+  routines,
+  routineTriggers,
   createDb,
   toolConnections,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -166,6 +171,29 @@ describeEmbeddedPostgres("deleting a saved Google Antigravity sign-in on disconn
     expect(await liveSecret(companyId, reconnected.secretId)).toBe(true);
   });
 
+  it.each([
+    ["created by someone else", { createdByUserId: "company-admin" }],
+    ["deleted", { deletedAt: new Date(), status: "deleted" }],
+    ["moved to another provider", { provider: "aws_secrets_manager" }],
+  ] as const)("refuses a personal reconnect when the saved sign-in slot was %s", async (_label, change) => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "personal", account: "olga@example.test" });
+    await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+    const key = `ai_${account.grantId.replaceAll("-", "_")}`;
+    await db.update(userSecretDefinitions).set(change).where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, key)));
+    const [definition] = await db.select().from(userSecretDefinitions)
+      .where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, key)));
+
+    await expect(connectGoogle({ companyId, userId, ownership: "personal", account: "olga@example.test",
+      refreshToken: "olga-new-refresh-do-not-log", connectionId: account.connectionId }))
+      .rejects.toThrow("This account's saved sign-in slot was changed outside this connection");
+
+    const values = await db.select().from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.userSecretDefinitionId, definition!.id)));
+    expect(values).toEqual([]);
+    expect((await grantRow(account.grantId)).status).toBe("revoked");
+  });
+
   it("deletes the saved sign-in when the whole connection is removed", async () => {
     const { companyId, userId } = await company();
     const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "bob@example.test" });
@@ -194,6 +222,34 @@ describeEmbeddedPostgres("deleting a saved Google Antigravity sign-in on disconn
     expect((await grantRow(account.grantId)).credentialSecretRefs).toEqual([]);
   });
 
+  it("deletes the saved sign-in on connection removal when only grants of that connection reference it", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "mia@example.test" });
+    const ref = { secretId: account.secretId, configPath: "ai.credential", required: true, versionSelector: "latest" as const };
+    const [second] = await db.insert(connectionGrants).values({
+      companyId, connectionId: account.connectionId, kind: "organization", credentialSecretRefs: [ref], createdByUserId: userId,
+    }).returning();
+
+    const removed = await toolAccessService(db).archiveConnection(account.connectionId, companyId, { actorType: "user", actorId: userId });
+
+    expect(removed.removal.signInRemoval).toEqual(STILL_VALID);
+    expect(await liveSecret(companyId, account.secretId)).toBe(false);
+    expect((await grantRow(second!.id)).status).toBe("revoked");
+  });
+
+  it("keeps the saved sign-in when a grant on another, still active connection references it", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "nia@example.test" });
+    const other = await connectGoogle({ companyId, userId, ownership: "shared", account: "nia-two@example.test" });
+    const ref = { secretId: account.secretId, configPath: "ai.credential", required: true, versionSelector: "latest" as const };
+    await db.update(connectionGrants).set({ credentialSecretRefs: [ref] }).where(eq(connectionGrants.id, other.grantId));
+
+    const removed = await toolAccessService(db).archiveConnection(account.connectionId, companyId, { actorType: "user", actorId: userId });
+
+    expect(removed.removal.signInRemoval).toEqual({ ...STILL_VALID, savedSignIn: "kept_shared" });
+    expect(await liveSecret(companyId, account.secretId)).toBe(true);
+  });
+
   it("reports a failed delete, keeps a retryable reference, and deletes on the next disconnect", async () => {
     const { companyId, userId } = await company();
     const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "dana@example.test" });
@@ -209,6 +265,73 @@ describeEmbeddedPostgres("deleting a saved Google Antigravity sign-in on disconn
     const retried = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
     expect(retried.signInRemoval).toEqual(STILL_VALID);
     expect(await liveSecret(companyId, account.secretId)).toBe(false);
+  });
+
+  it("finishes a delete that failed after the sign-in was already marked deleted", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "ivy@example.test" });
+    await db.execute(sql.raw(`create or replace function test_block_secret_purge() returns trigger language plpgsql as $$
+      begin
+        if old.id = '${account.secretId}'::uuid then raise exception 'vault unavailable'; end if;
+        return old;
+      end $$`));
+    await db.execute(sql.raw("create trigger test_block_secret_purge before delete on company_secrets for each row execute function test_block_secret_purge()"));
+    let failed;
+    try {
+      failed = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+    } finally {
+      await db.execute(sql.raw("drop trigger if exists test_block_secret_purge on company_secrets"));
+    }
+
+    expect(failed.signInRemoval).toEqual({ ...STILL_VALID, savedSignIn: "not_deleted" });
+    const [halfDeleted] = await db.select().from(companySecrets).where(eq(companySecrets.id, account.secretId));
+    expect(halfDeleted?.deletedAt).not.toBeNull();
+    expect((await grantRow(account.grantId)).credentialSecretRefs.map((entry) => entry.secretId)).toEqual([account.secretId]);
+
+    const retried = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+    expect(retried.signInRemoval).toEqual(STILL_VALID);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, account.secretId))).toEqual([]);
+    expect((await grantRow(account.grantId)).credentialSecretRefs).toEqual([]);
+  });
+
+  it("keeps a saved sign-in that another target binds", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "jade@example.test" });
+    await db.insert(companySecretBindings).values({
+      companyId, secretId: account.secretId, targetType: "agent", targetId: randomUUID(), configPath: "env.GEMINI_HOME",
+    });
+
+    const revoked = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+
+    expect(revoked.signInRemoval).toEqual({ ...STILL_VALID, savedSignIn: "kept_shared" });
+    expect(await liveSecret(companyId, account.secretId)).toBe(true);
+  });
+
+  it("keeps a personal saved sign-in that another target declares", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "personal", account: "kim@example.test" });
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, account.secretId));
+    await db.insert(userSecretDeclarations).values({
+      companyId, userSecretDefinitionId: secret!.userSecretDefinitionId!, targetType: "agent", targetId: randomUUID(),
+      configPath: "env.GEMINI_HOME", envKey: "GEMINI_HOME",
+    });
+
+    const revoked = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+
+    expect(revoked.signInRemoval).toEqual({ ...STILL_VALID, savedSignIn: "kept_shared" });
+    expect(await liveSecret(companyId, account.secretId)).toBe(true);
+  });
+
+  it("keeps a saved sign-in that a routine trigger uses", async () => {
+    const { companyId, userId } = await company();
+    const account = await connectGoogle({ companyId, userId, ownership: "shared", account: "lee@example.test" });
+    const [routine] = await db.insert(routines).values({ companyId, title: "Uses the sign-in" }).returning();
+    await db.insert(routineTriggers).values({ companyId, routineId: routine!.id, kind: "webhook", secretId: account.secretId });
+
+    const revoked = await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+
+    expect(revoked.signInRemoval).toEqual({ ...STILL_VALID, savedSignIn: "kept_shared" });
+    expect(await liveSecret(companyId, account.secretId)).toBe(true);
   });
 
   it("keeps the reference after a failed delete during connection removal so removing it again finishes", async () => {
@@ -242,7 +365,7 @@ describeEmbeddedPostgres("deleting a saved Google Antigravity sign-in on disconn
         },
       },
     });
-    const prepared = await removal.prepare(connection!, [await grantRow(account.grantId)]);
+    const prepared = await removal.prepare(connection!, [await grantRow(account.grantId)], { removingConnection: false });
     await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date(Date.now() - 1_000) })
       .where(eq(connectionGrants.id, account.grantId));
 
