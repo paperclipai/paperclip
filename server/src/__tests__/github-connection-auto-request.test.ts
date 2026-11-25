@@ -216,8 +216,37 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
         output: "fatal: not a git repository (or any of the parent directories): .git\n",
       }),
     ],
+    [
+      "unrelated command printing git auth error text",
+      toolExecutionEvent({
+        name: "vitest run server/src/__tests__/auth.test.ts",
+        output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      }),
+    ],
   ])("ignores non-matching or non-GitHub failure: %s", (_label, event) => {
     expect(detectUnconfiguredGitHubAuthFailureInEvents([event])).toBe(false);
+  });
+
+  it("clears detection when a later remote git/gh command succeeds, but not for local git status", () => {
+    const authFailure = toolExecutionEvent({
+      name: "git clone https://github.com/acme/private-repo.git",
+      output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    });
+    const localGitStatus = toolExecutionEvent({
+      name: "git status",
+      exitCode: 0,
+      status: "completed",
+      output: "On branch main\n",
+    });
+    const recoveredClone = toolExecutionEvent({
+      name: "git clone https://github.com/acme/public-mirror.git",
+      exitCode: 0,
+      status: "completed",
+      output: "Cloning into 'public-mirror'...\n",
+    });
+
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, localGitStatus])).toBe(true);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredClone])).toBe(false);
   });
 });
 
@@ -416,9 +445,11 @@ describeEmbeddedPostgres("automatic GitHub connection card on unconfigured git a
       }),
     });
 
-    // Calling again is idempotent and never creates a second pending card.
+    // Calling again reuses the pending card without creating a duplicate and keeps liveness blocked.
     const repeated = await connectionIntentService(db).requestForRunGitHubAuthFailure(runId);
-    expect(repeated).toBeNull();
+    expect(repeated?.interactionId).toBe(cards[0]!.id);
+    const recheckedRun = await lifecycle.classifyAndPersistRunLiveness(run);
+    expect(recheckedRun?.livenessState).toBe("blocked");
     const afterRepeat = await db.select().from(issueThreadInteractions).where(and(
       eq(issueThreadInteractions.companyId, companyId),
       eq(issueThreadInteractions.issueId, issueId),

@@ -1562,6 +1562,26 @@ export function connectionIntentService(db: Db) {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       if (!run || (run.status !== "failed" && run.status !== "succeeded") || !run.responsibleUserId) return null;
       if (record(run.contextSnapshot)?.githubAuthenticationMode === "host") return null;
+      let detected = isGitHubWorkspaceCloneAuthFailure({
+        resultJson: resultJsonOverride ?? run.resultJson,
+        contextSnapshot: run.contextSnapshot,
+      });
+      if (!detected) {
+        const recentEvents = await db
+          .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+          .from(heartbeatRunEvents)
+          .where(and(
+            eq(heartbeatRunEvents.companyId, run.companyId),
+            eq(heartbeatRunEvents.runId, run.id),
+            inArray(heartbeatRunEvents.eventType, ["tool.execution.completed", "item.completed"]),
+          ))
+          .orderBy(desc(heartbeatRunEvents.seq))
+          .limit(200);
+        // Evaluate chronologically (oldest -> newest) so a later successful remote
+        // git/gh command clears an earlier auth failure.
+        detected = detectUnconfiguredGitHubAuthFailureInEvents(recentEvents.reverse());
+      }
+      if (!detected) return null;
       let context: Awaited<ReturnType<typeof loadRunContext>>;
       try {
         context = await loadRunContext(
@@ -1584,7 +1604,16 @@ export function connectionIntentService(db: Db) {
         eq(issueThreadInteractions.status, "pending"),
         sql`${issueThreadInteractions.payload}->>'serviceSlug' = 'github'`,
       )).limit(1);
-      if (pendingGitHub) return null;
+      if (pendingGitHub) {
+        return {
+          version: 1 as const,
+          service: "github",
+          state: "needs_user_action" as const,
+          connectionId: null,
+          interactionId: pendingGitHub.id,
+          instruction: "A GitHub connection card is already pending for the responsible user.",
+        };
+      }
       const ready = await usableConnectionForAgent({
         companyId: run.companyId,
         agentId: run.agentId,
@@ -1609,24 +1638,6 @@ export function connectionIntentService(db: Db) {
           return null;
         }
       }
-      let detected = isGitHubWorkspaceCloneAuthFailure({
-        resultJson: resultJsonOverride ?? run.resultJson,
-        contextSnapshot: run.contextSnapshot,
-      });
-      if (!detected) {
-        const events = await db
-          .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
-          .from(heartbeatRunEvents)
-          .where(and(
-            eq(heartbeatRunEvents.companyId, run.companyId),
-            eq(heartbeatRunEvents.runId, run.id),
-            inArray(heartbeatRunEvents.eventType, ["tool.execution.completed", "item.completed"]),
-          ))
-          .orderBy(desc(heartbeatRunEvents.seq))
-          .limit(200);
-        detected = detectUnconfiguredGitHubAuthFailureInEvents(events);
-      }
-      if (!detected) return null;
       try {
         const created = await requestWithContext(context, "github");
         return created.interactionId ? created : null;

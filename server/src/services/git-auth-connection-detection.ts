@@ -11,10 +11,15 @@ export interface GitHubWorkspaceFailureRun {
 interface CommandExecutionRecord {
   command: string;
   output: string;
+  failed: boolean;
 }
 
 const GITHUB_HOST_URL_RE =
   /(?:^|[\s'"`(\[])(?:(?:https?|ssh|git):\/\/(?:[^/\s'"`@]+@)?|git@)github\.com(?::\d+)?(?:[/:]|$|[\s'"`)\]])/i;
+
+const GIT_OR_GH_COMMAND_RE = /(?:^|[\s/\\;|&`'"])(?:git|gh)(?:\s|$)/i;
+const REMOTE_GIT_OR_GH_COMMAND_RE =
+  /(?:^|[\s/\\;|&`'"])(?:git\s+(?:-[^\s]+\s+)*(?:clone|fetch|pull|push|ls-remote)\b|gh\s+(?!-h\b|--help\b|--version\b|version\b|help\b))/i;
 
 const GH_CLI_UNAUTHENTICATED_PATTERNS = [
   /\byou are not logged into any github hosts\b/i,
@@ -62,7 +67,7 @@ export function isGitHubRemoteUrl(value: unknown): boolean {
   return text !== null && GITHUB_HOST_URL_RE.test(text);
 }
 
-function extractFailedCommandExecution(event: GitAuthCommandEvent): CommandExecutionRecord | null {
+function extractCommandExecution(event: GitAuthCommandEvent): CommandExecutionRecord | null {
   const payload = asRecord(event.payload);
   if (!payload) return null;
   const prpEvent = asRecord(payload.prpEvent);
@@ -75,11 +80,10 @@ function extractFailedCommandExecution(event: GitAuthCommandEvent): CommandExecu
     const failed = exitCode !== null
       ? exitCode !== 0
       : (status === "failed" || status === "error");
-    if (!failed) return null;
     const output = joinTextParts([body.output, body.stderr, body.error]);
-    if (!output) return null;
     const command = joinTextParts([body.command, body.name, body.subject]);
-    return { command, output };
+    if (!output && !command) return null;
+    return { command, output, failed };
   }
 
   if (event.eventType === "item.completed") {
@@ -96,17 +100,26 @@ function extractFailedCommandExecution(event: GitAuthCommandEvent): CommandExecu
     const failed = exitCode !== null
       ? exitCode !== 0
       : (status === "failed" || status === "error");
-    if (!failed) return null;
     const output = joinTextParts([item.aggregated_output, item.aggregatedOutput, item.output, item.stderr]);
-    if (!output) return null;
     const command = asNonEmptyString(item.command) ?? "";
-    return { command, output };
+    if (!output && !command) return null;
+    return { command, output, failed };
   }
 
   return null;
 }
 
+function isGitOrGhCommand(command: string): boolean {
+  // Some generic shell wrappers omit the raw command string; allow output-only
+  // matching when command metadata is absent, but reject unrelated commands
+  // (for example `cat error.log` or `vitest run`) when a command name is present.
+  return command.length === 0 || GIT_OR_GH_COMMAND_RE.test(command);
+}
+
 function matchesUnconfiguredGitHubAuthFailure(execution: CommandExecutionRecord): boolean {
+  if (!execution.failed || !execution.output || !isGitOrGhCommand(execution.command)) {
+    return false;
+  }
   const { output } = execution;
   if (GH_CLI_UNAUTHENTICATED_PATTERNS.some((pattern) => pattern.test(output))) {
     return true;
@@ -120,16 +133,29 @@ function matchesUnconfiguredGitHubAuthFailure(execution: CommandExecutionRecord)
   return false;
 }
 
+function isRecoveredGitHubCommand(execution: CommandExecutionRecord): boolean {
+  return !execution.failed && execution.command.length > 0 && REMOTE_GIT_OR_GH_COMMAND_RE.test(execution.command);
+}
+
+/**
+ * Inspects command events in chronological order (oldest -> newest) and returns
+ * true only when an unconfigured GitHub auth failure occurred and was not
+ * followed by a successful remote git or authenticated gh command.
+ */
 export function detectUnconfiguredGitHubAuthFailureInEvents(
   events: Iterable<GitAuthCommandEvent>,
 ): boolean {
+  let detected = false;
   for (const event of events) {
-    const execution = extractFailedCommandExecution(event);
-    if (execution && matchesUnconfiguredGitHubAuthFailure(execution)) {
-      return true;
+    const execution = extractCommandExecution(event);
+    if (!execution) continue;
+    if (matchesUnconfiguredGitHubAuthFailure(execution)) {
+      detected = true;
+    } else if (detected && isRecoveredGitHubCommand(execution)) {
+      detected = false;
     }
   }
-  return false;
+  return detected;
 }
 
 function isGitCloneAuthFailureObject(value: unknown): boolean {
