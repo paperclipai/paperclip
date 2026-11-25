@@ -10,7 +10,7 @@ import type { TranscriptEntry } from "@/adapters";
 import { nativeRunEventsToTranscript } from "@/components/transcript/native-run-events";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import type { TaskChatActivityPhaseItem } from "./task-chat-model";
-import { paperclipRunnerActivityItems, transcriptToTaskChatItems } from "./transcript-adapter";
+import { markRetriedTools, paperclipRunnerActivityItems, transcriptToTaskChatItems } from "./transcript-adapter";
 
 /** One live Antigravity /swarm run's tool, bridge-call and final-message events (see the fixture's provenance). */
 const fixture = swarmRun as unknown as { runId: string; events: HeartbeatRunEvent[] };
@@ -94,6 +94,24 @@ describe("an Antigravity swarm run's task thread", () => {
 
   it("reads the same while the run is live", () => {
     expect(renderedRows(liveEntries())).toEqual(settled());
+  });
+
+  it("shows a paired bridge call's arguments live, as the settled row does", () => {
+    const parser = paperclipRunnerUIAdapter.createStdoutParser!();
+    const line = (event: Record<string, unknown>) => parser.parseLine(JSON.stringify({ type: "paperclip.prp.event", event }), "2026-11-25T05:51:00Z");
+    line({ eventType: "tool.execution.started", itemId: "item-1", payload: { schema: "paperclip.tool.execution.v1", executionId: "call_1",
+      name: "search_tasks", namespace: "paperclip", transport: "mcp", operation: "search", status: "running" } });
+    const paired = line({ eventType: "item.started", itemId: "7", payload: { kind: "dynamicToolCall",
+      item: { id: "7", type: "tool_use", name: "search_tasks", input: { query: "open bugs", limit: 5 } } } });
+    expect(paired).toEqual([expect.objectContaining({ kind: "provider_activity", payload: expect.objectContaining({ executionId: "call_1", subject: "open bugs" }) })]);
+  });
+
+  it("never calls a failure retried when the shortened subjects only look alike", () => {
+    const tool = (id: string, status: "failed" | "completed", target: string) =>
+      ({ id, kind: "tool", name: "run_command", status, target }) as Parameters<typeof markRetriedTools>[0][number];
+    const clipped = `${"x".repeat(399)}…`;
+    expect(markRetriedTools([tool("a", "failed", clipped), tool("b", "completed", clipped)])[0]).not.toHaveProperty("retried");
+    expect(markRetriedTools([tool("a", "failed", "npm test"), tool("b", "completed", "npm test")])[0]).toHaveProperty("retried", true);
   });
 
   it("never shows raw tool names, internal paths or hashes", () => {

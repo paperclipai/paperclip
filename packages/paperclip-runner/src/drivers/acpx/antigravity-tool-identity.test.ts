@@ -96,9 +96,21 @@ describe("Antigravity tool identity", () => {
 
   it("drops every update of a read of the CLI's own files, even one that no longer names the path", () => {
     const project = createAntigravityToolEventProjection();
-    expect(project({ type: "tool_call", toolCallId: "s1", title: "File ../antigravity-home/builtin/skills/a/SKILL.md", kind: "read", status: "in_progress" })).toBeNull();
+    expect(project({ type: "tool_call", toolCallId: "s1", kind: "read", status: "in_progress",
+      title: "File ../../runtime/paperclip-runner/acpx/acpx/session-1/antigravity-home/antigravity-cli/antigravity-cli/builtin/skills/a/SKILL.md" })).toBeNull();
     expect(project({ type: "tool_call", toolCallId: "s1", kind: "read", status: "completed" })).toBeNull();
     expect(project({ type: "text_delta", text: "hi" })).toEqual({ type: "text_delta", text: "hi" });
+  });
+
+  it("keeps work on a task folder that happens to be named antigravity-home, and any command or edit", () => {
+    const project = createAntigravityToolEventProjection();
+    const shown = [
+      { type: "tool_call", toolCallId: "t1", kind: "read", status: "completed", title: "File antigravity-home/notes.md", locations: [{ path: "antigravity-home/notes.md" }] },
+      { type: "tool_call", toolCallId: "t2", kind: "execute", status: "completed", title: "mkdir -p antigravity-home/config", rawInput: { CommandLine: "mkdir -p antigravity-home/config" } },
+      { type: "tool_call", toolCallId: "t3", kind: "edit", status: "completed", title: "Write file",
+        locations: [{ path: "/runtime/paperclip-runner/acpx/s/antigravity-home/antigravity-cli/settings.json" }] },
+    ];
+    for (const event of shown) expect(project(event)).not.toBeNull();
   });
 
   it("leaves a call it cannot name unchanged", () => {

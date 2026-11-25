@@ -4,6 +4,7 @@ import { parseCodexStdoutLine, buildPaperclipRunnerConfig } from "@paperclipai/a
 import { CodexLocalConfigFields } from "../codex-local/config-fields";
 import { isRunLogOnlyProviderEvent } from "@/components/transcript/run-log-only-events";
 import { createBridgeCallPairing, type BridgeCallPairing } from "@/components/transcript/bridge-call-pairing";
+import { summarizeToolInput } from "@/components/task-chat/transcript-adapter";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -21,16 +22,6 @@ interface PaperclipRunnerParserState {
   paperclipExecutions: Map<string, { ts: string; eventType: string; summary: string; payload: JsonRecord }>;
 }
 
-/** The file or thing a Paperclip bridge call is about, from its arguments ("u1.txt"). */
-function bridgeCallSubject(input: unknown): string | undefined {
-  const value = record(input);
-  for (const key of ["filename", "path", "title"]) {
-    const candidate = text(value[key]);
-    if (candidate) return candidate.slice(0, 400);
-  }
-  return undefined;
-}
-
 /**
  * A bridge call that belongs to an in-flight provider call (bridge-call-pairing.ts)
  * shows on that call's row: its start adds the subject, its result adds nothing.
@@ -43,7 +34,8 @@ function pairedBridgeEntries(event: JsonRecord, item: JsonRecord, phase: "starte
     : state.bridgeCalls.pairedExecution(id);
   if (!executionId) return null;
   const row = state.paperclipExecutions.get(executionId);
-  const subject = phase === "started" ? bridgeCallSubject(item.input ?? item.arguments) : undefined;
+  // The same summary the settled row shows for these arguments ("u1.txt", a search query).
+  const subject = phase === "started" ? summarizeToolInput(item.input ?? item.arguments) : undefined;
   if (!row || !subject) return [];
   return [{ kind: "provider_activity", ts: row.ts, family: "tool_execution", eventType: row.eventType, status: "running",
     title: "Tool execution", summary: row.summary, payload: { ...row.payload, subject } }];

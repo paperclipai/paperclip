@@ -60,14 +60,25 @@ function command(call: Json): string | undefined {
  * Reads of the CLI's own installation (its built-in skills under the run's
  * private Antigravity home) are the CLI loading itself, not work on the task.
  */
-export function isAntigravityInternalRead(call: { title?: unknown; locations?: unknown; rawInput?: unknown; args?: unknown }): boolean {
+export function isAntigravityInternalRead(call: { name?: unknown; kind?: unknown; title?: unknown; locations?: unknown; rawInput?: unknown; args?: unknown }): boolean {
+  // Only a read is the CLI loading itself; a command or edit stays visible wherever it points.
+  const name = string(call.name);
+  if (call.kind !== "read" && !(name && READ_TOOL.test(name))) return false;
   const paths = [
     string(call.title),
     ...(Array.isArray(call.locations) ? call.locations.map(location => string(record(location).path)) : []),
     ...Object.values({ ...record(call.rawInput), ...record(call.args) }).map(string),
   ];
-  return paths.some(path => path !== undefined && /(?:^|[\\/ ])antigravity-home[\\/]/.test(path));
+  return paths.some(path => path !== undefined && PRIVATE_CLI_HOME.test(path));
 }
+
+const READ_TOOL = /^(?:view|read)_/;
+/**
+ * The run's private Antigravity home, inside the Runner's own ACPX runtime
+ * folder (`…/paperclip-runner/acpx/…/antigravity-home/antigravity-cli/…`). A
+ * task folder that merely has a directory named `antigravity-home` is not it.
+ */
+const PRIVATE_CLI_HOME = /(?:^|[\\/ ])paperclip-runner[\\/]acpx[\\/](?:[^\\/]+[\\/])*?antigravity-home[\\/]antigravity-(?:cli|acp)[\\/]/;
 
 /**
  * The identity of one Antigravity tool call. `name` is the CLI's native tool

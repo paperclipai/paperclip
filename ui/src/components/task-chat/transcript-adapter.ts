@@ -1569,16 +1569,18 @@ export function paperclipRunnerTimelineItems(
   ));
 }
 
-/** A tool row's identity and subject, for matching a retry of the same call. */
+/**
+ * A tool row's identity and subject, for matching a retry of the same call.
+ * A shortened subject ("…") no longer identifies the call, so it never matches.
+ */
 function retryKey(item: TaskChatItem): string | null {
-  if (item.kind === "tool") {
-    const target = item.target?.trim();
-    return target && !item.blockedReason ? `${(item.rawName ?? item.name).toLowerCase()}\u0000${target}` : null;
-  }
+  const key = (name: string | undefined, target: string | undefined) => {
+    const subject = target?.trim();
+    return name && subject && !subject.endsWith("…") ? `${name.toLowerCase()}\u0000${subject}` : null;
+  };
+  if (item.kind === "tool") return item.blockedReason ? null : key(item.rawName ?? item.name, item.target);
   if (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution") {
-    const name = providerItemDetail(item, "Name");
-    const target = providerItemDetail(item, "Subject") ?? providerItemDetail(item, "Target");
-    return name && target ? `${name.toLowerCase()}\u0000${target.trim()}` : null;
+    return key(providerItemDetail(item, "Name"), providerItemDetail(item, "Subject") ?? providerItemDetail(item, "Target"));
   }
   return null;
 }
