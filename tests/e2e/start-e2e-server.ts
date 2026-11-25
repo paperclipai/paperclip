@@ -104,6 +104,7 @@ function startParallelUiBuild(): { child: ChildProcess; done: Promise<void> } | 
       );
     });
   });
+  done.catch(() => {});
   return { child, done };
 }
 
