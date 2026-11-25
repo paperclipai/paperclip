@@ -532,6 +532,12 @@ const spentRestartRetryAccounting = () => ({
   serverRestartWindowStartedAt: new Date().toISOString(),
 });
 
+/**
+ * Registers one of four disjoint partitions of the heartbeat process recovery
+ * suite so CI can shard them across serialized runners. Every `it` / `it.each`
+ * (and nested `describe`) in this function MUST live inside an
+ * `if (part === N)` block; shared helpers stay at top level outside the guards.
+ */
 export function registerHeartbeatProcessRecoverySuite(part: 1 | 2 | 3 | 4): void {
 describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`, () => {
   let db!: ReturnType<typeof createDb>;
@@ -680,7 +686,7 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
       emailVerified: true,
       createdAt: now,
       updatedAt: now,
-    });
+    }).onConflictDoNothing();
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -2449,8 +2455,8 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
     const previous = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
     await db.insert(heartbeatRuns).values({ id: queuedId, companyId, agentId: previous.agentId,
       status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } });
-    const { createPostgresRunDispatchAdapter } = await import("../modules/run-dispatch/adapters/postgres.js");
-    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
+    const { createRunDispatch } = await import("../modules/run-dispatch/index.js");
+    expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
       expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
     const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
     await settleUnrecoverableExecutions(db);
@@ -2472,8 +2478,8 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
     const previous = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
     await db.insert(heartbeatRuns).values({ id: queuedId, companyId, agentId: previous.agentId,
       status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } });
-    const { createPostgresRunDispatchAdapter } = await import("../modules/run-dispatch/adapters/postgres.js");
-    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
+    const { createRunDispatch } = await import("../modules/run-dispatch/index.js");
+    expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
       expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
     await db.update(environmentLeases).set({ releasedAt: new Date(), status: "released" }).where(eq(environmentLeases.id, lease!.id));
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();

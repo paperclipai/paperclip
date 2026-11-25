@@ -408,7 +408,7 @@ files, successful lease cleanup, and one bounded continuation. Reload before
 checking the successor. Repeat with controller loss: the expired fence must
 retain the exact source and require repair, never claim restored files or start
 a second executor. The database-backed
-[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery-part-2.test.ts)
+[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 checks finalizer joining, release order, durable retry uniqueness, and reload.
 The [settlement regressions](../../server/src/services/heartbeat/recovery.test.ts)
 cover other-controller fencing and owner loss. Provider boundaries are controlled
