@@ -63,9 +63,10 @@ export const ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS = {
   antigravity: [["GEMINI_API_KEY"]],
 } as const satisfies Record<string, readonly (readonly string[])[]>;
 export type PluginEnvironmentTaskCredentialProvider = keyof typeof ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS;
+const providerNames = Object.keys(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS) as [PluginEnvironmentTaskCredentialProvider, ...PluginEnvironmentTaskCredentialProvider[]];
 const providerCredential = z.object({
   type: z.literal("provider-env"),
-  provider: z.enum(["grok", "copilot", "opencode", "antigravity"]),
+  provider: z.enum(providerNames),
   environment: z.record(z.string(), credentialValue),
 }).strict().superRefine((credential, ctx) => {
   const names = Object.keys(credential.environment).sort();
