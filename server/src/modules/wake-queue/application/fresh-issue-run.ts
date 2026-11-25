@@ -108,9 +108,13 @@ export function createFreshIssueRunAdmission<Run extends { id: string }>(store: 
 
     // Chat keeps separate batches, but an exact resumed receipt must be consumed with its successor.
     const canCoalesceComments = !durableChatReceiptId && !issue.isConversation && input.allowRunCoalescing !== false;
-    const requiredReceiptId = input.queuedCommentInterruptId ?? input.queuedCommentRequestId ?? input.boardRetryReceiptId ?? null;
-    const exactWakeId = executionWaitRequestId ?? requiredReceiptId;
     const isPromotedDurableChat = Boolean(durableChatReceiptId && durableChatReceiptId === executionWaitRequestId);
+    const rawRequiredReceiptId = input.queuedCommentInterruptId ?? input.queuedCommentRequestId ?? input.boardRetryReceiptId ?? null;
+    if (isPromotedDurableChat && rawRequiredReceiptId && rawRequiredReceiptId !== durableChatReceiptId) {
+      throw new Error("wake-queue: promoted durable chat wake cannot require a separate resumed receipt");
+    }
+    const requiredReceiptId = isPromotedDurableChat ? null : rawRequiredReceiptId;
+    const exactWakeId = executionWaitRequestId ?? requiredReceiptId;
     const readCandidates = () => store.readCommentCandidates({
       issueId: issue.id,
       agentId,
