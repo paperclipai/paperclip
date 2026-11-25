@@ -163,7 +163,7 @@ function googleErrorInText(text: string): { status: number; body: string } | nul
   return status && status >= 400 && status < 600 ? { status, body: "" } : null;
 }
 
-export function googleWorkspaceMcpErrorDetails(result: unknown): { toolCode: string; retryable?: true } {
+export function googleWorkspaceMcpErrorDetails(result: unknown, options: { readOnly: boolean }): { toolCode: string; retryable?: true } {
   const record = isObject(result) ? result : {};
   const texts = Array.isArray(record.content)
     ? record.content.flatMap((item) => isObject(item) && typeof item.text === "string" ? [item.text] : [])
@@ -173,7 +173,8 @@ export function googleWorkspaceMcpErrorDetails(result: unknown): { toolCode: str
   const error = googleError({ status: found.status, headers: new Headers() }, found.body);
   if (error instanceof GoogleWorkspaceAuthError) return { toolCode: `google_${error.reason}` };
   if (!(error instanceof GoogleToolError)) return { toolCode: "google_error" };
-  return { toolCode: `google_${error.kind}`, ...(error.kind === "rate_limited" ? { retryable: true as const } : {}) };
+  const retryable = error.kind === "rate_limited" || (error.kind === "unavailable" && options.readOnly);
+  return { toolCode: `google_${error.kind}`, ...(retryable ? { retryable: true as const } : {}) };
 }
 
 export async function callGoogleWorkspaceRest(

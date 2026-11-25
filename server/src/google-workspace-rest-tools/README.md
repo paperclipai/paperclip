@@ -276,9 +276,10 @@ on the Paperclip Runner sees the code and the full text. For an error that
 Google returns, the agent sees only a code. `googleWorkspaceMcpErrorDetails`
 takes Google's HTTP status or status name and classifies it with the REST
 tools' `googleError`, for example `google_permission_denied`,
-`google_insufficient_scope` or `google_unavailable`, else `google_error`. Only
-`google_rate_limited` is retryable, because a write can already be applied
-when Google reports a server error. Google's own text is not sent to the
+`google_insufficient_scope` or `google_unavailable`, else `google_error`.
+`google_rate_limited` is retryable. `google_unavailable` is retryable only for a
+read action, because a write can already be applied when Google reports a
+server error. Google's own text is not sent to the
 agent. The failed call event records the code in
 `errorCode`, and the text in `errorMessage`, which the 30-day Google Technical
 Information sweep clears.

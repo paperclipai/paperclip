@@ -9119,7 +9119,7 @@ export function createToolGatewayService(
           "ok",
           "Remote MCP server responded to tools/call.",
         );
-        const errorDetails = workspaceTarget?.transport === "google_mcp" && result.data.isError ? googleWorkspaceMcpErrorDetails(callResult) : undefined;
+        const errorDetails = workspaceTarget?.transport === "google_mcp" && result.data.isError ? googleWorkspaceMcpErrorDetails(callResult, { readOnly: tool.risk === "read" }) : undefined;
         return { result, ...(errorDetails ? { errorDetails } : {}), failureInstructions, headerSummary, execution };
       }
     } catch (error) {
