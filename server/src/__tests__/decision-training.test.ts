@@ -272,10 +272,15 @@ describeEmbeddedPostgres("decision training", () => {
       status: "executed", canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { summary: "", sizeBytes: 0, sha256: "hash", redactedFields: [] },
     }).returning();
     const [deliveredRun] = await db.insert(heartbeatRuns).values({
-      companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: secret },
+      companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: secret }, sessionIdAfter: "approval-session",
       startedAt: new Date("2026-07-16T11:40:00.000Z"), finishedAt: new Date("2026-07-16T11:45:00.000Z"),
       contextSnapshot: { issueId: seeded.issueId, toolActionRequestIds: [actionRequest!.id], toolAction: { resultSummary: secret } },
       createdAt: new Date("2026-07-16T11:40:00.000Z"), updatedAt: new Date("2026-07-16T11:45:00.000Z"),
+    }).returning();
+    const [resumedApprovalRun] = await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: `Recalling: ${secret}` },
+      sessionIdBefore: "approval-session", startedAt: new Date("2026-07-16T11:46:00.000Z"), finishedAt: new Date("2026-07-16T11:48:00.000Z"),
+      contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:46:00.000Z"), updatedAt: new Date("2026-07-16T11:48:00.000Z"),
     }).returning();
     await db.update(issueThreadInteractions).set({
       payload: { question: "Send?", toolAction: { previewMarkdown: secret } } as never,
@@ -294,6 +299,7 @@ describeEmbeddedPostgres("decision training", () => {
     expect(captured.snapshot.runs.find((run) => run.id === otherRun!.id)).toMatchObject({ resultJson: { summary: "Other work" } });
     expect(captured.snapshot.runs.find((run) => run.id === deliveredRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
     expect(captured.snapshot.runs.find((run) => run.id === resumedRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
+    expect(captured.snapshot.runs.find((run) => run.id === resumedApprovalRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
     expect(captured.snapshot.decision.payload).toMatchObject({ payload: { question: "Send?", googleWorkspaceContentOmitted: true } });
 
     const savedBeforeThisChange = {

@@ -82,7 +82,12 @@ export async function runsThatUsedGoogleWorkspace(db: Pick<Db, "select">, compan
       sql`exists (select 1 from heartbeat_runs g where g.company_id = ${companyId} and g.agent_id = ${heartbeatRuns.agentId}
         and ${sessions("g")} && array_remove(array[${heartbeatRuns.sessionIdBefore}, ${heartbeatRuns.sessionIdAfter}], null)
         and (exists (select 1 from tool_invocations i where i.company_id = ${companyId} and i.run_id = g.id and i.connection_id in ${google})
-          or exists (select 1 from tool_call_events ev where ev.company_id = ${companyId} and ev.run_id = g.id and ev.connection_id in ${google})))`,
+          or exists (select 1 from tool_call_events ev where ev.company_id = ${companyId} and ev.run_id = g.id and ev.connection_id in ${google})
+          or (jsonb_typeof(g.context_snapshot -> 'toolActionRequestIds') = 'array'
+            and exists (select 1 from jsonb_array_elements_text(g.context_snapshot -> 'toolActionRequestIds') as carried(request_id)
+              join tool_action_requests tar on tar.id::text = carried.request_id and tar.company_id = ${companyId}
+              join tool_invocations ti on ti.id = tar.invocation_id
+              where ti.connection_id in ${google}))))`,
     ));
   return new Set([...direct, ...sameSession.map((row) => row.runId)]);
 }
