@@ -3,11 +3,14 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ToolMcpGatewayWithTokens, ToolRedactedValueSummary } from "@paperclipai/shared";
 import { toolsApi, type ToolAuditOutcome, type ToolGatewayActivityEvent } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { queryKeys } from "@/lib/queryKeys";
-import { ErrorState, RelativeTime } from "@/pages/tools/shared";
+import { RelativeTime } from "@/pages/tools/shared";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
@@ -119,7 +122,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
           {argumentsText ? (
             <div className="mt-2 space-y-1">
               <div className="text-muted-foreground">Arguments (redacted)</div>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+              <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                 {argumentsText}
               </pre>
             </div>
@@ -127,7 +130,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
           {resultText ? (
             <div className="mt-3 space-y-1">
               <div className="text-muted-foreground">Result (redacted)</div>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+              <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                 {resultText}
               </pre>
             </div>
@@ -158,12 +161,14 @@ export function GatewayActivityPanel({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 
+  const activityView = useQueryView(activityQuery);
+
   const events = useMemo(
     () => activityQuery.data?.pages.flatMap((page) => page.events) ?? [],
     [activityQuery.data],
   );
 
-  if (activityQuery.isLoading) {
+  if (activityQuery.isLoading || activityView.kind === "reconnecting") {
     return (
       <div className="space-y-2">
         <Skeleton className="h-12 w-full" />
@@ -172,8 +177,15 @@ export function GatewayActivityPanel({
       </div>
     );
   }
-  if (activityQuery.isError) {
-    return <ErrorState error={activityQuery.error} onRetry={() => activityQuery.refetch()} />;
+  if (activityView.kind === "error") {
+    return (
+      <QueryErrorState
+        error={activityQuery.error}
+        action="load gateway activity"
+        onRetry={activityView.retry}
+        retrying={activityView.isFetching}
+      />
+    );
   }
 
   return (

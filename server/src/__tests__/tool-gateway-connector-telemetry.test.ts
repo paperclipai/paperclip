@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -29,12 +29,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 // Proposal wrappers drop unregistered names inside the real client, so the
 // integration assertions use a client double that reports the proposed event
 // as registered. `track` observes exactly what the emitter would hand the
 // real client after schema adoption.
-const track = vi.fn();
+const track = vi.fn((..._args: unknown[]) => scopedTelemetryCompanyId());
 const isRegisteredEventName = vi.fn(() => true);
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => ({ track, isRegisteredEventName }),
@@ -236,6 +237,11 @@ async function createRemoteMcpTool(db: Db, companyId: string) {
   return { application: application!, connection: connection!, catalogEntry: catalogEntry! };
 }
 
+function scopesOf(name: string) {
+  return track.mock.calls.flatMap(([eventName], index) =>
+    eventName === name ? [track.mock.results[index]?.value] : []);
+}
+
 async function settledEvents(expectedCount: number) {
   await vi.waitFor(() => {
     expect(
@@ -298,7 +304,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
   async function fixture(options: Parameters<typeof createToolGatewayService>[1] = {}) {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
-    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
     const remoteTool = await createRemoteMcpTool(db, company.id);
     await allowAllToolsForAgent(db, company.id, agent.id);
     const gateway = createToolGatewayService(db, {
@@ -315,7 +321,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
       (candidate) => candidate.connectionId === remoteTool.connection.id,
     );
     expect(tool).toBeDefined();
-    return { company, agent, run, remoteTool, gateway, session, tool: tool! };
+    return { company, agent, issue, run, remoteTool, gateway, session, tool: tool! };
   }
 
   it("emits exactly one succeeded event for a successful agent execution", async () => {
@@ -336,6 +342,56 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
       status: "succeeded",
       origin: "agent",
     });
+    expect(scopesOf("connection.invoked")).toEqual([f.company.id]);
+  }, 30_000);
+
+  it("keeps the result and its audit row when the audit insert loses a deadlock to an issue-then-run locker", async () => {
+    const locker = createDb(tempDb!.connectionString);
+    let startLocker!: () => void, issueHeld!: () => void, lockRun!: () => void;
+    const lockerStart = new Promise<void>(resolve => { startLocker = resolve; });
+    const issueLocked = new Promise<void>(resolve => { issueHeld = resolve; });
+    const runGate = new Promise<void>(resolve => { lockRun = resolve; });
+    const f = await fixture({
+      remoteHttpRequest: async (_url, init) => {
+        if (JSON.parse(String(init.body ?? "{}"))?.method === "tools/call") {
+          startLocker();
+          await issueLocked;
+        }
+        return mcpSuccessResponse(init);
+      },
+    });
+    const lockerDone = lockerStart.then(() => locker.transaction(async tx => {
+      await tx.execute(sql`set local deadlock_timeout = '20s'`);
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issue.id)).for("update");
+      issueHeld();
+      await runGate;
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)).for("update");
+    }));
+    try {
+      const call = f.gateway.executeTool({
+        sessionToken: f.session.token,
+        tool: f.tool.name,
+        parameters: { key: "a", value: "1" },
+      }).then(value => ({ value }), error => ({ error }));
+      await vi.waitFor(async () => {
+        const [waiting] = await locker.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where wait_event_type = 'Lock' and query like 'insert into "tool_call_events"%'`);
+        expect(waiting?.count).toBe(1);
+      }, { timeout: 10_000, interval: 50 });
+      lockRun();
+      await lockerDone;
+      const outcome = await call;
+      expect(outcome).not.toHaveProperty("error");
+      expect(outcome).toMatchObject({ value: { status: "completed" } });
+      expect(await db.select({ id: toolCallEvents.id }).from(toolCallEvents).where(and(
+        eq(toolCallEvents.runId, f.run.id), eq(toolCallEvents.eventType, "call_completed")))).toHaveLength(1);
+    } finally {
+      startLocker();
+      issueHeld();
+      lockRun();
+      await lockerDone.catch(() => undefined);
+      await locker.$client.end({ timeout: 1 });
+    }
   }, 30_000);
 
   it("emits a single failed event when post-success audit work throws (no contradictory pair)", async () => {

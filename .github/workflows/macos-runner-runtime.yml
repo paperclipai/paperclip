@@ -1,0 +1,139 @@
+name: macOS OpenCode SSH runtime
+
+on:
+  workflow_call:
+    outputs:
+      artifact_name:
+        value: ${{ jobs.build.outputs.artifact_name }}
+      inputs_digest:
+        value: ${{ jobs.build.outputs.inputs_digest }}
+  pull_request:
+    paths:
+      - .github/workflows/macos-runner-runtime.yml
+      - .github/workflows/docker.yml
+      - .github/workflows/docker-merge-group.yml
+      - Dockerfile
+      - packages/paperclip-runner/**
+      - scripts/macos-runner-runtime.mjs
+      - scripts/macos-runner-runtime-cache.mjs
+      - server/src/services/native-runtime/remote-opencode-artifacts*
+      - server/src/services/native-runtime/remote-opencode-runtime*
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      artifact_name: ${{ steps.cached.outputs.artifact_name }}
+      inputs_digest: ${{ steps.cached.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - name: Find an identical runtime from a successful master image build
+        id: cached
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/macos-runner-runtime-cache.mjs
+      - name: Reuse the verified runtime artifact
+        if: steps.cached.outputs.run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ steps.cached.outputs.artifact_name }}
+          run-id: ${{ steps.cached.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/macos-runner-runtime
+      - run: pnpm install --frozen-lockfile
+        if: steps.cached.outputs.run_id == ''
+      - run: pnpm --filter @paperclipai/paperclip-runner build:typescript
+        if: steps.cached.outputs.run_id == ''
+      - run: pnpm --filter @paperclipai/paperclip-runner build:binary
+        if: steps.cached.outputs.run_id == ''
+      - name: Build the pinned native provider pack
+        if: steps.cached.outputs.run_id == ''
+        env:
+          PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ github.sha }}
+        run: node packages/paperclip-runner/scripts/build-provider-pack.mjs "$RUNNER_TEMP/macos-provider-pack"
+      - name: Qualify the actual OpenCode server
+        if: steps.cached.outputs.run_id == ''
+        env:
+          PAPERCLIP_OPENCODE_QUALIFY: "1"
+        run: |
+          export PAPERCLIP_TEST_OPENCODE_BINARY="$RUNNER_TEMP/macos-provider-pack/node_modules/opencode-ai/bin/opencode.exe"
+          node --test packages/paperclip-runner/scripts/qualify-opencode-runtime.test.mjs
+      - name: Package the macOS SSH runtime
+        if: steps.cached.outputs.run_id == ''
+        env:
+          RUNTIME_INPUTS_DIGEST: ${{ steps.cached.outputs.digest }}
+        run: |
+          node scripts/macos-runner-runtime.mjs package \
+            "$RUNNER_TEMP/macos-provider-pack" \
+            packages/paperclip-runner/dist/bin/paperclip-runnerd \
+            "$GITHUB_SHA" "$RUNNER_TEMP/macos-runner-runtime" "$RUNTIME_INPUTS_DIGEST"
+      - name: Verify the unpacked pack with the remote startup verifier
+        if: steps.cached.outputs.run_id == ''
+        env:
+          RUNTIME_INPUTS_DIGEST: ${{ steps.cached.outputs.digest }}
+        run: |
+          node scripts/macos-runner-runtime.mjs install \
+            "$RUNNER_TEMP/macos-runner-runtime" "$RUNNER_TEMP/qualified-runtimes" "$GITHUB_SHA" "$RUNTIME_INPUTS_DIGEST"
+          node --import ./server/node_modules/tsx/dist/loader.mjs --input-type=module <<'JS'
+          import { execFile } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { promisify } from 'node:util';
+          import { verifyRemoteProviderPack } from './server/src/services/native-runtime/remote-provider-pack-verification.ts';
+          const packRoot = join(process.env.RUNNER_TEMP, 'qualified-runtimes/darwin-arm64/provider-pack');
+          const manifest = JSON.parse(readFileSync(join(packRoot, 'provider-pack.json'), 'utf8'));
+          const execute = async request => {
+            try {
+              const result = await promisify(execFile)(request.command, request.args, { cwd: request.cwd, timeout: request.timeoutMs });
+              return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: null };
+            } catch (error) {
+              return { stdout: error.stdout ?? '', stderr: error.stderr ?? String(error), exitCode: error.code,
+                signal: error.signal ?? null, timedOut: Boolean(error.killed), pid: null, startedAt: null };
+            }
+          };
+          await verifyRemoteProviderPack({ runner: { execute }, cwd: packRoot, packRoot, manifest });
+          JS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.cached.outputs.artifact_name }}
+          path: ${{ runner.temp }}/macos-runner-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+  verify_linux_controller:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/macos-runner-runtime
+      - name: Verify that Linux can install the Mac runtime without executing it
+        env:
+          RUNTIME_INPUTS_DIGEST: ${{ needs.build.outputs.inputs_digest }}
+        run: |
+          node scripts/macos-runner-runtime.mjs install \
+            "$RUNNER_TEMP/macos-runner-runtime" "$RUNNER_TEMP/installed-runtimes" "$GITHUB_SHA" "$RUNTIME_INPUTS_DIGEST"

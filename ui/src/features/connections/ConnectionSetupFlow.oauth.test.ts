@@ -6,6 +6,10 @@ import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
+  isMissingOAuthStateMessage,
+  oauthFailureMessage,
+  readConnectionIntentGitHubRecovery,
+  readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
   retainedReconnectMatches,
@@ -192,6 +196,41 @@ describe("retained reconnect definition lookup", () => {
     })).toBe(expected);
   });
 
+  it("resumes an older Copilot draft saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-github",
+      companyId: "company-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilotDraft = {
+      id: "connection-1",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    const githubDraft = {
+      id: "connection-2",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      config: { sourceTemplateKey: "github" },
+    } as unknown as ToolConnection;
+    const resume = (requestedAppKey: string, resumeConnection: ToolConnection) => retainedResumeMatches({
+      requestedAppKey,
+      resumeConnection,
+      resumeApplication: github,
+      completedResumeConnectionId: null,
+    });
+
+    expect(resume("github-copilot", copilotDraft)).toBe(true);
+    expect(resume("github", copilotDraft)).toBe(false);
+    expect(resume("github-copilot", githubDraft)).toBe(false);
+    expect(resume("github", githubDraft)).toBe(true);
+  });
+
   it("does not apply fresh-setup availability to an exact retained reconnect", () => {
     expect(isVercelConnectUnavailable({
       credentialSource: "vercel_connect",
@@ -262,5 +301,107 @@ describe("retained reconnect target matching", () => {
       reconnectConnection: connection,
       reconnectApplication: curated,
     })).toBe(false);
+  });
+
+  it("reconnects older Copilot accounts saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilot = {
+      applicationId: "app-1",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: copilot,
+      reconnectApplication: github,
+    })).toBe(true);
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: connection,
+      reconnectApplication: github,
+    })).toBe(false);
+  });
+});
+
+describe("connection intent OAuth failure reasons", () => {
+  it("explains an expired sign-in instead of a generic failure", () => {
+    const code = readConnectionIntentOAuthFailureCode({
+      type: "paperclip.connection-intent.oauth",
+      interactionId,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(code).toBe("oauth_state_expired");
+    expect(oauthFailureMessage(code)).toMatch(/took too long/);
+  });
+
+  it("explains a sign-in finished in another Paperclip session", () => {
+    expect(oauthFailureMessage("oauth_session_mismatch")).toMatch(/different Paperclip session/);
+  });
+
+  it("ignores malformed codes and never shows a raw code", () => {
+    expect(readConnectionIntentOAuthFailureCode({ code: "<script>" })).toBeNull();
+    expect(readConnectionIntentOAuthFailureCode(null)).toBeNull();
+    const fallback = oauthFailureMessage("oauth_callback_http_500");
+    expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
+    expect(fallback).not.toContain("oauth_");
+  });
+});
+
+describe("missing sign-in state messages", () => {
+  const missing = { type: "paperclip.connection-intent.oauth", outcome: "failed", code: "oauth_state_missing" };
+  const activePopup = {} as Window;
+  const oldPopup = {} as Window;
+  const from = (data: unknown, source: Window | null, eventOrigin = origin) => ({ origin: eventOrigin, data, source });
+
+  it("accepts a missing-state failure from this setup's active sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, activePopup), origin, activePopup)).toBe(true);
+  });
+
+  it("ignores a missing-state failure from an old sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, null)).toBe(false);
+  });
+
+  it("rejects other origins, other codes, and messages bound to an interaction", () => {
+    expect(isMissingOAuthStateMessage(from(missing, activePopup, "https://evil.test"), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, code: "oauth_state_expired" }, activePopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, interactionId }, activePopup), origin, activePopup)).toBe(false);
+  });
+});
+
+describe("GitHub installation recovery from the sign-in window", () => {
+  it("offers the install and manage links GitHub returned", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      outcome: "failed",
+      code: "github_installation_required",
+      recovery: {
+        installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+        managementUrl: "https://github.com/settings/installations",
+      },
+    })).toEqual({
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: "https://github.com/settings/installations",
+    });
+    expect(oauthFailureMessage("github_installation_required")).toMatch(/Paperclip for GitHub app isn’t installed/);
+  });
+
+  it("drops links that are not on github.com or belong to another failure", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      code: "github_installation_required",
+      recovery: { installationUrl: "https://evil.test/install", managementUrl: "javascript:alert(1)" },
+    })).toBeNull();
+    expect(readConnectionIntentGitHubRecovery({
+      code: "oauth_state_expired",
+      recovery: { installationUrl: "https://github.com/apps/paperclip-for-github/installations/new" },
+    })).toBeNull();
   });
 });
