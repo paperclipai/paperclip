@@ -4,7 +4,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { comparisonPaths, planTasks } from "../ci-plan.mjs";
+import vm from "node:vm";
+import { compactHostedEntries, comparisonPaths, HOSTED_SHARD_COUNTS, planSummary, planTasks } from "../ci-plan.mjs";
 import { mergeDiff } from "../ci-diff.mjs";
 import { planLane } from "../../../scripts/ci-typecheck-lane.mjs";
 
@@ -16,17 +17,95 @@ const selected = (result, job) => result.jobs[job].run;
 const selectedTasks = (result) => new Set(Object.values(result.jobs).filter((job) => job.run)
   .flatMap((job) => job.matrix.include.map((entry) => entry.task)));
 
-test("trusted workflow fallbacks preserve every declared partition and command", () => {
+test("trusted workflow fallbacks preserve every declared partition and command for both AWS and hosted runners", () => {
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
+  const fullPlan = plan(["package.json"], { forceReason: "Full suite requested by label" });
+  const legacyPlan = structuredClone(fullPlan);
+  for (const lane of Object.values(legacyPlan.jobs)) delete lane.hosted_matrix;
+  const awsRunner = "runs-on/fleet=paperclip-public-pr-x64/env=public-ci";
+  const evalMatrix = (expression, { runner, planJson }) => vm.runInNewContext(expression, {
+    fromJSON: JSON.parse,
+    toJSON: JSON.stringify,
+    needs: { gate: { outputs: { runner, plan: planJson } }, test_selection: { outputs: { plan: "" } } },
+  });
   for (const [job, entries] of Object.entries(lanes)) {
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
     const normalized = block.replaceAll("(needs.test_selection.outputs.plan || needs.gate.outputs.plan)", "needs.gate.outputs.plan");
     assert.ok(normalized.includes(`fromJSON(needs.gate.outputs.plan).jobs.${job}.run`), job);
     if (!block.includes("      matrix:")) { assert.equal(entries.length, 1); continue; }
-    const fallback = block.match(/matrix:.*\|\| '(.*)'\) \}\}/)?.[1];
-    assert.ok(fallback, `${job}: missing full fallback`);
-    assert.deepEqual(JSON.parse(fallback), { include: entries }, job);
+    const expression = block.match(/      matrix: \$\{\{ (.+) \}\}$/m)?.[1];
+    assert.ok(expression, `${job}: missing matrix expression`);
+    const expectedAws = { include: entries };
+    const expectedHosted = { include: compactHostedEntries(entries) };
+    assert.deepEqual(evalMatrix(expression, { runner: awsRunner, planJson: "" }), expectedAws, `${job} aws fallback`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: "" }), expectedHosted, `${job} hosted fallback`);
+    assert.deepEqual(evalMatrix(expression, { runner: awsRunner, planJson: JSON.stringify(fullPlan) }), fullPlan.jobs[job].matrix, `${job} aws plan`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: JSON.stringify(fullPlan) }), fullPlan.jobs[job].hosted_matrix, `${job} hosted plan`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: JSON.stringify(legacyPlan) }), legacyPlan.jobs[job].matrix, `${job} legacy plan compat`);
   }
+});
+
+test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of tasks, groups, and contiguous shard coverage", () => {
+  const full = plan(["package.json"], { forceReason: "Full suite requested by label" });
+  const awsJobs = Object.values(full.jobs).reduce((sum, lane) => sum + lane.total, 0);
+  const hostedJobs = Object.values(full.jobs).reduce((sum, lane) => sum + (lane.hosted_total ?? lane.total), 0);
+  assert.equal(awsJobs, 66);
+  assert.equal(hostedJobs, 33);
+  assert.ok(Buffer.byteLength(JSON.stringify(full)) < 32_768, "dual-profile plan stays compact for GITHUB_OUTPUT/env");
+
+  for (const [job, lane] of Object.entries(full.jobs)) {
+    if (!lane.hosted_matrix) continue;
+    const awsEntries = lane.matrix.include;
+    const hostedEntries = lane.hosted_matrix.include;
+    assert.ok(hostedEntries.length < awsEntries.length, `${job} should compact on hosted`);
+    const partitionKey = (entry) => `${entry.task}::${entry.group ?? ""}`;
+    assert.deepEqual(
+      [...new Set(hostedEntries.map(partitionKey))],
+      [...new Set(awsEntries.map(partitionKey))],
+      `${job} must preserve every task and group`,
+    );
+    const byPartition = new Map();
+    for (const entry of hostedEntries) {
+      const key = partitionKey(entry);
+      if (!byPartition.has(key)) byPartition.set(key, []);
+      byPartition.get(key).push(entry);
+    }
+    for (const [key, groupEntries] of byPartition) {
+      if (groupEntries[0].shard_count !== undefined) {
+        assert.deepEqual(
+          groupEntries.map((e) => [e.shard_index, e.shard_count]),
+          groupEntries.map((_, i) => [i, groupEntries.length]),
+          `${job}/${key} must have contiguous shard indices`,
+        );
+      } else if (typeof groupEntries[0].command === "string" && groupEntries[0].command.includes("--package-lane=")) {
+        assert.deepEqual(
+          groupEntries.map((e) => e.command.match(/--package-lane=(\d+\/\d+)/)?.[1]),
+          groupEntries.map((_, i) => `${i + 1}/${groupEntries.length}`),
+          `${job}/${key} must have contiguous package lanes`,
+        );
+      }
+    }
+  }
+
+  const uiPr = plan(["ui/src/components/Sidebar.tsx"]);
+  assert.equal(uiPr.jobs.general_tests.selected, 2);
+  assert.equal(uiPr.jobs.general_tests.hosted_selected, 1);
+  assert.deepEqual(uiPr.jobs.general_tests.hosted_matrix.include, [
+    { group: "general-workspaces-a", group_label: "workspaces-a (1/1)", shard_index: 0, shard_count: 1, task: "ci:workspaces-a" },
+  ]);
+  assert.equal(uiPr.jobs.e2e_shards.selected, 12);
+  assert.equal(uiPr.jobs.e2e_shards.hosted_selected, 4);
+
+  const futureEntries = Array.from({ length: 10 }, (_, shard_index) => ({
+    task: "ci:future", shard_index, shard_count: 10, shard_label: `${shard_index + 1}/10`,
+  }));
+  const futureCompact = compactHostedEntries(futureEntries, HOSTED_SHARD_COUNTS);
+  assert.equal(futureCompact.length, 5);
+  assert.equal(futureCompact[4].shard_label, "5/5");
+
+  const summary = planSummary(full);
+  assert.match(summary, /27\/27 \(hosted: 12\/12\)/);
+  assert.match(summary, /12\/12 \(hosted: 4\/4\)/);
 });
 
 test("a UI component retains browser and build coverage without unrelated server/Rust jobs", () => {

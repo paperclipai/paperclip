@@ -344,7 +344,7 @@ describe("execute", () => {
     expect(input.split("Keep this deliberate repetition. Keep this deliberate repetition.")).toHaveLength(2);
     const continuationHeading = "## Current request and continuation context";
     const continuationStart = input.indexOf(continuationHeading);
-    const fencedStart = input.indexOf("```text\n", continuationStart);
+    const fencedStart = input.indexOf("```text\n{", continuationStart);
     const fencedEnd = input.indexOf("\n```", fencedStart + "```text\n".length);
     expect(continuationStart).toBeGreaterThanOrEqual(0);
     expect(fencedStart).toBeGreaterThan(continuationStart);

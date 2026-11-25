@@ -23,6 +23,7 @@ import { logger } from "../middleware/logger.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { accessService } from "../services/access.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
 import {
   connectManagedGmail as connectManagedGmailFixture,
@@ -259,15 +260,20 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
   it("makes no broker call when removal fails before the grants are revoked, and the retry sends them", async () => {
     const fixture = await connectManagedGmail();
-    const update = db.update.bind(db);
+    const transaction = db.transaction.bind(db);
     let failedOnce = false;
-    vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
-      if (table === connectionGrants && !failedOnce) {
-        failedOnce = true;
-        throw new Error("grant revocation failed");
-      }
-      return update(table as never);
-    }) as never);
+    vi.spyOn(db, "transaction").mockImplementation(((work: (tx: typeof db) => Promise<unknown>, ...rest: unknown[]) =>
+      transaction(async (tx) => {
+        const update = tx.update.bind(tx);
+        tx.update = ((table: unknown) => {
+          if (table === connectionGrants && !failedOnce) {
+            failedOnce = true;
+            throw new Error("grant revocation failed");
+          }
+          return update(table as never);
+        }) as never;
+        return work(tx as unknown as typeof db);
+      }, ...(rest as []))) as never);
 
     const failed = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(failed.status).toBe(500);
@@ -581,6 +587,20 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     const [started] = await db.select().from(activityLog).where(and(
       eq(activityLog.companyId, fixture.company.id), eq(activityLog.action, "tool_connection.content_deletion_started")));
     expect(started!.details).toEqual({ reason: "connection_removed" });
+  });
+
+  it("wakes the Google Technical Information sweep when Google tools are listed and when access ends", async () => {
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.googleTechnicalInformation, notified);
+    try {
+      const fixture = await connectManagedGmail();
+      expect(notified).toHaveBeenCalled();
+      notified.mockClear();
+      await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`).expect(200);
+      expect(notified).toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("starts deleting what agents read from Google when a person disconnects their Google account", async () => {

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { describeError } from "@/api/errors";
 import { environmentsApi } from "@/api/environments";
+import { healthApi } from "@/api/health";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
@@ -52,12 +53,14 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const settings = useQuery({ queryKey: queryKeys.instance.settings, queryFn: instanceSettingsApi.get });
   const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: instanceSettingsApi.getExperimental });
   const general = useQuery({ queryKey: queryKeys.instance.generalSettings, queryFn: instanceSettingsApi.getGeneral });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: provider === "google" });
   const envsView = useQueryView(envs);
   const capsView = useQueryView(caps);
   const settingsView = useQueryView(settings);
   const experimentalView = useQueryView(experimental);
   const generalView = useQueryView(general);
   const views = [envsView, capsView, settingsView, experimentalView, generalView];
+  const hostedGoogleSignIn = provider === "google" && Boolean(health.data?.hostedGoogleAiLoginSupported);
   const forced = resolveForcedKubernetesEnvironment(general.data?.executionMode, envs.data ?? []);
   let environmentId: string | null = null;
   let environmentError: string | undefined;
@@ -70,7 +73,9 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(envs.data),
       visibleEnvironmentIds: envs.data?.map((env) => env.id),
     });
-  } catch (error) { environmentError = describeError(error).body; }
+  } catch (error) {
+    if (!hostedGoogleSignIn) environmentError = describeError(error).body;
+  }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
     env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported"))),
   );
@@ -82,7 +87,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
   const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported");
-  const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || views.some((view) => view.kind === "reconnecting");
+  const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || (provider === "google" && health.isPending) || views.some((view) => view.kind === "reconnecting");
   const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-6">

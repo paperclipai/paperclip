@@ -33,6 +33,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import {
+  attachmentIdFromUrl,
   extractAttachmentRefs,
   extractImageRefs,
   fileKindForAttachment,
@@ -44,6 +45,7 @@ import {
 } from "./task-chat-attachments";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
+import { RunFileCardsContext } from "./RunFileCardsContext";
 import type { TaskChatMessageItem } from "./task-chat-model";
 import { safeNavigableUrl } from "@/lib/safe-url";
 
@@ -171,6 +173,7 @@ function TaskChatBubbleContent({
     ? <CoordinatorRelativeTime value={recordedTimestamp} /> : item.timestamp;
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
+  const runFileCards = useContext(RunFileCardsContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -201,6 +204,22 @@ function TaskChatBubbleContent({
   const isHuman = item.author === "human";
   const isOwnMessage = isHuman && item.isCurrentUser === true;
   const sentFromIMessage = isHuman && item.sourceChannel === "imessage-photon";
+  // Short notes before the timestamp: the message ran as a swarm, or came from iMessage.
+  const footerNotes = [
+    isHuman && item.nativeCommand === "swarm" ? "Swarm" : null,
+    sentFromIMessage ? "Sent from iMessage" : null,
+  ].filter((note): note is string => note !== null);
+  const footerLine = (
+    <>
+      {footerNotes.map((note, index) => (
+        <span key={note} data-testid={note === "Swarm" ? "task-chat-swarm-marker" : undefined}>
+          {index > 0 ? " · " : null}{note}
+        </span>
+      ))}
+      {footerNotes.length > 0 && timestamp ? " · " : null}
+      {timestamp}
+    </>
+  );
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
   const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
@@ -223,15 +242,19 @@ function TaskChatBubbleContent({
       openPath: attachment.openPath,
       downloadPath: attachment.downloadPath,
     }));
+  const notRunFileCard = (ref: AttachmentRef) => {
+    const id = ref.id ?? attachmentIdFromUrl(ref.url);
+    return !(item.author === "agent" && item.sourceRunId && id && runFileCards.get(id) === item.sourceRunId);
+  };
   const imageRefs = uniqueAttachmentRefs([
     ...hydratedEmbeddedRefs,
     ...hydratedLinkedRefs.filter(isImageAttachment),
     ...boundAttachmentRefs.filter(isImageAttachment),
-  ]);
+  ]).filter(notRunFileCard);
   const attachmentRefs = uniqueAttachmentRefs([
     ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
     ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
-  ]);
+  ]).filter(notRunFileCard);
   const mediaRefs = [...imageRefs, ...attachmentRefs.filter((ref) => isVideoLikeOutput(ref.contentType, ref.name))];
   const galleryItems: GalleryMediaItem[] =
     lightboxSrc !== null && !mediaRefs.some((ref) => ref.url === lightboxSrc)
@@ -439,9 +462,7 @@ function TaskChatBubbleContent({
             <TaskChatBubbleActions copyText={item.text} />
           </div>
           <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-            {sentFromIMessage ? "Sent from iMessage" : null}
-            {sentFromIMessage && timestamp ? " · " : null}
-            {timestamp}
+            {footerLine}
           </span>
         </div>
       ) : actions ? (
@@ -464,12 +485,10 @@ function TaskChatBubbleContent({
             ) : null}
           </div>
         )
-      ) : timestamp || sentFromIMessage ? (
+      ) : timestamp || footerNotes.length > 0 ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-          {sentFromIMessage ? "Sent from iMessage" : null}
-          {sentFromIMessage && timestamp ? " · " : null}
-          {timestamp}
+          {footerLine}
         </span>
       ) : null}
       {artifactsV1 && imageRefs.length + attachmentRefs.length > 0 ? (

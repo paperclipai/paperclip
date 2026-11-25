@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { antigravitySwarmQuotaScope } from "./antigravity-swarm.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
@@ -1985,6 +1986,11 @@ export function heartbeatService(
         agentDefaultEnvironmentId: agent.defaultEnvironmentId, lowTrustIssueEnvironmentId: null,
         environmentsSvc, instanceSettings,
       });
+    },
+    // A recorded, unfulfilled /swarm draws on the Antigravity CLI's own quota.
+    providerQuotaScope: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      return issueId ? antigravitySwarmQuotaScope(db, { companyId: run.companyId, issueId, runId: run.id, agent, context: run.contextSnapshot }) : null;
     },
   });
 

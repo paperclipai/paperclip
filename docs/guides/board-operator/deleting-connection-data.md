@@ -30,6 +30,12 @@ Deletion starts at once. Runs that are still working keep their data until they 
 
 The deletion covers everything listed under "What is deleted" for that connection, for all people who used it. If you connect Google again later, Paperclip saves new data from new calls only. Data that was deleted does not come back. Agents also do not resume the conversations of those runs; their next run starts a new one.
 
+## Technical details from Google
+
+Paperclip keeps technical details it gets from Google, such as error messages and the descriptions of Google's tools, for at most 30 days. After that it deletes them on its own. When you remove a Google connection, it deletes them at once. The record that a call happened stays.
+
+Paperclip does not use content from Google to train or test AI models. Feedback you share with Paperclip and decision training examples leave out runs that read from Google.
+
 ## How to delete it
 
 You need permission to manage the connection.
@@ -61,6 +67,7 @@ Deletion starts right away and continues in the background. It finishes even if 
 - Tool results too large to pass to the agent directly, which Paperclip saved as files for those runs
 - Error messages the app returned for those calls
 - The saved conversation that agents resume in later runs, for the runs whose transcript is deleted. The agent's next run starts a new conversation.
+- The run's error text, its copy in the task's continuation summary, the summary handed to the next run, and the run in any decision training example
 
 ## What is kept
 

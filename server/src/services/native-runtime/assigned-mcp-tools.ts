@@ -193,8 +193,11 @@ function runnerToolCode(code: string | undefined): string {
   return /[_.-]/.test(code) ? code : `tool_${code}`;
 }
 
-export function toolReportedError(details: { toolCode?: string; retryable?: boolean }): ToolGatewayHttpError {
-  return new ToolGatewayHttpError(details.retryable ? 429 : 422, `${runnerToolCode(details.toolCode)}: The connected tool reported an error.`,
+export const PAPERCLIP_REFUSAL_MAX_CHARACTERS = 2000;
+
+export function toolReportedError(details: { toolCode?: string; retryable?: boolean; paperclipRefusal?: string }): ToolGatewayHttpError {
+  const reason = details.paperclipRefusal?.slice(0, PAPERCLIP_REFUSAL_MAX_CHARACTERS) || "The connected tool reported an error.";
+  return new ToolGatewayHttpError(details.retryable ? 429 : 422, `${runnerToolCode(details.toolCode)}: ${reason}`,
     "tool_error", details.retryable ? { retryable: true } : undefined);
 }
 
@@ -467,7 +470,11 @@ export async function createAssignedMcpTools(input: {
         });
       } catch (error) {
         if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_error") {
-          throw toolReportedError({ toolCode: typeof error.details.toolCode === "string" ? error.details.toolCode : undefined, retryable: error.details.retryable === true });
+          throw toolReportedError({
+            toolCode: typeof error.details.toolCode === "string" ? error.details.toolCode : undefined,
+            retryable: error.details.retryable === true,
+            paperclipRefusal: typeof error.details.paperclipRefusal === "string" ? error.details.paperclipRefusal : undefined,
+          });
         }
         throw error;
       }

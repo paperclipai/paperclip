@@ -31,37 +31,42 @@ export interface GoogleWorkspaceArgumentCheck {
   inputSchema: unknown;
 }
 
-export function googleWorkspaceArgumentRefusal(check: GoogleWorkspaceArgumentCheck): string | null {
+export interface GoogleWorkspaceRefusal {
+  code: string;
+  message: string;
+}
+
+export function googleWorkspaceArgumentRefusal(check: GoogleWorkspaceArgumentCheck): GoogleWorkspaceRefusal | null {
   const args = check.arguments ?? {};
-  if (!isRecord(args)) return refusal(check.toolName, "arguments must be an object.");
+  if (!isRecord(args)) return refusal("invalid_arguments", check.toolName, "arguments must be an object.");
   const schema = isRecord(check.inputSchema) && check.inputSchema.additionalProperties === false && !isRecord(check.inputSchema.properties)
     ? { ...check.inputSchema, properties: {} } : check.inputSchema;
   const unknown = unknownArgumentProblems(args, schema, "", closedAtTopOrDeclared);
-  if (unknown.length > 0) return refusal(check.toolName, unknown.join(" "));
+  if (unknown.length > 0) return refusal("unknown_argument", check.toolName, unknown.join(" "));
   for (const name of FILE_ID_ARGUMENTS[check.service] ?? []) {
     const value = args[name];
     if (value !== undefined && (typeof value !== "string" || !FILE_ID.test(value))) {
-      return refusal(check.toolName, `${name} must be one Google file ID (letters, digits, - and _), not a link or a list.`);
+      return refusal("invalid_file_id", check.toolName, `${name} must be one Google file ID (letters, digits, - and _), not a link or a list.`);
     }
   }
   const rules = REQUEST_KINDS[check.service]?.[check.toolName];
   if (rules && args.requests !== undefined) {
     const requests = args.requests;
     if (!Array.isArray(requests) || requests.some((request) => !isRecord(request) || Object.keys(request).length !== 1)) {
-      return refusal(check.toolName, "requests must be a list in which each request names exactly one kind of update, such as insertText.");
+      return refusal("request_kind_refused", check.toolName, "requests must be a list in which each request names exactly one kind of update, such as insertText.");
     }
     try {
       assertRequestKinds(requests as Array<Record<string, unknown>>, rules);
     } catch (error) {
-      if (error instanceof GoogleToolError) return refusal(check.toolName, error.message);
+      if (error instanceof GoogleToolError) return refusal("request_kind_refused", check.toolName, error.message);
       throw error;
     }
   }
   return null;
 }
 
-function refusal(toolName: string, detail: string): string {
-  return `Invalid arguments for ${toolName}: ${detail} Nothing was sent to Google.`;
+function refusal(code: string, toolName: string, detail: string): GoogleWorkspaceRefusal {
+  return { code, message: `Invalid arguments for ${toolName}: ${detail} Nothing was sent to Google.` };
 }
 
 export interface GoogleCalendarEventRead {
@@ -70,7 +75,7 @@ export interface GoogleCalendarEventRead {
   text: string | null;
 }
 
-const SERIES_REFUSAL = "This ID is a whole recurring series. This tool deletes single events or single occurrences only. Pass one occurrence's ID (from list_events). Nothing was deleted.";
+const SERIES_REFUSAL: GoogleWorkspaceRefusal = { code: "recurring_series_delete_refused", message: "This ID is a whole recurring series. This tool deletes single events or single occurrences only. Pass one occurrence's ID (from list_events). Nothing was deleted." };
 
 function eventFrom(read: GoogleCalendarEventRead): Record<string, unknown> | null {
   const structured = isRecord(read.structuredContent) ? read.structuredContent : null;
@@ -86,10 +91,10 @@ function eventFrom(read: GoogleCalendarEventRead): Record<string, unknown> | nul
   return isRecord(candidate.event) ? candidate.event : candidate;
 }
 
-export function googleCalendarSeriesRefusal(read: GoogleCalendarEventRead): string | null {
+export function googleCalendarSeriesRefusal(read: GoogleCalendarEventRead): GoogleWorkspaceRefusal | null {
   const event = read.isError ? null : eventFrom(read);
   if (!event || (event.id === undefined && event.eventId === undefined && event.start === undefined)) {
-    return "Paperclip reads an event before it deletes it, to make sure the ID is not a whole recurring series, and that read did not return the event. Check the eventId and calendarId with get_event. Nothing was deleted.";
+    return { code: "delete_target_unverified", message: "Paperclip reads an event before it deletes it, to make sure the ID is not a whole recurring series, and that read did not return the event. Check the eventId and calendarId with get_event. Nothing was deleted." };
   }
   const recurrence = event.recurrence;
   return Array.isArray(recurrence) && recurrence.length > 0 && !event.recurringEventId ? SERIES_REFUSAL : null;

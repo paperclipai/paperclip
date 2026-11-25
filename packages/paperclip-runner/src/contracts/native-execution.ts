@@ -6,6 +6,7 @@ import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind }
 import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
 import { isDecodableAcpxVersion, isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
@@ -25,6 +26,10 @@ export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V2 = "paperclip.native-model-envelope.v2" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3" as const;
 export const NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+/** Antigravity's native swarm provider mode; its request travels in `provider.swarmRequest` (protocol/provider-schemas/acpx-sidecar.schema.json). */
+export const ANTIGRAVITY_SWARM_PROVIDER_MODE = GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE;
+/** The longest /swarm request the swarm route sends (the server refuses longer ones up front). */
+export const NATIVE_SWARM_REQUEST_MAX_CHARS = GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS;
 
 export type NativeExecutionMode = "default" | "plan";
 
@@ -147,6 +152,7 @@ export type NativeProviderConfig =
       model: string;
       permissionMode?: NativeAcpxPermissionMode;
       mode?: string;
+      swarmRequest?: string;
       piThinkingLevel?: "off" | "low" | "high" | "max";
       /** Present only in persisted v1-v3 inputs. */
       permissionPolicy?: "interactive";
@@ -163,6 +169,8 @@ export type NativeProviderConfigV4 =
       model: string;
       permissionMode: NativeAcpxPermissionMode;
       mode?: string;
+      /** The signed-in user's recorded /swarm request, verbatim; present only for Antigravity's swarm mode. */
+      swarmRequest?: string;
       piThinkingLevel?: "off" | "low" | "high" | "max";
       profile: NativeAcpxProfileSnapshot;
     };
@@ -314,6 +322,11 @@ export interface NativeModelEnvelopeV2 {
 export interface NativeModelEnvelopeV3 extends Omit<NativeModelEnvelopeV2, "schema" | "task" | "completionContract"> {
   requestedSkills: string[];
   constraints?: string[];
+  /**
+   * The user's recorded /swarm request, carried apart from `task.prompt` (which
+   * holds rendered wake and task context). The swarm route sends only this.
+   */
+  swarmRequest?: string;
   schema: typeof NATIVE_MODEL_ENVELOPE_SCHEMA;
   task: Pick<NativeExecutionInputV2["task"], "identifier" | "title" | "prompt" | "workMode">;
   completionContract: Omit<StrictCompletionContractInput, "criteria"> & {
@@ -590,7 +603,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode", "swarmRequest"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort", "webSearch"] : [])]
         : provider.kind === "opencode" && isV4
@@ -722,6 +735,14 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (provider.mode !== undefined && !isProviderMode(provider.mode)) {
       throw new NativeExecutionInputError("input.provider.mode must be a bounded nonempty provider mode identifier");
     }
+    const swarmMode = provider.agent === "antigravity" && provider.mode === ANTIGRAVITY_SWARM_PROVIDER_MODE;
+    if (swarmMode !== (provider.swarmRequest !== undefined)) {
+      throw new NativeExecutionInputError("input.provider.swarmRequest is required for, and only for, the Antigravity swarm mode");
+    }
+    if (provider.swarmRequest !== undefined && (typeof provider.swarmRequest !== "string" || provider.swarmRequest.trim().length === 0
+      || provider.swarmRequest.length > NATIVE_SWARM_REQUEST_MAX_CHARS)) {
+      throw new NativeExecutionInputError(`input.provider.swarmRequest must be non-empty text of at most ${NATIVE_SWARM_REQUEST_MAX_CHARS} characters`);
+    }
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
@@ -776,6 +797,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
       ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
+      ...(provider.swarmRequest === undefined ? {} : { swarmRequest: provider.swarmRequest as string }),
       ...(claudeEffort === undefined ? {} : { claudeEffort }),
       ...(grokEffort === undefined ? {} : { grokEffort }),
       ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
@@ -1030,6 +1052,8 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
           : input.task.prompt,
         workMode: input.task.workMode,
       },
+      ...(input.provider.kind === "acpx" && "swarmRequest" in input.provider && input.provider.swarmRequest !== undefined
+        ? { swarmRequest: input.provider.swarmRequest } : {}),
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
       workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
