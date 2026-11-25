@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -26,6 +27,7 @@ import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertCloudTrialInferenceEligible } from "../services/cloud-trial-inference.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { publicMcpConfig } from "../services/public-mcp/oauth.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
@@ -293,7 +295,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { buildOnboardingFirstAgentInstructionsBundle } from "../services/onboarding-first-task-assets.js";
-import { getTelemetryClient } from "../telemetry.js";
+import { getTelemetryClient, trackCloudPostHogEvent } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
@@ -1760,9 +1762,21 @@ export function agentRoutes(
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
+    skipReason?: string | null,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
     if (!issueId) {
+      if (skipReason === "heartbeat.task_required" && !supportsUnscopedHeartbeat(agent)) {
+        return {
+          status: "skipped" as const,
+          reason: "task_required",
+          message: "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+          issueId: null,
+          executionRunId: null,
+          executionAgentId: null,
+          executionAgentName: null,
+        };
+      }
       return {
         status: "skipped" as const,
         reason: "wakeup_skipped",
@@ -3480,7 +3494,7 @@ export function agentRoutes(
           { code: "dot_enabled", level: dotEnabled ? "info" : "error", message: dotEnabled ? "Dot is enabled." : "Enable OpenAI Dot in experimental settings." },
           { code: "dot_public_endpoint", level: resource?.origin.startsWith("https://") ? "info" : "error", message: resource?.origin.startsWith("https://") ? "Public HTTPS MCP origin is configured." : "Configure a stable public HTTPS PAPERCLIP_PUBLIC_URL." },
           { code: "dot_unmetered", level: inputAdapterConfig.allowUnmeteredProvider === true ? "info" : "error", message: "Dot usage and provider cost are unavailable. Explicit externally billed provider acknowledgement is required." },
-          { code: "dot_binding", level: binding?.status === "ready" && binding.subscriptionVerified && binding.id === inputAdapterConfig.dotBindingId ? "info" : "warn", message: binding?.status === "ready" && binding.subscriptionVerified ? "Binding has a verified event subscription and completed readiness challenge." : "Save this agent, pair it, subscribe to mailbox events and complete the event test." },
+          { code: "dot_binding", level: binding?.status === "ready" && binding.subscriptionVerified && binding.id === inputAdapterConfig.dotBindingId ? "info" : "warn", message: binding?.status === "ready" && binding.subscriptionVerified ? "Binding has a verified event subscription and completed readiness challenge." : binding?.subscriptionExpired ? "Dot's event subscription expired. Ask the Dot to subscribe to paperclip.dot.mailbox_updated again; it does not need a new pairing." : "Save this agent, pair it, subscribe to mailbox events and complete the event test." },
           { code: "dot_controller", level: controllerAvailable ? "info" : "error", message: controllerAvailable
             ? environment?.driver === "sandbox" ? "Dot assignments use the selected managed sandbox Runner." : "Dot assignments use the selected Runner environment."
             : "Restore the managed sandbox before assigning Dot work. Dot cannot run on the Cloud control-plane host." },
@@ -4758,6 +4772,9 @@ export function agentRoutes(
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      if ((normalizedHireInput.runtimeConfig as Record<string, unknown> | undefined)?.cloudTrialInference === true) {
+        await assertCloudTrialInferenceEligible(db, companyId);
+      }
       const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, "none", true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
@@ -4894,6 +4911,17 @@ export function agentRoutes(
       if (telemetryClient) {
         trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
       }
+      if ((agent.runtimeConfig as Record<string, unknown> | null)?.cloudTrialInference === true) {
+        const rawModel = (agent.adapterConfig as Record<string, unknown> | null)?.model;
+        trackCloudPostHogEvent(
+          "cloud_trial.started",
+          {
+            source: "onboarding_wizard",
+            ...(typeof rawModel === "string" && rawModel.trim() ? { model: rawModel.trim() } : {}),
+          },
+          { userId: actor.actorType === "user" ? actor.actorId : null, companyId },
+        );
+      }
 
       await applyDefaultAgentTaskAssignGrant(
         companyId,
@@ -4974,6 +5002,9 @@ export function agentRoutes(
     } = req.body;
     const agentId = setupId ?? randomUUID();
     const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if ((createInput.runtimeConfig as Record<string, unknown> | undefined)?.cloudTrialInference === true) {
+      await assertCloudTrialInferenceEligible(db, companyId);
+    }
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
@@ -5742,6 +5773,10 @@ export function agentRoutes(
         existing.runtimeConfig,
       );
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
+      const wasCloudTrial = (existing.runtimeConfig as Record<string, unknown> | null)?.cloudTrialInference === true;
+      if (requestedRuntimeConfig.cloudTrialInference === true && !wasCloudTrial) {
+        await assertCloudTrialInferenceEligible(db, existing.companyId);
+      }
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
@@ -6289,7 +6324,11 @@ export function agentRoutes(
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
-    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, payload: Record<string, unknown> | null) => unknown | Promise<unknown>;
+    skippedResponse: (
+      agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+      payload: Record<string, unknown> | null,
+      skipReason: string | null,
+    ) => unknown | Promise<unknown>;
   };
   const handleWakeupRoute = async (
     req: Request,
@@ -6484,9 +6523,13 @@ export function agentRoutes(
         ),
       );
     }
+    let wakeSkipReason: string | null = null;
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
+      onSkip: (skipReason) => {
+        wakeSkipReason = skipReason;
+      },
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
@@ -6520,7 +6563,7 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      res.status(202).json(await opts.skippedResponse(agent, wakePayload, wakeSkipReason));
       return;
     }
 
@@ -6560,7 +6603,7 @@ export function agentRoutes(
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     await handleWakeupRoute(req, res, {
       source: req.body.source,
-      skippedResponse: (agent, payload) => buildSkippedWakeupResponse(agent, payload),
+      skippedResponse: (agent, payload, skipReason) => buildSkippedWakeupResponse(agent, payload, skipReason),
     });
   });
 

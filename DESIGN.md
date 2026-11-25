@@ -524,7 +524,9 @@ width tokens and configurable column order. Review the complete composition in
 - Task combines the status icon and title under one header and one Columns-menu
   choice. Sorting Task uses the title. Status sorting is unavailable for now.
 - Parent Task refers to the structural parent; it can show its ID and title.
-- Last updated comes from `updatedAt`. Worktree shows the linked Git worktree's
+- Last updated shows the task's latest activity (`lastActivityAt`, then
+  `lastExternalCommentAt`, then `updatedAt`), the same time the Updated filter
+  and Last updated sort use. Worktree shows the linked Git worktree's
   branch name. Unassigned tasks say “Unassigned”; other missing values use “—”.
 - Default visibility is Task, Task ID, and Last updated. The All columns specimen
   starts with all nine visible for review. Widths are provisional: preserve

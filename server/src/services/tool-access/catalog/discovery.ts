@@ -174,7 +174,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
           : await remoteTools(connection, headers, actor, profile.serverUrl, [], listOptions);
         return tools.map((tool) => {
           const name = googleWorkspaceToolName(service, tool.name);
-          return { ...tool, name, title: googleWorkspaceCatalogToolTitle("google-workspace", name, tool.title) };
+          return {
+            ...tool,
+            name,
+            title: googleWorkspaceCatalogToolTitle("google-workspace", name, tool.title),
+            upstreamTitle: tool.title ?? null,
+          };
         })
           .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, scopes));
       }));
