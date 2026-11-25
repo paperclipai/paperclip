@@ -24,5 +24,7 @@ describe("roleArnFromAgentSummary", () => {
 
   it("only returns ARNs the connection's own validation accepts", () => {
     expect(ROLE_ARN_PATTERN.test(roleArnFromAgentSummary(`Role ARN: ${arn}`, roleName)!)).toBe(true);
+    expect(ROLE_ARN_PATTERN.test("arn:aws:s3:::some-bucket")).toBe(false);
+    expect(ROLE_ARN_PATTERN.test(`arn:aws:iam::123456789012:user/${roleName}`)).toBe(false);
   });
 });
