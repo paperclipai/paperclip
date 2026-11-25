@@ -190,6 +190,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
+import { hasExplicitWorkspaceStrategy } from "../isolated-task-directory.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON, allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { releaseProviderLimitWaits } from "./provider-limit-wait.js";
@@ -4513,6 +4514,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const issueSettings = parseIssueExecutionWorkspaceSettings(
               issue.executionWorkspaceSettings,
             );
+            const agentConfig = parseObject(agent.adapterConfig);
             const resolvedMode = resolveExecutionWorkspaceMode({
               projectPolicy: null,
               issueSettings,
@@ -4520,7 +4522,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             });
             const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig(
               {
-                agentConfig: parseObject(agent.adapterConfig),
+                agentConfig,
                 projectPolicy: null,
                 issueSettings,
                 mode: resolvedMode,
@@ -4551,6 +4553,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             });
             const hasResolvablePriorSessionWorkspace =
               await resolveHasResolvablePriorSessionWorkspace();
+            const usesIsolatedTaskDirectory =
+              resolvedMode === "isolated_workspace" &&
+              !(issue.projectId ?? projectId) &&
+              !issue.projectWorkspaceId &&
+              !hasExplicitWorkspaceStrategy([
+                agentConfig.workspaceStrategy,
+                issueSettings?.workspaceStrategy,
+              ]);
 
             if (
               isUnrunnableWorktreeCombo({
@@ -4568,6 +4578,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 hasResolvablePriorSessionWorkspace,
                 freshIsolatedContinuation: await isFreshIsolatedContinuationWake(tx as unknown as Db, {
                   companyId: issue.companyId, issueId: issue.id, contextSnapshot: enrichedContextSnapshot }),
+                usesIsolatedTaskDirectory,
               })
             ) {
               if (caseRequest) waitForCaseAdmission(WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE, WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE);

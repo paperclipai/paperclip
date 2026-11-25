@@ -162,6 +162,14 @@ describe("execution workspace policy helpers", () => {
       freshIsolatedContinuation: true })).toBe(false);
   });
 
+  it("admits a projectless isolated task that resolves to a private task directory instead of a git worktree", () => {
+    const issue = { projectId: null, projectWorkspaceId: null, executionWorkspaceId: null,
+      executionWorkspacePreference: null };
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree" })).toBe(true);
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree",
+      usesIsolatedTaskDirectory: true })).toBe(false);
+  });
+
   it("centralizes unrunnable isolated worktree detection", () => {
     expect(
       isUnrunnableWorktreeCombo({
