@@ -1,7 +1,7 @@
 import { and, count, eq, gt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
-import { activityLog, companyMemberships, heartbeatRuns, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, companyMemberships, heartbeatRuns, principalPermissionGrants } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
@@ -50,8 +50,10 @@ export async function agentOwnsRun(db: Db, input: { companyId: string; agentId: 
 /**
  * Count an agent's Retry toward its daily cap on the task. The activity row
  * names the agent and the grantor, and is written before the Retry so refused
- * and failed attempts count too. A replay of
- * the same idempotency key counts once.
+ * and failed attempts count too. A replay of an idempotency key that already
+ * has a saved Retry receipt for this task and grantor counts once; an old
+ * unsaved attempt (such as a stale observedRunId) cannot be reused to bypass
+ * today's cap.
  */
 export async function recordAgentTaskRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string; grantedByUserId: string; idempotencyKey: string;
@@ -59,11 +61,12 @@ export async function recordAgentTaskRetry(db: Db, input: {
   const publications: ActivityPublication[] = [];
   await db.transaction(async tx => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`agent-task-retry:${input.issueId}`}))`);
-    const [replay] = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
-      eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
-      eq(activityLog.entityId, input.issueId), eq(activityLog.action, AGENT_TASK_RETRY_ACTION),
-      eq(activityLog.actorId, input.agentId), sql`${activityLog.details}->>'idempotencyKey' = ${input.idempotencyKey}`)).limit(1);
-    if (replay) return;
+    const [savedReceipt] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.idempotencyKey, `task-retry:${input.idempotencyKey}`),
+      eq(agentWakeupRequests.requestedByActorId, input.grantedByUserId),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`)).limit(1);
+    if (savedReceipt) return;
     const [{ value: recent }] = await tx.select({ value: count() }).from(activityLog).where(and(
       eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
       eq(activityLog.entityId, input.issueId), eq(activityLog.action, AGENT_TASK_RETRY_ACTION),

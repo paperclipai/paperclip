@@ -1216,13 +1216,42 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     it("counts a replayed request once toward the cap", async () => {
       const f = await seedIssueWithRetry();
+      await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+        .where(eq(heartbeatRuns.id, f.retryRunId));
       await grant(f, "board-user");
       const idempotencyKey = randomUUID();
-      for (let i = 0; i < 4; i += 1) expect((await retry(f, { idempotencyKey })).status).not.toBe(429);
+      for (let i = 0; i < 4; i += 1) expect((await retry(f, { idempotencyKey })).status).toBe(202);
 
       const events = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
         eq(activityLog.action, "issue.retry_requested_by_agent")));
       expect(events).toHaveLength(1);
+    });
+
+    it("does not let an old unsaved idempotency key from yesterday bypass today's daily cap", async () => {
+      const f = await seedIssueWithRetry();
+      await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+        .where(eq(heartbeatRuns.id, f.retryRunId));
+      await grant(f, "board-user");
+      const oldUnsavedKey = randomUUID();
+      await db.insert(activityLog).values({
+        companyId: f.companyId,
+        actorType: "agent",
+        actorId: f.agentId,
+        agentId: f.agentId,
+        runId: f.sourceRunId,
+        action: "issue.retry_requested_by_agent",
+        entityType: "issue",
+        entityId: f.issueId,
+        details: { grantedByUserId: "board-user", idempotencyKey: oldUnsavedKey },
+        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+      });
+
+      for (let i = 0; i < 3; i += 1) expect((await retry(f)).status).not.toBe(429);
+
+      const res = await retry(f, { idempotencyKey: oldUnsavedKey });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(429);
+      expect(res.body).toMatchObject({ details: { code: "agent_task_retry_cap_reached" } });
     });
 
     it("refuses a run id that is not the agent's own run", async () => {
