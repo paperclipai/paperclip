@@ -726,7 +726,7 @@ function OnboardingWizardInner({
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding; grantId?: string; sessionId?: string } | null>(null);
   const defaultSelectionsRef = useRef(new Map<string, { pending: Promise<unknown>; queued: number; revision: number; grantId?: string | null }>());
   const managedProvider = aiProviderForAdapter(adapterType);
-  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
+  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" || (managedProvider === "google" && adapterType === "antigravity_runtime") ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType) return gatewayConnection.binding;
     const restoredBinding = restoredSetup?.companyId === createdCompanyId
@@ -1078,7 +1078,16 @@ function OnboardingWizardInner({
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const localAiLoginSupported = Boolean(localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(localLoginHealth.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && (
+    managedSubscriptionProvider === "google"
+      ? (hostedGoogleAiLoginSupported || (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported))
+      : (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported)
+  );
+  const googleHostedRedirect: boolean | "optional" = managedSubscriptionProvider === "google" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
@@ -3323,7 +3332,7 @@ function OnboardingWizardInner({
                       />
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
-                        <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                        <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
                       ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>

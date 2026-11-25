@@ -10,6 +10,7 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  AntigravityBrowserLoginState,
   GeneratedAntigravitySwarmChannel,
   GeneratedAntigravitySwarmCredentialFacts,
   NativeCursorCloudConfig,
