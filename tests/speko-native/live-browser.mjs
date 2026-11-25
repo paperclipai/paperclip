@@ -107,7 +107,7 @@ try {
     event('qualification_task_created', {issueId: task.id});
     event('existing_connection_used', {endpointId: fixture.endpointId});
   } else {
-  await page.getByRole('link', { name: 'Connectors', exact: true }).first().click();
+  await page.getByRole('link', { name: 'Plugins', exact: true }).first().click();
   if (fixture.endpointId) {
     // Resume the saved setup using the same UI route after an earlier failed test.
     await page.goto(`${origin}/${fixture.companyPrefix}/apps/chat/connect?provider=speko&resume=${fixture.endpointId}`);

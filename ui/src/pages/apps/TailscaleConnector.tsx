@@ -61,7 +61,7 @@ export function TailscaleConnector() {
     onSuccess: () => { authorization.cancel(); return client.invalidateQueries({ queryKey: tailscaleConnectionsKey(selectedCompanyId) }); } });
   useEffect(() => authorization.cancel, [selectedCompanyId, authorization.cancel]);
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Tailscale" }]);
+    setBreadcrumbs([{ label: "Plugins", href: "/apps" }, { label: "Tailscale" }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Select an organization to connect Tailscale.</p>;
