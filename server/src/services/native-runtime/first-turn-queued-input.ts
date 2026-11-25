@@ -110,7 +110,8 @@ export function deferredWakeJoinsFirstTurn(
     !payload.interactionId && !context.interactionId && !context.interactionStatus &&
     !payload.queuedCommentInterrupt && context.resumeIntent !== true &&
     // A /swarm request selects its own run (a different provider route).
-    context.antigravitySwarmCommentId === undefined &&
+    // (Lean projections carry an absent marker as JSON null.)
+    context.antigravitySwarmCommentId == null &&
     !deferredWakeIsChatRequest(payload) &&
     queuedCommentIdsFromWakePayload(payload).length > 0;
 }
@@ -324,7 +325,8 @@ export function firstTurnWakeContextFields(payload: typeof agentWakeupRequests.p
     'interactionId', ${payload}->'_paperclipWakeContext'->'interactionId',
     'interactionStatus', ${payload}->'_paperclipWakeContext'->'interactionStatus',
     'resumeIntent', ${payload}->'_paperclipWakeContext'->'resumeIntent',
-    'chatConversationId', ${payload}->'_paperclipWakeContext'->'chatConversationId'`;
+    'chatConversationId', ${payload}->'_paperclipWakeContext'->'chatConversationId',
+    'antigravitySwarmCommentId', ${payload}->'_paperclipWakeContext'->'antigravitySwarmCommentId'`;
 }
 
 /**

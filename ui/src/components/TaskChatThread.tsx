@@ -167,6 +167,14 @@ import { safeNavigableUrl } from "@/lib/safe-url";
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
 
+/** Mirrors task-interruption-presentation.ts: a swarm-route failure needs the person when Antigravity says so. */
+function swarmFailureNeedsAction(resultJson: Record<string, unknown> | null | undefined): boolean {
+  const failure = resultJson?.providerFailure;
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) return false;
+  const { provider, retryability } = failure as Record<string, unknown>;
+  return provider === "antigravity" && retryability === "requires_action";
+}
+
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
   const ms = new Date(value).getTime();
@@ -1813,7 +1821,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
             : code === "antigravity_swarm_unavailable" && source.status === "failed"
-            ? "Swarm did not start"
+            ? swarmFailureNeedsAction(meta?.resultJson) ? "Swarm did not start" : "Swarm did not finish"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
@@ -1876,8 +1884,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            // A refused /swarm waits for the person (another model, or /swarm again); Retry meets the same refusal.
-            retryable: code !== "native_session_cleanup_quarantined" && code !== "antigravity_swarm_unavailable" && !diskFullBesideInterruption,
+            // A /swarm the route refused for something the person must change (another model,
+            // a planning run) has no Retry; one that ran and failed (no result, helpers timed
+            // out) keeps it. The same rule as the server's task interruption state.
+            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption &&
+              !(code === "antigravity_swarm_unavailable" && swarmFailureNeedsAction(meta?.resultJson)),
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,

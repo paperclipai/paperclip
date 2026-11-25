@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents, agentWakeupRequests, assets, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueAttachments,
@@ -10,7 +10,8 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { undeliveredLegacyUserCommentIds } from "../explicit-native-continuation.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import {
-  claimFirstTurnQueuedInput, deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput,
+  claimFirstTurnQueuedInput, deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments,
+  firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput,
 } from "./first-turn-queued-input.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -71,6 +72,25 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
     // Nor does Interrupt treat it as a first turn that will take the message.
     expect(await runAcceptsFirstTurnQueuedInput(db, await readRun(f.runId))).toBe(false);
+  });
+
+  // The board's queue view reads a lean projection of the wake. It must decide as
+  // the first-turn claim does, or a waiting /swarm looks sent and loses its controls.
+  it("keeps a queued /swarm waiting in the board's lean view, as the first-turn claim does", async () => {
+    const f = await seed();
+    const ordinary = await queueMessage(f, "an ordinary message");
+    const lean = async () => (await db.select({ ...firstTurnWakeColumns, status: agentWakeupRequests.status,
+      payload: sql<Record<string, unknown>>`jsonb_build_object(${firstTurnWakePayloadFields(agentWakeupRequests.payload)},
+        '_paperclipWakeContext', jsonb_build_object(${firstTurnWakeContextFields(agentWakeupRequests.payload)},
+          'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds'))` })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))[0]!;
+    const view = async () => firstTurnQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, wake: await lean() });
+    expect(await view()).toEqual([ordinary]);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    await db.update(agentWakeupRequests).set({ payload: { ...wake!.payload,
+      _paperclipWakeContext: { ...(wake!.payload!._paperclipWakeContext as object), antigravitySwarmCommentId: ordinary } } }).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(await view()).toEqual([]);
+    expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
   });
 
   it("gives a message that arrived during preparation to the first turn, without a stop", async () => {
