@@ -1830,6 +1830,23 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         .toEqual({ taskKey: "issue-1", commentId: "fresh-input", ...history });
     });
 
+    it("keeps the AI credential holder a run received after the wake read its context", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      // The wake read the context before the run received its credential.
+      const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { taskKey: "issue-1" } });
+      const received = { aiCredentialHolder: "grant-1", aiConnection: { grantId: "grant-1", responsibleUserId: null } };
+      await db.update(heartbeatRuns).set({ contextSnapshot: { taskKey: "issue-1", ...received } }).where(eq(heartbeatRuns.id, runId));
+      await db.transaction(async (tx) => createWakeAdmissionWriter(tx, companyId).coalesceIntoActiveExecutionRun({
+          companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "running",
+          mergedContextSnapshot: { taskKey: "issue-1", commentId: "fresh-input" },
+          source: "on_demand", triggerDetail: null, payload: null,
+          requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
+        }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+        .toEqual({ taskKey: "issue-1", commentId: "fresh-input", ...received });
+    });
+
     // Review test (b), the coalesce write: a foreign company affects no row
     // on the active execution run either.
     it("refuses to coalesce into a run for a company that does not own it, and leaves the run and the wake table untouched", async () => {

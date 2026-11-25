@@ -12,6 +12,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { environmentService } from "./environments.js";
 import { readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
+import { deleteIsolatedClaudeKeychainCredential } from "@paperclipai/adapter-claude-local/server";
 import { logActivity } from "./activity-log.js";
 import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-browser-login.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
@@ -31,6 +32,19 @@ function loginHome(id: string) {
   try { canonicalRoot = realpathSync(root); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return path.join(canonicalRoot, "ai-local-logins", id);
+}
+/**
+ * Remove an attempt's private home. On macOS a Claude sign-in keeps its login
+ * in a Keychain item bound to that home, not in the home, so delete that first.
+ * A failed delete fails the removal, like a failed `rm`: the attempt keeps its
+ * home and its expiry, and the expiry worker tries again.
+ */
+async function removeLoginHome(id: string, provider: string | undefined) {
+  const directory = loginHome(id);
+  if (provider === "anthropic" && !(await deleteIsolatedClaudeKeychainCredential(directory))) {
+    throw unprocessable("The Keychain item of this sign-in could not be deleted. Retry shortly.", { code: "ai_connection_busy" });
+  }
+  await rm(directory, { recursive: true, force: true });
 }
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
@@ -116,6 +130,26 @@ export function localAiLoginService(db: Db) {
     void retirement.then(release, release);
     return retirement;
   }
+  /** Make an attempt due for the expiry worker now, when its retirement could not finish in this request. */
+  async function requestCleanup(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
+    await db.transaction(async tx => {
+      const [session] = await tx.select().from(adapterAuthSessions).where(and(
+        eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
+        eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+      )).for("update");
+      if (!session) return;
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
+      const now = new Date();
+      await tx.update(adapterAuthSessions).set({ expiresAt: session.expiresAt && session.expiresAt < now ? session.expiresAt : now,
+        failureReason: RETIREMENT_PENDING, updatedAt: now })
+        .where(eq(adapterAuthSessions.id, id));
+      await logActivity(tx as unknown as Db, {
+        companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
+        action: "ai_connection.local_login_cleanup_requested", entityType: "adapter_auth_session", entityId: id,
+        details: { provider: session.aiConnection?.provider },
+      });
+    });
+  }
   async function retireOwnedAttempt(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const retirement = stopBrowserLogin(id);
@@ -127,29 +161,31 @@ export function localAiLoginService(db: Db) {
       retainRetirement(id, retirement);
       // Keep the active claim and private home. The existing expiry worker may
       // join the original retirement without holding a database transaction.
-      await db.transaction(async tx => {
-        const [session] = await tx.select().from(adapterAuthSessions).where(and(
-          eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
-          eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
-        )).for("update");
-        if (!session) return;
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
-        const now = new Date();
-        await tx.update(adapterAuthSessions).set({ expiresAt: session.expiresAt && session.expiresAt < now ? session.expiresAt : now,
-          failureReason: RETIREMENT_PENDING, updatedAt: now })
-          .where(eq(adapterAuthSessions.id, id));
-        await logActivity(tx as unknown as Db, {
-          companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
-          action: "ai_connection.local_login_cleanup_requested", entityType: "adapter_auth_session", entityId: id,
-          details: { provider: session.aiConnection?.provider },
-        });
-      });
+      await requestCleanup(companyId, userId, id, managementContext);
       throw unprocessable("The previous sign-in is still stopping. Retry shortly.", { code: "ai_connection_busy" });
     } finally { clearTimeout(timeout); }
   }
   function ensureBrowserLogin(id: string, provider: string) {
     if (provider === "xai" || browserLogins.has(id)) return;
     browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
+  }
+  /**
+   * Stop a sign-in process while the caller holds the row lock of its attempt.
+   * `start` launches the process after its transaction commits, so a reopened
+   * attempt can gain a process after `retireOwnedAttempt` stopped the previous
+   * one. The caller removes the login home next; no process may outlive that.
+   */
+  async function stopBrowserLoginUnderLock(id: string) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const retirement = stopBrowserLogin(id);
+    try {
+      await Promise.race([retirement, new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(RETIREMENT_PENDING)), BROWSER_STOP_WAIT_MS);
+      })]);
+    } catch {
+      retainRetirement(id, retirement);
+      throw unprocessable("The previous sign-in is still stopping. Retry shortly.", { code: "ai_connection_busy" });
+    } finally { clearTimeout(timeout); }
   }
   async function reapExpired() {
     // Waiting native owners have a completion wake, not a retry deadline. The
@@ -170,6 +206,18 @@ export function localAiLoginService(db: Db) {
       const retirement = stopBrowserLogin(id);
       const retired = await Promise.race([retirement.then(() => true, () => false), budget]);
       if (!retired) { retainRetirement(id, retirement); return; }
+      try { await remove(id); }
+      catch (error) {
+        // Keep the attempt due, but move it behind the other due attempts.
+        // A cleanup that continues to fail must not fill each batch.
+        await db.update(adapterAuthSessions).set({ expiresAt: new Date() }).where(and(
+          eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+          lte(adapterAuthSessions.expiresAt, new Date()))).catch(() => undefined);
+        throw error;
+      }
+      deferredRetirements.delete(id);
+    }
+    async function remove(id: string) {
       await db.transaction(async (tx) => {
         const [session] = await tx.select().from(adapterAuthSessions)
           .where(eq(adapterAuthSessions.id, id)).for("update");
@@ -178,14 +226,16 @@ export function localAiLoginService(db: Db) {
           return;
         }
         if (session.expiresAt.getTime() > Date.now()) return;
-        await rm(loginHome(id), { recursive: true, force: true });
+        // A `start` that read the attempt before it expired can launch its
+        // process after the stop above. Stop again under the row lock.
+        await stopBrowserLoginUnderLock(id);
+        await removeLoginHome(id, session.aiConnection?.provider);
         await tx.update(adapterAuthSessions).set({
           status: session.connectionId ? "authenticated" : session.failureReason === RETIREMENT_PENDING ? "cancelled" : "timed_out",
           failureReason: null,
           expiresAt: null, finishedAt: session.finishedAt ?? new Date(), updatedAt: new Date(),
         }).where(eq(adapterAuthSessions.id, id));
       });
-      deferredRetirements.delete(id);
     }
     try {
       const failures: unknown[] = [];
@@ -233,7 +283,8 @@ export function localAiLoginService(db: Db) {
         if (!restart || existing.connectionMethod !== LOCAL_LOGIN_METHOD)
           throw unprocessable("Another sign-in is still open. Finish it, or choose Start sign-in again to replace a local attempt.");
         if (existing.id !== retiredAttemptId) throw unprocessable("The sign-in attempt changed. Retry Start sign-in again.");
-        await rm(loginHome(existing.id), { recursive: true, force: true });
+        await stopBrowserLoginUnderLock(existing.id);
+        await removeLoginHome(existing.id, intent.provider);
         await tx.update(adapterAuthSessions).set({ status: "cancelled", expiresAt: null, failureReason: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(adapterAuthSessions.id, existing.id));
         await logActivity(tx as unknown as Db, {
@@ -282,9 +333,27 @@ export function localAiLoginService(db: Db) {
         throw error;
       }
       return presentAttempt(id, expiresAt, intent.provider);
+    }).catch(async error => {
+      // The replacement could not finish retiring the previous attempt, for
+      // whatever reason. Its transaction rolled back, so record the pending
+      // retirement now.
+      if (retiredAttemptId) await requestCleanup(companyId, userId, retiredAttemptId, managementContext).catch(() => undefined);
+      throw error;
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
-    ensureBrowserLogin(attempt.sessionId, intent.provider);
+    // A cancel or a replacement may have retired this attempt since the
+    // transaction above. Launch the process while holding the row lock of the
+    // attempt: a retirement that committed first is visible here and nothing
+    // is launched, and neither is it for an attempt that has expired. A
+    // retirement that comes later waits for this lock and then stops the
+    // process it finds. If this read fails, nothing was launched.
+    const launched = await db.transaction(async tx => {
+      const [current] = await tx.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update");
+      if (current?.status !== "waiting_for_user" || !current.expiresAt || current.expiresAt.getTime() <= Date.now()) return false;
+      ensureBrowserLogin(attempt.sessionId, intent.provider);
+      return true;
+    });
+    if (!launched) throw unprocessable("This sign-in has ended. Start sign-in again.");
     return attempt;
   }
 
@@ -430,7 +499,7 @@ export function localAiLoginService(db: Db) {
     });
     // Failed cleanup can be retried by the same completed attempt or reaper.
     await stopBrowserLogin(id);
-    await rm(loginHome(id), { recursive: true, force: true });
+    await removeLoginHome(id, intent.provider);
     deferredRetirements.delete(id);
     return result;
   }
@@ -443,6 +512,12 @@ export function localAiLoginService(db: Db) {
     ));
     if (!owned) throw notFound("Local sign-in attempt not found.");
     await retireOwnedAttempt(companyId, userId, id, managementContext);
+    // The cleanup below can fail, for example while the Keychain refuses a
+    // delete, the login home cannot be removed, or a process that a reopen
+    // launched does not stop in time. The transaction then rolls back and the
+    // attempt stays waiting. Whatever the error, make the attempt due now, so
+    // the expiry worker retries the cleanup at once and a reopen cannot
+    // launch it again.
     await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -450,7 +525,8 @@ export function localAiLoginService(db: Db) {
         eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
       )).for("update");
       if (!session) throw notFound("Local sign-in attempt not found.");
-      await rm(loginHome(id), { recursive: true, force: true });
+      await stopBrowserLoginUnderLock(id);
+      await removeLoginHome(id, session.aiConnection?.provider);
       if (!session.connectionId && session.status !== "cancelled") {
         await tx.update(adapterAuthSessions).set({
           status: "cancelled", expiresAt: null, failureReason: null, finishedAt: new Date(), updatedAt: new Date(),
@@ -461,6 +537,9 @@ export function localAiLoginService(db: Db) {
           details: { provider: session.aiConnection?.provider },
         });
       }
+    }).catch(async error => {
+      await requestCleanup(companyId, userId, id, managementContext).catch(() => undefined);
+      throw error;
     });
     deferredRetirements.delete(id);
   }

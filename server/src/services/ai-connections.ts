@@ -1,3 +1,5 @@
+import { claudeAccessTokenOf, claudeSignInEndsAt, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
+import { claudeRenewalAfterRejection, hasPendingClaudeExchange, refreshClaudeSubscription, type ClaudeRefreshOptions } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -154,6 +156,8 @@ export function aiConnectionService(db: Db) {
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
+          ...(metadata.data.provider === "anthropic" && metadata.data.method === "subscription" && typeof connection.config.aiSignInEndsAt === "string"
+            ? { signInEndsAt: connection.config.aiSignInEndsAt } : {}),
           ownership:
             grant.kind === "user" ? ("personal" as const) : ("shared" as const),
           ownerUserId: grant.subjectUserId ?? undefined,
@@ -558,7 +562,7 @@ export function aiConnectionService(db: Db) {
     }
     return { ...row, provider };
   }
-  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
+  async function credentialRaw(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.routing?.auth === "none") return "";
     const ref = row.grant.credentialSecretRefs.find(
@@ -623,9 +627,16 @@ export function aiConnectionService(db: Db) {
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });
-      return credential(row, retry + 1, audit);
+      return credentialRaw(row, retry + 1, audit);
     }
     return value;
+  }
+  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2], options: ClaudeRefreshOptions = {}): Promise<string> {
+    const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
+    if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return credentialRaw(row, retry, audit);
+    // Resolve under the credential lock too: resolution records lastResolvedAt,
+    // so concurrent pre-lock reads would contend with the rotating writer.
+    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected, retry, audit), options);
   }
   async function save(
     companyId: string,
@@ -639,6 +650,14 @@ export function aiConnectionService(db: Db) {
   ) {
     await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
+    // A sibling key of `ai`: the non-secret end of a Claude sign-in, so lists
+    // can show it without reading the credential.
+    const claudeConfig = (existing: Record<string, unknown> = {}) => {
+      if (input.provider !== "anthropic" || input.method !== "subscription") return existing;
+      const { aiSignInEndsAt: _ended, ...rest } = existing;
+      const endsAt = claudeSignInEndsAt(verifiedCredential);
+      return { ...rest, ...(endsAt ? { aiSignInEndsAt: new Date(endsAt).toISOString() } : {}) };
+    };
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
     const reconnect = input.connectionId
@@ -839,7 +858,7 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: { ...claudeConfig(reconnect.connection.config), aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -861,6 +880,7 @@ export function aiConnectionService(db: Db) {
             enabled: true,
             healthStatus: "ok",
             config: {
+              ...claudeConfig(),
               sourceTemplateKey: source,
               ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
@@ -1038,9 +1058,9 @@ export function aiConnectionService(db: Db) {
     return pending.value;
   }
 
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], options: ClaudeRefreshOptions = {}) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row, 0, undefined, options);
     if (!(await quotaCredentialRecovery(row.connection.companyId, row.grant.id).read())) return credential(row);
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
@@ -1081,7 +1101,7 @@ export function aiConnectionService(db: Db) {
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, row.connection.companyId),
         )).for("update", { noWait: true });
         const selected = { connection: row.connection, grant };
-        const current = await aiConnectionService(tx as unknown as Db).credential(selected);
+        const current = await aiConnectionService(tx as unknown as Db).credentialRaw(selected);
         const pending = await recoverQuotaCredentialInTransaction(tx as unknown as Db, selected, current, () => {
           savingReplacement = true;
         });
@@ -1118,6 +1138,13 @@ export function aiConnectionService(db: Db) {
     agentId?: string;
     runStartedAt: Date;
     attribution: AiConnectionAttribution & { identity: string };
+    /**
+     * `only`: act only on a login that the server can renew. Such a login is
+     * marked spent; it requests sign-in here only when the token issued after
+     * a refused one is refused too. `skip`: leave such a login
+     * as it is, because nothing shows that the provider refused its token.
+     */
+    renewable?: "only" | "skip";
   }) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
@@ -1142,13 +1169,33 @@ export function aiConnectionService(db: Db) {
         await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
           eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, ref.secretId),
         )).for("update");
-        const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
-        const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
+        const value = await aiConnectionService(tx as unknown as Db).credentialRaw({ connection, grant });
+        const generation = createHash("sha256").update(metadata.data.provider === "anthropic" && metadata.data.method === "subscription" ? claudeAccessTokenOf(value) : value).digest("hex").slice(0, 16);
         if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
         // A quota exchange may have consumed this run's token before a failed
         // database commit. Save its working replacement instead of revoking it.
         recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
         if (recovered) return;
+        const renewable = metadata.data.provider === "anthropic" && metadata.data.method === "subscription" ? parseStoredClaudeOauth(value) : null;
+        if (renewable) {
+          // A renewable Claude login is not shown to need sign-in by one run's
+          // rejected access token: that token may simply have expired under a
+          // long run. Mark it spent, so the next use renews it; only the
+          // provider refusing that renewal requests sign-in. An exchanged pair
+          // that still awaits its save already replaces this token: rotating the
+          // secret here would discard that pair and reuse a spent refresh token.
+          const markable = input.renewable !== "skip" && renewable.expiresAt > 0 && !hasPendingClaudeExchange(input.companyId, grant.id);
+          // The limit of that rule: this token was itself issued by the renewal
+          // that followed a refused token, and the provider refuses it before
+          // its end. A further renewal would be refused in the same way, so
+          // the login requests sign-in, also for a caller that passes `only`.
+          const refusedAgain = markable && renewable.expiresAt > Date.now() && claudeRenewalAfterRejection.is(input.companyId, grant.id, generation);
+          if (!refusedAgain) {
+            if (markable) await secretService(tx).rotate(ref.secretId, { value: serializeClaudeOauth({ ...renewable, expiresAt: 0 })!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+            return;
+          }
+          claudeRenewalAfterRejection.set(input.companyId, grant.id, null);
+        } else if (input.renewable === "only") return;
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
@@ -1184,7 +1231,7 @@ export function aiConnectionService(db: Db) {
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, companyId),
         )).for("update", { noWait: true });
         if (!secret) throw new Error("credentials_unavailable");
-        const current = await aiConnectionService(tx as unknown as Db).credential({ connection: row.connection, grant });
+        const current = await aiConnectionService(tx as unknown as Db).credentialRaw({ connection: row.connection, grant });
         if (replacement) {
           // A lost commit response is reconciled from the authoritative secret.
           // Reconnect, revocation and a competing saved generation always win.
@@ -1281,5 +1328,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, credentialRaw, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }
