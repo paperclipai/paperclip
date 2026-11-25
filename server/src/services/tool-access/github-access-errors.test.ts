@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { githubAccessDeniedInstructions, githubAccessError, projectGitHubActionResult } from "./github-access-errors.js";
+import {
+  findUnreachableManagedGitHubTarget,
+  githubAccessDeniedInstructions,
+  githubAccessError,
+  githubAccessErrorInstructions,
+  projectGitHubActionResult,
+} from "./github-access-errors.js";
 
 describe("GitHub tool access failures", () => {
   it.each(["integration", "personal access token"])("classifies GitHub's %s permission denial", kind => {
@@ -58,5 +64,157 @@ describe("GitHub tool access failures", () => {
     const unknown = githubAccessDeniedInstructions("mcp.github:create_repository");
     expect(unknown).toMatch(/authentication method/);
     expect(unknown).not.toMatch(/GitHub App|Refresh access/);
+  });
+
+  it("classifies 403 denials on external orgs outside managed GitHub App installations separately from installed-org denials", () => {
+    const githubGrant = {
+      login: "octocat",
+      installationOwnerLogins: ["acme"],
+      repositories: [{ id: "10", fullName: "acme/app", installationId: "9" }],
+    };
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/external-org/public-repo/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "external-org", repo: "public-repo", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_repo_outside_app_installations" });
+
+    // Accessible org missing a specific repo selection remains github_access_denied.
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/acme/unselected-repo/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "acme", repo: "unselected-repo", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
+
+    // User's own personal account remains repairable via Manage GitHub access.
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/octocat/personal-repo/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "octocat", repo: "personal-repo", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
+
+    // PAT connections and missing snapshots keep github_access_denied.
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/external-org/public-repo/issues: 403 Resource not accessible by personal access token []",
+      {
+        connectionMethodKey: "mcp-key",
+        githubGrant,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "external-org", repo: "public-repo", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/external-org/public-repo/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant: null,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "external-org", repo: "public-repo", title: "Bug" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
+  });
+
+  it("pre-checks managed GitHub writes against installed accounts without blocking installed orgs, personal accounts, or upstream fork sources", () => {
+    const githubGrant = {
+      login: "octocat",
+      installationOwnerLogins: ["Acme"],
+    };
+    const unreachable = findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:add_issue_comment",
+      parameters: { owner: "vercel", repo: "next.js", issue_number: 1, body: "hi" },
+    });
+    expect(unreachable).toMatchObject({ owner: "vercel", repo: "next.js" });
+    expect(unreachable?.message).toContain("vercel/next.js");
+    expect(unreachable?.message).toMatch(/not installed/i);
+    expect(unreachable?.message).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+
+    // repository: "owner/repo" format is also detected.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:create_issue",
+      parameters: { repository: "external-org/public-repo", title: "Bug" },
+    })).toMatchObject({ owner: "external-org", repo: "public-repo" });
+
+    // Installed org (case-insensitive) and user's own personal account are allowed.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "acme", repo: "other-repo", title: "Bug" },
+    })).toBeNull();
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "OctoCat", repo: "my-repo", title: "Bug" },
+    })).toBeNull();
+
+    // fork_repository reads from owner/repo and writes to organization (or personal account).
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:fork_repository",
+      parameters: { owner: "vercel", repo: "next.js", organization: "acme" },
+    })).toBeNull();
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant,
+      toolName: "mcp.github:fork_repository",
+      parameters: { owner: "vercel", repo: "next.js", organization: "other-org" },
+    })).toMatchObject({ owner: "other-org" });
+
+    // PAT connections and missing snapshots are not pre-blocked.
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "mcp-key",
+      githubGrant,
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "vercel", repo: "next.js" },
+    })).toBeNull();
+    expect(findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: "github",
+      connectionMethodKey: "managed",
+      githubGrant: { login: "octocat", installationOwnerLogins: [] },
+      toolName: "mcp.github:create_issue",
+      parameters: { owner: "vercel", repo: "next.js" },
+    })).toBeNull();
+  });
+
+  it("gives accurate non-refresh instructions for github_repo_outside_app_installations", () => {
+    const text = githubAccessErrorInstructions(
+      "github_repo_outside_app_installations",
+      "mcp.github:create_issue",
+      "managed",
+      { owner: "external-org", repo: "public-repo" },
+    );
+    expect(text).toMatch(/Do not retry/);
+    expect(text).toMatch(/not installed/i);
+    expect(text).toMatch(/directly on GitHub|personal access token/i);
+    expect(text).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
   });
 });
