@@ -192,6 +192,13 @@ if sys.argv[1] != "completion":
     const context = { skills: [{ key: "assigned", runtimeName: "assigned", versionId: "version-1", bundle }] } as any;
     expect(await readAssignedSkill(context, { skill: "assigned" })).toMatchObject({ versionId: "version-1", text: "# Assigned skill\nUse the pinned instructions." });
     await expect(readAssignedSkill(context, { skill: "not-assigned" })).rejects.toThrow("not_assigned");
+    const saved = { skills: [{ key: "company/company-1/qa-saved-skill", runtimeName: "qa-saved-skill--33910b3ce6", versionId: "version-1", bundle }] } as any;
+    expect(await readAssignedSkill(saved, { skill: "qa-saved-skill" })).toMatchObject({ skill: "company/company-1/qa-saved-skill", versionId: "version-1" });
+    expect(await readAssignedSkill(saved, { skill: "/qa-saved-skill" })).toMatchObject({ skill: "company/company-1/qa-saved-skill" });
+    expect(await readAssignedSkill(saved, { skill: " /QA-Saved-Skill " })).toMatchObject({ skill: "company/company-1/qa-saved-skill" });
+    const twins = { skills: [saved.skills[0], { ...saved.skills[0], key: "paperclipai/paperclip/qa-saved-skill", runtimeName: "qa-saved-skill--aa" }] } as any;
+    await expect(readAssignedSkill(twins, { skill: "qa-saved-skill" })).rejects.toThrow("not_assigned");
+    expect(await readAssignedSkill(twins, { skill: "qa-saved-skill--aa" })).toMatchObject({ skill: "paperclipai/paperclip/qa-saved-skill" });
     await expect(readAssignedSkill(context, { skill: "assigned", path: "../private" })).rejects.toThrow();
     await expect(readAssignedSkill(context, { skill: "assigned", path: "not-pinned.txt" })).rejects.toThrow("not_pinned");
     await expect(readAssignedSkill({ ...context, skills: [{ ...context.skills[0], bundle: { ...bundle, manifestDigest: createHash("sha256").update("different").digest("hex") } }] }, { skill: "assigned" })).rejects.toThrow("manifest_digest");

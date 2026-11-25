@@ -5,6 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  connectionGrants,
+  decisionTrainingExamples,
+  documentRevisions,
+  documents,
+  issueDocuments,
+  toolCatalogEntries,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
@@ -23,7 +31,15 @@ import {
   toolMcpAppViews,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { createConnectionContentDeletion, requestConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { forgetHandoffAfterDeletedRuns } from "../services/tool-access/connections/run-copies.js";
+import {
+  createGoogleTechnicalInformationRetention,
+  GOOGLE_TECHNICAL_INFORMATION_TTL_MS,
+  readIdleGoogleTechnicalInformationSchedule,
+} from "../services/tool-access/connections/google-technical-information.js";
+import { deleteGoogleContentWhenAccessEnds } from "../services/tool-access/connections/google-content-retention.js";
+import { forgetSessionsOfDeletedRun, runContentDeleted } from "../services/tool-access/connections/run-session-reset.js";
 import type { RunLogHandle, RunLogStore } from "../services/run-log-store.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -282,6 +298,319 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(runLogs.logs.has(seed.settledRun.logRef!)).toBe(false);
     const finished = await service.storedContent(seed.connection);
     expect(finished.deletion).toMatchObject({ status: "completed", retrying: false, counts: { toolCalls: 1, runs: 2 } });
+  });
+
+  it("waits for work still running when access ends, then deletes its content too, also after a restart", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    await db.update(toolInvocations).set({ status: "failed", errorMessage: SECRET }).where(eq(toolInvocations.id, seed.settledCall.id));
+    await db.update(toolCallEvents).set({ errorMessage: SECRET }).where(eq(toolCallEvents.invocationId, seed.settledCall.id));
+    await db.update(heartbeatRuns).set({ sessionIdAfter: "harness-session-1" }).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    const [laterRun] = await db.insert(heartbeatRuns).values({ companyId: seed.company.id, agentId: seed.agent.id, status: "succeeded", finishedAt: new Date(),
+      sessionIdBefore: "harness-session-1", sessionIdAfter: "harness-session-1", resultJson: { sessionId: "harness-session-1" } }).returning();
+    await db.insert(agentTaskSessions).values({
+      companyId: seed.company.id, agentId: seed.agent.id, adapterType: "process", taskKey: "task-1",
+      sessionParamsJson: { sessionId: "harness-session-1" }, sessionDisplayId: "harness-session-1", lastRunId: laterRun!.id,
+    });
+    await db.insert(agentRuntimeState).values({ agentId: seed.agent.id, companyId: seed.company.id, adapterType: "process", sessionId: "harness-session-1" });
+
+    const { deletion } = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "access_revoked");
+    expect(deletion).toMatchObject({ status: "pending", reason: "access_revoked" });
+    const [lateEvent] = await db.insert(toolCallEvents).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, runId: seed.liveRun.id, invocationId: seed.liveCall.id,
+      eventType: "call_completed", resultSummary: { summary: SECRET, sizeBytes: 42, sha256: "hash-42", redactedFields: [] },
+    }).returning();
+    const [lateAudit] = await db.insert(toolAccessAuditEvents).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, action: "tool_access.policy_decision", outcome: "success",
+      details: { invocationId: seed.liveCall.id, argumentsSummary: { summary: SECRET, sizeBytes: 42, sha256: "hash-42" } },
+    }).returning();
+    const [lateView] = await db.insert(toolMcpAppViews).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, runId: seed.liveRun.id, invocationId: seed.liveCall.id,
+      applicationName: "Docs", toolName: "read_doc", upstreamToolName: "read_doc", resourceUri: "ui://docs/view",
+      toolInput: { id: "doc-1" }, toolResult: { text: SECRET },
+    }).returning();
+    await drain(service);
+
+    const [waiting] = await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    expect(waiting!.status).toBe("pending");
+    expect(waiting!.notBefore!.getTime()).toBeGreaterThan(Date.now());
+    expect(await service.nextDeadline()).toBeGreaterThan(Date.now());
+    const [settledCall] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, seed.settledCall.id));
+    expect(settledCall!.errorMessage).toBeNull();
+    const settledEvents = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, seed.settledCall.id));
+    expect(settledEvents.map((event) => event.errorMessage)).toEqual([null]);
+    expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, seed.agent.id))).toEqual([]);
+    const [runtime] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, seed.agent.id));
+    expect(runtime!.sessionId).toBeNull();
+    const [laterAfter] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, laterRun!.id));
+    expect(laterAfter).toMatchObject({ sessionIdBefore: null, sessionIdAfter: null, resultJson: {} });
+    const [settledAfter] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    expect(settledAfter!.sessionIdAfter).toBeNull();
+    expect(runLogs.logs.get(seed.liveRun.logRef!)).toBe(SECRET);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    await db.update(toolConnectionContentDeletions).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    const restarted = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    await drain(restarted);
+
+    expect(runLogs.logs.has(seed.liveRun.logRef!)).toBe(false);
+    const [liveCall] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, seed.liveCall.id));
+    expect(liveCall!.resultSummary?.summary).toBe("");
+    const [late] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.id, lateEvent!.id));
+    expect(late!.resultSummary?.summary).toBe("");
+    const [audited] = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.id, lateAudit!.id));
+    expect(JSON.stringify(audited!.details)).not.toContain(SECRET);
+    expect(await db.select().from(toolMcpAppViews).where(eq(toolMcpAppViews.id, lateView!.id))).toEqual([]);
+    const finished = await restarted.storedContent(seed.connection);
+    expect(finished.stored).toEqual({ toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 });
+    expect(finished.deletion).toMatchObject({ id: deletion.id, status: "completed", reason: "access_revoked" });
+    expect(await restarted.nextDeadline()).toBeNull();
+
+    await db.insert(agentTaskSessions).values({
+      companyId: seed.company.id, agentId: seed.agent.id, adapterType: "process", taskKey: "task-2",
+      sessionParamsJson: { sessionId: "harness-session-2" }, lastRunId: seed.liveRun.id,
+    });
+    await db.update(agentRuntimeState).set({ sessionId: "harness-session-2", lastRunId: seed.liveRun.id }).where(eq(agentRuntimeState.agentId, seed.agent.id));
+    expect(await forgetSessionsOfDeletedRun(db, { id: seed.liveRun.id, companyId: seed.company.id })).toBe(true);
+    expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, seed.agent.id))).toEqual([]);
+    const [restored] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, seed.agent.id));
+    expect(restored!.sessionId).toBeNull();
+    expect(await forgetSessionsOfDeletedRun(db, { id: seed.otherRun.id, companyId: seed.company.id })).toBe(false);
+    expect(await runContentDeleted(db, seed.company.id, seed.liveRun.id)).toBe(true);
+    expect(await runContentDeleted(db, seed.company.id, seed.otherRun.id)).toBe(false);
+  });
+
+  it("extends a pending deletion to everything saved before access ended, and keeps content saved after reconnecting", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    const manual = await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    await db.update(toolConnectionContentDeletions).set({ requestedAt: new Date(Date.now() - 60_000) })
+      .where(eq(toolConnectionContentDeletions.id, manual.deletion.id));
+    const summary = { summary: SECRET, sizeBytes: 42, sha256: "hash-42", redactedFields: [] };
+    const [lateCall] = await db.insert(toolInvocations).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: summary, resultSummary: summary, createdAt: new Date(Date.now() - 1_000),
+    }).returning();
+
+    const automatic = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "provider_access_ended");
+    expect(automatic).toMatchObject({ created: false, deletion: { id: manual.deletion.id, reason: "provider_access_ended" } });
+    await drain(service);
+
+    const [late] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, lateCall!.id));
+    expect(late!.resultSummary?.summary).toBe("");
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ status: "completed" });
+
+    const [afterReconnect] = await db.insert(toolInvocations).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: summary, resultSummary: summary,
+    }).returning();
+    await drain(service);
+    const after = await service.storedContent(seed.connection);
+    expect(after.stored.toolCalls).toBe(1);
+    const [kept] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, afterReconnect!.id));
+    expect(kept!.resultSummary?.summary).toBe(SECRET);
+    const [old] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, seed.settledCall.id));
+    expect(old!.resultSummary?.summary).toBe("");
+  });
+
+  it("also removes the run's copies: error text, continuation summary, handoff and training snapshot", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const [issue] = await db.insert(issues).values({ companyId: seed.company.id, title: "Summaries" }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue!.id, error: SECRET }).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    const [laterRun] = await db.insert(heartbeatRuns).values({
+      companyId: seed.company.id, agentId: seed.agent.id, issueId: issue!.id, status: "running",
+      contextSnapshot: { issueId: issue!.id, paperclipSessionHandoffMarkdown: SECRET },
+    }).returning();
+    const [document] = await db.insert(documents).values({ companyId: seed.company.id, title: "Continuation summary", latestBody: SECRET }).returning();
+    const [revision] = await db.insert(documentRevisions).values({
+      companyId: seed.company.id, documentId: document!.id, revisionNumber: 1, body: SECRET, createdByRunId: seed.settledRun.id,
+    }).returning();
+    await db.update(documents).set({ latestRevisionId: revision!.id }).where(eq(documents.id, document!.id));
+    await db.insert(issueDocuments).values({ companyId: seed.company.id, issueId: issue!.id, documentId: document!.id, key: "continuation-summary" });
+    const [example] = await db.insert(decisionTrainingExamples).values({
+      companyId: seed.company.id, sourceKind: "interaction", sourceId: seed.interaction.id, issueId: issue!.id, cutoffAt: new Date(),
+      createdByUserId: "board-user",
+      snapshot: { version: 1, runs: [{ id: seed.settledRun.id, status: "succeeded", stdoutExcerpt: SECRET }, { id: laterRun!.id, status: "succeeded" }] } as never,
+    }).returning();
+
+    await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    await drain(service);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    expect(run!.error).toBeNull();
+    const [stillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, laterRun!.id));
+    expect(stillRunning!.contextSnapshot).toMatchObject({ paperclipSessionHandoffMarkdown: SECRET });
+    expect(await forgetHandoffAfterDeletedRuns(db, laterRun!)).toBe(true);
+    const [later] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, laterRun!.id));
+    expect(later!.contextSnapshot).toEqual({ issueId: issue!.id });
+    const [summary] = await db.select().from(documents).where(eq(documents.id, document!.id));
+    expect(summary!.latestBody).toBe("");
+    const [summaryRevision] = await db.select().from(documentRevisions).where(eq(documentRevisions.id, revision!.id));
+    expect(summaryRevision!.body).toBe("");
+    const [kept] = await db.select().from(decisionTrainingExamples).where(eq(decisionTrainingExamples.id, example!.id));
+    expect(JSON.stringify(kept!.snapshot)).not.toContain(SECRET);
+    expect((kept!.snapshot as unknown as { runs: unknown[] }).runs).toEqual([
+      { id: seed.settledRun.id, agentId: null, status: "succeeded", startedAt: null, finishedAt: null, contentDeleted: true },
+      { id: laterRun!.id, status: "succeeded" },
+    ]);
+
+    await db.update(heartbeatRuns).set({ error: SECRET }).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    await db.update(documentRevisions).set({ body: SECRET }).where(eq(documentRevisions.id, revision!.id));
+    await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    await drain(service);
+    const [again] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    expect(again!.error).toBeNull();
+    const [revisionAgain] = await db.select().from(documentRevisions).where(eq(documentRevisions.id, revision!.id));
+    expect(revisionAgain!.body).toBe("");
+  });
+
+  describe("Google Technical Information", () => {
+    const DAY = 24 * 60 * 60_000;
+
+    it("schedules nothing while no Google connection exists", async () => {
+      expect(await createGoogleTechnicalInformationRetention(db).nextDeadline()).toBeNull();
+      expect(await readIdleGoogleTechnicalInformationSchedule(db, Date.now())).toMatchObject({ blocked: false, deadlines: [] });
+    });
+
+    it("strips it after 30 days, right away once access ended, and keeps the bare activity row", async () => {
+      const now = Date.now();
+      const old = new Date(now - 31 * DAY);
+      const recent = new Date(now - DAY);
+      const [company] = await db.insert(companies).values({ name: `GTI ${randomUUID()}`, issuePrefix: `GT${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
+      const [application] = await db.insert(toolApplications).values({ companyId: company!.id, name: "Google Workspace", type: "mcp_http" }).returning();
+      const failure = "Google: quota exceeded for project 12345";
+      const [google, removed, other] = await db.insert(toolConnections).values([
+        { companyId: company!.id, applicationId: application!.id, name: "Google", uid: randomUUID(), transport: "mcp_remote", status: "active",
+          config: { sourceTemplateKey: "google-workspace" }, healthMessage: failure, lastError: failure, healthCheckedAt: old, lastCatalogRefreshAt: old },
+        { companyId: company!.id, applicationId: application!.id, name: "Removed Google", uid: randomUUID(), transport: "mcp_remote", status: "archived",
+          config: { oauth: { connectorProfile: "gmail.draft" } }, healthMessage: failure, healthCheckedAt: recent },
+        { companyId: company!.id, applicationId: application!.id, name: "Docs", uid: randomUUID(), transport: "mcp_remote", status: "active",
+          healthMessage: failure, healthCheckedAt: old },
+      ]).returning();
+      const [googleOld, googleRecent, otherOld] = await db.insert(toolInvocations).values([
+        { companyId: company!.id, connectionId: google!.id, toolName: "get_message", status: "failed", errorMessage: failure, createdAt: old },
+        { companyId: company!.id, connectionId: google!.id, toolName: "get_message", status: "failed", errorMessage: failure, createdAt: recent },
+        { companyId: company!.id, connectionId: other!.id, toolName: "read_doc", status: "failed", errorMessage: failure, createdAt: old },
+      ]).returning();
+      await db.insert(toolCallEvents).values({ companyId: company!.id, connectionId: google!.id, invocationId: googleOld!.id, eventType: "call_failed", errorMessage: failure, createdAt: old });
+      const catalog = { description: "Reads one Gmail message", inputSchema: { type: "object" }, versionHash: "v1" };
+      const [staleEntry, freshEntry, removedEntry] = await db.insert(toolCatalogEntries).values([
+        { companyId: company!.id, connectionId: google!.id, name: "get_message", toolName: "get_message", lastSeenAt: old, ...catalog },
+        { companyId: company!.id, connectionId: google!.id, name: "list_threads", toolName: "list_threads", lastSeenAt: new Date(now), ...catalog },
+        { companyId: company!.id, connectionId: removed!.id, name: "get_message", toolName: "get_message", lastSeenAt: recent, status: "removed", ...catalog },
+      ]).returning();
+      const [grant] = await db.insert(connectionGrants).values({
+        companyId: company!.id, connectionId: removed!.id, kind: "organization", status: "revoked",
+        providerTenant: { externalId: "subject-1", oauth: { scopes: ["https://www.googleapis.com/auth/gmail.readonly"] } } as never,
+      }).returning();
+      const [activity] = await db.insert(activityLog).values({
+        companyId: company!.id, actorType: "agent", actorId: "agent-1", action: "tool.invoked", entityType: "tool_invocation",
+        entityId: googleOld!.id, details: { toolName: "get_message", status: "failed" },
+      }).returning();
+      const retention = createGoogleTechnicalInformationRetention(db);
+      expect(await retention.nextDeadline(now)).toBe(now);
+
+      await retention.sweep(new AbortController().signal, new Date(now));
+
+      const calls = new Map((await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company!.id))).map((row) => [row.id, row]));
+      expect(calls.get(googleOld!.id)).toMatchObject({ errorMessage: null, status: "failed", toolName: "get_message" });
+      expect(calls.get(googleRecent!.id)!.errorMessage).toBe(failure);
+      expect(calls.get(otherOld!.id)!.errorMessage).toBe(failure);
+      const [event] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, googleOld!.id));
+      expect(event!.errorMessage).toBeNull();
+      const connections = new Map((await db.select().from(toolConnections).where(eq(toolConnections.companyId, company!.id))).map((row) => [row.id, row]));
+      expect(connections.get(google!.id)).toMatchObject({ healthMessage: null, lastError: null, lastCatalogRefreshAt: null });
+      expect(connections.get(removed!.id)!.healthMessage).toBeNull();
+      expect(connections.get(other!.id)!.healthMessage).toBe(failure);
+      const entries = new Map((await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, company!.id))).map((row) => [row.id, row]));
+      expect(entries.get(staleEntry!.id)).toMatchObject({ name: "get_message", description: null, inputSchema: {} });
+      expect(entries.get(removedEntry!.id)).toMatchObject({ name: "get_message", description: null, inputSchema: {} });
+      expect(entries.get(freshEntry!.id)!.description).toBe(catalog.description);
+      const [revoked] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+      expect(revoked!.providerTenant).toEqual({ externalId: "subject-1" });
+      const [keptActivity] = await db.select().from(activityLog).where(eq(activityLog.id, activity!.id));
+      expect(keptActivity).toMatchObject({ action: "tool.invoked", entityId: googleOld!.id, details: { toolName: "get_message", status: "failed" } });
+
+      expect(await retention.nextDeadline(now)).toBe(googleRecent!.createdAt.getTime() + GOOGLE_TECHNICAL_INFORMATION_TTL_MS);
+      expect(await readIdleGoogleTechnicalInformationSchedule(db, now)).toMatchObject({
+        blocked: false, deadlines: [googleRecent!.createdAt.getTime() + GOOGLE_TECHNICAL_INFORMATION_TTL_MS],
+      });
+      await db.delete(activityLog).where(eq(activityLog.companyId, company!.id));
+      await db.delete(companies).where(eq(companies.id, company!.id));
+    });
+  });
+
+  it("keeps waiting for work that is still running after a day, then rechecks hourly", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const { deletion } = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "member_removed");
+    const dayAgo = new Date(Date.now() - 26 * 60 * 60_000);
+    await db.update(toolInvocations).set({ createdAt: dayAgo }).where(eq(toolInvocations.companyId, seed.company.id));
+    await db.update(toolCallEvents).set({ createdAt: dayAgo }).where(eq(toolCallEvents.companyId, seed.company.id));
+    await db.update(toolConnectionContentDeletions).set({ requestedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+
+    const [waiting] = await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    expect(waiting!.status).toBe("pending");
+    expect(waiting!.notBefore!.getTime()).toBeGreaterThan(Date.now() + 30 * 60_000);
+    expect(runLogs.logs.get(seed.liveRun.logRef!)).toBe(SECRET);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    await db.update(toolConnectionContentDeletions).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+    expect(runLogs.logs.has(seed.liveRun.logRef!)).toBe(false);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "completed" });
+  });
+
+  it.each([
+    ["its app template", { config: { sourceTemplateKey: "google-workspace" } }, {}, true],
+    ["its transport settings", { transportConfig: { sourceTemplateKey: "gmail" } }, {}, true],
+    ["the app's source", {}, { source: "google-drive" }, true],
+    ["its Google broker profile", { config: { oauth: { connectorProfile: "calendar.read" } } }, {}, true],
+    ["another app", { config: { sourceTemplateKey: "slack" } }, { source: "slack" }, false],
+  ] as const)("recognises a Google connection by %s", async (_label, connectionFields, metadata, google) => {
+    const [company] = await db.insert(companies).values({ name: `Shape ${randomUUID()}`, issuePrefix: `SH${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company!.id, name: "App", type: "mcp_http", metadata }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id, applicationId: application!.id, name: "App", uid: randomUUID(), transport: "mcp_remote", status: "active", ...connectionFields,
+    }).returning();
+    const started = await db.transaction(async (tx) => deleteGoogleContentWhenAccessEnds(tx as never, connection!, "connection_removed"));
+    expect(Boolean(started)).toBe(google);
+  });
+
+  it("finishes once earlier work settles, even while the connection keeps making new calls", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const { deletion } = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "access_revoked");
+    await db.insert(toolInvocations).values({
+      companyId: seed.company.id, connectionId: seed.connection.id, toolName: "read_doc", status: "executing", createdAt: new Date(Date.now() + 60_000),
+    });
+    await drain(service);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "pending" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, seed.liveRun.id));
+    await db.update(toolConnectionContentDeletions).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(toolConnectionContentDeletions.id, deletion.id));
+    await drain(service);
+    expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ id: deletion.id, status: "completed" });
+  });
+
+  it("moves an automatic deletion's cutoff when Delete data is selected later, and keeps waiting for running work", async () => {
+    const runLogs = memoryRunLogs();
+    const service = createConnectionContentDeletion(db, { runLogStore: () => runLogs.store });
+    const seed = await seedCompany(runLogs);
+    const automatic = await requestConnectionContentDeletion(db, seed.connection, { actorType: "system", actorId: null }, "provider_access_ended");
+    await db.update(toolConnectionContentDeletions).set({ requestedAt: new Date(Date.now() - 60_000) })
+      .where(eq(toolConnectionContentDeletions.id, automatic.deletion.id));
+    const manual = await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    expect(manual).toMatchObject({ created: false, deletion: { id: automatic.deletion.id, reason: "provider_access_ended" } });
+    expect(Date.parse(manual.deletion.requestedAt)).toBeGreaterThan(Date.now() - 10_000);
+    await drain(service);
   });
 
   it("returns the pending deletion instead of starting a second one", async () => {

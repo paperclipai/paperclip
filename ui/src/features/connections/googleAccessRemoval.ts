@@ -3,6 +3,9 @@ import type { ToastAction, ToastInput, ToastTone } from "../../context/ToastCont
 
 export const GOOGLE_THIRD_PARTY_ACCESS_URL = "https://myaccount.google.com/connections";
 
+export const GOOGLE_CONTENT_DELETION_NOTICE =
+  "Paperclip then deletes what agents read from Google through it: saved tool results and the transcripts of runs that used it. This starts at once. Paperclip waits for runs that are still working, and keeps trying until every step succeeds. Comments, documents and files that agents wrote into tasks stay.";
+
 export interface GoogleAccessRemovalNotice {
   body: string;
   tone: ToastTone;

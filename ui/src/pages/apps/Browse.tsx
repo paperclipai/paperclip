@@ -1,4 +1,4 @@
-import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
+import { connectionRemovalToast, GOOGLE_CONTENT_DELETION_NOTICE } from "@/features/connections/googleAccessRemoval";
 import { AGGREGATOR_NAMES, aggregatorManagementUrl, isAppAggregator, type AggregatorAppSnapshot, type AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
 import type { CatalogSource } from "./CatalogSourceFilters";
 import { ConnectorsToolbar } from "./ConnectorsToolbar";
@@ -9,6 +9,7 @@ import {
   aiConnectionRouterPluginKey,
   connectionSetupVerbForApp,
   getConnectableAppDefinition,
+  isGoogleWorkspaceConnectionConfig,
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
@@ -158,6 +159,7 @@ type ConnectionRemovalTarget = {
   remainingConnectionCount: number;
   pool?: boolean;
   poolRevision?: number;
+  googleWorkspace?: boolean;
 } & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
 
 // Offer the unified connector for new Google accounts. Existing per-service
@@ -582,7 +584,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
             : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`;
       pushToast(connectionRemovalToast({
-        title: deleteStoredContent && !target.pool && target.kind !== "chat" ? "Connection removed. Deleting its saved data." : "Connection removed",
+        title: (deleteStoredContent || target.googleWorkspace) && !target.pool && target.kind !== "chat" ? "Connection removed. Deleting its saved data." : "Connection removed",
         body,
         providerAccess: removed?.removal?.providerAccess,
       }));
@@ -1149,7 +1151,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {connectionToRemove && !connectionToRemove.pool && connectionToRemove.kind !== "chat" ? (
+          {connectionToRemove?.googleWorkspace ? (
+            <p className="text-sm text-muted-foreground">{GOOGLE_CONTENT_DELETION_NOTICE}</p>
+          ) : connectionToRemove && !connectionToRemove.pool && connectionToRemove.kind !== "chat" ? (
             <label className="flex items-start gap-2 text-sm text-foreground">
               <Checkbox
                 className="mt-0.5"
@@ -1362,6 +1366,8 @@ export function ConnectorCard({
                     onRequestRemove({
                       id: connection.id,
                       pool: Boolean(aiConnectionRouterPluginKey(connection)),
+                      googleWorkspace: isGoogleWorkspaceConnectionConfig(connection.config, connection.transportConfig,
+                        row.applications.find((application) => application.id === connection.applicationId)?.metadata),
                       accountName,
                       providerName: row.name,
                       remainingConnectionCount: row.connections.filter(

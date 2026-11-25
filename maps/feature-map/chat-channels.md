@@ -49,12 +49,10 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 ### `external-thread`
 
-Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
+Automated: the chat channel integration suites ([Slack](../../server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts), [Discord](../../server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts), [Teams](../../server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts), [Telegram](../../server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts), [GitHub](../../server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts), and [shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)) use provider fixtures; they do not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
-Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
-verify the exact originating conversation, rejected forged/mismatched receipts,
-one working publication, no completion for a yielded run, and saved-response
-recovery. In a disposable live thread, request work that needs deferred repository
+Monitor continuation coverage lives in [GitHub review workflow](../../server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts), [Slack interactions and files](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts),
+and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts). In a disposable live thread, request work that needs deferred repository
 preparation. Verify a useful continuation explanation, automatic resumption, and
 the final result in that same thread. A successful provider turn alone is insufficient.
 
@@ -121,10 +119,11 @@ while still validating the channel and the source message timestamp.
 For an agent with two linked Slack endpoints, compare assignment preparation and
 tool discovery in the run trace. Endpoint checks may overlap in pairs. Confirm
 that both permitted tool sets remain available, then revoke one linked identity
-and confirm that the next preparation excludes it. The
-[database regression](../../server/src/__tests__/slack-tool-preparation.test.ts)
-uses real PostgreSQL with one connection and controlled credential resolution;
-it does not prove live provider latency or an end-to-end response target.
+and confirm that the next preparation excludes it. Canonical endpoint preparation
+and Slack lifecycle coverage lives in
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts)
+and [Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts);
+these do not prove live provider latency or an end-to-end response target.
 
 Catalog discovery rechecks live authority and current credentials without
 computing the unused compatibility fingerprint. Assignment snapshots and
@@ -160,7 +159,7 @@ write safety; record hosted destination acceptance separately.
 
 ### `endpoint-management`
 
-Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) covers shared endpoint/delivery behavior; live credential repair and provider ownership remain manual checks.
+Automated: [board and shared core integration](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts) and the provider-scoped suites under `server/src/__tests__/chat-channels/` cover shared endpoint/delivery behavior; live credential repair and provider ownership remain manual checks.
 
 Manual: Inspect the bound agent and identity, recent activity, and delivery failure details. Repair a disposable credential, retry a safe message when offered, and verify exactly one external reply. Disable the endpoint and confirm new traffic is not silently processed.
 
@@ -251,7 +250,7 @@ Capability ID: `chat-channels/attachments`.
 Scope: ui
 Storybook: Mount TaskChatBubble attachments and ChatEndpointDetail provider-specific consent/upload/delivery failure and unknown-outcome states. Local email attachment dialog remains a prototype.
 Production: Transfer a disposable supported file through each affected provider; verify recipient delivery, read scope, duplicate/replay handling and failure/unknown state without treating notification as file-upload proof.
-Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [chat-channels.integration.test.ts](../../server/src/__tests__/chat-channels.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
+Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [slack-interactions-and-files.integration.test.ts](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts), [teams-authority-and-transfer.integration.test.ts](../../server/src/__tests__/chat-channels/teams-authority-and-transfer.integration.test.ts), [telegram-media-and-recovery.integration.test.ts](../../server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
 
 ### Documentation scope: Chat and email channel setup
 

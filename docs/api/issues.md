@@ -224,6 +224,22 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 
 Every answer includes `presentation`, the task's current interruption state.
 
+## Check Now
+
+```
+POST /api/issues/{issueId}/monitor/check-now
+```
+
+Starts the task's next check now. This is the "Check now" button on the task banner.
+
+- When the task has a scheduled monitor, the monitor check starts. The answer is `200` with `{ "ok": true }`.
+- When the task has no monitor but its run waits in a scheduled retry (for example, a wait for provider usage), the retry starts now. Before any work, the retry checks again whether the agent's current AI account has usage. If that account is still limited, the run waits again with a plain message. The caller must be a board user who can read the task and has `issue:mutate` access to it, the same access as Retry now. The answer is `200` with `{ "ok": true, "outcome": "promoted" | "already_promoted" | "waiting", "message": "..." }`.
+
+Refusals:
+
+- `403` or `404`: the caller cannot start work on this task. A private task that the caller cannot see answers `404`.
+- `409` with `details.code: "issue_monitor_check_deferred"`: the check did not start. `error` gives the reason in plain words, for example that nothing waits to be checked anymore or that the task changed. Refresh the task.
+
 ## Comments
 
 ### List Comments
@@ -240,6 +256,35 @@ POST /api/issues/{issueId}/comments
 ```
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
+
+#### Start a Google Antigravity swarm
+
+```
+POST /api/issues/{issueId}/comments
+{ "body": "write the tests for the parser", "nativeCommand": "swarm", "clientRequestId": "<uuid>" }
+```
+
+The optional `nativeCommand` field accepts only `"swarm"`. It asks the task's Google Antigravity assignee to run the comment as a swarm with helpers. With `nativeCommand`, `body` is the request itself, used verbatim (trimmed) as the swarm's only instruction: do not include the `/swarm` command (the board composer removes the one the user typed). Nothing strips another one, so a body of `/swarm explain this` asks the swarm about `/swarm explain this`. Comment text alone is never read as a command: without `nativeCommand`, `/swarm` is ordinary text.
+
+A resend with the same `clientRequestId` returns the original comment, even if the checks below would now refuse a new request (for example after the setting was turned off). Nothing is posted or started twice.
+
+Only a signed-in board user can send `nativeCommand`. Any other caller, such as an agent, gets `403` with `Only a signed-in user can start a swarm`.
+
+The endpoint refuses these requests with `422` and `{ "error": "<message>", "code": "antigravity_swarm_unavailable" }`. It saves no comment and wakes no agent. Checks run in this order:
+
+| When | `error` |
+| --- | --- |
+| The task is a chat | `Swarm works in task comments, not in chats.` |
+| The instance setting is off | `Swarm is not turned on for this Paperclip. An instance admin can turn on "Google Antigravity swarm" in Settings, Experimental.` |
+| The assignee is not a Google Antigravity agent | `Swarm works only for tasks assigned to a Google Antigravity agent.` |
+| The task is in Plan mode | `Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.` |
+| The task is in any mode other than Standard (for example Ask) | `Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.` |
+| `body` is empty or only whitespace | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
+| `body` is longer than 16,000 characters | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
+
+The swarm runs without the agent's own instructions: its system prompt holds only Paperclip's fixed execution prompt, the swarm rules, and the task's completion revision and criterion IDs. The agent's instruction files and connection instructions are left out because an agent can edit its own instructions, and the swarm's helpers act without asking.
+
+Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
 ### Discard a Queued Comment
 

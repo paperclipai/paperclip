@@ -1215,9 +1215,25 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  /**
+   * A native command the signed-in user started with the composer's leading
+   * `/name` (parseLeadingUserCommand). Only "swarm" (Google Antigravity) exists.
+   */
+  nativeCommand: z.literal("swarm").optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
+
+/**
+ * A comment request that carries `nativeCommand: "swarm"`. Its body is the swarm's
+ * request, and an empty one passes validation so the route answers every request
+ * without one with the same documented refusal (422 `antigravity_swarm_unavailable`).
+ * Ordinary comments keep `addIssueCommentSchema` and its non-empty body.
+ */
+export const addIssueSwarmCommentSchema = addIssueCommentSchema.extend({
+  body: multilineTextSchema.pipe(z.string()),
+  nativeCommand: z.literal("swarm"),
+});
 
 export const issueThreadInteractionStatusSchema = z.enum(
   ISSUE_THREAD_INTERACTION_STATUSES,
@@ -2340,7 +2356,7 @@ export type WithdrawIssueThreadInteraction = z.infer<
 >;
 
 export const respondIssueThreadInteractionSchema = z.object({
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(64),
   summaryMarkdown: multilineTextSchema
     .pipe(z.string().max(20000))
     .nullable()

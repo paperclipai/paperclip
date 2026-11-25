@@ -62,11 +62,40 @@ test("ordinary app PRs skip canary dry run, runner support, docker context and r
 });
 
 test("canary dry run, runner support, chat, docker and test-only edits select their exact owners", () => {
-  for (const file of ["scripts/release.sh", "package.json", "server/package.json", "cli/esbuild.config.mjs",
-    "server/scripts/bundle-runtime.mjs", "packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs",
-    "packages/paperclip-runner/release-runner-targets.json"]) {
+  for (const file of ["scripts/release.sh", "scripts/release-lib.sh", "scripts/release-package-manifest.json",
+    "scripts/release-package-map.mjs", "scripts/build-npm.sh", "scripts/build-standalone-public-packages.mjs",
+    "scripts/cli-bundled-npm-dependencies.mjs", "scripts/link-plugin-dev-sdk.mjs", "scripts/prefetch-child.mjs",
+    "scripts/stage-bundled-packages.mjs", "scripts/pack-staged-packages.mjs",
+    "scripts/prepare-bundled-package.mjs", "scripts/prepare-server-ui-dist.sh",
+    "scripts/generate-npm-package-json.mjs", "scripts/prepare-npm-readme.mjs"]) {
     assert.equal(selected(plan([file]), "canary_dry_run"), true, `canary: ${file}`);
   }
+  const canaryQueue = ["scripts/release.sh", "scripts/build-npm.sh"];
+  const canarySeen = new Set(canaryQueue);
+  while (canaryQueue.length) {
+    const entry = canaryQueue.shift();
+    const content = readFileSync(new URL(entry, root), "utf8");
+    for (const [, rawTarget] of content.matchAll(/(?:^|[^a-zA-Z0-9._/-])((?:\.\.?\/|scripts\/)[a-zA-Z0-9._/-]+\.(?:sh|mjs|js|json))/g)) {
+      const target = rawTarget.startsWith(".") ? path.posix.normalize(path.posix.join(path.posix.dirname(entry), rawTarget)) : rawTarget;
+      if (!target.startsWith("scripts/") || target === "scripts/stage-release-runner-binaries.mjs") continue;
+      if (canarySeen.has(target)) continue;
+      let exists = false;
+      try { readFileSync(new URL(target, root)); exists = true; } catch {}
+      if (!exists) continue;
+      canarySeen.add(target);
+      canaryQueue.push(target);
+      assert.equal(selected(plan([target]), "canary_dry_run"), true, `${entry} transitively depends on ${target}`);
+    }
+  }
+  for (const file of ["package.json", "server/package.json", "packages/shared/package.json",
+    "packages/shared/src/constants.ts", "pnpm-lock.yaml", "README.md", "scripts/run-vitest-stable.mjs",
+    "cli/esbuild.config.mjs", "server/scripts/bundle-runtime.mjs",
+    "packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs",
+    "packages/paperclip-runner/release-runner-targets.json", ".github/workflows/pr-trusted.yml"]) {
+    assert.equal(selected(plan([file]), "canary_dry_run"), false, `non-canary: ${file}`);
+  }
+  assert.equal(selected(plan(["package.json"], { forceReason: "Full suite requested by label" }), "canary_dry_run"), true);
+  assert.equal(selected(plan(["packages/shared/src/constants.ts"], { mode: "full" }), "canary_dry_run"), true);
   for (const file of ["tests/runner-e2e/catalog.test.ts", "packages/paperclip-runner/src/index.ts",
     "packages/plugins/sdk/src/index.ts", "packages/adapters/codex-local/src/index.ts",
     "packages/shared/src/constants.ts", "server/src/services/native-runtime/canonical.ts",
@@ -187,7 +216,10 @@ test("shared contracts, runtime prompts, protocol inputs and fixtures reach cons
   assert.ok(selectedTasks(plan(["server/src/onboarding-assets/default/AGENTS.md"])).has("ci:runner-vitest"));
   assert.ok(selectedTasks(plan(["packages/paperclip-runner/protocol/schema.json"])).has("ci:runner-rust"));
   for (const file of ["tests/runner-e2e/fixtures/prompt.md", "scripts/run-vitest-stable.mjs", "pnpm-lock.yaml"]) {
-    assert.ok(Object.values(plan([file]).jobs).every((job) => job.selected === job.total), file);
+    const result = plan([file]);
+    assert.equal(selected(result, "canary_dry_run"), false, `${file} must not trigger canary_dry_run`);
+    assert.ok(Object.entries(result.jobs).filter(([name]) => name !== "canary_dry_run")
+      .every(([, job]) => job.selected === job.total), file);
   }
 });
 
@@ -253,7 +285,9 @@ test("cache-affecting definition changes force execution across successive PR pu
     for (const paths of [[file], [file, "packages/db/src/schema/issues.ts"]]) {
       const result = plan(paths);
       assert.match(result.forceReason, /Global CI input changed/);
-      assert.ok(Object.values(result.jobs).every((job) => job.selected === job.total));
+      assert.equal(selected(result, "canary_dry_run"), false, `${file} must not trigger canary_dry_run`);
+      assert.ok(Object.entries(result.jobs).filter(([name]) => name !== "canary_dry_run")
+        .every(([, job]) => job.selected === job.total));
     }
   }
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
@@ -392,7 +426,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 30 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 27 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }

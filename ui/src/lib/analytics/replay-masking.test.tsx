@@ -6,9 +6,16 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { DocumentRevision } from "@paperclipai/shared";
+import type { ConnectionGrant, DocumentRevision } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AccountQuotaPanels } from "@/components/AccountQuotaPanels";
+import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
+import { AiConnectionAccountControls } from "@/components/ai-connections/AiConnectionAccountControls";
+import { AiConnectionIdentity } from "@/components/ai-connections/AiConnectionIdentity";
+import { AiConnectionPicker } from "@/components/ai-connections/AiConnectionPicker";
+import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
 import { DocumentDiffModal } from "@/components/DocumentDiffModal";
+import { CopyField } from "@/components/routine-triggers/WebhookFields";
 import { RunInvocationCard } from "@/components/run-log/RunDetails";
 import { ChatConversationList } from "@/pages/apps/chat/ChatConversationList";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
@@ -384,6 +391,104 @@ describe("session replay text masking", () => {
 
   it.each(CONNECTION_PORTALS)("masks the portal at $file:$line", ({ tag }) => {
     expect(tag).toMatch(/ANALYTICS_MASK_CLASS|ANALYTICS_NO_CAPTURE_CLASS/);
+  });
+
+  it("masks the subscription account label in AccountQuotaPanels", () => {
+    document.body.innerHTML = renderToStaticMarkup(<AccountQuotaPanels accounts={[{
+      provider: "anthropic", accountKey: "key", accountLabel: "fenwick.oriel@example.test", ok: true,
+      windows: [{ label: "Weekly limit", usedPercent: 40, valueLabel: null, resetsAt: null, detail: null }],
+    }]} />);
+    expect(replayLeaks("fenwick.oriel@example.test")).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Weekly limit")).toEqual({ rendered: true, recorded: true });
+  });
+
+  it("blocks the webhook URL and secret in WebhookFields CopyField", () => {
+    document.body.innerHTML = renderToStaticMarkup(<>
+      <CopyField label="Webhook URL" value="https://paperclip.example.test/api/routine-triggers/hook_k4Zr9Qe1" />
+      <CopyField label="Authentication key" value="whsec_Tq8vLm2Rz7Np" />
+    </>);
+    expect(isBlockedFromReplay("hook_k4Zr9Qe1", document.body)).toBe(true);
+    expect(isBlockedFromReplay("whsec_Tq8vLm2Rz7Np", document.body)).toBe(true);
+  });
+
+  it("filters incompatible OpenRouter models and masks account labels in AiConnectionPicker", () => {
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionPicker
+      adapterType="opencode_local" model="zai/glm-5" requirement={{ companyId: "company", provider: "openrouter" }}
+      connections={[{ id: "router", grantId: "grant", companyId: "company", provider: "openrouter", method: "api_key",
+        name: "Shared router", ownership: "shared", status: "connected" }]}
+      currentUserId="user" agentId="agent" agentName="Nova" onChange={vi.fn()} onConnect={vi.fn()} />);
+    expect(document.body.textContent).not.toContain("Shared router");
+    expect(document.querySelector<HTMLButtonElement>('[aria-label="Responsible user’s connection"]')!.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Incompatible with this harness and model");
+
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionPicker
+      requirement={{ companyId: "company", provider: "anthropic" }}
+      connections={[{ id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "api_key",
+        name: "Shared Claude key", accountLabel: "orla.brisk@example.test", ownership: "shared", status: "connected" }]}
+      currentUserId="user" agentId="agent" agentName="Nova" onChange={vi.fn()} onConnect={vi.fn()} />);
+    expect(replayLeaks("orla.brisk@example.test")).toEqual({ rendered: true, recorded: false });
+
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionPicker
+      requirement={{ companyId: "company", provider: "anthropic" }}
+      connections={[{ id: "mine", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",
+        name: "Orla's Claude Max", ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }]}
+      currentUserId="user" agentId="agent" agentName="Nova" onChange={vi.fn()} onConnect={vi.fn()} />);
+    expect(replayLeaks("Orla's Claude Max")).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("masks account labels in AiConnectionAccountControls, AiConnectionIdentity, and AiConnectionPoolRunDetails", () => {
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionAccountControls
+      account={{ id: "connection", grantId: "grant", companyId: "company", provider: "openai", method: "subscription",
+        name: "Team ChatGPT", accountLabel: "tamsin.vale@example.test", ownership: "shared", status: "connected" }}
+      grant={{ id: "grant", capabilities: { canRevoke: true, canEditAudience: false } } as ConnectionGrant}
+      currentUserId="user" onMakeDefault={vi.fn()} onReconnect={vi.fn()} onRevoke={vi.fn()} />);
+    expect(replayLeaks("tamsin.vale@example.test")).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Reconnect")).toEqual({ rendered: true, recorded: true });
+
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionIdentity connection={{
+      id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",
+      name: "Zephyr Labs Claude", accountLabel: "quill.marten@example.test", ownership: "shared", status: "connected",
+    }} />);
+    expect(replayLeaks("Zephyr Labs Claude")).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("quill.marten@example.test")).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Company shared")).toEqual({ rendered: true, recorded: true });
+
+    document.body.innerHTML = renderToStaticMarkup(<AiConnectionPoolRunDetails context={{
+      aiRouterSelection: { binding: { provider: "anthropic" }, runtimeConfig: { model: "claude-sonnet" }, notes: [] },
+      aiConnection: { accountName: "Juniper Ops Pool Account", connectionId: "connection" },
+    }} />);
+    expect(replayLeaks("Juniper Ops Pool Account")).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("claude-sonnet")).toEqual({ rendered: true, recorded: true });
+  });
+
+  it("blocks the setup prompt preview carrying pairing tokens in AgentSetupPrompt", async () => {
+    const prevMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("reduce"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      onchange: null,
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => {}) } });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      const prompt = "Run: paperclipai pair --token pcp_pair_8f3kQz2LmWv";
+      await act(async () => root.render(<AgentSetupPrompt prompt={prompt} />));
+      await act(async () => host.querySelector<HTMLButtonElement>("button")!.click());
+      expect(document.querySelector("pre[aria-label='Setup prompt']")).not.toBeNull();
+      expect(isBlockedFromReplay("pcp_pair_8f3kQz2LmWv", document.body)).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      window.matchMedia = prevMatchMedia;
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 
   it("never lets autocapture record element text or attribute values", () => {
