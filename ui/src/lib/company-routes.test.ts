@@ -46,6 +46,13 @@ describe("company routes", () => {
     );
   });
 
+  it("treats Responsibilities as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/responsibilities")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/responsibilities/resp-1")).toBeNull();
+    expect(applyCompanyPrefix("/responsibilities/resp-1", "pap")).toBe("/PAP/responsibilities/resp-1");
+    expect(toCompanyRelativePath("/PAP/responsibilities/resp-1")).toBe("/responsibilities/resp-1");
+  });
+
   it("treats /search as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/search")).toBe(true);
     expect(extractCompanyPrefixFromPath("/search")).toBeNull();
@@ -137,6 +144,14 @@ describe("company routes", () => {
     expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
     expect(applyCompanyPrefix("/timeline", "PAP")).toBe("/PAP/timeline");
     expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
+  });
+
+  it.each(["cases", "status"])("keeps the active company on /%s navigation links", (root) => {
+    expect(isBoardPathWithoutPrefix(`/${root}`)).toBe(true);
+    expect(extractCompanyPrefixFromPath(`/${root}`)).toBeNull();
+    expect(applyCompanyPrefix(`/${root}`, "PAP")).toBe(`/PAP/${root}`);
+    expect(applyCompanyPrefix(`/PAP/${root}`, "REA")).toBe(`/PAP/${root}`);
+    expect(toCompanyRelativePath(`/PAP/${root}`)).toBe(`/${root}`);
   });
 
   it("treats Skill Studio create mode as an unprefixed board route", () => {

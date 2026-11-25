@@ -38,8 +38,8 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
-import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
-import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
+import { preparationOnlyWriterCondition, settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { retirableRemoteSnapshotLedgerCondition, settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -968,7 +968,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
-        .where(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
+        .where(and(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`,
+          preparationOnlyWriterCondition())).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => {
         const writerRunId = str(json(json(row.metadata).remoteWorkspace).writerRunId);
@@ -983,7 +984,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
-        .from(executionWorkspaceSnapshots).where(inArray(executionWorkspaceSnapshots.status, ["pending", "uploaded"])).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
+        .from(executionWorkspaceSnapshots).where(retirableRemoteSnapshotLedgerCondition()).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.sourceRunId, issueId: null,

@@ -81,6 +81,7 @@ export interface CodexAppServerTransport {
   runnerExitConfirmed?(): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
+  retireReleasedController?(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   /** True when this transport recovers a session only to stop it. */

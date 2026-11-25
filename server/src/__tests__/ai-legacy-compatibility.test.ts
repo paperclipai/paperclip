@@ -198,6 +198,25 @@ it("enforces local attempt ownership, company, target, cancellation, and expiry"
   expect(row.status).toBe("timed_out");
 });
 
+it("tells the owner why an ended attempt stopped instead of calling every one expired", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+  const ownCompany = randomUUID();
+  await db.insert(companies).values({ id: ownCompany, name: "Ended attempts", issuePrefix: "END" });
+  await db.insert(companyMemberships).values({ companyId: ownCompany, principalId: owner, principalType: "user", status: "active", membershipRole: "owner" });
+  const login = localAiLoginService(db);
+  const replacedMessage = "This sign-in attempt was cancelled or replaced by a newer one. Start sign-in again.";
+  const first = await login.start(ownCompany, owner, loginIntent());
+  const retry = await login.start(ownCompany, owner, loginIntent(), true);
+  expect(await login.check(ownCompany, owner, loginIntent(), first.sessionId)).toEqual({ status: "expired", error: replacedMessage });
+  await login.cancel(ownCompany, owner, retry.sessionId);
+  expect(await login.check(ownCompany, owner, loginIntent(), retry.sessionId)).toEqual({ status: "expired", error: replacedMessage });
+  const completed = await login.start(ownCompany, owner, loginIntent());
+  await writeFile(path.join(directoryFor(completed.sessionId), "auth.json"), auth("completed-login"));
+  await login.complete(ownCompany, owner, completed.sessionId, loginIntent());
+  expect(await login.check(ownCompany, owner, loginIntent(), completed.sessionId))
+    .toEqual({ status: "expired", error: "This sign-in already connected the account." });
+});
+
 it("explicit retry replaces another owned local attempt while ordinary navigation preserves it", async () => {
   const login = localAiLoginService(db);
   const first = await login.start(companyId, owner, loginIntent());

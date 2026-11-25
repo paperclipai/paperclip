@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, describeRunnerCommandStall, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, revertUnattachedRelaunchRotation, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -22,6 +22,7 @@ import { PRP_PROTOCOL_VERSION } from "../protocol/replay-contract.js";
 import { redactCapabilityEvidenceData } from "./evidence-redaction.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
+import { SANDBOX_DISK_FULL_FAILURE_CODE } from "../contracts/sandbox-disk-full.js";
 import {
   ACPX_CREDENTIAL_BINDING_ENV,
   createAcpxCredentialBinding,
@@ -614,6 +615,56 @@ it("retries a replacement whose staging failed before any process launched", asy
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);
+
+// Relaunching on a full sandbox disk retried the same upload for the whole grace.
+it("fails at once when a replacement cannot be staged because the sandbox disk is full", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-disk-full-"));
+  const diskFull = Object.assign(new Error("sandbox_disk_full: the sandbox disk is full, so the runner cannot be started"),
+    { code: SANDBOX_DISK_FULL_FAILURE_CODE });
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    if (children.length > 0) return {
+      child: { pid: undefined, exitCode: null, kill: () => false },
+      completion: Promise.reject(diskFull),
+      isExitConfirmed: (): boolean => true,
+    };
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 10_000, runnerProcessLauncher: launch,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    const failed = (async () => {
+      for await (const _event of bundle.transport.notifications()) {}
+    })().catch(error => error as Error);
+    children[0]!.kill("SIGKILL");
+    const result = await Promise.race([failed, new Promise(resolve => setTimeout(() => resolve("still retrying"), 4_000))]);
+    expect(result).toMatchObject({ message: expect.stringMatching(/^sandbox_disk_full: /), cause: diskFull });
+    expect(launch).toHaveBeenCalledTimes(2);
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
 
 it("fails instead of relaunching a runner that keeps exiting right after it is restored", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-restore-crash-loop-"));
@@ -2097,6 +2148,70 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+describe("a rotation for a released Runner that the host starts again", () => {
+  const priorIdentity = {
+    runnerInstanceId: "runner-relaunch-rotation", environmentLeaseId: "lease-relaunch-rotation",
+    runId: "run-relaunch-prior", normalizedSessionId: "session-relaunch-rotation",
+    turnId: "turn-relaunch-prior", itemId: "item-relaunch-prior",
+  };
+  const desiredIdentity = { ...priorIdentity, runId: "run-relaunch-next", turnId: "turn-relaunch-next", itemId: "item-relaunch-next" };
+  const settled = {
+    schema: "paperclip.runner.durable.state.v1", ...priorIdentity, lifecycle: "ready", nextSourceSeq: 8, ackedSourceSeq: 7,
+    outbox: [], pendingTerminalDelivery: null, processedCommands: { "command-a": { status: "completed" } },
+  };
+
+  it("moves only the control plane, and resumes the same archive on a retry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-relaunch-rotation-"));
+    const controlPlaneState = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: priorIdentity };
+    const unavailable = vi.fn(async () => { throw new Error("the host archives this state"); });
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(controlPlaneState));
+      const archive = { archivedByLaunch: true as const, read: unavailable, archive: unavailable };
+      await expect(runnerdRecoveryInternals.rotateAuthorityEpoch(root, controlPlaneState, desiredIdentity, archive))
+        .resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({ code: "ENOENT" });
+      const epochs = await readdir(join(root, "authority-epochs"));
+      expect(epochs).toHaveLength(1);
+      expect(await readdir(join(root, "authority-epochs", epochs[0]!))).toEqual(["control-plane"]);
+      await expect(runnerdRecoveryInternals.rotateAuthorityEpoch(root, controlPlaneState, desiredIdentity, archive))
+        .resolves.toEqual(controlPlaneState);
+      expect(unavailable).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("puts the source authority back only when no Runner attached to the rotated run", async () => {
+    for (const target of [
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: desiredIdentity }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 0, ackedSourceSeq: 0,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: null } } }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 1, ackedSourceSeq: 3,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: "2099-01-01T00:00:00.000Z" } } }, reverted: false },
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: priorIdentity }, reverted: false },
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), "paperclip-relaunch-revert-"));
+      const source = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: priorIdentity };
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(source));
+        const unavailable = async () => { throw new Error("the host archives this state"); };
+        await runnerdRecoveryInternals.rotateAuthorityEpoch(root, source, desiredIdentity,
+          { archivedByLaunch: true, read: unavailable, archive: unavailable });
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(target.state));
+        expect(revertUnattachedRelaunchRotation(root, priorIdentity)).toBe(target.reverted);
+        const active = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
+        expect(active.identity).toEqual(target.reverted ? priorIdentity : target.state.identity);
+        expect(await readdir(join(root, "authority-epochs"))).toHaveLength(target.reverted ? 0 : 1);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+});
 
 describe("authority rotation after the prior controller state is restored", () => {
   const priorIdentity = {

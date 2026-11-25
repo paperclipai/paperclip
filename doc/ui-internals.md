@@ -16,17 +16,31 @@ emits them under `ui/dist/fonts/`. The server package copies the same output int
 
 ## Recent task ordering
 
-The streamlined sidebar keeps five recent tasks per company and account in browser
-storage. It sorts by the newest observed task or comment activity, not by live-run
-state. Older detail responses cannot move the stored activity time backward.
+The streamlined sidebar keeps recent task candidates per company and account in browser
+storage. A task appears only after the authenticated navigation summary confirms
+personal participation using the same rule as Mine: manual creation, human assignment,
+a direct comment, a meaningful audited action, or a live request addressed to the viewer.
+Routine ownership, connected-account provenance and read-only visits do not qualify.
+Inbox archive is independent of this personal history. Readable children remain
+contextual navigation beneath a qualifying parent.
+
+Local human actions advance recency. Passive visits and background title, status
+and readiness refreshes preserve the recorded time and never promote a task.
+New passive candidates enter below existing history without using server update
+time. A successful sidebar rename records explicit local human activity.
 Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay
 current during that delay.
 
-The sidebar renders saved snapshots immediately and refreshes its exact five IDs
-with one company/account-scoped summary query. Passive refreshes do not fetch
+The sidebar validates saved candidates with company/account-scoped summary queries,
+using bounded parallel chunks for long histories. Viewer participation and unread
+facts are session data and are never trusted from browser storage. Passive refreshes do not fetch
 full task details or inspect workspaces. Successful omissions remove unavailable
-tasks; failed batch reads retain saved history. Existing full-detail cache data
+tasks and nonparticipants; failed batch reads retain saved history and any
+previously confirmed session state, including after a change to the candidate batch.
+These confirmed facts never cross account or company scopes. Unverified history
+stays out of the visible list and does not affect the activity reorder delay.
+Existing full-detail cache data
 can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
@@ -151,7 +165,7 @@ Run `node scripts/check-query-error-rendering.mjs`. The guard now enforces acros
 
 The browser saves a small read cache in `paperclip:query-cache:v1:*` local storage records. It contains session display identity, health and shell preferences, company and sidebar data, agent/project lists, plugin UI contribution metadata, the first inbox page (including up to 100 rows per legacy Inbox query), and up to 20 recently opened tasks. Records belong to one user and company, expire 24 hours after each read, and are discarded when the build changes. Normal in-memory query garbage collection does not erase saved recent tasks or extend their expiry. Builds without a source commit stamp skip read-cache hydration and persistence, but still revoke and clear saved reads on sign-out. Plugin contributions use the existing instance-wide query inside the user's root record. Session tokens, bootstrap payloads, documents, comments, browser viewer capabilities, pairing data, other queries and mutations are excluded, with one exception for the saved recent tasks below. Task content in this allowlist remains on the browser until expiry or sign-out; use the normal sign-out action to clear it across tabs.
 
-The first chat frame of each saved recent task is also saved, so a hard load of a task the user opened before shows its conversation before any server response. The owner approved saving recent comments for this on 2026-11-14. The saved reads are only the ones that first frame waits for: the recent comments window (at most 50 comments, the newest ones), their input facts, recent activity, the recent run window, interactions, attachment metadata (never file contents), live and active runs, work products and the plan document. They follow the 20-task limit and are stored in the task's own user and company record. Each task's saved chat is limited to 192 KiB and all saved chat to 1 MiB, newest tasks first. A record that storage refuses is saved again without its chat, so saved chat never displaces the rest of the cache. The other field exclusions (tokens, credentials, environment values and the like) still apply. Saved chat expires 24 hours after it was read, like every other entry. A 401 or 403 on the task or on any of its chat reads, or a 404 on the task or its comments, removes the task and its saved chat from memory and storage at once. A 404 on a plan, run or work-product read does not, because it does not mean the task is gone (a task without a plan answers 404). Restored reads are shown immediately and revalidated through the page's chat bootstrap; its answer replaces them, and they never replace newer data already in the page. Account changes also detach pending shared GETs so a new user cannot join the previous user’s private reads. Editors that need fields excluded from the display cache, including bulk agent settings, fetch complete current data before opening.
+The first chat frame of each saved recent task is also saved, so a hard load of a task the user opened before shows its conversation before any server response. The owner approved saving recent comments for this on 2026-11-14. The saved reads are only the ones that first frame waits for: the recent comments window (at most 50 comments, the newest ones), their input facts, recent activity, the recent run window, interactions, attachment metadata (never file contents), live and active runs, work products and the plan document. They follow the 20-task limit and are stored in the task's own user and company record. The limit keeps the tasks the user opened first, newest first; the time each saved task was last opened is saved with the record, so tasks that a list or Recents only preloaded never push out tasks the user opened. Each task's saved chat is limited to 192 KiB and all saved chat to 1 MiB, newest tasks first. A record that storage refuses is saved again without its chat, so saved chat never displaces the rest of the cache. The other field exclusions (tokens, credentials, environment values and the like) still apply. Saved chat expires 24 hours after it was read, like every other entry. A 401 or 403 on the task or on any of its chat reads, or a 404 on the task or its comments, removes the task and its saved chat from memory and storage at once. A 404 on a plan, run or work-product read does not, because it does not mean the task is gone (a task without a plan answers 404). Restored reads are shown immediately and revalidated through the page's chat bootstrap; its answer replaces them, and they never replace newer data already in the page. Account changes also detach pending shared GETs so a new user cannot join the previous user’s private reads. Editors that need fields excluded from the display cache, including bulk agent settings, fetch complete current data before opening.
 
 Restored identity permits cached display only. Restored inline task drafts compare their saved base with a fresh field read before each replay; conflicting edits stay in the editor for review. Account-bound writes wait for a fresh server session and are cancelled if its user changes. A definitive session denial removes saved account reads. Service-worker updates reload hidden tabs only after connectivity is online and mutations, durable sends and autosaves have settled. Durable queues synchronously report each unresolved operation, including the intervals between online rate-limit retries. Sign-out revocation also works on plain-HTTP installs without `crypto.randomUUID`.
 

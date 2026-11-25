@@ -26,6 +26,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       admitDueWhileActive?: boolean;
     };
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
+    /** What the first pass after registration reconstructs; an unscoped reload by default. */
+    initialHint?: string;
     backstop?(scope: Scope | undefined): number | null;
     beforePass?(): Promise<void>;
     beforeChecks?(entries: readonly Entry[]): void;
@@ -51,7 +53,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   }
   const ownerRevision = randomUUID();
   let revision = 0, running = false, stopped = false, lastRunFailed = false;
-  const dirty = new Set<string>(["*"]);
+  const dirty = new Set<string>([options.initialHint ?? "*"]);
   const versions = new Map<string, number>();
   const scans = new Map<string, { version: number; seen: Set<string> }>();
   const entries = new Map<string, Entry>();

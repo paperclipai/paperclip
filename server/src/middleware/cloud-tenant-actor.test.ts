@@ -65,6 +65,8 @@ function createFakeDb(options: {
   }
   const db = {
     transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
+    // Session settings such as the grant repair's lock timeout.
+    execute: async () => [],
     insert: (table: unknown) => {
       insertedTables.push(table);
       return writeChain(table);
@@ -590,4 +592,5 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       expect(deletedTables).toContain(instanceUserRoles);
     });
   });
+
 });

@@ -224,6 +224,7 @@ export function startTracingSdk(
   const provider = new WebTracerProvider({
     resource: resourceFromAttributes({
       "service.name": config.serviceName,
+      ...(config.instanceHost ? { "paperclip.instance.host": config.instanceHost } : {}),
       ...(buildCommit ? { "service.version": buildCommit } : {}),
       ...(config.environment ? { "deployment.environment.name": config.environment } : {}),
     }),

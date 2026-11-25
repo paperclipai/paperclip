@@ -11,6 +11,9 @@ import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBoo
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
+
+export { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT };
 
 export const NATIVE_CONTROLLER_RECOVERY_MAX_BYTES = 4 * 1024;
 
@@ -68,10 +71,11 @@ export type NativeControllerRecoveryOutcome =
   | { kind: "missing_evidence" | "unsupported" | "dependency_unavailable"; reason: string; cause?: unknown }
   | { kind: "no_prior_execution" };
 
-export const NATIVE_RETAINED_OWNER_WAIT = "native_controller_recovery_waiting_for_owner";
+
+export type NativeRetainedOwnerWait = { runId: string; controllerBootId: string };
 
 export class NativeControllerRecoveryWaitingError extends Error {
-  constructor(readonly retryAt: Date) {
+  constructor(readonly retryAt: Date, readonly owner?: NativeRetainedOwnerWait) {
     super(NATIVE_RETAINED_OWNER_WAIT);
     this.name = "NativeControllerRecoveryWaitingError";
   }
@@ -83,7 +87,7 @@ export class NativeControllerRecoveryWaitingError extends Error {
  * permissions and task ownership when this deadline arrives. */
 export async function deferNativeControllerRecovery(db: Db, input: {
   companyId: string; agentId: string; issueId: string; runId: string;
-  leaseOwner?: string; retryAt: Date;
+  leaseOwner?: string; retryAt: Date; waitingForOwner?: NativeRetainedOwnerWait;
 }): Promise<void> {
   await db.transaction(async tx => {
     const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
@@ -128,13 +132,14 @@ export async function deferNativeControllerRecovery(db: Db, input: {
       failureDetail: { originalFailureCode: NATIVE_RETAINED_OWNER_WAIT,
         message: "Waiting for the retained native controller owner to release its lease.",
         recoveryMode: record(run.runnerProfileJson).sessionCheckpoint ? "same_session_resume" : "bootstrap_retry",
-        providerSessionEstablished: false, providerEventsExist: false },
+        providerSessionEstablished: false, providerEventsExist: false,
+        ...(input.waitingForOwner ? { waitingForOwner: { runId: input.waitingForOwner.runId,
+          controllerBootId: input.waitingForOwner.controllerBootId } } : {}) },
       updatedAt: new Date(),
     }).where(eq(nativeRunFinalizations.runId, input.runId));
   });
 }
 
-export const NATIVE_AGENT_DIRECTORY_BUSY_WAIT = "agent_directory_operation_busy";
 
 export async function deferNativeRunForBusyAgentDirectory(db: Db, input: {
   companyId: string; runId: string; leaseOwner?: string; retryAt: Date; maxDeferrals: number;

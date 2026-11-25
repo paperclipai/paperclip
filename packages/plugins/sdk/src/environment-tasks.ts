@@ -56,10 +56,29 @@ export const environmentTaskConfiguredEnvironmentSchema = z.record(
 });
 export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
 
+export const ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS = {
+  grok: [["XAI_API_KEY"]],
+  copilot: [["COPILOT_GITHUB_TOKEN"]],
+  opencode: [["OPENROUTER_API_KEY"], ["PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_AI_PROVIDER_KEY"]],
+} as const satisfies Record<string, readonly (readonly string[])[]>;
+export type PluginEnvironmentTaskCredentialProvider = keyof typeof ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS;
+const providerCredential = z.object({
+  type: z.literal("provider-env"),
+  provider: z.enum(["grok", "copilot", "opencode"]),
+  environment: z.record(z.string(), credentialValue),
+}).strict().superRefine((credential, ctx) => {
+  const names = Object.keys(credential.environment).sort();
+  const sets: readonly (readonly string[])[] = ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[credential.provider];
+  if (!sets.some(set => set.length === names.length && [...set].sort().every((name, index) => name === names[index]))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one complete credential for the provider", path: ["environment"] });
+  }
+});
+
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
   z.object({ type: z.literal("claude-env"), environment: claudeCredentialEnvironment }).strict(),
+  providerCredential,
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
@@ -74,6 +93,8 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     acpxPermissionMode: z.enum(["approve-all", "approve-paperclip", "approve-reads", "deny-all"]).optional(),
     acpxPermissionModePinned: z.boolean().optional(), piThinkingLevel: z.enum(["off", "low", "high", "max"]).optional(),
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    grokEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+    grokDisableWebSearch: z.boolean().optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
     disableCodexWebSearch: z.literal(true).optional(),
     disableCodexProjectInstructions: z.literal(true).optional(),
@@ -150,6 +171,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
     credential: environmentTaskCredentialSchema.optional(),
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
+    relaunchedRunnerVersion: z.literal(1).optional(),
+    runner: z.object({ runId: runnerIdentity, turnId: runnerIdentity, itemId: runnerIdentity }).strict().optional(),
   }).strict(),
   z.object({
     kind: z.literal("ensure_ownership"),
@@ -164,12 +187,14 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
 
+const runnerArtifact = z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict();
+
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("admission_rejected"), taskId: providerId,
     reason: z.enum(["session_state_unavailable", "account_binding_mismatch"]) }).strict(),
   z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
-  z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]) }).strict(),
+  z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]), runner: runnerArtifact.optional() }).strict(),
   z.object({
     kind: z.literal("ownership"),
     taskId: providerId,
@@ -193,7 +218,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("credentials"), taskId: providerId, /** Null proves that cancellation fenced admission before the task could start. It must not mean an unavailable export. */
     credential: environmentTaskCredentialSchema.nullable() }).strict(),
   z.object({ kind: z.literal("description"), taskId: providerId,
-    runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
+    runner: runnerArtifact,
     warmTaskVersion: z.literal(1).optional(),
     releaseResumeVersion: z.literal(1).optional(),
     sessionHandoffVersion: z.literal(1).optional(),
@@ -208,6 +233,8 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     githubCredentialBrokerVersion: z.literal(1).optional(),
     configuredEnvironmentVersion: z.literal(1).optional(),
     resumeLaunchInputsVersion: z.literal(1).optional(),
+    resumeRelaunchedRunnerVersion: z.literal(1).optional(),
+    resumeIdentityVersion: z.literal(1).optional(),
     launchDigestVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
@@ -279,5 +306,8 @@ export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOpera
   const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   const rejectedSubmit = operation.kind === "submit" && result.kind === "admission_rejected";
   if (result.taskId !== taskId || (result.kind !== expected && !rejectedSubmit)) throw new Error("Invalid plugin-provided Runner execution response");
+  if (operation.kind === "resume" && result.kind === "resume" && operation.runner && result.outcome === "resumed" && !result.runner) {
+    throw new Error("Invalid plugin-provided Runner execution response");
+  }
   return result;
 }

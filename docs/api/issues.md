@@ -5,6 +5,20 @@ summary: Issue CRUD, checkout/release, comments, documents, interactions, and at
 
 Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
 
+## Onboarding chat
+
+Board users open their own onboarding conversation with
+`POST /api/companies/{companyId}/chats/{agentRef}/onboarding` (empty body).
+It returns a conversation record, creates no execution task or project, and does
+not start an agent turn. Existing conversations are reused.
+
+After the thread is visible, call
+`POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting` (empty body).
+It returns `{ "started": true }` when the welcome is queued or already owed, or
+`{ "started": false }` when unnecessary. Requests are company-scoped and
+owner-bound. Refreshes do not repeat a successful welcome. Normal pause, budget
+and agent admission gates apply.
+
 ## List Issues
 
 ```
@@ -23,8 +37,14 @@ Query parameters:
 | `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 | `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
+| `inboxArchive` | `include` adds the viewer's archive state to each result. `archived` returns only tasks actively archived by the viewer. |
 
 Results sorted by priority.
+
+`inboxArchive` requires a signed-in board user. The filter cannot be combined
+with `attention`. When `inboxArchive` is present, each result includes the
+boolean `isArchivedForMe`. Paperclip uses the same activity rules as Mine to
+decide whether a task is still archived for the viewer.
 
 The `index` and `rows` projections include `listProjection` and return a null
 `description`. They are partial collection snapshots: fetch the issue detail
@@ -204,6 +224,22 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 
 Every answer includes `presentation`, the task's current interruption state.
 
+## Check Now
+
+```
+POST /api/issues/{issueId}/monitor/check-now
+```
+
+Starts the task's next check now. This is the "Check now" button on the task banner.
+
+- When the task has a scheduled monitor, the monitor check starts. The answer is `200` with `{ "ok": true }`.
+- When the task has no monitor but its run waits in a scheduled retry (for example, a wait for provider usage), the retry starts now. Before any work, the retry checks again whether the agent's current AI account has usage. If that account is still limited, the run waits again with a plain message. The caller must be a board user who can read the task and has `issue:mutate` access to it, the same access as Retry now. The answer is `200` with `{ "ok": true, "outcome": "promoted" | "already_promoted" | "waiting", "message": "..." }`.
+
+Refusals:
+
+- `403` or `404`: the caller cannot start work on this task. A private task that the caller cannot see answers `404`.
+- `409` with `details.code: "issue_monitor_check_deferred"`: the check did not start. `error` gives the reason in plain words, for example that nothing waits to be checked anymore or that the task changed. Refresh the task.
+
 ## Comments
 
 ### List Comments
@@ -220,6 +256,35 @@ POST /api/issues/{issueId}/comments
 ```
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
+
+#### Start a Google Antigravity swarm
+
+```
+POST /api/issues/{issueId}/comments
+{ "body": "write the tests for the parser", "nativeCommand": "swarm", "clientRequestId": "<uuid>" }
+```
+
+The optional `nativeCommand` field accepts only `"swarm"`. It asks the task's Google Antigravity assignee to run the comment as a swarm with helpers. With `nativeCommand`, `body` is the request itself, used verbatim (trimmed) as the swarm's only instruction: do not include the `/swarm` command (the board composer removes the one the user typed). Nothing strips another one, so a body of `/swarm explain this` asks the swarm about `/swarm explain this`. Comment text alone is never read as a command: without `nativeCommand`, `/swarm` is ordinary text.
+
+A resend with the same `clientRequestId` returns the original comment, even if the checks below would now refuse a new request (for example after the setting was turned off). Nothing is posted or started twice.
+
+Only a signed-in board user can send `nativeCommand`. Any other caller, such as an agent, gets `403` with `Only a signed-in user can start a swarm`.
+
+The endpoint refuses these requests with `422` and `{ "error": "<message>", "code": "antigravity_swarm_unavailable" }`. It saves no comment and wakes no agent. Checks run in this order:
+
+| When | `error` |
+| --- | --- |
+| The task is a chat | `Swarm works in task comments, not in chats.` |
+| The instance setting is off | `Swarm is not turned on for this Paperclip. An instance admin can turn on "Google Antigravity swarm" in Settings, Experimental.` |
+| The assignee is not a Google Antigravity agent | `Swarm works only for tasks assigned to a Google Antigravity agent.` |
+| The task is in Plan mode | `Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.` |
+| The task is in any mode other than Standard (for example Ask) | `Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.` |
+| `body` is empty or only whitespace | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
+| `body` is longer than 16,000 characters | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
+
+The swarm runs without the agent's own instructions: its system prompt holds only Paperclip's fixed execution prompt, the swarm rules, and the task's completion revision and criterion IDs. The agent's instruction files and connection instructions are left out because an agent can edit its own instructions, and the swarm's helpers act without asking.
+
+Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
 ### Discard a Queued Comment
 
@@ -328,6 +393,36 @@ GET /api/issues/{issueId}/documents
 ```
 GET /api/issues/{issueId}/documents/{key}
 ```
+
+### Bulk Get By Key
+
+```
+GET /api/companies/{companyId}/issue-documents?key=sentry-case&issueIds={uuid1},{uuid2}
+```
+
+Read one document key across 1–200 task UUIDs. Items follow the requested order;
+duplicate IDs appear once. The result is `{ key, items: [{ issueId, document }] }`.
+Each document has the same body and revision metadata as Get By Key. A readable
+task without the key returns `document: null`. Missing, hidden, foreign-company,
+and unreadable tasks are omitted without revealing whether they exist. Callers
+must check that every requested ID is present before treating a scan as complete.
+Task bridge keys cannot use this company-wide route. Break-glass reads are not supported.
+
+Use `includeBody=false` for current revision IDs, revision numbers, and update
+times without loading document bodies. A helper with cached documents can compare
+their revisions, then fetch bodies only for changed or newly added documents.
+Task-row timestamps alone do not prove that a document is unchanged.
+
+Responses use `Cache-Control: private, no-store`. A response over 8 MiB returns
+`413`; split the IDs into smaller requests. The response is never truncated.
+Body sizes are checked in the database before loading them. Reads use one
+snapshot so a concurrent edit cannot grow an admitted body set. At most two
+reads per actor and eight per server instance can run at once; extra reads
+return `429` with `Retry-After: 1`.
+Native agents can discover this GET with `search_api`, save the whole batch with
+one `save_api_response`, and transfer it with one `download_artifact`. The saved
+artifact supplies its exact `artifactId`, `byteSize`, and `sha256` for the download.
+This replaces per-task document relays; helpers must consume the batch result.
 
 ### Create Or Update
 

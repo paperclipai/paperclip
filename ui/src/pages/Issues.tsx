@@ -1,3 +1,4 @@
+import { PERSONAL_ARCHIVE_QUERY_KEY } from "@/lib/inboxArchiveCache";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
@@ -40,6 +41,7 @@ import {
   taskView,
   type TaskViewKey,
 } from "../lib/task-views";
+import { useTaskArchiveAction } from "../hooks/useTaskArchiveAction";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 import { usePageContentReady } from "../hooks/usePageContentReady";
 
@@ -166,16 +168,21 @@ function StreamlinedTasks() {
     );
   }
 
-  return <OrganizationIssues toolbarContext={viewsMenu} initialStatuses={definition.statuses} />;
+  return <OrganizationIssues toolbarContext={viewsMenu} initialStatuses={definition.statuses} archiveView={view === "archived" ? "archived" : "include"} />;
 }
 
 function OrganizationIssues({
   toolbarContext,
   initialStatuses,
-}: { toolbarContext?: ReactNode; initialStatuses?: string[] } = {}) {
+  archiveView,
+}: { toolbarContext?: ReactNode; initialStatuses?: string[]; archiveView?: "archived" | "include" } = {}) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const issuesPresentation = resolveIssuesPresentation(streamlinedUiEnabled);
   const { selectedCompanyId } = useCompany();
+  const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
+  const inboxArchive = userId ? archiveView : undefined;
+  const archiveQueryScope = JSON.stringify([selectedCompanyId, userId, inboxArchive]);
+  const getArchiveAction = useTaskArchiveAction(selectedCompanyId, userId);
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -291,10 +298,13 @@ function OrganizationIssues({
       serverSortField,
       serverSortDir,
       includeBlockedBy,
+      PERSONAL_ARCHIVE_QUERY_KEY,
+      archiveQueryScope,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
       participantAgentId,
+      inboxArchive,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
       includeAgentCreatedTasks,
@@ -308,8 +318,9 @@ function OrganizationIssues({
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
-    enabled: !!selectedCompanyId,
-    placeholderData: (previousData) => previousData,
+    enabled: !!selectedCompanyId && (archiveView !== "archived" || !!userId),
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey.at(-1) === archiveQueryScope ? previousData : undefined,
   });
 
   const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
@@ -342,11 +353,17 @@ function OrganizationIssues({
     );
   }
 
+  if (archiveView === "archived" && !userId) return identitySettled
+    ? <EmptyState icon={CircleDot} message="Sign in to view archived tasks." />
+    : <p role="status">Loading archived tasks…</p>;
+
   if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
+      key={archiveView === "archived" ? "archived" : undefined}
       issues={issues ?? []}
+      getArchiveAction={getArchiveAction}
       preloadTaskChats
       isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
@@ -371,7 +388,10 @@ function OrganizationIssues({
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy || inboxArchive ? {
+        participantAgentId, workspaceId: workspaceIdFilter, originKind, inboxArchive,
+        ...(includeBlockedBy ? { includeBlockedBy: true } : {}),
+      } : undefined}
     />
   );
 }

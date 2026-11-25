@@ -357,6 +357,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
       queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
     }).expect(200);
+    const interruption = await db.select({ details: activityLog.details }).from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comments_interrupted"));
+    expect(interruption).toEqual([{ details: { queueId: seeded.wakeId, targetRunId: null } }]);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
       .toBe("deferred_issue_execution");
     // Cleanup timestamps alone are not proof. A mismatched receipt is not proof either.
@@ -1053,6 +1056,34 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       expect(after.body.entries).toEqual([]);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId)))
         .filter(row => row.status === "queued")).toEqual([]);
+    },
+  );
+
+  it.each([["preparing", false], ["native", false], ["native", true]] as const)(
+    "stops a %s swarm run (turn started: %s) on Interrupt and delivers the queued message as the next request",
+    async (runtime, turnStarted) => {
+      const seeded = await seedFirstTurnQueue(runtime);
+      // A trusted /swarm run: its only instruction is the recorded request, so no queued message joins it.
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...current!.contextSnapshot, antigravitySwarmCommentId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      if (turnStarted) {
+        await appendHeartbeatRunEvent(db, { companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+          eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
+      }
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      // Not shown as taken by the first turn: the swarm will never read it.
+      expect(queue.body.firstTurnCommentIds ?? []).toEqual([]);
+      const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.executionWait?.reason).not.toBe("first_turn_pending");
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(wake!.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(run!.status).toBe("cancelled");
     },
   );
 
@@ -2261,11 +2292,14 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(steered.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
   });
 
-  it.each(["cancelled", "failed", "succeeded"] as const)("preserves queued input when the run stops during acknowledgement (%s)", async status => {
+  it.each(["cancelled", "failed", "succeeded", "different task"] as const)("preserves queued input when the run stops or changes scope during acknowledgement (%s)", async outcome => {
     const seeded = await seedQueue();
     await seedDispatchIdentity(seeded);
     steerNativeSessionMock.mockImplementationOnce(async () => {
-      await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), resultJson: { terminalReceipt: "preserve" } })
+      await db.update(heartbeatRuns).set({
+        ...(outcome === "different task" ? { contextSnapshot: { issueId: randomUUID() } } : { status: outcome, finishedAt: new Date() }),
+        resultJson: { providerReceipt: "preserve" },
+      })
         .where(eq(heartbeatRuns.id, seeded.runId));
       return { turnId: "turn-that-stopped" };
     });
@@ -2279,7 +2313,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(wake.status).toBe("deferred_issue_execution");
     expect((wake.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
-    expect(run.resultJson).toEqual({ terminalReceipt: "preserve" });
+    expect(run.resultJson).toEqual({ providerReceipt: "preserve" });
+    const [identity] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, seeded.commentIds[0]));
+    expect(identity?.status).toBe("pending");
     const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"));
     expect(activity).toHaveLength(0);
   });

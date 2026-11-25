@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
 import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
@@ -230,10 +229,8 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
   const lock = path.join(root, `${fingerprint}.lock`);
   const token = randomUUID();
   const owner = path.join(root, `.owner-${token}`);
-  // `pid` and `host` stay for older readers; `controller` is the proof input.
   // The stamp does no I/O, so preparation adds no wait before the turn.
-  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname(), token,
-    controller: currentControllerProcessStamp() }), { flag: "wx" });
+  await fs.writeFile(owner, JSON.stringify({ token, controller: currentControllerProcessStamp() }), { flag: "wx" });
   let acquired = false;
   // A live holder is re-proved at most once a second, not on every 20 ms poll.
   let judged: { inode: number; at: number } | null = null;

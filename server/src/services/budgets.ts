@@ -434,7 +434,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
-      await notifyRunDispatch(db, { companyId: policy.companyId });
+      await notifyRunDispatch(db, { companyId: policy.companyId, everyTask: true });
       await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
       await db
         .update(projects)
@@ -451,7 +451,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
     await notifyMuseContactVerification(db,{companyId:policy.companyId});
-    await notifyRunDispatch(db, { companyId: policy.companyId });
+    await notifyRunDispatch(db, { companyId: policy.companyId, everyTask: true });
     await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyStatusCardIssueChange(db, policy.companyId);

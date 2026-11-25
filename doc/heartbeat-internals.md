@@ -56,6 +56,62 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Queued run dispatch order
+
+When an agent is at its concurrency limit, each freed slot starts the next
+queued run chosen by `server/src/services/heartbeat/queued-run-dispatch-order.ts`.
+The "place in line" a waiting task shows uses the same facts and order
+(`queued-run-line.ts`).
+
+Runs fall into four tiers, started in this order:
+
+1. **Person.** A run a person asked for (an assignment, comment, chat message
+   or Retry by a board user, itself or through its source chain), and any other
+   non-recovery run on a task tree a person created. A task belongs to such a
+   tree when it, or any task above it, has `createdByUserId`. This covers an
+   agent's subtasks of a person's task and the parent's resume once they
+   complete (`issue_children_completed`), so a half-finished task is not left
+   behind newer tasks.
+2. **Work.** Other agent work, such as a tree an agent or routine started.
+3. **Recovery** and 4. **old recovery backlog.** System recovery wakes, even on
+   a person's tree.
+
+A clean continuation is not system recovery. It is an `issue_continuation_needed`
+run queued because its source run hit the tool-call loop limit
+(`livenessContinuationReason: agent_tool_call_loop`), when the source run
+succeeded, is not itself such a continuation, and the run is not a failure retry
+(no `retryOfRunId`, `retryReason` or `previousRunId`). It takes its task's tier,
+so a person's task that continues its own work stays with that person's work.
+Its start still uses up the recovery share, so recovery-reason starts do not
+increase. Later hops of a loop chain and every failure retry stay in the
+recovery tiers. The provenance check is in `queued-run-provenance.ts`. The
+dispatch query and the place-in-line query both read its
+`QUEUED_RUN_ORDER_CONTEXT_KEYS`, so they see the same context fields.
+
+Within a tier, runs are ordered by readiness (in progress first), then task
+priority, then age, oldest first. A newer run on a person's tree never passes
+another person's equally ranked task that has waited longer.
+
+Fairness bounds:
+
+- **Oldest-run share.** Every `OLDEST_DISPATCH_SHARE` (4th) start goes to the
+  longest-waiting ready run that has waited past `QUEUED_RUN_AGING_MS`
+  (60 minutes), preferring runs people wait on. So even while a deep tree keeps
+  adding in-progress or higher-priority work, another person's new task starts
+  within 60 minutes plus 4 x (aged person-tier runs queued before it + 1)
+  starts.
+- **Recovery share.** Recovery takes every `RECOVERY_DISPATCH_SHARE` (4th)
+  start from lower-tier work. It is held only while a run a person asked for is
+  ready, not for the rest of a person's tree, so a deep tree cannot hold
+  recovery indefinitely.
+- **Scope.** Queues are per agent, and agents belong to one company, so tree
+  priority never moves one agent's or company's runs ahead of another's.
+
+Tree membership is read in one recursive query per dispatch pass, walking each
+queued task's parent chain by the `(company_id, id)` unique index and stopping
+at the first person-created task (at most 32 levels). It runs only when the
+agent has more than one queued run.
+
 ## Run history authorization reads
 
 Run history reuses the authorization service's batch read API for distinct task
@@ -77,6 +133,10 @@ their existing launch rules. OpenCode owns the `OPENCODE_*` and `XDG_*`
 configuration variables; task bindings cannot override them.
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
+
+A workspace-provider plugin owns the files of the workspaces it prepares, so the run environment only decides where the runner executes. For these workspaces, a changed environment configuration is a refresh, not a replacement: Paperclip records the new workspace fingerprint once and reports the drift in that run only. Other replacement-class changes, such as the repository or base ref, keep the replacement decision.
+
+The saved-session fingerprint covers only inputs that can change what the provider thread saw or may do, or what the native session digest compares before a follow-up turn attaches to its warm Runner. It leaves out the agent config revision row itself (its id and time), agent identity and display fields that tools read live, turn timeouts, the legacy kill grace, permission keys of a provider that is not selected, wake scheduling (`runtimeConfig.heartbeat`), the environment row's update time and selection source, and the environment's release, log-streaming, and RPC-timeout settings. Lifecycle inputs stay in: the lifecycle mode, the agent and environment warm idle windows, and the environment's lease reuse, because they become `session.lifecyclePolicy`, and a kept session with a different policy cannot attach to its warm Runner. `server/src/services/heartbeat/session-fingerprint-inputs.ts` classifies every input with the reason. Its tests fail when an agent revision field, a runner config schema field, a provider permission key, or an environment config key appears without a classification, when a new field reaches a hashed category, or when an excluded runner key reaches the native execution input. An unknown adapter or runtime config key is hashed. A session saved with the previous fingerprint composition is accepted once for the same inputs, so an upgrade does not discard saved sessions.
 
 An explicit `reuse_existing` Git workspace keeps its recorded source repository, including after its project-workspace row is deleted or the project primary changes. The server verifies the original company, project, repository origin, and worktree registration before reuse. It does not attach a deleted association to the new primary. A conflicting explicit project-workspace selection, missing source identity, or an unverified legacy local checkout blocks the run. Restore the original source. Before intentionally clearing the existing-workspace binding to choose a new repository, review and preserve its retained work. Missing worktrees may be reconstructed only from the verified original source; current project defaults are not a fallback.
 
@@ -138,6 +198,15 @@ overrides, scoped credentials, managed AI identity, and runtime skill delivery.
 The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
+
+During standing-instruction resolution, the gateway's [OpenTelemetry trace](observability.md)
+separates the catalog transaction and its two reads from availability checks
+and tool descriptor construction. The transaction span carries the number of
+catalog entries and connections returned. With or without an OTLP endpoint,
+native run preparation also buffers phase timings of 50 ms or longer, subject
+to the existing per-run limits. At dispatch, the native executor queues these
+timings for the [instance run log](run-log-events.md). The catalog counts are
+trace attributes only.
 
 On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
 preparation to the normal Runner launch. After the selected account completes
@@ -201,9 +270,17 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+Wake-queue also handles automatic steering for a saved task comment when an
+active session goal is working. It suppresses the assignee's comment wake after
+the live runner acknowledges delivery. When the live command cannot deliver the
+comment, the comment follows the route's normal wake rules.
+
 The task composer offers Steer when the native session has an active provider
-turn that accepts steering. If steering is unavailable or unsupported, it offers
-an explicit Interrupt action instead. Interrupt records the board user's intent,
+turn that accepts steering. Wake-queue locks the task and receipt for the click,
+then locks and rereads the run after the provider acknowledges delivery. It
+records the acknowledgement and removes the queued entry in one transaction.
+If steering is unavailable or unsupported, the composer offers Interrupt.
+Interrupt records the board user's intent,
 requests cancellation, and delivers the saved queue through normal admission after
 the previous execution stops. Preparation and cleanup can keep messages queued;
 the action does not bypass Stop confirmation or execution gates.
@@ -265,9 +342,22 @@ and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
 
-Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
-It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
-concurrency and priority checks, timer admission, and native status wake intents.
+Heartbeat coordinates wakeup dispatch, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents
+in `server/src/services/heartbeat/queue.ts`. The wake-queue module owns the
+company and issue lock, the admission transaction, and the handoff after commit
+for both fresh task runs and wakes arriving behind an active execution. Wake-queue
+checks conversation eligibility before locking the task. The locked task supplies
+the attribution fields used to select the responsible user for a fresh run.
+Wake-queue reads recovery state inside the admission transaction. It checks
+continuation eligibility before allowing a wake to join active work, then
+settles any explicit continuation before allowing a fresh run. Wake-queue
+saves blocked comments in the admission transaction and updates the same receipt
+if its retry is still blocked. Heartbeat uses the same transaction for its other
+eligibility gates and specialized receipt handling. Wake-queue selects eligible
+saved comment receipts in request order and binds them to the new run. Chat authorization and its admission callback run in
+the same transaction. Authorization contention defers the wake and rolls back
+without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.
 The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
@@ -292,6 +382,39 @@ and cancellation maps so scheduler and route instances observe the same owners.
 Forwarding callbacks preserve construction order for budget, retry, recovery,
 and queue services. Existing public helpers remain re-exported by `heartbeat.ts`.
 Keep cancellation policy changes separate from this extraction and execution.
+
+An operator Stop during preparation can settle before any adapter starts. The
+preparation owner records `executionCancellation.state = acknowledged` only after
+it unwinds and the retained dispatch, process, session, event and lease evidence confirms
+that provider work never started. A terminal run status alone is not this proof.
+The locked run must have no `budgetDispatch.handedOffAt` marker. The dispatch gate
+writes that marker before adapter entry, so a missing invocation event or an old
+owner's local flag cannot prove that dispatch never occurred.
+The task page shows a confirmed operator Stop as Stopped and accepts a new message
+through normal admission. Stop does not automatically restart the task. Recovery
+holds, approvals, budget limits and uncertain termination keep their own gates.
+The receipt's `preparation_settled` proof identifies that evidence path. Both page
+projections read the same bounded evidence and require that proof; an acknowledged
+receipt from a different path does not clear the preparation failure notice.
+Only a user's operator Stop gets this acknowledgement and clears an obsolete
+automatic-recovery marker. A system cancellation keeps its existing recovery
+delivery metadata, so saved comments and continuation intents still reach admission.
+
+The control plane can also cancel a run that is still waiting and was never
+claimed. An example is a scheduled retry that is cancelled when its task moves to
+backlog. This run has no actions with an unknown outcome. If the run has
+`errorCode = cancelled`, an expected system `control_plane` cancellation, and none
+of the retained execution evidence that the dispatch-gate cancellations also check
+(start time, stage, process, controller, session, lease, finalization or execution
+events), it does not create a reconciliation hold. A retry also continues its
+chain. Terminalization records a reconciliation hold on a predecessor whose
+outcome is unknown, and the scheduler does not retry such a run. So the retry is
+exempt only when its predecessor still exists and has no such hold that is
+effective or was superseded. A retry whose predecessor row was deleted keeps the
+hold. Workspace-wait retries keep their own proof. A hold that an earlier
+release recorded for such a run no longer blocks execution, so the next wake or
+Retry starts normally. The failure-retry count of the chain does not change this,
+because the cancelled run did not make an attempt.
 
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
@@ -599,3 +722,16 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Setup-token cleanup retries
+
+The setup-token cleanup worker removes reapable login records. A record with no
+provider lease is removed without a call to the lease provider. A failed cleanup
+keeps the record and logs the error class and code of the failure and its
+causes, never the error message. Consecutive failed sweeps back off from 30
+seconds to 30 minutes through the shared delivery scheduler, and a successful
+sweep resets the delay. The configured cleanup interval stays the minimum delay.
+The backoff applies to the whole setup-token cleanup worker, so new cleanup can
+wait behind a failing provider. The failure count resets on restart; the
+retained database rows rebuild the cleanup obligation. No timer remains once the
+durable schedule has no pending cleanup or future expiry.

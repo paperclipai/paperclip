@@ -56,6 +56,7 @@ import {
 } from "./metadata.js";
 import { normalizeOAuthProviderError } from "./provider-errors.js";
 import type { OAuthTransport } from "./types.js";
+import { connectionRemovedOrSignInCancelled } from "../connections/first-sign-in.js";
 
 type Dependencies = OAuthTransport & {
   now: () => Date;
@@ -372,7 +373,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
 
   async function machineSignInConnection(companyId: string, connectionId: string) {
     const connection = await getConnectionRow(connectionId, companyId);
-    if (connection.status === "archived") {
+    if (connectionRemovedOrSignInCancelled(connection)) {
       throw unprocessable("This connection was removed. Set up machine sign-in again to reconnect.", {
         code: "client_credentials_connection_removed",
       });
@@ -433,7 +434,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       const [locked] = await tx.select().from(toolConnections)
         .where(and(eq(toolConnections.id, previous.id), eq(toolConnections.companyId, previous.companyId)))
         .for("update");
-      if (!locked || locked.status === "archived" || signInState(locked) !== signInState(previous)) {
+      if (!locked || connectionRemovedOrSignInCancelled(locked) || signInState(locked) !== signInState(previous)) {
         throw machineSignInChangedError();
       }
       const written: Record<string, ToolCredentialSecretRef> = {};

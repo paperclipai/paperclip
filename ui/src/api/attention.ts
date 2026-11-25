@@ -4,6 +4,7 @@ import type {
   AttentionCloseResult,
   AttentionFeed,
   AttentionSummary,
+  AttentionRunHistoryEntry,
   AttentionTaskIndex,
   AttentionFeedQuery,
   AttentionSourceKind,
@@ -21,6 +22,10 @@ function cardPath(companyId: string, sourceKind: AttentionSourceKind, sourceId: 
 export const attentionApi = {
   summary: (companyId: string) => api.get<AttentionSummary>(`/companies/${companyId}/attention/summary`),
   taskIndex: (companyId: string) => api.get<AttentionTaskIndex>(`/companies/${companyId}/attention/tasks`),
+  runHistory: (companyId: string, before?: { at: string; id: string }) => {
+    const query = before ? `?${new URLSearchParams(before)}` : "";
+    return api.get<AttentionRunHistoryEntry[]>(`/companies/${companyId}/attention/run-history${query}`);
+  },
   history: (companyId: string, options: DecisionHistoryQuery = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(options)) if (value !== undefined && value !== "") params.set(key, String(value));
@@ -44,7 +49,8 @@ export const attentionApi = {
     if (options.cursor) params.set("cursor", options.cursor);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const query = params.toString();
-    return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`);
+    // A post-answer refresh must not join a GET begun before the answer.
+    return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`, { fresh: true, cache: "no-store" });
   },
   /** Claim an Unassigned card: you become its addressee (PAP-749 plan §1, Rule 3). */
   claim: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>

@@ -1,6 +1,5 @@
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
-import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
@@ -18,6 +17,7 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
 import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
@@ -25,8 +25,8 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
-import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
-import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordChildTaskRead, recordChildTaskReads } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead, recordCompletedHandoffReads } from "../services/chat-completion-delivery.js";
 import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
@@ -56,10 +56,10 @@ import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } fro
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
-import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments, firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
+import { deferredWakeJoinsFirstTurn, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
-import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
@@ -71,13 +71,6 @@ import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
 } from "../services/execution-recovery-resolution.js";
-import {
-  storedSteeringAcknowledgement,
-  reconcileSteeredIdentity,
-  reserveSteeredIdentity,
-  acceptSteeredIdentity,
-  rejectSteeredIdentity,
-} from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -85,6 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -115,6 +109,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -195,7 +190,6 @@ import {
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueComment,
   type IssueCommentPresentation,
-  type IssueQueuedCommentQueue,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -209,6 +203,8 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { resolveTelemetryPerson, withTelemetryActor } from "../telemetry-company-scope.js";
+import { emitArtifactCreatedAfterCommit } from "../services/product-telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
@@ -255,9 +251,11 @@ import { ContextCompactionError, contextCompactionService } from "../services/co
 import { issueContextUsage } from "../services/issue-context-usage.js";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
-import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
+import { emitAgentTaskRunById, telemetryAdapterType } from "../services/agent-task-run-telemetry.js";
 import {
+  createAutomaticGoalCommentSteering,
   createQueuedCommentQueue,
+  requireQueuedCommentMutationTarget,
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
   type QueuedCommentIssueContext,
@@ -410,6 +408,7 @@ import {
 import {
   addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
+  conversationInteractionResponderAllowed,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -422,15 +421,11 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
-  getNativeSessionSteeringState,
   NativeSessionSteeringError,
-  steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
 import {
   buildQueuedCommentQueueSnapshot,
-  decideQueuedCommentQueueSteering,
   queuedCommentIdsFromWakePayload,
-  withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -3129,6 +3124,9 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.isUnreadForMe !== undefined
       ? { isUnreadForMe: issue.isUnreadForMe }
       : {}),
+    ...(issue.isArchivedForMe !== undefined
+      ? { isArchivedForMe: issue.isArchivedForMe }
+      : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     interruption: issue.interruption ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
@@ -3762,6 +3760,14 @@ export function issueRoutes(
         );
       }
     },
+  });
+  const steerAutomaticGoalComment = createAutomaticGoalCommentSteering({
+    readGoal: runnerGoals.projection,
+    queueCommand: queueLiveRunnerPrpCommand,
+    reportCommandFailure: (details) => logger.warn(
+      details,
+      "failed to steer an active session goal; falling back to a boundary wake",
+    ),
   });
   const stopRunnerGoalForOwnershipChange = async (input: {
     companyId: string;
@@ -6423,7 +6429,7 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+    if (req.actor.type === "board" && !conversationInteractionResponderAllowed(issue, req.actor.userId)) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
     // Actor-only gates deliberately precede the interaction lookup. An actor
@@ -7280,6 +7286,22 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertAgentMayLeaveBlocked(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string },
+    nextStatus: string,
+  ) {
+    if (req.actor.type !== "agent" || issue.status !== "blocked" || nextStatus === "blocked" || isClosedIssueStatus(nextStatus)) return true;
+    const hold = await getExecutionBlocker(db, issue.companyId, issue.id, { recoveryHoldOnly: true });
+    if (!hold?.recoveryActionId) return true;
+    res.status(409).json({
+      error: `Issue stays blocked until its execution recovery hold is released. ${hold.nextAction}`,
+      details: { issueId: issue.id, recoveryActionId: hold.recoveryActionId, cause: hold.cause, nextAction: hold.nextAction },
+    });
+    return false;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -7702,393 +7724,6 @@ export function issueRoutes(
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
-  type IssueQueueTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-  type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
-  type IssueQueueRun = typeof heartbeatRuns.$inferSelect;
-  type IssueQueueState = {
-    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId" | "agentId" | "reason"
-      | "requestedByActorType" | "requestedByActorId">;
-    state: "deferred" | "queued";
-    queueRun: Pick<IssueQueueRun, "runtimeMode"> | null;
-    /** The receipt already read for an interaction wake, reused by the queue builder. */
-    response?: QueuedInteractionResponse | null;
-  };
-
-  const QUEUED_INTERRUPT_HANDOFF_WAIT = { reason: "interrupt_handoff", message: "Sending your messages." } as const;
-
-  async function findQueuedCommentWake(
-    executor: IssueQueueDb,
-    issue: { id: string; companyId: string; assigneeAgentId: string | null },
-  ): Promise<IssueQueueState | null> {
-    if (!issue.assigneeAgentId) return null;
-    const rows = await executor
-      .select({
-        id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
-        status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
-        ...firstTurnWakeColumns,
-        payload: sql<Record<string, unknown>>`jsonb_build_object(
-          ${firstTurnWakePayloadFields(agentWakeupRequests.payload)},
-          'issueId', ${agentWakeupRequests.payload}->'issueId',
-          'mutation', ${agentWakeupRequests.payload}->'mutation',
-          'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
-          'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
-          'executionWait', jsonb_build_object(
-            'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
-            'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
-          '_paperclipWakeContext', jsonb_build_object(
-            ${firstTurnWakeContextFields(agentWakeupRequests.payload)},
-            'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds',
-            'forceFreshSession', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'forceFreshSession')
-        )`,
-      })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, issue.companyId),
-          eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
-          sql`${agentWakeupRequests.payload}->'issueId' = to_jsonb(${issue.id}::text)`,
-          inArray(agentWakeupRequests.status, [
-            "deferred_issue_execution",
-            "queued",
-          ]),
-        ),
-      )
-      .orderBy(asc(agentWakeupRequests.requestedAt));
-
-    // A saved card response (an approval, an answer, a declined connection)
-    // is a read-only receipt. It must never hide the user's own later
-    // messages, which are separately queued and remain editable and sendable.
-    let receipt: IssueQueueState | null = null;
-    let agentOnly: IssueQueueState | null = null;
-    const hasPersonMessage = async (wake: { payload: unknown }) => {
-      const ids = queuedCommentIdsFromWakePayload(wake.payload);
-      if (ids.length === 0) return false;
-      const [row] = await executor.select({ id: issueComments.id }).from(issueComments).where(and(
-        eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
-        inArray(issueComments.id, ids), eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt),
-      )).limit(1);
-      return Boolean(row);
-    };
-    const pendingMessages = async (state: IssueQueueState) => {
-      if (await hasPersonMessage(state.wake)) return state;
-      agentOnly = state;
-      return null;
-    };
-    for (const wake of rows) {
-      if (
-        readObject(wake.payload).issueId !== issue.id ||
-        (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
-      )
-        continue;
-      const isReceipt = Boolean(queuedInteractionId(wake.payload));
-      if (isReceipt && receipt) continue;
-      if (!isReceipt && agentOnly) continue;
-      const readReceipt = () => readQueuedInteractionResponse(executor as Db, wake.companyId, issue.id, wake.payload);
-      if (wake.status === "deferred_issue_execution") {
-        if (isReceipt) {
-          const response = await readReceipt();
-          if (response && !response.toolActionOutcome) receipt = { wake, state: "deferred", queueRun: null, response };
-          continue;
-        }
-        const messages = await pendingMessages({ wake, state: "deferred", queueRun: null });
-        if (messages) return messages;
-        continue;
-      }
-      if (!wake.runId) continue;
-      const queueRun = await executor
-        .select({ runtimeMode: heartbeatRuns.runtimeMode })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.id, wake.runId),
-            eq(heartbeatRuns.companyId, issue.companyId),
-            eq(heartbeatRuns.agentId, issue.assigneeAgentId),
-            eq(heartbeatRuns.wakeupRequestId, wake.id),
-            eq(heartbeatRuns.status, "queued"),
-          ),
-        )
-        .limit(1)
-        .then((runRows) => runRows[0] ?? null);
-      if (queueRun && isReceipt) {
-        const response = await readReceipt();
-        if (response && !response.toolActionOutcome) receipt = { wake, state: "queued", queueRun, response };
-      }
-      else if (queueRun) {
-        const messages = await pendingMessages({ wake, state: "queued", queueRun });
-        if (messages) return messages;
-      }
-    }
-    return receipt ?? agentOnly;
-  }
-
-  async function queueCommentsForWake(
-    executor: IssueQueueDb,
-    issueId: string,
-    wake: Pick<IssueQueueWake, "companyId" | "payload"> | null,
-    response: QueuedInteractionResponse | null,
-  ) {
-    if (wake && queuedInteractionId(wake.payload)) return response ? [response.comment] : [];
-    const ids = queuedCommentIdsFromWakePayload(wake?.payload);
-    if (ids.length === 0) return [];
-    const rows = await executor
-      .select()
-      .from(issueComments)
-      .where(
-        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, ids)),
-      );
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    return ids.flatMap((id) => {
-      const row = byId.get(id);
-      return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];
-    });
-  }
-
-  async function buildQueuedCommentQueue(input: {
-    executor: IssueQueueDb;
-    issue: { id: string; companyId: string; assigneeAgentId: string | null; conversationAgentId?: string | null };
-    activeRun: Awaited<ReturnType<typeof resolveActiveIssueRun>>;
-    actor: ReturnType<typeof getActorInfo>;
-    queueState?: IssueQueueState | null;
-    steeringDisposition?: IssueQueuedCommentQueue["steeringDisposition"];
-  }): Promise<IssueQueuedCommentQueue> {
-    const queueState =
-      input.queueState === undefined
-        ? await findQueuedCommentWake(input.executor, input.issue)
-        : input.queueState;
-    const wake = queueState?.wake ?? null;
-    // Read an interaction receipt once per snapshot.
-    const response = wake && queuedInteractionId(wake.payload)
-      ? queueState?.response !== undefined
-        ? queueState.response
-        : await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload)
-      : null;
-    // Messages the active run took into its first turn are no longer queued.
-    const claimedByFirstTurn = queueState?.state === "deferred" ? firstTurnClaimedCommentIds(input.activeRun) : new Set<string>();
-    const comments = (await queueCommentsForWake(
-      input.executor,
-      input.issue.id,
-      wake,
-      response,
-    )).filter((comment) => !claimedByFirstTurn.has(comment.id));
-    const assignedAgent = input.issue.assigneeAgentId
-      ? await input.executor
-          .select({ adapterType: agents.adapterType })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.id, input.issue.assigneeAgentId),
-              eq(agents.companyId, input.issue.companyId),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
-      : null;
-    const steering = decideQueuedCommentQueueSteering({
-      state: queueState?.state ?? null,
-      queueRunRuntimeMode: queueState?.state === "queued" ? queueState.queueRun?.runtimeMode ?? null : null,
-      activeRun: input.activeRun,
-      assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
-      queuedCommentCount: comments.length,
-    });
-    const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-      input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
-        ? steering.kind
-        : input.steeringDisposition
-          ?? (await getNativeSessionSteeringState(steering.steeringRunId)
-            .then((state) => state.disposition)
-            .catch(() => "temporarily_unavailable" as const));
-    const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
-    // The user's Interrupt click is delivering these messages. Its stopped run
-    // settling is not something to read about under the composer; the task
-    // notice owns any wait that needs the user.
-    const interruptHandoff = queueState?.state === "deferred" && readObject(wake?.payload).queuedCommentInterrupt != null;
-    const queue = buildQueuedCommentQueueSnapshot({
-      issueId: input.issue.id,
-      executionWait: interruptHandoff ? QUEUED_INTERRUPT_HANDOFF_WAIT
-        : typeof wait.reason === "string" && typeof wait.message === "string"
-          ? { reason: wait.reason, message: wait.message } : null,
-      queueId: wake?.id ?? null,
-      state: queueState?.state ?? null,
-      activeRunId: input.activeRun?.id ?? null,
-      protocol: steering.protocol,
-      steeringDisposition,
-      comments,
-      actorType: input.actor.actorType,
-      actorId: input.actor.actorId,
-    });
-    if (wake && queuedInteractionId(wake.payload)) {
-      if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
-      queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
-    } else if (wake && queueState?.state === "deferred" && input.activeRun?.status === "running") {
-      // A starting run (a booting sandbox, say) cannot be steered yet, but its
-      // first turn takes these messages. The view shows them as sent.
-      const firstTurnCommentIds = await firstTurnQueuedCommentIds(input.executor, {
-        companyId: input.issue.companyId, issueId: input.issue.id, runId: input.activeRun.id, wake,
-      });
-      if (firstTurnCommentIds.length > 0) queue.firstTurnCommentIds = firstTurnCommentIds;
-    }
-    return queue;
-  }
-
-  function assertQueueMutationTarget(input: {
-    queue: IssueQueuedCommentQueue;
-    queueId: string;
-    revision: string;
-  }) {
-    if (input.queue.queueId !== input.queueId) {
-      throw conflict("The queued message targets a stale queue", {
-        code: "queued_comment_stale_queue",
-      });
-    }
-    if (input.queue.revision !== input.revision) {
-      throw conflict("The queued messages changed in another session", {
-        code: "queued_comment_revision_conflict",
-      });
-    }
-  }
-
-  async function lockQueuedCommentState(input: {
-    tx: IssueQueueTx;
-    issue: {
-      id: string;
-      companyId: string;
-      assigneeAgentId: string | null;
-      executionRunId?: string | null;
-    };
-    actor: ReturnType<typeof getActorInfo>;
-    queueId: string;
-    targetRunId?: string;
-    allowStoppedTarget?: boolean;
-    /** Steering must allow PRP event ingestion to update the run before ACK. */
-    lockRun?: boolean;
-  }) {
-    const [currentIssue] = await input.tx
-      .select()
-      .from(issueRows)
-      .where(
-        and(
-          eq(issueRows.id, input.issue.id),
-          eq(issueRows.companyId, input.issue.companyId),
-        ),
-      )
-      .for("update");
-    if (!currentIssue) throw notFound("Issue not found");
-    input.issue = currentIssue;
-    const wake = await input.tx
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.id, input.queueId),
-          eq(agentWakeupRequests.companyId, input.issue.companyId),
-          input.issue.assigneeAgentId
-            ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId)
-            : undefined,
-        ),
-      )
-      .for("update")
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (
-      !wake ||
-      readObject(wake.payload).issueId !== input.issue.id ||
-      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
-      // A tool action's outcome is never a message to steer, interrupt or discard.
-      (queuedInteractionId(wake.payload) &&
-        (await readQueuedInteractionResponse(input.tx as unknown as Db, input.issue.companyId, input.issue.id, wake.payload))
-          ?.toolActionOutcome)
-    ) {
-      throw conflict("The queued message is no longer pending", {
-        code: "queued_comment_not_pending",
-      });
-    }
-
-    let state: IssueQueueState["state"];
-    let queueRun: IssueQueueRun | null = null;
-    if (wake.status === "deferred_issue_execution") {
-      state = "deferred";
-    } else if (wake.status === "queued" && wake.runId) {
-      queueRun = await input.tx
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.id, wake.runId),
-            eq(heartbeatRuns.companyId, input.issue.companyId),
-            eq(heartbeatRuns.agentId, wake.agentId),
-            eq(heartbeatRuns.wakeupRequestId, wake.id),
-          ),
-        )
-        .for("update")
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (!queueRun || queueRun.status !== "queued") {
-        throw conflict("The queued message is already being dispatched", {
-          code: "queued_comment_already_dispatching",
-        });
-      }
-      state = "queued";
-    } else if (
-      wake.status === "claimed" ||
-      wake.status === "running" ||
-      (wake.runId && (wake.status === "succeeded" || wake.status === "failed"))
-    ) {
-      throw conflict("The queued message is already being dispatched", {
-        code: "queued_comment_already_dispatching",
-      });
-    } else {
-      throw conflict("The queued message is no longer pending", {
-        code: "queued_comment_not_pending",
-      });
-    }
-
-    const activeRunId =
-      state === "deferred"
-        ? (input.targetRunId ?? input.issue.executionRunId ?? null)
-        : null;
-    const activeRunQuery = activeRunId
-      ? input.tx
-          .select()
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.id, activeRunId),
-              eq(heartbeatRuns.companyId, input.issue.companyId),
-              input.allowStoppedTarget ? undefined : eq(heartbeatRuns.status, "running"),
-            ),
-          )
-          .$dynamic()
-      : null;
-    const activeRun = activeRunQuery
-      ? await (input.lockRun === false ? activeRunQuery : activeRunQuery.for("update"))
-          .limit(1).then(rows => rows[0] ?? null)
-      : null;
-    if (input.targetRunId) {
-      const runContext = readObject(activeRun?.contextSnapshot);
-      if (
-        !activeRun ||
-        (runContext.issueId !== input.issue.id &&
-          runContext.taskId !== input.issue.id)
-      ) {
-        throw conflict("The queued message targets a stale run", {
-          code: "queued_comment_stale_target",
-        });
-      }
-    }
-    const queueState = { wake, state, queueRun } satisfies IssueQueueState;
-    const queue = await buildQueuedCommentQueue({
-      executor: input.tx,
-      issue: input.issue,
-      activeRun,
-      actor: input.actor,
-      queueState,
-      steeringDisposition:
-        activeRun?.runtimeMode === "native"
-          ? "temporarily_unavailable"
-          : "unsupported",
-    });
-    return { activeRun, wake, queueRun, state, queue, queueState };
-  }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
     return {
@@ -9187,6 +8822,15 @@ export function issueRoutes(
       res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
       return;
     }
+    const inboxArchive = req.query.inboxArchive;
+    if (inboxArchive !== undefined && ((inboxArchive !== "include" && inboxArchive !== "archived") || attention)) {
+      res.status(400).json({ error: "inboxArchive must be include or archived and cannot be used with attention" });
+      return;
+    }
+    if (inboxArchive && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "inboxArchive requires board authentication" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -9354,6 +8998,9 @@ export function issueRoutes(
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
+      inboxArchive: inboxArchive && req.actor.type === "board" && req.actor.userId
+        ? { mode: inboxArchive, userId: req.actor.userId }
+        : undefined,
       unreadForUserId,
       readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
@@ -9411,7 +9058,7 @@ export function issueRoutes(
       requestKey,
       // The new collection projections must reflect read/archive/undo mutations
       // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
-      allowTtlCache: view === "compact",
+      allowTtlCache: view === "compact" && !inboxArchive,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
@@ -9759,7 +9406,6 @@ export function issueRoutes(
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     // An Agent Chat run starts only for the conversation's owner.
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can compact a chat agent's context");
     }
@@ -10445,7 +10091,6 @@ export function issueRoutes(
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can retry a chat run");
     }
@@ -11449,6 +11094,18 @@ export function issueRoutes(
       res.json({ refreshed: results });
     },
   );
+
+  registerIssueDocumentBatchRoute(router, db, {
+    filterReadable: filterIssuesForActor,
+    recordReads: async (req, issues) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return;
+      const input = { companyId: req.params.companyId as string, agentId: req.actor.agentId, runId: req.actor.runId };
+      await recordCompletedHandoffReads(db, { ...input, tasks: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the completed handoffs a run read"));
+      await recordChildTaskReads(db, { ...input, children: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the child tasks a run read"));
+    },
+  });
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
@@ -12787,6 +12444,8 @@ export function issueRoutes(
         });
         return;
       }
+      emitArtifactCreatedAfterCommit({ companyId: product.companyId, type: product.type, provider: product.provider, creationFlow: "promotion",
+        task: issue, runOwnerUserId: actor.actorType === "user" ? actor.actorId : null });
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -14436,6 +14095,40 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    const waitingRetry = issue.monitorNextCheckAt
+      ? null
+      : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
+    if (waitingRetry?.status === "scheduled_retry") {
+      // The banner also shows "Check now" for a scheduled retry, such as a
+      // usage wait. With no monitor, the check is that retry: it starts now
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      const retry = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id,
+        actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: retry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: retry.scheduledRetry?.runId ?? null,
+        details: { outcome: retry.outcome, message: retry.message, source: "monitor_check_now" },
+      });
+      if (retry.outcome === "no_scheduled_retry") {
+        throw conflict("Nothing is waiting to be checked on this task anymore. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "no_scheduled_check" });
+      }
+      if (retry.outcome === "gate_suppressed") {
+        throw conflict("The check could not start because the task changed. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "gate_suppressed" });
+      }
+      res.json({ ok: true, outcome: retry.outcome, message: retry.message });
+      return;
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -15554,6 +15247,7 @@ export function issueRoutes(
       }
 
       const nextStatus = updateFields.status ?? existing.status;
+      if (!(await assertAgentMayLeaveBlocked(req, res, existing, nextStatus))) return;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -16695,13 +16389,18 @@ export function issueRoutes(
               typeof actorAgent.adapterConfig?.model === "string"
                 ? actorAgent.adapterConfig.model
                 : undefined;
-            trackAgentTaskCompleted(tc, {
+            const person = resolveTelemetryPerson({
+              taskCreatedByUserId: issue.createdByUserId,
+              taskAssignedByUserId: issue.responsibleUserId,
+              runOwnerUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId : null,
+            });
+            withTelemetryActor({ companyId: issue.companyId, person }, () => trackAgentTaskCompleted(tc, {
               agentRole: actorAgent.role,
               agentId: actorAgent.id,
-              adapterType: actorAgent.adapterType,
+              adapterType: telemetryAdapterType(actorAgent),
               model,
               taskId: issue.id,
-            });
+            }));
           }
         }
       }
@@ -16776,49 +16475,7 @@ export function issueRoutes(
           : await addCommentAndReceipt(db);
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
-        if (
-          issue.assigneeAgentId &&
-          !issue.externalConversationState &&
-          !(
-            actor.actorType === "agent" &&
-            actor.actorId === issue.assigneeAgentId
-          )
-        ) {
-          const goalProjection = await runnerGoals.projection(
-            issue.companyId,
-            issue.id,
-            issue.assigneeAgentId,
-          );
-          if (
-            goalProjection?.goal?.status === "active" &&
-            goalProjection.workingNow
-          ) {
-            const steer = queueLiveRunnerPrpCommand({
-              companyId: issue.companyId,
-              issueId: issue.id,
-              agentId: issue.assigneeAgentId,
-              type: "turn.steer",
-              payload: { text: comment.body },
-              commandId: `goal_comment_${comment.id}`,
-            });
-            if (steer) {
-              try {
-                await steer.completion;
-                goalCommentSteered = true;
-              } catch (err) {
-                logger.warn(
-                  {
-                    err,
-                    issueId: issue.id,
-                    commentId: comment.id,
-                    runId: steer.runId,
-                  },
-                  "failed to steer an active session goal; falling back to a boundary wake",
-                );
-              }
-            }
-          }
-        }
+        goalCommentSteered = await steerAutomaticGoalComment(issue, actor, comment);
         const commentReferenceSummaryAfter =
           await issueReferencesSvc.listIssueReferenceSummary(issue.id);
         const commentReferenceDiff =
@@ -16877,7 +16534,7 @@ export function issueRoutes(
                 }
               : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
-            ...(hasFieldChanges ? { updated: true } : {}),
+            ...(hasFieldChanges ? { updated: true, changes: issueChanges } : {}),
             ...summarizeIssueReferenceActivityDetails({
               addedReferencedIssues:
                 commentReferenceDiff.addedReferencedIssues.map(
@@ -17528,6 +17185,7 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue, "in_progress"))) return;
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
@@ -17736,17 +17394,18 @@ export function issueRoutes(
       });
     }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 7 }),
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
-      hasMore: recent.length > 4,
+      hasMore: recent.slice(4).some((comment) => !included.has(comment.id)),
     });
   }
 
@@ -17800,10 +17459,14 @@ export function issueRoutes(
   /** Maps a wake-queue queued-comment mutation error onto the same HTTP error the route threw before this mutation moved into the module. */
   function throwForQueuedCommentMutationError(error: unknown): never {
     if (error instanceof QueuedCommentMutationError) {
+      if (error.code === "queued_comment_issue_not_found") throw notFound(error.message);
       throw conflict(error.message, { code: error.code });
     }
     if (error instanceof QueuedCommentMutationForbiddenError) {
       throw forbidden(error.message);
+    }
+    if (error instanceof NativeSessionSteeringError) {
+      throw conflict(error.message, { code: error.code, retryable: true });
     }
     throw error;
   }
@@ -17843,7 +17506,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const actor = getActorInfo(req);
-    let queue = await buildQueuedCommentQueue({
+    let queue = await queuedCommentQueue.readBoardQueue({
       executor: db,
       issue,
       activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
@@ -17952,18 +17615,17 @@ export function issueRoutes(
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {
           throw forbidden("Only the conversation owner can interrupt a chat to send queued messages");
         }
       }
       const actor = getActorInfo(req);
-      const interruptPlan = await db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
-        const locked = await lockQueuedCommentState({
+      const interruptPlan = await runQueuedCommentMutation(() => db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
+        const locked = await queuedCommentQueue.lockBoardQueue({
           tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
           allowStoppedTarget: true,
         });
-        assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
+        requireQueuedCommentMutationTarget(locked.queue, req.body.queueId, req.body.revision);
         // Explicit Interrupt is also the fallback when a native turn cannot
         // accept steering. Cancellation and ordinary admission still own Stop
         // confirmation, cleanup, and delivery; this click only records intent.
@@ -17997,7 +17659,7 @@ export function issueRoutes(
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));
         return { runToInterrupt: locked.activeRun?.status === "running" ? locked.activeRun.id : null };
-      });
+      }));
       const firstTurnRunId = "firstTurnRunId" in interruptPlan ? interruptPlan.firstTurnRunId : null;
       const runToInterrupt = "runToInterrupt" in interruptPlan ? interruptPlan.runToInterrupt : null;
       // Never hold the issue lock while joining the adapter. Queue edits and
@@ -18017,7 +17679,7 @@ export function issueRoutes(
           ...(firstTurnRunId ? { deliveredWithFirstTurnOfRunId: firstTurnRunId } : {}) },
       });
       const currentIssue = await svc.getById(issue.id);
-      const queue = await buildQueuedCommentQueue({
+      const queue = await queuedCommentQueue.readBoardQueue({
         executor: db, issue: currentIssue ?? issue,
         activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
       });
@@ -18048,254 +17710,11 @@ export function issueRoutes(
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const actor = getActorInfo(req);
-      const responseWake = await db.select().from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
-      )).then(rows => rows[0]);
-      const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
-      if (responseWake) await recheckQueuedCommentInteractionDelivery(db, {
-        companyId: issue.companyId, issueId: issue.id, agentId: responseWake.agentId,
-        commentId, queueId: responseWake.id,
-      });
-      const steeringIdentity = await reserveSteeredIdentity(db, {
-        companyId: issue.companyId,
-        runId: req.body.targetRunId,
-        issueId: issue.id,
-        messageId: commentId,
-        source: response?.comment.id === commentId ? "interaction" : "comment",
-      });
-      let steeringDeliveryAttempted = false;
-      let acknowledgedTurnId: string | null = null;
-      let duplicate = false;
-      let queue: IssueQueuedCommentQueue;
-      try {
-        queue = await db.transaction(async (tx) => {
-          // A client can lose the successful response after the final queued
-          // message cancels its wake. Lock the original queue and target run
-          // first so that the persisted acknowledgement remains a durable
-          // idempotency record even when no pending queue remains.
-          await tx
-            .select({ id: issueRows.id })
-            .from(issueRows)
-            .where(
-              and(
-                eq(issueRows.id, issue.id),
-                eq(issueRows.companyId, issue.companyId),
-              ),
-            )
-            .for("update");
-          const retryWake = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(
-              and(
-                eq(agentWakeupRequests.id, req.body.queueId),
-                eq(agentWakeupRequests.companyId, issue.companyId),
-                issue.assigneeAgentId
-                  ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId)
-                  : undefined,
-              ),
-            )
-            .for("update")
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          const retryRun =
-            retryWake && readObject(retryWake.payload).issueId === issue.id
-              ? await tx
-                  .select()
-                  .from(heartbeatRuns)
-                  .where(
-                    and(
-                      eq(heartbeatRuns.id, req.body.targetRunId),
-                      eq(heartbeatRuns.companyId, issue.companyId),
-                      eq(heartbeatRuns.agentId, retryWake.agentId),
-                    ),
-                  )
-                  .limit(1)
-                  .then((rows) => rows[0] ?? null)
-              : null;
-          const retryRunContext = readObject(retryRun?.contextSnapshot);
-          const retryRunResult = readObject(retryRun?.resultJson);
-          const retryAcknowledgements = readObject(
-            retryRunResult.queuedSteeringAcknowledgements,
-          );
-          const retryAcknowledgement = readObject(
-            retryAcknowledgements[commentId],
-          );
-          if (
-            retryRun &&
-            (retryRunContext.issueId === issue.id ||
-              retryRunContext.taskId === issue.id) &&
-            retryAcknowledgement.status === "acknowledged" &&
-            retryAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof retryAcknowledgement.turnId === "string"
-                ? retryAcknowledgement.turnId
-                : null;
-            return buildQueuedCommentQueue({
-              executor: tx,
-              issue,
-              activeRun: retryRun.status === "running" ? retryRun : null,
-              actor,
-            });
-          }
-
-          const locked = await lockQueuedCommentState({
-            tx,
-            issue,
-            actor,
-            queueId: req.body.queueId,
-            targetRunId: req.body.targetRunId,
-            lockRun: false,
-          });
-          if (!locked.activeRun) {
-            throw conflict("The queued message targets a stale run", {
-              code: "queued_comment_stale_target",
-            });
-          }
-          const runResult = readObject(locked.activeRun.resultJson);
-          const acknowledgements = readObject(
-            runResult.queuedSteeringAcknowledgements,
-          );
-          const priorAcknowledgement = readObject(acknowledgements[commentId]);
-          if (
-            priorAcknowledgement.status === "acknowledged" &&
-            priorAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof priorAcknowledgement.turnId === "string"
-                ? priorAcknowledgement.turnId
-                : null;
-            return buildQueuedCommentQueue({
-              executor: tx,
-              issue,
-              activeRun: locked.activeRun,
-              actor,
-              queueState: locked.queueState,
-            });
-          }
-          assertQueueMutationTarget({
-            queue: locked.queue,
-            queueId: req.body.queueId,
-            revision: req.body.revision,
-          });
-          if (locked.queue.protocol !== "paperclip_runner_v1") {
-            throw conflict("This runner does not support same-turn steering", {
-              code: "steering_unsupported",
-            });
-          }
-          const entry = locked.queue.entries.find(
-            (candidate) => candidate.comment.id === commentId,
-          );
-          if (!entry) {
-            throw conflict("The queued message is no longer pending", {
-              code: "queued_comment_not_pending",
-            });
-          }
-
-          if (entry.source?.requiresFreshSession) {
-            throw conflict("This approval needs a fresh turn. Interrupt or wait for the current turn to finish.", {
-              code: "queued_response_requires_fresh_session",
-            });
-          }
-          await assertQueuedCommentInteractionDelivery(tx, {
-            companyId: issue.companyId, issueId: issue.id, agentId: locked.activeRun.agentId,
-            commentId, lock: true,
-          });
-          steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
-              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
-            })) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
-          // PRP ingestion allocates event sequences on this row. Locking it
-          // while awaiting the provider prevents its durable ACK from arriving.
-          // Re-read under lock after ACK so concurrent run receipts are retained.
-          const [acknowledgedRun] = await tx.select().from(heartbeatRuns)
-            .where(eq(heartbeatRuns.id, locked.activeRun.id)).for("update");
-          if (!acknowledgedRun || acknowledgedRun.status !== "running") {
-            throw conflict("The queued message targets a stopped run. Your message is still queued.", {
-              code: "queued_comment_stale_target",
-            });
-          }
-          const acknowledgedResult = readObject(acknowledgedRun.resultJson);
-          if (steeringIdentity)
-            await acceptSteeredIdentity(tx, steeringIdentity);
-          acknowledgedTurnId = acknowledgement.turnId;
-          const remainingIds = locked.queue.entries
-            .map((candidate) => candidate.comment.id)
-            .filter((candidateId) => candidateId !== commentId);
-          const now = new Date();
-          const nextWake =
-            remainingIds.length === 0
-              ? await tx
-                  .update(agentWakeupRequests)
-                  .set({ status: "cancelled", finishedAt: now, updatedAt: now })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then(() => null)
-              : await tx
-                  .update(agentWakeupRequests)
-                  .set({
-                    payload: withQueuedCommentIdsInWakePayload(
-                      locked.wake.payload,
-                      remainingIds,
-                    ),
-                    updatedAt: now,
-                  })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then((rows) => rows[0] ?? locked.wake);
-          await tx
-            .update(heartbeatRuns)
-            .set({
-              resultJson: {
-                ...acknowledgedResult,
-                queuedSteeringAcknowledgements: {
-                  ...readObject(acknowledgedResult.queuedSteeringAcknowledgements),
-                  [commentId]: {
-                    status: "acknowledged",
-                    queueId: req.body.queueId,
-                    turnId: acknowledgement.turnId,
-                    acknowledgedAt: now.toISOString(),
-                  },
-                },
-              },
-              updatedAt: now,
-            })
-            .where(eq(heartbeatRuns.id, locked.activeRun.id));
-          return buildQueuedCommentQueue({
-            executor: tx,
-            issue,
-            activeRun: locked.activeRun,
-            actor,
-            queueState: nextWake
-              ? { wake: nextWake, state: "deferred", queueRun: null }
-              : null,
-          });
-        });
-      } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
-        if (steeringIdentity && !uncertain)
-          await rejectSteeredIdentity(db, steeringIdentity);
-
-        if (error instanceof NativeSessionSteeringError) {
-          throw conflict(error.message, { code: error.code, retryable: true });
-        }
-        throw error;
-      }
+      const { queue, turnId, duplicate } = await runQueuedCommentMutation(() =>
+        queuedCommentQueue.steerQueuedComment({
+          issue, actor, commentId, queueId: req.body.queueId, revision: req.body.revision, targetRunId: req.body.targetRunId,
+        }),
+      );
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -18309,7 +17728,7 @@ export function issueRoutes(
         details: {
           commentId,
           targetRunId: req.body.targetRunId,
-          turnId: acknowledgedTurnId,
+          turnId,
           duplicate,
         },
       });
@@ -19899,7 +19318,6 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-    if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const conversations = await svc.listConversations(companyId, req.actor.userId);
     res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
@@ -19910,7 +19328,6 @@ export function issueRoutes(
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
@@ -19922,7 +19339,7 @@ export function issueRoutes(
         return;
       }
       const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        title: `Chat with ${agent.name}`, generateConversationTitle: true, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });
@@ -19935,7 +19352,8 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/comments",
-    validate(addIssueCommentSchema),
+    // A /swarm request without a request text gets the route's documented refusal, not a validation error.
+    (req, res, next) => validate(req.body?.nativeCommand === ANTIGRAVITY_SWARM_COMMAND ? addIssueSwarmCommentSchema : addIssueCommentSchema)(req, res, next),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
@@ -19945,8 +19363,26 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // Trusted /swarm: the composer sends it as a structured field; comment text is never read as a command.
+      const swarmRequested = req.body.nativeCommand === ANTIGRAVITY_SWARM_COMMAND;
+      if (swarmRequested) {
+        if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
+        // A resend of an already accepted request returns its original receipt below; availability
+        // applies only to new requests (the setting may have changed since the first send).
+        const [accepted] = req.body.clientRequestId ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorUserId, req.actor.userId), eq(issueComments.clientRequestId, req.body.clientRequestId),
+        )) : [];
+        const refusal = accepted ? null : issue.conversationAgentId
+          ? "Swarm works in task comments, not in chats."
+          : await antigravitySwarmCommentRefusal(db, issue)
+            ?? antigravitySwarmRequestRefusal(antigravitySwarmRequestFromComment(String(req.body.body ?? "")));
+        if (refusal) {
+          res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
+          return;
+        }
+      }
       if (issue.conversationAgentId && req.actor.type === "board") {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
         if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
@@ -20163,6 +19599,12 @@ export function issueRoutes(
         return;
       }
       if (
+        effectiveMoveToTodoRequested &&
+        !hasUnresolvedFirstClassBlockers &&
+        !(await assertAgentMayLeaveBlocked(req, res, issue, "todo"))
+      )
+        return;
+      if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,
           res,
@@ -20344,7 +19786,6 @@ export function issueRoutes(
       // Without a single transaction, a 422 (or any error) thrown by the status update after the
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
-      let goalCommentSteered = false;
       let fastResponseEnqueued = false;
       if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
@@ -20418,6 +19859,12 @@ export function issueRoutes(
               },
               tx,
             );
+            // The swarm request commits with its comment or not at all.
+            if (swarmRequested && actor.actorType === "user") {
+              await recordAntigravitySwarmRequest(tx as unknown as Db, {
+                companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: insertedComment.id, userId: actor.actorId,
+              });
+            }
             const updated =
               actor.actorType === "user" && currentIssue.status !== "done"
                 ? await svc.update(
@@ -20523,9 +19970,15 @@ export function issueRoutes(
             dbOrTx,
           );
         const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
-        comment = needsFastResponse ? await db.transaction(async tx => {
+        comment = needsFastResponse || swarmRequested ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
-          if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+          // The swarm request commits with its comment or not at all.
+          if (swarmRequested && actor.actorType === "user") {
+            await recordAntigravitySwarmRequest(tx as unknown as Db, {
+              companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: saved.id, userId: actor.actorId,
+            });
+          }
+          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
             fastResponseEnqueued = true;
@@ -20604,51 +20057,7 @@ export function issueRoutes(
       });
       else await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
-      if (
-        currentIssue.assigneeAgentId &&
-        // Slack-linked messages need the normal attributed wake boundary so
-        // the accepted requester and return-thread receipt travel with the run.
-        !currentIssue.externalConversationState &&
-        !(
-          actor.actorType === "agent" &&
-          actor.actorId === currentIssue.assigneeAgentId
-        )
-      ) {
-        const goalProjection = await runnerGoals.projection(
-          currentIssue.companyId,
-          currentIssue.id,
-          currentIssue.assigneeAgentId,
-        );
-        if (
-          goalProjection?.goal?.status === "active" &&
-          goalProjection.workingNow
-        ) {
-          const steer = queueLiveRunnerPrpCommand({
-            companyId: currentIssue.companyId,
-            issueId: currentIssue.id,
-            agentId: currentIssue.assigneeAgentId,
-            type: "turn.steer",
-            payload: { text: comment.body },
-            commandId: `goal_comment_${comment.id}`,
-          });
-          if (steer) {
-            try {
-              await steer.completion;
-              goalCommentSteered = true;
-            } catch (err) {
-              logger.warn(
-                {
-                  err,
-                  issueId: currentIssue.id,
-                  commentId: comment.id,
-                  runId: steer.runId,
-                },
-                "failed to steer an active session goal; falling back to a boundary wake",
-              );
-            }
-          }
-        }
-      }
+      const goalCommentSteered = await steerAutomaticGoalComment(currentIssue, actor, comment);
 
       if (actor.runId) {
         await heartbeat
@@ -20706,6 +20115,7 @@ export function issueRoutes(
         comment,
         currentIssue.assigneeAgentId,
       );
+      const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,
@@ -20857,6 +20267,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment.reopen",
                 wakeReason: "issue_reopened_via_comment",
                 reopenedFrom: reopenFromStatus,
@@ -20894,6 +20305,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment",
                 wakeReason: "issue_commented",
                 ...(resumeRequested === true
@@ -21161,9 +20573,6 @@ export function issueRoutes(
       if (issue.companyId !== companyId) {
         res.status(422).json({ error: "Issue does not belong to company" });
         return;
-      }
-      if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        throw notFound("Agent Chat is disabled");
       }
       if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
         throw forbidden("Only the conversation owner can upload attachments");
