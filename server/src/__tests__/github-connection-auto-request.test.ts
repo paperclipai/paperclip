@@ -117,8 +117,10 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
       }),
     ],
     [
+      // paperclip:allow-git-push: synthetic command output fixture testing GitHub auth detection
       "HTTPS git push authentication failed",
       toolExecutionEvent({
+        // paperclip:allow-git-push: synthetic command fixture testing GitHub auth detection
         name: "git push origin main",
         output: "fatal: Authentication failed for 'https://github.com/acme/private-repo.git/'\n",
       }),
@@ -457,6 +459,7 @@ describeEmbeddedPostgres("automatic GitHub connection card on unconfigured git a
       status: "succeeded",
       events: [
         toolExecutionEvent({
+          // paperclip:allow-git-push: synthetic command fixture testing GitHub auth detection
           name: "git push origin main",
           output: "fatal: Authentication failed for 'https://github.com/acme/private-repo.git/'\n",
         }),
@@ -494,6 +497,7 @@ describeEmbeddedPostgres("automatic GitHub connection card on unconfigured git a
       stream: "system",
       level: "info",
       payload: toolExecutionEvent({
+        // paperclip:allow-git-push: synthetic command fixture testing GitHub auth detection
         name: "git push origin main",
         output: "fatal: Authentication failed for 'https://github.com/acme/private-repo.git/'\n",
       }).payload,
