@@ -73,6 +73,9 @@ import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
 import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
+import { secretService } from "../services/secrets.js";
+import { logger } from "../middleware/logger.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
@@ -85,6 +88,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
+import { paperclipGoogleSignInAvailable } from "../services/google-sign-in-availability.js";
 import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -948,6 +952,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
     const pluginApps = (await loadPluginAppCatalog(db)).definitions;
+    const cloudHosted = paperclipGoogleSignInAvailable();
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
       // Full definitions of plugin-provided connectors. Like the built-in
@@ -970,9 +975,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...pluginApps.map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });
@@ -1063,9 +1068,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // client they registered themselves. Report that instead of a 4xx so
           // the wizard can ask for it rather than losing the draft.
           const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
-          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required"
+            && code !== "oauth_instance_client_endpoint_mismatch") throw error;
+          const reason = (error as HttpError).details as { reason?: unknown } | undefined;
           result.auth.startUrl = null;
           result.auth.manualClientRequired = true;
+          result.auth.manualClientReason = typeof reason?.reason === "string"
+            ? reason.reason
+            : code === "oauth_instance_client_endpoint_mismatch" ? (error as HttpError).message : null;
         }
       }
       await logActivity(db, {
@@ -1235,7 +1245,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
     assertBoard(req);
-    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus());
+    const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
+    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
+      try {
+        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
+      } catch (error) {
+        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+      }
+    } : undefined));
   });
 
   router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
@@ -2533,6 +2550,38 @@ function connectorEnrollmentPrincipal(req: Request): string {
       ? await requestStoredContentDeletion(req, connection)
       : null;
     res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
+  });
+
+  router.post("/tool-connections/:connectionId/sign-in/cancel", managementGuard("connections:configure", "POST /tool-connections/:connectionId/sign-in/cancel", { personal: true }), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const applicationBefore = await svc.getApplication(existing.applicationId);
+    const result = await svc.abandonFirstSignIn(existing.id, existing.companyId, connectionRequestActor(req));
+    if (!result.abandoned) {
+      res.json({ abandoned: false, connection: result.connection });
+      return;
+    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.sign_in_cancelled",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: { transport: existing.transport, ...result.removal },
+    });
+    const applicationAfter = await svc.getApplication(existing.applicationId);
+    if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
+      await logActivity(db, {
+        companyId: applicationAfter.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_application.archived",
+        entityType: "tool_application",
+        entityId: applicationAfter.id,
+        details: { type: applicationAfter.type, name: applicationAfter.name, reason: "sign_in_cancelled" },
+      });
+    }
+    res.json({ abandoned: true, connection: result.connection });
   });
 
   async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {

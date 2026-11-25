@@ -55,4 +55,6 @@ export const EVENT_RETENTION_CLASS: Partial<Record<string, RetentionClass>> = {
   "plan.created": "operational_enum_count",
   "plan.approved": "operational_enum_count",
   "artifact.created": "operational_enum_count",
+  "connection.app_linked": "operational_enum_count",
+  "connection.app_requested": "operational_enum_count",
 };

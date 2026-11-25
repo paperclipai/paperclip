@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { createActionsReader } from "./github-actions-reader.mjs";
+import { createActionsReader, GitHubActionsRateLimitError } from "./github-actions-reader.mjs";
 import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 import { createRunnerLossRetry } from "./cloud-readiness-runner-loss.mjs";
 
@@ -130,7 +130,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Long enough for a deferred full run plus two runner-loss retries.
     const timeoutMs = 90 * 60_000;
     const deadline = Date.now() + timeoutMs;
-    const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
+    const api = createActionsReader({ token: process.env.GITHUB_TOKEN, tokenSource: process.env.GITHUB_TOKEN_SOURCE, deadlineAt: () => deadline, maxRetryAfterMs: timeoutMs });
     const canonical = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master";
     const rerun = canonical ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
     const retryRunnerLoss = canonical ? createRunnerLossRetry({ token: process.env.GITHUB_TOKEN }) : undefined;
@@ -139,7 +139,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(message);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);
   } catch (error) {
-    console.error(error.message);
+    console.error(error instanceof GitHubActionsRateLimitError ? `::error title=GitHub API rate limited::${error.message}` : error.message);
     process.exitCode = 1;
   }
 }

@@ -248,7 +248,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         await waitForCondition("parked Runner stopped", () => handle!.isExitConfirmed?.() === true);
         const identity = { ...operation.identity, ...operation.runner };
         const archived = join(runnerRoot, `archived-${operation.identity.runId}.json`);
-        const archivedState = await state();
+        const parkedState = await state();
         await rename(join(runnerRoot, "runner-state.json"), archived);
         const launch = submittedLaunch!.launch!;
         listenPath = `/api/runner/v1/connect/${identity.runId}`;
@@ -260,8 +260,8 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           ...(harness === "claude" ? { acpxLaunchProfile: { authorityDigest: `sha256:${sha("fixture authority")}`, command: sidecar,
             commandSha256: `sha256:${sha(await readFile(sidecar, "utf8"))}`, sidecarScript,
             sidecarScriptSha256: `sha256:${sha(await readFile(sidecarScript, "utf8"))}` } } : {}) });
-        relaunches.push({ source: operation.identity, runId: identity.runId, archivedRunId: archivedState.runId });
-        return { kind: "resume", taskId, outcome: "resumed", runner: artifact, archivedState };
+        relaunches.push({ source: operation.identity, runId: identity.runId, archivedRunId: parkedState.runId });
+        return { kind: "resume", taskId, outcome: "resumed", runner: artifact };
       }
       if (operation.kind === "resume") {
         expect(relaunch).toBe(false);
@@ -310,7 +310,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
-      expect(await proof()).toMatchObject({ source: releases[0], taskId });
+      expect(await proof()).toBeUndefined();
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
       const pid = handle!.child.pid;
@@ -324,7 +324,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
         } else await new Promise(done => setTimeout(done, adoptedIdleTimeoutMs + 200));
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
-        expect(await proof()).toMatchObject({ source: releases[0], taskId });
+        expect(await proof()).toBeUndefined();
       }
       expect(readNativeSessionIdleWork()).toBe("none");
       await reconcileNativeFinalizations(db, [runId]);
@@ -358,7 +358,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           expect(handle!.isExitConfirmed!()).toBe(true);
           expect((await readFile(calls, "utf8")).split(/\r?\n/).filter(method => method === "turn/start")).toHaveLength(1);
           expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runB)))).toHaveLength(0);
-          expect(releases).toHaveLength(1); expect((await proof())?.source.runId).not.toBe(runB);
+          expect(releases).toHaveLength(1); expect(await proof()).toBeUndefined();
           return runB;
         }
         expect(await pendingFollowup).toMatchObject({ exitCode: 0, timedOut: false });
@@ -369,7 +369,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       const runB = await admitNext();
       if (cancellation) return;
       await waitForCondition("automatic release B", () => releases.length === 2);
-      expect(await proof()).toMatchObject({ source: releases[1], taskId });
+      expect(await proof()).toBeUndefined();
       expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       expect(adoption).toHaveBeenCalledTimes(adopted ? 1 : 0);
       if (adopted) expect(adoption.mock.calls[0]![0]).toMatchObject({ identity: releases[0], execution: { binding: { runId: runB } } });
@@ -377,7 +377,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       if (adopted) {
         runC = await admitNext();
         await waitForCondition("automatic release C", () => releases.length === 3);
-        expect(releases[2]!.runId).toBe(runC); expect(await proof()).toMatchObject({ source: releases[2], taskId });
+        expect(releases[2]!.runId).toBe(runC); expect(await proof()).toBeUndefined();
         expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
         expect(adoption).toHaveBeenCalledTimes(1);
       }

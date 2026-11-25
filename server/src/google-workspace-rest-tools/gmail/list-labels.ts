@@ -52,6 +52,7 @@ export function listLabelsResult(list: GmailLabelList, input: ListLabelsArgs): C
 export const listLabels = defineTool({
   definition: {
     name: "list_labels",
+    title: "List labels",
     description: "Lists the user-defined labels in the signed-in user's Gmail with their IDs and names, sorted by name. Use the IDs with list_threads, and the names (spaces written as hyphens) with `label:` in search queries. System labels are not listed; their IDs are INBOX, SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT and CHAT.",
     inputSchema: {
       type: "object",

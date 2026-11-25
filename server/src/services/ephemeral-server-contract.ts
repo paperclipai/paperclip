@@ -120,39 +120,70 @@ export async function assertEphemeralServerData(db: Db) {
   throw new Error(`Volume-free server data is not eligible: ${blockers.map(detail).join(", ")}`);
 }
 
+const failedCheckCode = (error: unknown) => {
+  const message = error instanceof Error ? error.message : "";
+  if (/^[a-z_]{1,80}$/.test(message)) return `:${message}`;
+  if (error instanceof SyntaxError) return ":invalid_source_json";
+  const errno = (error as { code?: unknown } | null)?.code;
+  return typeof errno === "string" && /^E[A-Z]{2,20}$/.test(errno) ? `:source_${errno.toLowerCase()}` : "";
+};
+
 export async function readEphemeralServerDataEligibility(db: Db, options: { purpose?: "migration" | "startup" } = {}) {
   const blockers: string[] = [];
-  const [missingFiles] = await db.select({ id: agents.id }).from(agents).leftJoin(agentFileRoots,
-    and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
-    .where(isNull(agentFileRoots.agentId)).limit(1);
-  if (missingFiles) blockers.push("agent_files_require_migration");
-  if (await hasUnsettledLocalInstructionCopies(db)) blockers.push("local_instruction_copies_require_settlement");
+  const check = async (area: string, blocker: string, inspect: () => Promise<boolean>) => {
+    try {
+      if (await inspect()) blockers.push(blocker);
+    } catch (error) {
+      logger.warn({ err: error, blocker }, "Volume-free data eligibility check failed");
+      blockers.push(`${area}_check_failed${failedCheckCode(error)}`);
+    }
+  };
+  await check("agent_files", "agent_files_require_migration", async () => {
+    const [missingFiles] = await db.select({ id: agents.id }).from(agents).leftJoin(agentFileRoots,
+      and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
+      .where(isNull(agentFileRoots.agentId)).limit(1);
+    return Boolean(missingFiles);
+  });
+  await check("local_instruction_copies", "local_instruction_copies_require_settlement", () => hasUnsettledLocalInstructionCopies(db));
   // Only inspect configuration here; filesystem reads must never adopt an
   // empty directory on the replacement machine as the old server's content.
-  const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
-  if (configured.some(agent => agentInstructionsBundleMode(agent) === "external")) blockers.push("external_agent_instructions");
-  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-    .where(localWorkspaceDependencyWhere(db)).limit(1);
-  if (localWorkspace) blockers.push("workspaces_require_migration");
-  const [localLog] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.logStore, "local_file"), isNotNull(heartbeatRuns.logRef),
-  )).limit(1);
-  if (localLog) blockers.push("run_logs_require_migration");
-  const [localTrace] = await db.select({ id: providerTraceRecords.id }).from(providerTraceRecords).where(and(
-    isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
-  )).limit(1);
-  if (localTrace) blockers.push("provider_traces_require_migration");
-  if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
-  const controller = await findLocalNativeControllerObligation(db);
-  if (controller) blockers.push("native_controllers_require_migration");
-  if (await hasLocalRuntimeSkillObligations(db)) blockers.push(RUNTIME_SKILL_ASSETS_BLOCKER);
-  const skills = skillInstallationMaintenance(db);
-  let after: string | undefined;
-  for (;;) {
-    const page = await skills.eligibility({ after, limit: 50, purpose: options.purpose });
-    if (page.results.some(skill => skill.status !== "version_backed")) { blockers.push("skills_require_migration"); break; }
-    if (page.inspected < 50 || !page.after) break;
-    after = page.after;
-  }
-  return { eligible: blockers.length === 0, blockers, controller };
+  await check("agent_instructions", "external_agent_instructions", async () => {
+    const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
+    return configured.some(agent => agentInstructionsBundleMode(agent) === "external");
+  });
+  await check("workspaces", "workspaces_require_migration", async () => {
+    const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+      .where(localWorkspaceDependencyWhere(db)).limit(1);
+    return Boolean(localWorkspace);
+  });
+  await check("run_logs", "run_logs_require_migration", async () => {
+    const [localLog] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.logStore, "local_file"), isNotNull(heartbeatRuns.logRef),
+    )).limit(1);
+    return Boolean(localLog);
+  });
+  await check("provider_traces", "provider_traces_require_migration", async () => {
+    const [localTrace] = await db.select({ id: providerTraceRecords.id }).from(providerTraceRecords).where(and(
+      isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
+    )).limit(1);
+    return Boolean(localTrace);
+  });
+  await check("native_harness_backups", "native_harness_backups_require_migration", () => hasLocalNativeHarnessObligations(db));
+  const found: { controller: Awaited<ReturnType<typeof findLocalNativeControllerObligation>> } = { controller: null };
+  await check("native_controllers", "native_controllers_require_migration", async () => {
+    found.controller = await findLocalNativeControllerObligation(db);
+    return Boolean(found.controller);
+  });
+  await check("runtime_skill_assets", RUNTIME_SKILL_ASSETS_BLOCKER, () => hasLocalRuntimeSkillObligations(db));
+  await check("skills", "skills_require_migration", async () => {
+    const skills = skillInstallationMaintenance(db);
+    let after: string | undefined;
+    for (;;) {
+      const page = await skills.eligibility({ after, limit: 50, purpose: options.purpose });
+      if (page.results.some(skill => skill.status !== "version_backed" && skill.status !== "source_unavailable")) return true;
+      if (page.inspected < 50 || !page.after) return false;
+      after = page.after;
+    }
+  });
+  return { eligible: blockers.length === 0, blockers, controller: found.controller };
 }

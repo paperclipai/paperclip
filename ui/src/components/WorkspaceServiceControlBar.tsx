@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { safeExternalHttpUrl } from "../lib/safe-url";
 
 export type WorkspaceServiceControlState =
   | "stopped"
@@ -157,7 +158,7 @@ function UrlSegment({ entry, compact }: { entry: WorkspaceServiceControlEntry; c
     <>
       {live ? (
         <a
-          href={entry.url ?? undefined}
+          href={safeExternalHttpUrl(entry.url) ?? undefined}
           target="_blank"
           rel="noreferrer"
           title={entry.url ?? undefined}
@@ -184,7 +185,7 @@ function UrlSegment({ entry, compact }: { entry: WorkspaceServiceControlEntry; c
           title="Open in new tab"
         >
           {live ? (
-            <a href={entry.url ?? undefined} target="_blank" rel="noreferrer" aria-label="Open in new tab">
+            <a href={safeExternalHttpUrl(entry.url) ?? undefined} target="_blank" rel="noreferrer" aria-label="Open in new tab">
               <ExternalLink className="size-3" />
             </a>
           ) : (
@@ -379,7 +380,7 @@ function ServicePopoverRow({
           {live && entry.url ? (
             <>
               <a
-                href={entry.url}
+                href={safeExternalHttpUrl(entry.url) ?? undefined}
                 target="_blank"
                 rel="noreferrer"
                 title={entry.url}

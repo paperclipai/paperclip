@@ -316,6 +316,29 @@ describeEmbeddedPostgres("activity service", () => {
     expect(ids(retryRunId)).toBeNull();
   });
 
+  it("tells the task view whether a failed /swarm needs the person before Retry, and nothing more", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Swarm", status: "blocked", priority: "medium", assigneeAgentId: agentId });
+    const failure = (retryability: string) => ({ schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn",
+      category: "unknown", retryability, message: "The swarm ended without doing any work." });
+    const [refused, noResult, other] = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(heartbeatRuns).values([
+      { id: refused, errorCode: "antigravity_swarm_unavailable", resultJson: { providerFailure: failure("requires_action") } },
+      { id: noResult, errorCode: "antigravity_swarm_unavailable", resultJson: { providerFailure: failure("unknown") } },
+      { id: other, errorCode: "adapter_failed", resultJson: { providerFailure: failure("unknown") } },
+    ].map((run, index) => ({ ...run, companyId, agentId, scopeKind: "issue" as const, issueId, invocationSource: "assignment",
+      status: "failed", createdAt: new Date(Date.now() - (3 - index) * 1000), contextSnapshot: { issueId } })));
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+    const summary = (id: string) => (runs.find(run => run.runId === id)?.resultJson as Record<string, unknown> | null)?.providerFailure;
+    expect(summary(refused)).toEqual({ provider: "antigravity", retryability: "requires_action" });
+    expect(summary(noResult)).toEqual({ provider: "antigravity", retryability: "unknown" });
+    expect(summary(other)).toBeUndefined();
+  });
+
   it.each([null, "native_provider_model_rejected", "adapter_failed"])("returns compact issue runs with bounded model rejection details: %s", async (errorCode) => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -45,6 +45,7 @@ import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
+import { requestIssueConnectionContentDeletion } from "./tool-access/connections/issue-content-deletion.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
@@ -2209,6 +2210,10 @@ const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function originKindPrefixCondition(prefix: string) {
+  return like(issues.originKind, `${escapeLikePattern(String(prefix))}%`);
 }
 
 export function clampIssueListLimit(limit: number): number {
@@ -6799,7 +6804,7 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind)
     conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix)
-    conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    conditions.push(originKindPrefixCondition(filters.originKindPrefix));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
@@ -8719,9 +8724,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
@@ -9045,9 +9048,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
@@ -12793,6 +12794,9 @@ export function issueService(db: Db) {
           }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyRoutineExecutionStatus(tx, id);
+          if (owner) {
+            await requestIssueConnectionContentDeletion(tx as unknown as Db, { companyId: owner.companyId, issueId: id, actorAgentId });
+          }
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))

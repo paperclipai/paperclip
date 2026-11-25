@@ -179,6 +179,17 @@ Compute its content ID with the same selection:
 `pnpm --silent test:e2e:runner:image-id --candidate-providers=cursor`.
 Candidate assets and the default pack have distinct image identities. Never reuse
 the default image's content ID for a candidate build.
+
+Google Antigravity (`antigravity`) is built only for Linux x64. The builder
+downloads the pinned ~274 MB archive into memory, patches it and keeps only the
+~850 MB patched closure under `provider-assets/antigravity/linux-x64`; it then
+starts the closure once, without credentials, to confirm the runtime version and
+native admission patch. While the profile is pending the pack lists it under
+`candidateProviders`; once the profile is released it moves to `providers` and
+is included without the flag. The controller pack
+(`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`) must be built with the same
+candidate selection and source revision as the image, or the image pack is not
+reused.
 Use each provider branch's recorded version and explicit model. Keep credentials
 out of images. Paid qualification requires bound provider and Daytona credentials,
 inspectable spend, and the shared $100 ceiling recorded in the capability report.

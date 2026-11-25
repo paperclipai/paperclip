@@ -18,6 +18,7 @@ import type {
   WorkspaceServiceControlAction,
   WorkspaceServiceControlEntry,
 } from "@/components/WorkspaceServiceControlBar";
+import { safeExternalHttpUrl } from "../lib/safe-url";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -470,8 +471,8 @@ function CommandSection({
                   />
                 </div>
                 <div className="space-y-1 text-xs text-muted-foreground">
-                  {item.url ? (
-                    <a href={item.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
+                  {safeExternalHttpUrl(item.url) ? (
+                    <a href={safeExternalHttpUrl(item.url) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                       {item.url}
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>
@@ -605,7 +606,7 @@ export function WorkspaceRuntimeQuickControls({
   iconOnly?: boolean;
 }) {
   const controlItems = sections.services.length > 0 ? sections.services : sections.otherServices;
-  const serviceUrl = getRunningRuntimeServiceUrl(sections);
+  const serviceUrl = safeExternalHttpUrl(getRunningRuntimeServiceUrl(sections));
   const alignEnd = align === "end";
 
   if (controlItems.length === 0 && !serviceUrl) return null;

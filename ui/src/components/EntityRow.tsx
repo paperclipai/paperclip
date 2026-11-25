@@ -23,7 +23,6 @@ interface EntityRowProps {
   titleClassName?: string;
   titleTextClassName?: string;
   subtitleClassName?: string;
-  reserveSubtitleSpace?: boolean;
   /**
    * Make the title (the row's primary identifier) win the flex fight: it keeps a
    * usable min-width floor and ellipsizes, while the `meta` cluster is the item
@@ -59,7 +58,6 @@ export function EntityRow({
   titleClassName,
   titleTextClassName,
   subtitleClassName,
-  reserveSubtitleSpace,
   titlePriority,
   secondaryRow,
   secondaryRowClassName,
@@ -98,15 +96,13 @@ export function EntityRow({
           </span>
           {titleAccessory}
         </div>
-        {(subtitle || reserveSubtitleSpace) && (
+        {Boolean(subtitle) && (
           <p
             className={cn(
               "text-xs text-muted-foreground mt-0.5 min-h-4",
               !subtitleClassName && "truncate",
               subtitleClassName,
-              !subtitle && "invisible",
             )}
-            aria-hidden={!subtitle}
           >
             {subtitle}
           </p>

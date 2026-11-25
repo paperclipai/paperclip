@@ -4,8 +4,9 @@ import type { ActorInfo, DbTransaction } from "../types.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
-import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
+import { deleteGoogleContentWhenAccessEnds } from "../connections/google-content-retention.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, companySecrets, toolConnections } from "@paperclipai/db";
@@ -149,23 +150,36 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 throw new PaperclipCloudConnectorError("Google did not return verifiable permissions", "REAUTHORIZATION_REQUIRED");
               }
             } catch (error) {
+              const cloudOnly = error instanceof PaperclipCloudConnectorError
+                && profile.provider === "google"
+                && error.brokerReason === "PROVIDER_CLOUD_ONLY";
               if (
                 error instanceof PaperclipCloudConnectorError &&
-                error.code === "REAUTHORIZATION_REQUIRED"
+                (error.code === "REAUTHORIZATION_REQUIRED" || cloudOnly)
               ) {
-                await db
-                  .update(connectionGrants)
-                  .set({ status: "needs_reauthorization", updatedAt: now() })
-                  .where(
-                    and(
-                      eq(connectionGrants.id, grant.id),
-                      eq(connectionGrants.companyId, grant.companyId),
-                    ),
-                  );
+                const accessEndedAtGoogle = profile.provider === "google"
+                  && error.code === "REAUTHORIZATION_REQUIRED"
+                  && error.brokerReason === "PROVIDER_REAUTHORIZATION_REQUIRED";
+                await db.transaction(async (tx) => {
+                  const [marked] = await tx
+                    .update(connectionGrants)
+                    .set({ status: "needs_reauthorization", updatedAt: now() })
+                    .where(
+                      and(
+                        eq(connectionGrants.id, grant.id),
+                        eq(connectionGrants.companyId, grant.companyId),
+                        eq(connectionGrants.status, "active"),
+                        sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
+                      ),
+                    )
+                    .returning({ id: connectionGrants.id });
+                  if (marked && accessEndedAtGoogle) await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "provider_access_ended");
+                });
                 throw unprocessable(
-                  "Managed authorization must be reconnected",
+                  cloudOnly ? `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}` : "Managed authorization must be reconnected",
                   {
                     code: "oauth_reauthorization_required",
+                    ...(cloudOnly ? { reason: "google_sign_in_cloud_only" } : {}),
                     setupUrl: connectionSetupUrl(connection),
                     reconnectUrl: connectionReconnectUrl(connection),
                   },
@@ -306,6 +320,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           const client = await oauthClientForConnection(
             connection,
             oauthProvider,
+            oauthTokenUrl,
             credentialActor,
           );
           if (!client.clientId)
@@ -346,7 +361,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                   ref.configPath !== "oauth.access_token" &&
                   ref.configPath !== "oauth.refresh_token",
               );
-            const [marked] = await db
+            const accessEndedAtGoogle = asRecord(error.details).providerError === "invalid_grant";
+            const [marked] = await db.transaction(async (tx) => {
+              const rows = await tx
               .update(connectionGrants)
               .set({
                 status: "needs_reauthorization",
@@ -369,6 +386,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 ),
               )
               .returning();
+              if (rows[0] && accessEndedAtGoogle) await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "provider_access_ended");
+              return rows;
+            });
             if (!marked) {
               const latest = await getOAuthGrantRow(input);
               const latestExpiresAt = oauthGrantExpiresAtMs(latest, connection);

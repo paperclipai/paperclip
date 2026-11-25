@@ -128,6 +128,7 @@ export function createFileResult(file: RestFile): CallToolResult {
 export const createFile = defineTool({
   definition: {
     name: "create_file",
+    title: "Create a file",
     description: "Creates a new file in Google Drive and returns it. It never changes or replaces an existing file. Prefer textContent for text; use base64Content for other bytes. Content is at most 5 MB. contentMimeType is required with content. By default, content Google can convert becomes a Google file: text, Markdown, HTML, RTF and Word files become Google Docs; CSV, TSV and Excel files become Sheets; PowerPoint files become Slides. Set disableConversionToGoogleType to keep the uploaded type. Without content, contentMimeType must be application/vnd.google-apps.document, application/vnd.google-apps.spreadsheet, application/vnd.google-apps.presentation or application/vnd.google-apps.folder. With Drive file access (drive.file), parentId must be a folder this app created or was given.",
     inputSchema: {
       type: "object",

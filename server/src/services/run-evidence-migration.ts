@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   heartbeatRunEvents,
@@ -28,6 +28,28 @@ import { logActivity, publishActivity, type ActivityPublication } from "./activi
 import { logger } from "../middleware/logger.js";
 
 const SETTLED = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+const NOT_A_PREFIX = "legacy_recorded_log_not_a_prefix";
+
+async function recordedPrefixOfLongerLog(logRef: string, bytes: number, sha256: string, signal?: AbortSignal) {
+  const source = await openLegacyRunLogForMigration(logRef);
+  try {
+    if (source.bytes === undefined || source.bytes <= bytes) return false;
+    if (source.source !== "local") throw new Error("mirror_completeness_unproven");
+    const hash = createHash("sha256");
+    let remaining = bytes;
+    for await (const chunk of source.stream) {
+      signal?.throwIfAborted();
+      if (remaining <= 0) break;
+      const part = Buffer.from(chunk).subarray(0, remaining);
+      hash.update(part);
+      remaining -= part.length;
+    }
+    if (remaining > 0 || hash.digest("hex") !== sha256) throw new Error(NOT_A_PREFIX);
+    return true;
+  } finally {
+    source.stream.destroy();
+  }
+}
 export interface RunEvidenceMigrationItem {
   kind: "log" | "trace";
   id: string;
@@ -95,6 +117,17 @@ export async function migrateRunEvidence(
       )})`,
     );
   }
+  function noPendingAttempt() {
+    return sql`not exists (select 1 from ${nativeRunFinalizations} where ${and(
+      eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+      eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+      or(
+        isNotNull(nativeRunFinalizations.nextAttemptAt),
+        isNotNull(nativeRunFinalizations.leaseOwner),
+        notInArray(nativeRunFinalizations.phase, ["committed", "terminal_failure"]),
+      ),
+    )})`;
+  }
   async function assertDrained(runId: string, companyId: string) {
     const [run] = await db
       .select({ id: heartbeatRuns.id })
@@ -144,9 +177,18 @@ export async function migrateRunEvidence(
       if (!run.logRef) throw new Error("legacy_reference_missing");
       const originalLogRef = run.logRef;
       await assertDrained(run.id, run.companyId);
-      const historicalArchive = (preserveHistoricalFiles || preserveSettledNativeFiles) && run.runtimeMode === "native" &&
+      const recorded = run.bytes !== null && run.sha256 ? { bytes: run.bytes, sha256: run.sha256 } : null;
+      const nativeHistory = (preserveHistoricalFiles || preserveSettledNativeFiles) && run.runtimeMode === "native" &&
         (run.bytes === null || run.sha256 === null);
-      const scopedArchive = historicalArchive && preserveSettledNativeFiles;
+      const appended = recorded !== null
+        && await recordedPrefixOfLongerLog(run.logRef, recorded.bytes, recorded.sha256, options.signal);
+      const historicalArchive = nativeHistory || appended;
+      const scopedArchive = nativeHistory && preserveSettledNativeFiles;
+      if (appended) {
+        const [settled] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), noPendingAttempt()));
+        if (!settled) throw new Error("legacy_writer_retry_pending");
+      }
       const sourceFence = scopedArchive ? options.apply
         ? await withNativeLogArchiveSource(db, run, undefined, async (_tx, fence) => fence)
         : await inspectNativeLogArchiveSource(db, run) : undefined;
@@ -189,6 +231,7 @@ export async function migrateRunEvidence(
         throw new Error("mirror_completeness_unproven");
       }
       const hash = createHash("sha256");
+      const prefixHash = appended ? createHash("sha256") : undefined;
       const nativeCoverage =
         !historicalArchive && run.runtimeMode === "native" && (run.bytes === null || run.sha256 === null)
           ? createNativeRunLogCoverageVerifier(db, run.companyId, run.id)
@@ -201,6 +244,8 @@ export async function migrateRunEvidence(
           options.signal?.throwIfAborted();
           const bytes = Buffer.from(chunk);
           hash.update(bytes);
+          if (prefixHash && recorded && offset < recorded.bytes)
+            prefixHash.update(bytes.subarray(0, recorded.bytes - offset));
           await nativeCoverage?.write(bytes);
           tail = Buffer.concat([tail, bytes]).subarray(-262144);
           if (writer) {
@@ -222,12 +267,13 @@ export async function migrateRunEvidence(
       }
       const digest = hash.digest("hex");
       if (source.source === "local") await source.assertUnchanged();
-      if (
-        (source.bytes !== undefined && source.bytes !== offset) ||
-        (run.bytes !== null && run.bytes !== offset) ||
-        (run.sha256 && run.sha256 !== digest)
-      )
+      if (source.bytes !== undefined && source.bytes !== offset)
         throw new Error("legacy_length_or_digest_mismatch");
+      if (appended) {
+        if (source.source !== "local") throw new Error("mirror_completeness_unproven");
+        if (offset <= recorded!.bytes || prefixHash!.digest("hex") !== recorded!.sha256) throw new Error(NOT_A_PREFIX);
+      } else if ((run.bytes !== null && run.bytes !== offset) || (run.sha256 && run.sha256 !== digest))
+        throw new Error(recorded ? NOT_A_PREFIX : "legacy_length_or_digest_mismatch");
       for (const line of tail.toString("utf8").split("\n")) {
         try {
           const entry = JSON.parse(line);
@@ -265,7 +311,8 @@ export async function migrateRunEvidence(
         if (source.source === "local") await source.assertUnchanged();
         const publish = (database: Db) => database
           .update(heartbeatRuns)
-          .set({ logStore: historicalArchive ? "s3_archive" : "s3_segments", logRef: ref })
+          .set({ logStore: historicalArchive ? "s3_archive" : "s3_segments", logRef: ref,
+            ...(appended ? { logBytes: offset, logSha256: digest } : {}) })
           .where(
             and(
               eq(heartbeatRuns.id, run.id),
@@ -279,6 +326,7 @@ export async function migrateRunEvidence(
                 ? isNull(heartbeatRuns.logSha256)
                 : eq(heartbeatRuns.logSha256, run.sha256),
               drainedWriter(),
+              appended ? noPendingAttempt() : undefined,
               run.runtimeMode === "native" && !historicalArchive
                 ? sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(
                     nativeRunLogSourceWhere(run.companyId, run.id),
@@ -289,18 +337,25 @@ export async function migrateRunEvidence(
           )
           .returning({ id: heartbeatRuns.id });
         const publications: ActivityPublication[] = [];
+        const publishArchive = async (tx: Db) => {
+          const result = await publish(tx);
+          if (!result.length) throw new Error("migration_publication_conflict");
+          await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "run-evidence-migration",
+            action: "run.historical_log_archived", entityType: "heartbeat_run", entityId: run.id,
+            agentId: run.agentId, runId: run.id, details: { ...(appended ? { reason: "output_appended_after_finalize",
+              recorded: { bytes: recorded!.bytes, sha256: recorded!.sha256 } } : {}),
+              bytes: offset, sha256: digest, ...(sourceFence ? { sourceFence } : {}) } }, publications);
+          return result;
+        };
         const [updated] = scopedArchive
           ? await withNativeLogArchiveSource(db, run, sourceFence, async tx => {
               if (source.source !== "local") throw new Error("native_log_archive_local_source_required");
               await source.assertUnchanged();
-              const result = await publish(tx);
-              if (!result.length) throw new Error("migration_publication_conflict");
-              await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "run-evidence-migration",
-                action: "run.historical_log_archived", entityType: "heartbeat_run", entityId: run.id,
-                agentId: run.agentId, runId: run.id, details: { bytes: offset, sha256: digest, sourceFence } }, publications);
-              return result;
+              return publishArchive(tx);
             })
-          : await publish(db);
+          : appended
+            ? await db.transaction(transaction => publishArchive(transaction as unknown as Db))
+            : await publish(db);
         if (!updated) throw new Error("migration_publication_conflict");
         item.state = "migrated";
         for (const publication of publications) {
