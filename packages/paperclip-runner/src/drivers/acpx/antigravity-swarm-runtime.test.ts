@@ -444,6 +444,78 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(alive(worker)).toBe(false);
   });
 
+  describe("helpers that lead their own process groups", () => {
+    const HELPER_DELAY_MS = 2_500;
+    const waitFor = async (check: () => boolean, timeoutMs = 5_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (!check()) { if (Date.now() > deadline) throw new Error("timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
+    };
+    const siblings: number[] = [];
+    afterEach(() => { for (const pid of siblings.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } });
+
+    async function startOrphanSwarm() {
+      const context = setup("orphan-helpers");
+      const spawnChild = context.options.command.spawn;
+      let cliPid = 0;
+      (context.options.command as { spawn: typeof spawnChild }).spawn = (args, spawnOptions = {}, lifetime) => {
+        const env = { ...(spawnOptions as { env?: NodeJS.ProcessEnv }).env, FAKE_AGY_HELPER_DELAY_MS: String(HELPER_DELAY_MS) };
+        const child = spawnChild(args, { ...spawnOptions, env }, lifetime);
+        cliPid = child.pid!;
+        return child;
+      };
+      // An unrelated process of the same OS user, not started by this run's CLI.
+      const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      siblings.push(sibling.pid!);
+      const runtime = await openAntigravitySwarmRuntime(context.options, { lineageSampleIntervalMs: 20, cancelGraceMs: 500 });
+      const turn = runtime.startTurn({ text: envelope(SWARM_REQUEST), requestId: "run-1:turn-1" });
+      void (async () => { for await (const _event of turn.events) { /* drain */ } })();
+      await waitFor(() => existsSync(context.workerPidFile) && readFileSync(context.workerPidFile, "utf8").length > 0);
+      const helper = Number(readFileSync(context.workerPidFile, "utf8"));
+      // Let the lineage record the helper while the CLI still runs.
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(alive(helper)).toBe(true);
+      return { ...context, runtime, turn, helper, sibling: sibling.pid!, cliPid, late: join(context.cwd, "late.txt") };
+    }
+    const settledAfterHelperDeadline = () => new Promise(resolve => setTimeout(resolve, HELPER_DELAY_MS + 500));
+
+    it("stops them before reporting a killed CLI, without waiting on the pipe they hold, and leaves other processes alone", async () => {
+      const run = await startOrphanSwarm();
+      const killedAt = Date.now();
+      process.kill(run.cliPid, "SIGKILL");
+      const result = await run.turn.result;
+      const reportedAfterMs = Date.now() - killedAt;
+      // The helper is already gone when the failure is reported.
+      expect(alive(run.helper)).toBe(false);
+      expect(result).toMatchObject({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", retryable: true } });
+      expect(reportedAfterMs).toBeLessThan(2_000);
+      await run.runtime.close({ reason: "done" });
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
+
+    it("stops them on Stop before the stopped turn is reported", async () => {
+      const run = await startOrphanSwarm();
+      await run.turn.cancel({ reason: "Stop" });
+      expect(await run.turn.result).toMatchObject({ status: "cancelled" });
+      expect(alive(run.helper)).toBe(false);
+      await run.runtime.close({ reason: "done" });
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
+
+    it("stops them when the runner shuts the runtime down mid-swarm", async () => {
+      const run = await startOrphanSwarm();
+      await run.runtime.close({ reason: "shutdown" });
+      expect(alive(run.helper)).toBe(false);
+      expect(alive(run.cliPid)).toBe(false);
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
+  });
+
   const trackPid = (options: AcpxRuntimePortOpenOptions) => {
     const tracked = { pid: 0 };
     const spawnChild = options.command.spawn;

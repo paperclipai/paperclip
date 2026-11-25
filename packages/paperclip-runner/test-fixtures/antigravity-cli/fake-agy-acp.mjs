@@ -12,6 +12,10 @@
 //   cancel         helpers keep running (a real child process) until session/cancel; the CLI
 //                  streams a token count, then answers the stopped prompt with its usage so far
 //   die            the CLI streams a token count, then exits in the middle of the swarm
+//   orphan-helpers a helper runs as its own process-group leader holding the CLI's output
+//                  pipe (as the real CLI's helper shells do) and writes late.txt in the
+//                  workspace after FAKE_AGY_HELPER_DELAY_MS; the CLI never stops it itself.
+//                  The test kills the CLI, stops the turn or closes the runtime.
 //   refusal        the provider refusal arrives as ordinary text with end_turn
 //   quota          the 429 quota refusal, as seen live on 2026-11-24
 //   wrong-version | no-auto | wrong-mode | wrong-model   receipt mismatches
@@ -185,6 +189,14 @@ async function prompt(id, params) {
   }
   // The terminal hint arrives in pieces, as recorded live: the hint complete without its period, then the period alone.
   for (const chunk of ["I have configured and launched the swarm.\n", "\nRun /swarm board (default shortcut alt+s) to open the live board", "."]) say(chunk);
+  if (scenario === "orphan-helpers") {
+    const late = join(state.cwd, "late.txt");
+    const helper = spawn(process.execPath, ["-e", `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(late)}, "late"), ${Number(process.env.FAKE_AGY_HELPER_DELAY_MS ?? 3000)})`],
+      { detached: true, stdio: ["ignore", "inherit", "inherit"] });
+    if (process.env.FAKE_AGY_WORKER_PID_FILE) writeFileSync(process.env.FAKE_AGY_WORKER_PID_FILE, String(helper.pid));
+    if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
+    return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled", usage: stoppedUsage } });
+  }
   if (scenario === "cancel" || scenario === "die") {
     update(state.sessionId, { sessionUpdate: "usage_update", used: 52000, size: 1048576, _meta: { usage: streamedUsage } });
     // A helper is a real descendant in the CLI's process group.
