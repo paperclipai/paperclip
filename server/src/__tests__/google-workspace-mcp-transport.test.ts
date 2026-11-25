@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions,
-  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations,
+  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations, toolPolicies, toolProfileEntries,
 } from "@paperclipai/db";
 import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
@@ -74,6 +74,7 @@ const allowlisted = (keep: (name: string) => boolean = () => true) => LAUNCH_SER
   .flatMap((service) => googleWorkspaceServiceToolNames(service).map((name) => `${service}__${name}`)).filter(keep).sort();
 const SCHEMAS_22634: Record<string, Record<string, unknown>> = JSON.parse(
   readFileSync(new URL("../google-workspace-rest-tools/fixtures/input-schemas-22634.json", import.meta.url), "utf8"));
+const UNLISTED = new Set<string>();
 const names = (catalog: Array<{ toolName: string }>) => catalog.map((entry) => entry.toolName).sort();
 
 type Confirmation = "none" | "legacy" | "modern";
@@ -126,7 +127,7 @@ function fakeGoogle(options: { confirm?: Confirmation } = {}) {
     }
     if (body.method === "tools/list") {
       const service = (Object.keys(HOSTS) as Array<keyof typeof HOSTS>).find((key) => HOSTS[key] === url.hostname)!;
-      const tools = [...googleWorkspaceServiceToolNames(service), ...(FORBIDDEN[url.hostname] ?? [])].map((name) => ({
+      const tools = [...googleWorkspaceServiceToolNames(service), ...(FORBIDDEN[url.hostname] ?? [])].filter((name) => !UNLISTED.has(name)).map((name) => ({
         name, description: `Google's ${name}.`, inputSchema: SCHEMAS[name] ?? { type: "object" },
         annotations: { readOnlyHint: /^(get|list|search|read|download|suggest)_/.test(name) },
       }));
@@ -575,6 +576,95 @@ const support = await getEmbeddedPostgresTestSupport();
       } finally {
         SCHEMAS.get_message = original;
       }
+    });
+
+    it("saves the review when Google no longer offers actions that were on, and still refuses a disabled action", async () => {
+      const f = await savedOnRest();
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      UNLISTED.add("list_threads").add("search_messages");
+      try {
+        await backOnGoogle(f);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+        UNLISTED.clear();
+      }
+      const [blocked] = await db.update(toolCatalogEntries).set({ status: "disabled", quarantineReason: null, quarantinedAt: null })
+        .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_draft"))).returning();
+      const rows = await savedRows(f.connectionId);
+      const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
+      expect(names(removed)).toEqual(["gmail__list_threads", "gmail__search_messages"]);
+      expect(removed.every((row) => row.status === "disabled")).toBe(true);
+      const held = rows.filter((row) => row.status === "quarantined");
+      expect(held.length).toBeGreaterThan(0);
+      const choices = (enabled: string[], askFirst: string[] = []) => f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: enabled, askFirstCatalogEntryIds: askFirst,
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
+      }, f.actor);
+
+      await expect(choices([...held, blocked!].map((row) => row.id)))
+        .rejects.toMatchObject({ status: 400, message: "Disabled actions cannot be enabled" });
+
+      await choices([...held, removed[0]!].map((row) => row.id), [removed[1]!.id]);
+      const after = await byName(f.connectionId);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[1]!.id);
+      expect(after.get("gmail__list_threads")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
+      expect(after.get("gmail__search_messages")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__list_threads");
+      expect(offered).not.toContain("gmail__search_messages");
+      expect(offered).not.toContain("gmail__get_draft");
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      const relisted = await byName(f.connectionId);
+      expect(relisted.get("gmail__list_threads")?.status).toBe("active");
+      expect(relisted.get("gmail__search_messages")?.status).toBe("active");
+      const offeredAgain = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offeredAgain).toContain("gmail__get_message");
+      expect(offeredAgain).not.toContain("gmail__list_threads");
+      expect(offeredAgain).not.toContain("gmail__search_messages");
+    });
+
+    it("does not keep a removed action on when a save keeps the existing access", async () => {
+      const f = await savedOnRest();
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      UNLISTED.add("list_threads");
+      try {
+        await backOnGoogle(f);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+        UNLISTED.clear();
+      }
+      const rows = await savedRows(f.connectionId);
+      const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
+      expect(names(removed)).toEqual(["gmail__list_threads"]);
+      const held = rows.filter((row) => row.status === "quarantined");
+      const [draftRow] = rows.filter((row) => row.toolName === "gmail__get_draft");
+      await db.update(toolCatalogEntries).set({ status: "disabled", quarantineReason: "mcp_tool_removed" }).where(eq(toolCatalogEntries.id, draftRow!.id));
+      const excluded = await db.update(toolProfileEntries).set({ effect: "exclude" })
+        .where(eq(toolProfileEntries.catalogEntryId, draftRow!.id)).returning();
+      expect(excluded).toHaveLength(1);
+      await f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [removed[0]!.id],
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
+        preserveExistingAccess: true,
+      }, f.actor);
+      const kept = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, excluded[0]!.profileId));
+      expect(kept.filter((entry) => entry.catalogEntryId === draftRow!.id).map((entry) => entry.effect)).toEqual(["exclude"]);
+      expect(kept.some((entry) => entry.catalogEntryId === removed[0]!.id)).toBe(false);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[0]!.id);
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect((await byName(f.connectionId)).get("gmail__list_threads")?.status).toBe("active");
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__list_threads");
     });
 
     it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {

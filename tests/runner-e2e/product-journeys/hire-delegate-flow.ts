@@ -148,8 +148,8 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     const runs = [...canonical.values()];
     const comments = await readObserved<Row[]>(`/api/issues/${chat.id}/comments?order=asc`);
     const requestIds = comments.filter(row => row.authorUserId === context.user.id).map(row => row.id);
-    const completionRepliesReady = assertHireRuns(scope, hiredId, owned.tasks, runs, undefined, requestIds, comments);
-    for (const run of projectedRuns) assertHireRuns(scope, hiredId, owned.tasks, [run], undefined, requestIds, comments);
+    const completionRepliesReady = assertHireRuns(scope, hiredId, owned.tasks, runs, undefined, requestIds, comments, options.deadlineAt);
+    for (const run of projectedRuns) assertHireRuns(scope, hiredId, owned.tasks, [run], undefined, requestIds, comments, options.deadlineAt);
     await retain("hire-delegate-observation.json", { scope: { ...scope, connectionBinding: undefined, connectionChoice: undefined }, chat, project,
       agents: owned.agents.map(row => ({ id: row.id, name: row.name, reportsTo: row.reportsTo })), tasks: owned.tasks,
       runs: runs.map(run => ({ id: run.id, issueId: hireRunIssueId(run), agentId: run.agentId, status: run.status })) });

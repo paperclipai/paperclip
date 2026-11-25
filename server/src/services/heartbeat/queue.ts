@@ -4035,7 +4035,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             executionBlocker: Pick<NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, "recoveryActionId" | "cause" | "nextAction">,
           ) => {
             if (caseRequest) waitForCaseAdmission("execution_reconciliation_required", executionBlocker.nextAction);
-            opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
+            opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause, executionBlocker.recoveryActionId ?? null);
             return recovery.defer({
               existingRequestId: executionWaitRequestId,
               commentId: wakeCommentId,

@@ -851,7 +851,8 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   if (typeof failure.message === "string" && validation.includes(failure.message)) return failure.message;
   const childText = (typeof failure.stderr === "string" ? failure.stderr : "")
     + (typeof failure.message === "string" ? failure.message : "");
-  if (failure.code === "ENOSPC" || failure.code === "EDQUOT" || /No space left on device|Disk quota exceeded/i.test(childText)) return diskFull;
+  if (failure.code === "ENOSPC" || failure.code === "EDQUOT"
+    || /No space left on device|Disk quota exceeded|paperclip_git_storage_limit:[^\n]*(?:too little free disk space|too few free inodes|stopped at its storage budget)/i.test(childText)) return diskFull;
   for (const code of ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EMFILE", "ENFILE", "EIO", "EROFS", "EEXIST"]) {
     const message = `remote_workspace_archive_fs_${code.toLowerCase()}`;
     if (failure.code === code || failure.message === message) return message;
@@ -867,20 +868,28 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
  */
 export function remoteWorkspaceFailureDetail(error: unknown): string {
   if (!error || typeof error !== "object") return "";
-  const failure = error as { code?: unknown; signal?: unknown; syscall?: unknown; killed?: unknown; cmd?: unknown; name?: unknown; message?: unknown };
+  const failure = error as { code?: unknown; signal?: unknown; syscall?: unknown; killed?: unknown; cmd?: unknown; name?: unknown; message?: unknown; stderr?: unknown };
   const fields: string[] = [];
   if (typeof failure.code === "string" && /^(E[A-Z0-9]{1,20}|ERR_[A-Z0-9_]{1,56})$/.test(failure.code)) fields.push(`code=${failure.code}`);
   if (typeof failure.code === "number" && Number.isSafeInteger(failure.code) && failure.code >= 0 && failure.code <= 255) fields.push(`exit=${failure.code}`);
   if (typeof failure.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(failure.signal)) fields.push(`signal=${failure.signal}`);
   if (typeof failure.syscall === "string" && /^[a-z_]{1,24}$/.test(failure.syscall)) fields.push(`syscall=${failure.syscall}`);
   if (failure.killed === true) fields.push("killed=true");
-  if (typeof failure.cmd === "string" && failure.cmd.startsWith("git ")) fields.push("program=git");
+  const isGit = typeof failure.cmd === "string" && failure.cmd.startsWith("git ");
+  if (isGit) fields.push("program=git");
   if (typeof failure.name === "string" && ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "AbortError"].includes(failure.name)) {
     fields.push(`name=${failure.name}`);
   }
   const reason = typeof failure.message === "string" ? /^(?:remote_workspace_archive_)?([a-z_]{1,48})$/.exec(failure.message)?.[1] : undefined;
   if (reason && (failure.message !== reason || ["unsafe", "unsafe_capture", "invalid_capture", "capture_missing"].includes(reason))) {
     fields.push(`reason=${reason}`);
+  } else if (isGit) {
+    const childText = (typeof failure.stderr === "string" ? failure.stderr : "")
+      + (typeof failure.message === "string" ? failure.message : "");
+    if (/paperclip_git_storage_limit:/i.test(childText)
+      && !/paperclip_git_storage_limit:[^\n]*(?:too little free disk space|too few free inodes|stopped at its storage budget)/i.test(childText)) {
+      fields.push("reason=git_storage_guard_unavailable");
+    }
   }
   return fields.join(" ");
 }

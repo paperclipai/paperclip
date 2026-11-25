@@ -56,7 +56,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { type AdmittedProviderPackReceipt, type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -148,7 +148,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, isMissingProviderPackBinaryError, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets, verifiedProviderPackAdmissionReceipt } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -17319,17 +17319,28 @@ async function createRunnerdBackendWithinSessionClaim(
     : remoteTarget
     ? remoteOpenCodeArtifacts?.runnerBinary || remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
     : await resolvePaperclipRunnerBinaryAsync();
-  const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
-    stateDirectory: root,
-    binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-      workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
-      runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
-      remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
-    reattach,
-    retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
-    runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
-    current: () => providerArtifacts?.manifest as RemoteProviderPackManifest ?? resolveCurrentProviderPackManifest(),
-  }) : null;
+  let providerPackAuthorityFromFallback = false;
+  const providerPackAuthorityBinding = () => ({
+    companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
+    runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
+    remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider),
+  });
+  const selectProviderPackAuthority = (reattach: boolean) => {
+    providerPackAuthorityFromFallback = false;
+    return requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
+      stateDirectory: root,
+      binding: providerPackAuthorityBinding(),
+      reattach,
+      retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
+      runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
+      current: () => {
+        if (providerArtifacts?.manifest) return providerArtifacts.manifest as RemoteProviderPackManifest;
+        providerPackAuthorityFromFallback = true;
+        return resolveCurrentProviderPackManifest();
+      },
+    }) : null;
+  };
   let providerPackAuthority = adoptingPersistedRemoteRunner ? null : selectProviderPackAuthority(reattachProviderPack);
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
     ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
@@ -17467,9 +17478,55 @@ async function createRunnerdBackendWithinSessionClaim(
   // standard app-image path is the default transport source, not an upgrade request.
   const explicitProviderPackSelection = Boolean(input.runnerRemoteProviderPackPath?.trim()
     && input.runnerRemoteProviderPackPath.trim() !== "/opt/paperclip-runner/provider-pack");
-  const useInstalledProviderPack = async () => {
+  const loadAdmittedProviderPackReceipt = async (): Promise<AdmittedProviderPackReceipt | undefined> => {
+    if (!retainProviderPack || !providerPackAuthorityFromFallback || explicitProviderPackSelection) return undefined;
+    const candidateRunIds = [...new Set([
+      ...(input.remoteWarmRecovery ? [input.remoteWarmRecovery.identity.runId] : []),
+      ...(input.providerPackAdmissionSource ? [input.providerPackAdmissionSource.runId] : []),
+      durableIdentity?.runId,
+      input.execution.binding.runId,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0))];
+    const sessionId = nativeSessionKey(input.execution);
+    for (const sourceRunId of candidateRunIds) {
+      let source: { receipt?: unknown; state?: unknown } | undefined =
+        input.providerPackAdmissionSource?.runId === sourceRunId ? input.providerPackAdmissionSource : undefined;
+      if (!source && input.db && typeof input.db.select === "function") {
+        try {
+          source = (await input.db.select({
+            receipt: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmission'`,
+            state: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmissionState'`,
+          }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, sourceRunId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+            eq(heartbeatRuns.runtimeMode, "native"),
+          )).limit(1))[0];
+        } catch {
+          source = undefined;
+        }
+      }
+      const verified = verifiedProviderPackAdmissionReceipt({
+        receipt: source?.receipt,
+        state: source?.state,
+        companyId: input.execution.binding.companyId,
+        agentId: input.execution.binding.agentId,
+        runId: sourceRunId,
+        sessionId,
+        runnerInstanceId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.runnerInstanceId
+          : effectiveRunnerInstanceId,
+        environmentLeaseId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.environmentLeaseId
+          : effectiveEnvironmentLeaseId,
+      });
+      if (verified) return verified;
+    }
+    return undefined;
+  };
+  const useInstalledProviderPack = async (onImmutableRejected?: (error: unknown) => void) => {
     const expected = expectedProviderPackManifest;
     if (!expected || !remoteTarget || !remoteCommandRunner) return false;
+    const admittedReceipt = await loadAdmittedProviderPackReceipt();
     for (const installation of remoteNativeArtifacts?.providerPackInventory() ?? []) {
       try {
         const manifest = await measureNativeRunnerSpan(input.trace, "provider_pack.compatibility", () => verifyRemoteProviderPackIdentity({
@@ -17479,14 +17536,29 @@ async function createRunnerdBackendWithinSessionClaim(
           requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
           requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
+          ...(admittedReceipt ? { admittedReceipt } : {}),
         }), { attributes: { target: installation.root === stagedRemoteProviderPackRoot ? "workspace" : "image" } });
-        if (!retainProviderPack) providerPackAuthority!.select(manifest);
+        if (!retainProviderPack) {
+          providerPackAuthority!.select(manifest);
+        } else if (admittedReceipt && providerPackAuthority && manifest.digest !== providerPackAuthority.manifest.digest) {
+          const preservedRunner = providerPackAuthority.runnerArtifact;
+          providerPackAuthority = resolveRemoteProviderPackAuthority({
+            stateDirectory: root,
+            binding: providerPackAuthorityBinding(),
+            reattach: false,
+            retainProviderPack: false,
+            runnerArtifact: () => preservedRunner,
+            current: () => manifest,
+          });
+          providerPackAuthorityFromFallback = false;
+        }
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
         providerPackVerified = true;
         return true;
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
+        if (installation.immutable) onImmutableRejected?.(error);
       }
     }
     return false;
@@ -17509,13 +17581,30 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       await remoteNativeArtifacts?.verifyRemoteRunner(requiredMode, undefined, true);
-      if (requiresRemoteProviderPack && await useInstalledProviderPack()) {
+      if (artifactStorage && providerArtifacts) {
+        providerPackVerified = true;
         remotePrepared = true;
         return;
       }
-      if (requiresRemoteProviderPack && stagedRemoteProviderPackRoot) {
-        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
-        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      if (requiresRemoteProviderPack) {
+        let immutableRejection: unknown = null;
+        if (await useInstalledProviderPack(error => { immutableRejection ??= error; })) {
+          remotePrepared = true;
+          return;
+        }
+        if (stagedRemoteProviderPackRoot) {
+          try {
+            await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+          } catch (error) {
+            if (immutableRejection && isMissingProviderPackBinaryError(error)) {
+              throw immutableRejection;
+            }
+            throw error;
+          }
+          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        } else if (immutableRejection) {
+          throw immutableRejection;
+        }
       }
       remotePrepared = true;
       return;
@@ -17571,7 +17660,8 @@ async function createRunnerdBackendWithinSessionClaim(
       signal: providerArtifactsSignal() });
     const bootstrap = activeRemoteProviderPackRoot
       ? { root: activeRemoteProviderPackRoot, manifest: expectedProviderPackManifest }
-      : remoteNativeArtifacts?.providerPackInventory().find(pack => pack.immutable);
+      : remoteNativeArtifacts?.providerPackInventory().find(pack =>
+          pack.immutable && typeof (pack.manifest as RemoteProviderPackManifest | null)?.payload?.artifacts?.nodeCommand?.path === "string");
     if (!bootstrap) throw new Error("native_provider_artifacts_bootstrap_unavailable");
     const bootstrapManifest = bootstrap.manifest as RemoteProviderPackManifest;
     openCodeLaunchArtifacts = await prepareRemoteOpenCodeArtifacts({ runner: remoteCommandRunner,
@@ -18763,12 +18853,20 @@ async function createRunnerdBackendWithinSessionClaim(
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }
         : undefined;
-  if (adoptingPersistedRemoteRunner && !adoptedProcess && requiresRemoteProviderPack) {
+  if (input.restartRecovery?.kind === "reattach_remote_runner" && !adoptedProcess && requiresRemoteProviderPack) {
     // Bind the relaunch to the pack this session was admitted with (the saved
     // authority, verified as an exact installed identity), never a newer one.
     relaunchesSettledRemoteRunner = true;
-    providerPackAuthority = selectProviderPackAuthority(true);
-    expectedProviderPackManifest = providerPackAuthority?.manifest ?? expectedProviderPackManifest;
+    if (artifactStorage && !providerArtifacts && durableBinding !== null && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+      providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+      if (providerArtifacts) legacyProviderContinuity = false;
+    }
+    if (adoptingPersistedRemoteRunner || providerArtifacts) {
+      providerPackAuthority = selectProviderPackAuthority(true);
+      expectedProviderPackManifest = providerPackAuthority?.manifest
+        ?? providerArtifacts?.manifest as RemoteProviderPackManifest
+        ?? expectedProviderPackManifest;
+    }
   }
   if (adoptedProcess && remoteTarget) {
     const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
