@@ -65,6 +65,10 @@ export function isAiAuthenticationFailure(code: string | null | undefined): bool
   return Boolean(code && (AI_AUTHENTICATION_FAILURE_CODE_RE.test(code) || AI_AUTHENTICATION_FAILURE_CODES.includes(code)));
 }
 
+export function isAiAuthenticationFailureRun(run: AuthenticationFailure): boolean {
+  return isAiAuthenticationFailure(run.errorCode) || Boolean(authenticationProvider(run));
+}
+
 /** Only a persisted blocked classification confirms that an inline repair owns recovery. */
 export function isAiAuthenticationBlocked(run: (AuthenticationFailure & { livenessState?: string | null }) | null | undefined): boolean {
   return run?.livenessState === "blocked" && isAiAuthenticationRepairable(run);
