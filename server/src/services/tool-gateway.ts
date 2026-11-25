@@ -11391,6 +11391,40 @@ export function createToolGatewayService(
     await reflectToolActionInteractionLifecycle(expired);
   });
 
+  async function discoverNamedGatewayTools(input: {
+    gatewayId?: string | null;
+    gatewayPublicId?: string | null;
+    bearerToken: string;
+    callerHeaders?: Record<string, string | string[] | undefined>;
+    signal?: AbortSignal;
+  }) {
+    input.signal?.throwIfAborted();
+    const session = await namedGatewaySessionFromBearer({
+      gatewayId: input.gatewayId ?? null,
+      gatewayPublicId: input.gatewayPublicId ?? null,
+      bearerToken: input.bearerToken,
+      protocolMethod: "tools/list",
+      callerHeaders: input.callerHeaders,
+    });
+    await assertGatewayTokenAction(session, "tools/list");
+    const tools = await listToolsForContext(session, input.signal);
+    await writeAudit({
+      session,
+      companyId: session.companyId,
+      agentId: session.agentId,
+      runId: session.runId,
+      issueId: session.issueId,
+      action: "tool_gateway.discovery",
+      details: {
+        decision: "allow",
+        reasonCode: "named_gateway_discovery_filtered",
+        visibleToolCount: tools.length,
+        visibleToolsHash: createHash("sha256").update(JSON.stringify(tools.map((tool) => tool.name).sort())).digest("hex"),
+      },
+    });
+    return { tools, allowedActions: session.gatewayTokenAllowedActions };
+  }
+
   return {
     async recordRuntimeMcpDeliveryDiagnostic(input: {
       companyId: string;
@@ -11809,38 +11843,10 @@ export function createToolGatewayService(
       });
     },
 
-    async listToolsForNamedGateway(input: {
-      gatewayId?: string | null;
-      gatewayPublicId?: string | null;
-      bearerToken: string;
-      callerHeaders?: Record<string, string | string[] | undefined>;
-      signal?: AbortSignal;
-    }): Promise<ToolGatewayDescriptor[]> {
-      input.signal?.throwIfAborted();
-      const session = await namedGatewaySessionFromBearer({
-        gatewayId: input.gatewayId ?? null,
-        gatewayPublicId: input.gatewayPublicId ?? null,
-        bearerToken: input.bearerToken,
-        protocolMethod: "tools/list",
-        callerHeaders: input.callerHeaders,
-      });
-      await assertGatewayTokenAction(session, "tools/list");
-      const tools = await listToolsForContext(session, input.signal);
-      await writeAudit({
-        session,
-        companyId: session.companyId,
-        agentId: session.agentId,
-        runId: session.runId,
-        issueId: session.issueId,
-        action: "tool_gateway.discovery",
-        details: {
-          decision: "allow",
-          reasonCode: "named_gateway_discovery_filtered",
-          visibleToolCount: tools.length,
-          visibleToolsHash: createHash("sha256").update(JSON.stringify(tools.map((tool) => tool.name).sort())).digest("hex"),
-        },
-      });
-      return tools;
+    discoverNamedGatewayTools,
+
+    async listToolsForNamedGateway(input: Parameters<typeof discoverNamedGatewayTools>[0]): Promise<ToolGatewayDescriptor[]> {
+      return (await discoverNamedGatewayTools(input)).tools;
     },
 
     async executeContextForNamedGateway(input: {

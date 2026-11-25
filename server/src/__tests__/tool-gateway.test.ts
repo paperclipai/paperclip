@@ -6827,6 +6827,44 @@ rl.on("line", (line) => {
     );
   });
 
+  it.each([
+    { label: "tools only", actions: ["tools/list", "tools/call"], helpers: [] },
+    { label: "resource list and prompt get", actions: ["tools/list", "tools/call", "resources/list", "prompts/get"], helpers: ["paperclip_list_resources", "paperclip_get_prompt"] },
+    { label: "resource read and prompt list", actions: ["tools/list", "tools/call", "resources/read", "prompts/list"], helpers: ["paperclip_read_resource", "paperclip_list_prompts"] },
+    { label: "default scope", actions: undefined, helpers: ["paperclip_list_resources", "paperclip_read_resource", "paperclip_list_prompts", "paperclip_get_prompt"] },
+  ])("scopes the native helper catalog to token actions: $label", async ({ actions, helpers }) => {
+    const company = await createCompany(db);
+    const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, { toolName: "read_note", riskLevel: "read" });
+    const businessTool = expectedConnectedToolName({
+      applicationKey: application.applicationKey, connectionId: connection.id, toolName: catalogEntry.toolName,
+    });
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id, profileKey: `helper-catalog-${randomUUID()}`, name: "Helper catalog", defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id, profileId: profile.id, selectorType: "tool_name", effect: "include", toolName: businessTool,
+    });
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({ companyId: company.id, body: { name: "Helper catalog", profileId: profile.id } });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id, gatewayId: created.id,
+      body: { name: "Catalog token", clientLabel: "Catalog client", ownerNote: "", ...(actions ? { allowedActions: actions as ToolMcpGatewayTokenAction[] } : {}) },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    for (const endpoint of [created.endpointPath, `/api/tool-gateway/gateways/${created.id}/mcp`]) {
+      if (actions && !actions.includes("prompts/list")) {
+        const denied = await request(app).post(endpoint).set("authorization", `Bearer ${token.token}`)
+          .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "paperclip_list_prompts", arguments: {} } }).expect(403);
+        expect(denied.body.error.data.reasonCode).toBe("gateway_token_action_denied");
+      }
+      const listed = await request(app).post(endpoint).set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 2, method: "tools/list" }).expect(200);
+      const tools = listed.body.result.tools as { name: string }[];
+      expect(tools.filter((tool) => !tool.name.startsWith("paperclip_")).map((tool) => tool.name)).toEqual([businessTool]);
+      expect(tools.filter((tool) => tool.name.startsWith("paperclip_")).map((tool) => tool.name)).toEqual(helpers);
+    }
+  });
+
   it("advertises on initialize only the capabilities that the gateway token may list", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({

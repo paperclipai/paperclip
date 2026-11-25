@@ -37,6 +37,13 @@ const TOOL_GATEWAY_WINDOWS: Record<string, number | null> = {
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const contextMethods = {
+  paperclip_list_resources: "resources/list",
+  paperclip_read_resource: "resources/read",
+  paperclip_list_prompts: "prompts/list",
+  paperclip_get_prompt: "prompts/get",
+} as const;
+
 function gatewayToken(req: { header(name: string): string | undefined }) {
   return req.header("x-paperclip-tool-gateway-token")?.trim() || null;
 }
@@ -129,7 +136,7 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
+      const { tools, allowedActions } = await cancellableRequest(req, res, (signal) => toolGateway.discoverNamedGatewayTools({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
@@ -146,6 +153,7 @@ async function handleMcpGatewayProtocol(
             description: tool.description,
             inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
             })),
+            ...[
             {
               name: "paperclip_list_resources",
               description: "List resources from fully assigned MCP connections.",
@@ -166,6 +174,7 @@ async function handleMcpGatewayProtocol(
               description: "Get a prompt returned by paperclip_list_prompts.",
               inputSchema: { type: "object", required: ["name"], properties: { name: { type: "string" }, arguments: { type: "object" } }, additionalProperties: false },
             },
+            ].filter((tool) => !allowedActions || allowedActions.includes(contextMethods[tool.name as keyof typeof contextMethods])),
           ],
         },
       });
@@ -178,12 +187,6 @@ async function handleMcpGatewayProtocol(
         res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
         return;
       }
-      const contextMethods = {
-        paperclip_list_resources: "resources/list",
-        paperclip_read_resource: "resources/read",
-        paperclip_list_prompts: "prompts/list",
-        paperclip_get_prompt: "prompts/get",
-      } as const;
       const contextMethod = contextMethods[name as keyof typeof contextMethods];
       if (contextMethod) {
         const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
