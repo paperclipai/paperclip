@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { antigravitySwarmRequestText } from "../../../packages/paperclip-runner/src/drivers/acpx/antigravity-swarm-runtime.js";
 import { buildNativeModelEnvelope } from "../vendor/paperclip-runner/index.js";
-import { recordAntigravitySwarmRequest, resolveAntigravitySwarmRun } from "../services/antigravity-swarm.js";
+import { recordAntigravitySwarmRequest, resolveAntigravitySwarmRun, withAntigravitySwarmMarkers } from "../services/antigravity-swarm.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
@@ -79,5 +79,27 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
     expect(sent).toBe(`/swarm ${comment!.body}`);
     expect(sent).not.toContain(AGENT_COMMENT);
     expect(sent).not.toContain(DESCRIPTION);
+  });
+
+  it("marks only the user's recorded request as a swarm, never from the comment's own text or metadata", async () => {
+    const [company] = await db.insert(companies).values({ name: "Swarm marker", issuePrefix: `M${randomUUID().slice(0, 4)}` }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Gemma", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Swarm", status: "todo", assigneeAgentId: agent!.id }).returning();
+    const insert = (values: Partial<typeof issueComments.$inferInsert>) => db.insert(issueComments)
+      .values({ companyId: company!.id, issueId: issue!.id, authorType: "user", authorUserId: USER, body: "write a.txt", ...values }).returning().then(rows => rows[0]!);
+    const requested = await insert({});
+    const ordinary = await insert({ body: "/swarm typed but not sent as a command", metadata: { nativeCommand: "swarm" } as never });
+    const otherUser = await insert({ authorUserId: "someone-else" });
+    const agentComment = await insert({ authorType: "agent", authorUserId: null, authorAgentId: agent!.id });
+    await recordAntigravitySwarmRequest(db, { companyId: company!.id, issueId: issue!.id, commentId: requested.id, userId: USER });
+    // A record by one user never marks another user's comment.
+    await recordAntigravitySwarmRequest(db, { companyId: company!.id, issueId: issue!.id, commentId: otherUser.id, userId: USER });
+    await recordAntigravitySwarmRequest(db, { companyId: company!.id, issueId: issue!.id, commentId: agentComment.id, userId: USER });
+
+    const marked = await withAntigravitySwarmMarkers(db, company!.id, issue!.id, [requested, ordinary, otherUser, agentComment]);
+    expect(marked.map(comment => comment.nativeCommand)).toEqual(["swarm", undefined, undefined, undefined]);
+    // The record belongs to its task.
+    expect((await withAntigravitySwarmMarkers(db, company!.id, randomUUID(), [requested]))[0]!.nativeCommand).toBeUndefined();
   });
 });

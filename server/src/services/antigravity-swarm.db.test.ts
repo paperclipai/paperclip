@@ -182,6 +182,22 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     await expect(automatic(f, (await insertRun(f, {})).id)).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/three attempts/) });
   });
 
+  it("recovers a swarm whose CLI process was lost on its own, and stops after three billed attempts", async () => {
+    // What the server stores for a lost CLI (the runner's ACPX_PROVIDER_PROCESS_LOST): a generic terminal failure, not the swarm's own code.
+    const lost = { status: "failed", errorCode: "native_provider_terminal_failed",
+      error: "The swarm stopped unexpectedly because the Antigravity CLI exited. Files the helpers already wrote stay in the task folder." };
+    const f = await seed();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await insertRun(f, {});
+      expect(await automatic(f, run.id, attempt === 0 ? "issue_commented" : "issue_continuation_needed")).toMatchObject({ request: expect.any(String) });
+      await db.update(heartbeatRuns).set(lost).where(eq(heartbeatRuns.id, run.id));
+    }
+    for (const wakeReason of ["issue_continuation_needed", "issue_recovery_action_restored", "issue_assigned"]) {
+      await expect(automatic(f, (await insertRun(f, {})).id, wakeReason)).rejects
+        .toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/three attempts/) });
+    }
+  });
+
   it("never starts another swarm automatically after the route failed one; the person's Retry starts it", async () => {
     const f = await seed();
     const first = await insertRun(f, {});

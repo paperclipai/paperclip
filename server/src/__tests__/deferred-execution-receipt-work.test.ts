@@ -32,21 +32,46 @@ vi.setConfig({ testTimeout: 90_000 });
 // and actual child processes on wall time until an explicit idle deadline step.
 function waitForReal(assertion: () => unknown | Promise<unknown>, { timeout = 1000 } = {}) {
   return new Promise<void>((resolve, reject) => {
-    let settled = false, lastError: unknown;
+    let settled = false, expired = false, attempting = false, lastError: unknown;
     let retry: ReturnType<typeof realTimeout> | undefined;
-    const deadline = realTimeout(() => finish(lastError ?? new Error("Expectation did not complete before its deadline")), timeout);
+    const deadline = realTimeout(() => {
+      expired = true;
+      if (!attempting) finish(lastError ?? new Error("Expectation did not complete before its deadline"));
+    }, timeout);
     function finish(error?: unknown) {
       if (settled) return;
       settled = true; clearRealTimeout(deadline); if (retry) clearRealTimeout(retry);
       if (error) reject(error); else resolve();
     }
     async function attempt() {
-      try { await assertion(); finish(); }
-      catch (error) { lastError = error; if (!settled) retry = realTimeout(attempt, 50); }
+      attempting = true;
+      try { await assertion(); attempting = false; finish(); }
+      catch (error) {
+        attempting = false; lastError = error;
+        if (expired) finish(error); else if (!settled) retry = realTimeout(attempt, 50);
+      }
     }
     void attempt();
   });
 }
+describe("waitForReal", () => {
+  const later = (ms: number) => new Promise(resolve => realTimeout(resolve, ms));
+  it("resolves an attempt that passes after its deadline", async () => {
+    await expect(waitForReal(() => later(60), { timeout: 10 })).resolves.toBeUndefined();
+  });
+  it("rejects with the error of an attempt that fails after its deadline", async () => {
+    const failure = new Error("still missing");
+    await expect(waitForReal(async () => { await later(60); throw failure; }, { timeout: 10 })).rejects.toBe(failure);
+  });
+  it("stops retrying a failing assertion at its deadline", async () => {
+    let attempts = 0;
+    await expect(waitForReal(() => { attempts++; throw new Error("absent"); }, { timeout: 120 })).rejects.toThrow("absent");
+    const settled = attempts;
+    await later(150);
+    expect(settled).toBeGreaterThan(1);
+    expect(attempts).toBe(settled);
+  });
+});
 describe("deferred receipt durable dispatch", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
