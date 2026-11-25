@@ -76,7 +76,12 @@ workspace provider operation, with a message naming the storage and environment.
 On a volume-free server, execution admission refuses that run earlier. When the
 task source's project storage cannot serve the selected environment, the run
 fails `configuration_incomplete` with reason
-`project_storage_environment_incompatible` and the same message. The task notice
+`project_storage_environment_incompatible` and the same message. The same
+`configuration_incomplete` / `project_storage_environment_incompatible` outcome
+applies in the opposite direction when a task's Core-storage project source
+requires Git worktree preparation in a workspace-storage plugin environment
+that cannot consume Core storage; generic task-only plugin environments and
+project-less tasks keep `plugin_workspace_strategy_unsupported`. The task notice
 names the owner action, and run-failure reporting does not send it to Sentry.
 A task that moves to another project keeps its selected source, so the source
 project's storage still decides compatibility.
