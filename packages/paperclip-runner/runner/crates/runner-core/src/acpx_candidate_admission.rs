@@ -23,52 +23,8 @@ fn native_host_matches(platform: &str, architecture: &str, os: &str, host_arch: 
 }
 
 /// The generated release profile that runtime qualification gates read.
-///
-/// Every gate that depends on `qualification_pending` reads it here, so tests
-/// can exercise the released state of a still-pending profile exactly as the
-/// declaration change at qualification would produce it.
 pub(crate) fn release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
-    #[allow(unused_mut)]
-    let mut profile = acpx_release_profile(agent)?;
-    #[cfg(test)]
-    if released_for_test::contains(agent) {
-        profile.qualification_pending = false;
-    }
-    Some(profile)
-}
-
-/// Test-only simulation of a profile flipped to released on this thread.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) mod released_for_test {
-    use std::cell::RefCell;
-
-    thread_local! {
-        static RELEASED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    }
-
-    pub(crate) fn contains(agent: &str) -> bool {
-        RELEASED.with(|released| released.borrow().iter().any(|name| name == agent))
-    }
-
-    /// Treats `agent` as released until the guard drops.
-    pub(crate) fn release(agent: &str) -> Guard {
-        RELEASED.with(|released| released.borrow_mut().push(agent.to_owned()));
-        Guard(agent.to_owned())
-    }
-
-    pub(crate) struct Guard(String);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            RELEASED.with(|released| {
-                let mut released = released.borrow_mut();
-                if let Some(index) = released.iter().position(|name| *name == self.0) {
-                    released.remove(index);
-                }
-            });
-        }
-    }
+    acpx_release_profile(agent)
 }
 
 /// Operator authority supplied only through trusted process startup. Company

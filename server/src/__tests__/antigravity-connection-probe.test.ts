@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({ probe: vi.fn(), admission: vi.fn(), remoteAdmi
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../vendor/paperclip-runner/index.js", async importOriginal => {
   const original = await importOriginal<typeof import("../vendor/paperclip-runner/index.js")>();
-  // Qualified by default; tests also simulate the historical pending declaration.
+  // Tests keep mocks.released = false for the pending-candidate suite and flip mocks.released = true for the qualified release suite.
   const pending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", { enumerable: true,
