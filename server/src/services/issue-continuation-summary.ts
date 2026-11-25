@@ -70,6 +70,45 @@ function readResultSummary(resultJson: Record<string, unknown> | null | undefine
   );
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * Files the run handed in as deliverables, by the name it gave them. A new
+ * session (for example the first ordinary turn after a swarm, which cannot
+ * reopen the swarm's conversation) learns from this what is already in the
+ * task folder without searching for it.
+ */
+function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefined): string[] {
+  const receipts = asRecord(resultJson?.semanticToolReceipts);
+  if (!receipts) return [];
+  const files = new Set<string>();
+  for (const value of Object.values(receipts)) {
+    const receipt = asRecord(value);
+    if (receipt?.operationId !== "register_deliverable" || asRecord(receipt.result)?.disposition !== "applied") continue;
+    const filename = asNonEmptyString(asRecord(receipt.input)?.filename);
+    if (filename && filename.length <= 200 && !/[`\u0000-\u001f]/.test(filename)) files.add(filename);
+    if (files.size >= 12) break;
+  }
+  return [...files];
+}
+
+/** The run's own checks, one line each: "Check cat v1.txt: passed (one three)." */
+function readVerification(resultJson: Record<string, unknown> | null | undefined): string[] {
+  const checks = asRecord(resultJson?.nativeResult)?.verification;
+  if (!Array.isArray(checks)) return [];
+  return checks.slice(0, 6).flatMap((value) => {
+    const check = asRecord(value);
+    const name = asNonEmptyString(check?.commandOrCheck);
+    const status = asNonEmptyString(check?.status);
+    if (!name || !status) return [];
+    const detail = asNonEmptyString(check?.detail);
+    const oneLine = (text: string, max: number) => truncateText(text.replace(/\s+/g, " "), max).replace(/\n/g, " ");
+    return [`Check ${oneLine(name, 160)}: ${status}${detail ? ` (${oneLine(detail, 240)})` : ""}.`];
+  });
+}
+
 function extractMarkdownSection(markdown: string | null | undefined, heading: string) {
   if (!markdown) return null;
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -149,15 +188,23 @@ export function buildContinuationSummaryMarkdown(input: {
   // Rows saved before SQL text was kept out of run errors still carry it.
   const modelError = summarizeRunErrorForModel(
     run.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run.error, terminalFailureCategory);
+  // No run ids or log locations: this text opens the next turn, which acts on
+  // what the run did, never on where Paperclip keeps its records.
   const recentActions = [
-    `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
+    `The latest run finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
+    ...readVerification(run.resultJson),
   ];
   if (modelError) {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
-  const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
+  const delivered = readDeliveredFiles(run.resultJson);
+  // Earlier runs' files stay listed: a later run's summary may not name them again.
+  const previousFiles = [...(extractMarkdownSection(input.previousSummaryBody, "Files / Routes Touched") ?? "")
+    .matchAll(/^[-*]\s+`([^`\n]+)`\s*$/gm)].map((match) => match[1]!);
+  const paths = [...new Set([...delivered, ...previousFiles,
+    ...extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody)])].slice(0, 12);
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
@@ -170,8 +217,7 @@ export function buildContinuationSummaryMarkdown(input: {
     `- Status: ${issue.status}`,
     `- Priority: ${issue.priority}`,
     `- Current mode: ${mode}`,
-    `- Last updated by run: ${run.id}`,
-    `- Agent: ${agent.name} (${agent.adapterType ?? "unknown"})`,
+    `- Agent: ${agent.name}`,
     "",
     "## Objective",
     "",
@@ -188,16 +234,6 @@ export function buildContinuationSummaryMarkdown(input: {
     "## Files / Routes Touched",
     "",
     bulletList(paths.map((path) => `\`${path}\``), "No file or route paths were detected in the captured run summary."),
-    "",
-    "## Commands Run",
-    "",
-    bulletList(
-      [
-        `Heartbeat run \`${run.id}\` invoked adapter \`${agent.adapterType ?? "unknown"}\`.`,
-        "Detailed shell/tool commands remain in the run log and transcript.",
-      ],
-      "No command metadata captured.",
-    ),
     "",
     "## Blockers / Decisions",
     "",

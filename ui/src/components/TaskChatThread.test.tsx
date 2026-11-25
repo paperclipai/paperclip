@@ -1533,6 +1533,37 @@ describe("TaskChatThread draft pass-through", () => {
     expect(container.textContent).toContain("u1.txt");
   });
 
+  it("does not repeat a run's file card under that run's reply when the reply links the file", async () => {
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const fileId = "00000000-0000-4000-8000-000000000021";
+    const at = new Date("2026-11-25T07:49:27Z");
+    const workProducts = [{
+      id: "file-v1", type: "artifact", provider: "paperclip", title: "v1.txt deliverable", status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "swarm-run", createdAt: at, updatedAt: at,
+      metadata: { attachmentId: fileId, originalFilename: "v1.txt", contentType: "text/plain", byteSize: 3, contentPath: `/api/attachments/${fileId}/content`, openPath: `/api/attachments/${fileId}/content`, downloadPath: `/api/attachments/${fileId}/content?download=1` },
+    }] as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = [{ id: fileId, issueCommentId: null, originatingRunId: "swarm-run", createdByAgentId: "agent",
+      originalFilename: "v1.txt", contentType: "text/plain", contentPath: `/api/attachments/${fileId}/content`, createdAt: at, updatedAt: at, byteSize: 3,
+    }] as unknown as NonNullable<Props["attachments"]>;
+    const reply = (id: string, runId: string) => ({
+      id, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId, runId, presentation: null, metadata: null, createdAt: new Date(at.getTime() + 9_000), updatedAt: at,
+      body: `Created v1.txt.\n\n**Download**: [v1.txt](/api/attachments/${fileId}/content)`,
+    });
+    const chips = () => container.querySelectorAll('[data-testid="task-chat-bubble-attachments"], [data-testid="task-chat-bubble-artifacts-v1"]').length;
+
+    render(<TaskChatThread comments={[reply("reply-1", "swarm-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    // The run's own card shows the file; the reply keeps its words but no second card.
+    expect(container.textContent).toContain("Created v1.txt.");
+    expect(chips()).toBe(0);
+
+    // A later run's reply that links the same file still shows it: its card is not that run's.
+    render(<TaskChatThread comments={[reply("reply-2", "later-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    expect(chips()).toBe(1);
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [

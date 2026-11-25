@@ -64,27 +64,28 @@ describe("an Antigravity swarm run's task thread", () => {
 
   it("reads in plain language after the run", () => {
     expect(settled()).toEqual([
-      "Swarm Swarm started in the task folder with Gemini 3.8 Flash (Low) on Google's default channel (Antigravity CLI 1.5.15). Helper changes inside the task folder are approved automatically; anything else is blocked.",
-      "Swarm This swarm runs on the Google account of this agent's Google connection.",
-      "Swarm Goal: Create and verify u1.txt and u2.txt",
-      "Swarm Started helper writer1: Create a file named u1.txt in the current workspace directory containing exactly \"one\"",
-      "Swarm Started helper writer2: Create a file named u2.txt in the current workspace directory containing exactly \"two\"",
-      "Swarm Started helper verifier: You are the verifier",
-      "Swarm Started a helper that watches for stalls",
-      "Swarm Checked on the helpers",
-      "Swarm Checked on the helpers",
+      // A swarm line reads once: no "Swarm" label before its own sentence.
+      "Swarm started in the task folder with Gemini 3.8 Flash (Low) on Google's default channel (Antigravity CLI 1.5.15). Helper changes inside the task folder are approved automatically; anything else is blocked.",
+      "This swarm runs on the Google account of this agent's Google connection.",
+      "Goal: Create and verify u1.txt and u2.txt",
+      "Started helper writer1: Create a file named u1.txt in the current workspace directory containing exactly \"one\"",
+      "Started helper writer2: Create a file named u2.txt in the current workspace directory containing exactly \"two\"",
+      "Started helper verifier: You are the verifier",
+      "Started a helper that watches for stalls",
+      "Checked on the helpers",
+      "Checked on the helpers",
       // The CLI's first reads used a relative path and were refused; the same reads then succeeded.
       "Read · retried u1.txt",
       "Read · retried u2.txt",
       "Read u1.txt",
       "Read u2.txt",
-      "Swarm Coordinator: All files u1.txt and u2.txt created and verified successfully",
+      "Coordinator: All files u1.txt and u2.txt created and verified successfully",
       "$ shasum -a 256 u1.txt u2.txt; wc -c u1.txt u2.txt",
       // One row per file, with the file's name, never the bridge's arguments or a digest.
       "Attached u1.txt",
       "Attached u2.txt",
-      "Swarm Files changed in the task folder: u1.txt, u2.txt",
-      "Swarm Token usage is the coordinator's total and includes the helpers; Google does not report it per helper",
+      "Files changed in the task folder: u1.txt, u2.txt",
+      "Token usage is the coordinator's total and includes the helpers; Google does not report it per helper",
     ]);
   });
 

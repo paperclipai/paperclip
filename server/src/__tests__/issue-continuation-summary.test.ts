@@ -5,6 +5,7 @@ import {
   continuationSummaryParksExecutor,
   extractContinuationSummaryNextAction,
 } from "../services/issue-continuation-summary.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 describe("issue continuation summaries", () => {
   it("builds bounded issue-local handoff context with required sections", () => {
@@ -50,12 +51,62 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("## Acceptance Criteria");
     expect(body).toContain("- Summary is issue-local");
     expect(body).toContain("## Recent Concrete Actions");
-    expect(body).toContain("Run `run-1` finished with status `succeeded`");
+    expect(body).toContain("The latest run finished with status `succeeded`");
     expect(body).toContain("`server/src/services/heartbeat.ts`");
-    expect(body).toContain("## Commands Run");
     expect(body).toContain("## Blockers / Decisions");
     expect(body).toContain("## Next Action");
     expect(body.length).toBeLessThanOrEqual(ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
+  });
+
+  it("opens the next session after a swarm with what the swarm did, never with where Paperclip keeps its records", () => {
+    // The accepted result of a live Antigravity /swarm run (ids and digests replaced).
+    const swarmRunId = "6a1f0c2e-0000-4000-8000-00000000a001";
+    const deliverable = (filename: string, attachmentId: string) => ({
+      operationId: "register_deliverable",
+      input: { title: `${filename} deliverable`, filename, contentRef: filename, contentType: "text/plain", byteSize: 3, sha256: "0".repeat(64) },
+      result: { disposition: "applied", attachmentId, contentPath: `/api/attachments/${attachmentId}/content` },
+    });
+    const body = buildContinuationSummaryMarkdown({
+      issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", description: "Please wait for the request in a comment.",
+        status: "done", priority: "medium" },
+      run: {
+        id: swarmRunId, status: "succeeded", error: null, finishedAt: new Date("2026-11-25T07:49:36.000Z"),
+        resultJson: {
+          summary: "Successfully created v1.txt containing \"one\" and v2.txt containing \"two\" using dedicated swarm helpers per file, and verified both files.",
+          nativeResult: { verification: [{ status: "passed", commandOrCheck: "verifier check",
+            detail: "Both files verified successfully: v1.txt exists and contains \"one\", and v2.txt exists and contains \"two\"." }] },
+          semanticToolReceipts: {
+            "register-v1-txt": deliverable("v1.txt", "6a1f0c2e-0000-4000-8000-00000000b001"),
+            "register-v2-txt": deliverable("v2.txt", "6a1f0c2e-0000-4000-8000-00000000b002"),
+          },
+        },
+      },
+      agent: { id: "agent-1", name: "Swarm Agent", adapterType: "paperclip_runner" },
+    });
+
+    // The ordinary follow-up starts a fresh conversation (a swarm's CLI session
+    // cannot be reopened by the ordinary route): this summary is its memory.
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_reopened_via_comment",
+      issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", status: "in_progress" },
+      comments: [{ id: "comment-1", body: "append three to v1.txt" }],
+      fallbackFetchNeeded: false,
+      continuationSummary: { key: "continuation-summary", body },
+    });
+    expect(prompt).toContain("Successfully created v1.txt containing \"one\" and v2.txt containing \"two\"");
+    expect(prompt).toContain("- `v1.txt`\n- `v2.txt`");
+    expect(prompt).toContain("Check verifier check: passed (Both files verified successfully");
+    expect(prompt).not.toContain(swarmRunId);
+    expect(prompt).not.toMatch(/run log|transcript|\/api\/attachments|[0-9a-f]{64}|paperclip_runner/);
+
+    // A later run keeps the swarm's files listed even when its own result names none.
+    const next = buildContinuationSummaryMarkdown({
+      issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", description: null, status: "done", priority: "medium" },
+      run: { id: "run-next", status: "succeeded", error: null, resultJson: { summary: "Appended three." } },
+      agent: { id: "agent-1", name: "Swarm Agent", adapterType: "paperclip_runner" },
+      previousSummaryBody: body,
+    });
+    expect(next).toContain("- `v1.txt`\n- `v2.txt`");
   });
 
   it("uses failure state to point the next run at the error", () => {

@@ -31,8 +31,8 @@ import {
   type ComposerDraftSubmission,
   type ComposerSendRequest,
 } from "@/lib/composer-draft";
-import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
-import { describeError, errorStatus } from "@/api/errors";
+import { classifySendFailure, isInlineSendRefusal, type SendOutcome } from "@/lib/pending-send";
+import { describeError } from "@/api/errors";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
 import { useRequestOwnerBinding } from "@/hooks/useRequestOwnerBinding";
@@ -1162,10 +1162,7 @@ export function TaskChatComposer({
       // A refusal (for example /swarm while the task is in Plan mode) stays
       // under the restored text until dismissed or the next send; a toast alone
       // disappears before it can be read.
-      const status = errorStatus(error);
-      if (status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected") {
-        setActionError(describeError(error).body);
-      }
+      if (isInlineSendRefusal(error)) setActionError(describeError(error).body);
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
       const restoredBody = nextDraft

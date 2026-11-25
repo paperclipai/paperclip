@@ -30,6 +30,7 @@ import {
   humanizeToolName,
   isGenericToolName,
   retriedLabel,
+  sentenceRowLabel,
   SUBJECT_FAMILIES,
   subjectRowLabel,
   toolActivityPresentation,
@@ -140,6 +141,16 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
       // "$ npm test" (TaskChatRunnerActivityGroup's tool rows).
       // Settled rows classify by the name alone (TaskChatRunnerActivityGroup).
       const settled = toolActivityPresentation({ name, target });
+      if (settled.sentenceSubject && subject && boundedActivity === subject) {
+        return {
+          icon: settled.icon,
+          runningLabel: sentenceRowLabel(settled.runningLabel),
+          completedLabel: sentenceRowLabel(settled.completedLabel),
+          failedLabel: sentenceRowLabel(settled.failedLabel),
+          interruptedLabel: sentenceRowLabel(settled.interruptedLabel),
+          detail: [subject, source].filter(Boolean).join(" · "),
+        };
+      }
       const concrete = Boolean(boundedActivity && (boundedActivity === subject || boundedActivity === meaningfulToolDetail(target)))
         && SUBJECT_FAMILIES.has(settled.family);
       if (concrete) {

@@ -53,6 +53,16 @@ export function classifySendFailure(error: unknown): SendFailure {
   return "rejected";
 }
 
+/**
+ * A send the server refused with a reason (a 4xx answer, for example /swarm
+ * while the task is in Plan mode). The task chat composer keeps that reason
+ * inline under the restored text, so the page shows no toast for it as well.
+ */
+export function isInlineSendRefusal(error: unknown): boolean {
+  const status = errorStatus(error);
+  return status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected";
+}
+
 // --- Persisted records ------------------------------------------------------------
 
 export interface PendingSend<T> {
