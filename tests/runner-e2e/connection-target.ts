@@ -12,6 +12,9 @@ import type { MatrixExecution } from "./types.js";
 
 export const connectionDelay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+const transientConnectionFailure = (failure: ConnectionFailure) =>
+  /^(api_request_failed|api_status_(408|429|502|503|504))$/.test(failure.message);
+
 /** No raw response bodies, callback URLs, headers, or Playwright diagnostics escape. */
 export class ConnectionApi {
   constructor(readonly request: APIRequestContext, readonly origin: string) {}
@@ -20,13 +23,20 @@ export class ConnectionApi {
     if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
     const timeout = options.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
-    try {
-      const response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0, timeout });
-      if (!response.ok()) throw new ConnectionFailure(`api_status_${response.status()}`);
-      return response;
-    } catch (error) {
-      if (error instanceof Error && /^api_status_\d+$/.test(error.message)) throw error;
-      throw new ConnectionFailure("api_request_failed");
+    // A read is safe to repeat. One dropped connection or gateway error must not
+    // fail a long journey; writes are never repeated.
+    const attempts = method === "GET" ? 3 : 1;
+    for (let attempt = 1; ; attempt++) {
+      let failure: ConnectionFailure;
+      try {
+        const response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0, timeout });
+        if (response.ok()) return response;
+        failure = new ConnectionFailure(`api_status_${response.status()}`);
+      } catch {
+        failure = new ConnectionFailure("api_request_failed");
+      }
+      if (attempt >= attempts || !transientConnectionFailure(failure)) throw failure;
+      await connectionDelay(250 * attempt);
     }
   }
   async get<T = any>(route: string, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "GET", undefined, options)).json(); }

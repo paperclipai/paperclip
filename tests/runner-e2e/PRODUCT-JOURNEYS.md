@@ -577,3 +577,7 @@ lead and hired-agent runs. Its idle check still requires every run to succeed.
 A journey failure from a hosted API call keeps its fixed code, such as
 `api_status_500` or `api_request_failed`; other errors stay
 `journey_operation_failed`.
+
+`ConnectionApi` repeats a read up to three times after a dropped connection or a
+408, 429, 502, 503 or 504 response. It never repeats a write. A single transport
+failure among the many reads of a long journey therefore does not fail it.
