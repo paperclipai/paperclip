@@ -7,7 +7,7 @@ import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
-import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions, permissionsImplyLowTrust } from "../lib/agent-permissions.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -5136,6 +5136,11 @@ export function agentRoutes(
       }
       if (actorAgent.role !== "ceo") {
         res.status(403).json({ error: "Only CEO can manage permissions" });
+        return;
+      }
+      if (permissionsImplyLowTrust(existing.permissions)
+        && !permissionsImplyLowTrust(normalizeAgentPermissions({ ...existing.permissions, ...req.body }, { role: existing.role }))) {
+        res.status(403).json({ error: "Only a board user can lift low-trust review" });
         return;
       }
       // Hiring authority is granted only by an actor that holds it. A CEO the

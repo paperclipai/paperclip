@@ -2408,6 +2408,23 @@ describe("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
+  it("does not let an agent lift low-trust review, for itself or a peer", async () => {
+    const lowTrust = { canCreateAgents: false, canCreateSkills: true, trustPreset: "low_trust_review" };
+    const ceo = { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: lowTrust };
+    const worker = { ...baseAgent, permissions: lowTrust };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === ceo.id ? ceo : id === worker.id ? worker : null));
+    const app = createApp({ type: "agent", agentId: ceo.id, companyId, runId: "run-1", source: "agent_jwt" });
+
+    for (const target of [ceo.id, worker.id]) {
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${target}/permissions`)
+        .send({ canCreateAgents: false, canAssignTasks: true, trustPreset: "standard" }));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Only a board user can lift low-trust review");
+    }
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+  });
+
   it("records the board user who saves a CEO's hiring as off", async () => {
     const ceo = { ...baseAgent, role: "ceo", permissions: { canCreateAgents: true, canCreateSkills: true } };
     mockAgentService.getById.mockResolvedValue(ceo);
