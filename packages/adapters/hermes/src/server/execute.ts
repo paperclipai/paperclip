@@ -62,9 +62,6 @@ import { reconcileHermesPaperclipSkills } from "./skills.js";
 function cfgString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
-// The billing types an operator can set for a Hermes agent. Hermes does not
-// report how its provider bills a run, so a subscription-backed model (for
-// example an Ollama Cloud `:cloud` model) is otherwise recorded as unpriced.
 export const HERMES_CONFIG_BILLING_TYPES = [
   "api",
   "metered_api",
