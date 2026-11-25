@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { companySkillVersions, heartbeatRuns,
+import { companySkillVersions, heartbeatRuns, issueRecoveryActions,
   nativeRunFinalizations, environmentLeases, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { assertSkillSnapshotPath } from "./skill-snapshot.js";
@@ -108,13 +108,21 @@ export function skillRunNeedsFilesSql() {
     isNull(heartbeatRuns.nativePhase), isNull(heartbeatRuns.nativePhaseUpdatedAt),
     sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ?| array['skillVersions', 'skillSelectionSnapshot'])`,
   );
+  // A blocked terminal failure is a recorded dead end: Retry and fresh
+  // continuation start new runs that select skills again. Only a same-run
+  // resume, a scheduled attempt, or a lease holder reads its pins again.
   return sql`not (${unstartedAdmission}) and (
       ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       or ${heartbeatRuns.finishedAt} is null
       or ${heartbeatRuns.controllerLeaseExpiresAt} > now()
       or exists (select 1 from ${nativeRunFinalizations} f
         where f.company_id = ${heartbeatRuns.companyId} and f.run_id = ${heartbeatRuns.id}
-        and (f.phase <> 'committed' or f.lease_owner is not null or f.recovery_state is not null))
+        and (f.phase <> 'committed' or f.lease_owner is not null or f.recovery_state is not null)
+        and not (f.phase = 'terminal_failure' and f.recovery_state is not distinct from 'blocked'
+          and f.lease_owner is null and f.next_attempt_at is null
+          and not exists (select 1 from ${issueRecoveryActions} a
+            where a.company_id = f.company_id and a.source_issue_id = f.issue_id and a.status in ('active', 'escalated')
+            and a.wake_policy->>'kind' = 'resume_native_run' and a.wake_policy->>'runId' = f.run_id::text)))
       or exists (select 1 from ${environmentLeases} l
         where l.company_id = ${heartbeatRuns.companyId} and l.heartbeat_run_id = ${heartbeatRuns.id}
         and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed'
