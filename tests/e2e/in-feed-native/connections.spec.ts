@@ -66,9 +66,8 @@ for (const journey of ['connect', 'decline', 'restart'] as const) test(`fresh na
     expect(nativeAgent.adapterConfig.env).toEqual(agent.adapterConfig.env);
     const holder = await api(`/companies/${company.id}/agents`, 'POST', { name: 'Archive holder', role: 'qa', adapterType: 'process', adapterConfig: { command: process.execPath, args: ['-e', 'process.exit(0)'] } });
     await page.goto(base + prefix + '/apps');
-    const custom = page.getByRole('list', { name: 'Connector list' }).getByRole('listitem').filter({ hasText: 'Connect your own tool' });
-    await custom.getByRole('button', { name: 'Connect', exact: true }).click();
-    await custom.getByRole('button', { name: 'Connect your own MCP server' }).click();
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByRole('menuitem', { name: /MCP server URL/ }).click();
     await page.getByPlaceholder('https://example.com/actions').fill(`http://127.0.0.1:${port}/`);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await page.getByRole('button', { name: 'Change', exact: true }).click();

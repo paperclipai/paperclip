@@ -9,6 +9,26 @@
   ],
   "$defs": {
     "protocolVersion": { "const": 2 },
+    "antigravitySwarmTurn": {
+      "description": "What the Antigravity swarm route reads from a turn: the session's provider mode must be `swarm`, and the turn text is the Runner's model envelope (`paperclip.native-model-envelope.v3`) whose `swarmRequest` holds the signed-in user's recorded /swarm request, verbatim. The route sends only `/swarm <swarmRequest>`; it never reads `task.prompt`. A route that reads the request elsewhere is a different contract.",
+      "type": "object",
+      "required": ["providerMode", "envelopeSchema", "swarmRequest"],
+      "properties": {
+        "providerMode": { "const": "swarm" },
+        "envelopeSchema": { "const": "paperclip.native-model-envelope.v3" },
+        "swarmRequest": { "type": "string", "minLength": 1, "maxLength": 16000 }
+      },
+      "additionalProperties": false
+    },
+    "antigravitySwarmCredentialFacts": {
+      "description": "Run facts the controller binds to the selected Google credential document for the Antigravity swarm route, under the document's `paperclip` member (the credential sanitizer drops it before anything is written). `swarmChannel` selects the Google channel the CLI is launched on: `provider_default` passes no endpoint (the CLI's own default, Google's non-stable daily channel) and `stable` pins Google's stable endpoint. `accountSha256` is the lowercase hex sha256 of `paperclip.antigravity-account.v1:` plus the connection account, lowercased, compared with the CLI's own sign-in; neither account is recorded. Absent or invalid facts mean `provider_default` and an unknown account.",
+      "type": "object",
+      "properties": {
+        "swarmChannel": { "enum": ["provider_default", "stable"] },
+        "accountSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
     "turnDispatchJournalFile": {
       "description": "File name of the sidecar's prompt-dispatch journal in the session runtime directory. It holds turnDispatchJournalRecord lines for the latest turn only.",
       "const": "paperclip-turn-dispatch.jsonl"

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_POOL_FAILURE_CODES, DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { isAntigravitySwarmExecution } from "../antigravity-swarm.js";
 import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
@@ -57,7 +58,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { type AdmittedProviderPackReceipt, type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -117,8 +118,9 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
-import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
+import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
 import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
@@ -148,7 +150,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, isMissingProviderPackBinaryError, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets, verifiedProviderPackAdmissionReceipt } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -6674,6 +6676,9 @@ async function migrateRunnerdStateRootForExecution(input: {
       return;
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
+      if (!input.restartRecovery && !input.retainedWarmOwnerRunId
+        && (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local")
+        && await retireNeverOpenedCandidateRunRoot(input.execution, scoped)) return;
       if (!input.restartRecovery && !input.retainedWarmOwnerRunId && input.bootstrapRetryLeaseOwner
         && input.runnerExecutionTarget?.kind === "remote"
         && runnerdAuthorityLifecycle(scoped, identity) === "absent"
@@ -7164,6 +7169,34 @@ export function prepareNativeSessionOpenTimeoutRetry(execution: NativeExecutionI
   const identity = readRunnerdDurableIdentity(root);
   if (!identity || identity.runId !== execution.binding.runId) return false;
   if (!runnerdStateProvesIncompleteBootstrap(root, { localProcesses: true })) return false;
+  quarantineRunnerdStateRoot(root, "identity_indeterminate");
+  return true;
+}
+
+/**
+ * The pending Antigravity candidate's runner refuses every prior activation in
+ * its run-scoped root. A same-run startup retry after a session.open that never
+ * recorded a provider identity has nothing to adopt, so its root is retired and
+ * the retry bootstraps fresh. A root whose provider state recorded an identity,
+ * a turn, or anything unreadable is kept, and the runner's gate refuses it.
+ */
+export async function retireNeverOpenedCandidateRunRoot(execution: NativeExecutionInput, root: string): Promise<boolean> {
+  if (!antigravityUsesRunScopedState(execution) || !isSafeNativeStateDirectory(root)) return false;
+  const identity = readRunnerdDurableIdentity(root);
+  if (!durableIdentityMatchesExecution(identity, execution)) return false;
+  let state: Record<string, unknown>;
+  try {
+    state = record(JSON.parse(readBoundedNativeFile(resolve(root, "runner", "acpx-provider-state.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8")));
+  } catch {
+    return false;
+  }
+  const empty = (value: unknown) => value == null || (Array.isArray(value) ? value.length === 0 : Object.keys(record(value)).length === 0);
+  if (state.schema !== ACPX_PROVIDER_STATE_SCHEMA || !["prepared", "closed"].includes(String(state.lifecycle))
+    || state.identity !== null || state.activeTurnId !== null || state.providerExitUnconfirmed !== false
+    || state.semanticResult != null || !empty(state.pendingEvents) || !empty(state.pendingRuntimeRequests)
+    || !empty(state.openSemanticCalls)) return false;
+  if (!(await noLocalRunnerProcessForRun(execution.binding.runId))) return false;
   quarantineRunnerdStateRoot(root, "identity_indeterminate");
   return true;
 }
@@ -8030,6 +8063,9 @@ export function resolveNativeHarnessPersistenceProfile(
                 ...(execution.provider.agent === "grok"
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
+                  : execution.provider.agent === "antigravity"
+                  ? ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp", "logs"].map((entry) =>
+                    `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/antigravity-home/antigravity-acp/${entry}`)
                   : execution.provider.agent === "codex"
                   ? CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES.map(
                       (entry) =>
@@ -9032,6 +9068,21 @@ export function nativeProviderAuthenticationFailureFromEvent(
     : null;
 }
 
+/**
+ * The run's error text. A refused /swarm carries one plain sentence for the
+ * person who asked (its provider failure), so the board and the agent's error
+ * reason never show the Runner's command JSON; the raw text stays in the
+ * recovery history's stderr tail for diagnostics.
+ */
+export function nativeStartupFailureMessage(
+  sourceFailureCode: string,
+  originalMessage: string,
+  providerFailure: { message: string } | null,
+): string {
+  if (sourceFailureCode === ANTIGRAVITY_SWARM_UNAVAILABLE && providerFailure?.message.trim()) return providerFailure.message.trim();
+  return runFailureMessage({ errorCode: sourceFailureCode, error: originalMessage })!;
+}
+
 export function nativeSessionFailureDisposition(
   attempt: number,
   now = new Date(),
@@ -9063,7 +9114,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
     sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER ||
     sourceFailureCode === NATIVE_SANDBOX_DISK_FULL ||
-    sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE;
+    sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE ||
+    sourceFailureCode === ANTIGRAVITY_SWARM_UNAVAILABLE;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -9316,6 +9368,7 @@ function classifyNativeSessionFailure(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
+  | typeof ANTIGRAVITY_SWARM_UNAVAILABLE
   | "provider_session_open_timeout"
   | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
@@ -9336,6 +9389,11 @@ function classifyNativeSessionFailure(
   if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
+    // A /swarm turn the swarm route failed by its own closed code (no result,
+    // helpers timed out, a blocked escape): each automatic attempt is a full,
+    // billed swarm, so the person decides whether to retry it. Interruptions
+    // (a lost CLI process) keep their own code and still recover on their own.
+    if (/^ANTIGRAVITY_SWARM_[A-Z_]+$/.test(error.providerCode)) return ANTIGRAVITY_SWARM_UNAVAILABLE;
     // Failed terminals retain their security meaning across the provider facade.
     // A stopped process is insufficient evidence to recover an integrity breach.
     if (
@@ -9449,6 +9507,14 @@ function classifyNativeSessionFailure(
     const failure = readProviderFailure(detail?.providerFailure);
     if (failure?.phase === "startup" && failure.category === "authentication" && failure.retryability === "requires_action") {
       return "native_provider_auth_failed";
+    }
+    // The swarm route refused this /swarm (typed, with its own plain message).
+    // Every automatic attempt would refuse the same way, so it waits for the user.
+    if (/classification=antigravity_swarm_[a-z_]+\)/.test(message)) return ANTIGRAVITY_SWARM_UNAVAILABLE;
+    // The Runner and its provider process disagree on the request contract, or the
+    // operator grant does not cover this execution: the same run cannot open again.
+    if (/classification=(?:sidecar_request_invalid|candidate_admission_invalid)\)/.test(message)) {
+      return NATIVE_PROVIDER_STARTUP_REJECTED;
     }
     // This closed class also covers lifetime lease and environment checks.
     // The class alone cannot attribute a failure to the selected account.
@@ -10672,6 +10738,8 @@ export async function executePaperclipNativeSession(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
+  /** The Google account of an Antigravity subscription grant (Runner compares only its digest). */
+  managedAiAccountEmail?: string;
   managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   onTaskDispatched?: () => Promise<void> | void;
@@ -11061,6 +11129,7 @@ async function executePaperclipNativeSessionAttempt(
   assertAntigravityExecutionAdmissible({
     execution: input.execution, useRunnerd: input.useRunnerd, backend: input.backend,
     restartRecovery: input.restartRecovery, remoteTarget: input.runnerExecutionTarget?.kind === "remote",
+    pluginTask: input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox" && Boolean(input.runnerExecutionTarget.runnerTask),
   });
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "kimi"
     && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
@@ -12795,11 +12864,13 @@ async function executePaperclipNativeSessionAttempt(
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner"
               || input.restartRecovery?.kind === "reattach_remote_runner" || scheduledResumeContinuation,
             providerTurnWait,
-            getFreshSessionHandoff: input.getFreshSessionHandoff,
+            getFreshSessionHandoff: isAntigravitySwarmExecution(input.execution) ? undefined : input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
-            prepareWakeAttachmentPrompt: input.prepareAttachmentPrompt,
-            getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
+            // A swarm turn's instruction is only the user's recorded request:
+            // no wake attachments, queued messages or handoff text join it.
+            prepareWakeAttachmentPrompt: isAntigravitySwarmExecution(input.execution) ? undefined : input.prepareAttachmentPrompt,
+            getFirstTurnQueuedInput: () => isAntigravitySwarmExecution(input.execution) ? Promise.resolve(null) : claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
               logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
               return null;
             }),
@@ -13578,7 +13649,7 @@ async function executePaperclipNativeSessionAttempt(
       const originalMessage = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
-      const message = runFailureMessage({ errorCode: sourceFailureCode, error: originalMessage })!;
+      const message = nativeStartupFailureMessage(sourceFailureCode, originalMessage, providerFailure);
       const sanitizedStderrTail = originalMessage.slice(-4_096);
       const remoteRunnerRecovery = readRemoteRunnerRecoveryError(error);
       // Set inside the transaction only when the write below genuinely
@@ -13940,6 +14011,8 @@ async function executePaperclipNativeSessionAttempt(
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
             ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
+            ...(providerLimit ? { providerLimitAutomatic: providerLimit.plan.automatic,
+              providerLimitEstimated: providerLimit.plan.estimated === true } : {}),
             ...(providerLimit && startupProviderLimit ? { providerLimitStartup: {
               failure: outputRedactor.redact(startupProviderLimit.failure),
               observedAt: startupProviderLimit.observedAt.toISOString(),
@@ -16532,6 +16605,8 @@ export async function createRunnerdBackend(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
+  /** The Google account of an Antigravity subscription grant (Runner compares only its digest). */
+  managedAiAccountEmail?: string;
   managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -17023,12 +17098,25 @@ async function createRunnerdBackendWithinSessionClaim(
     const resumeFrom = !retainedOwner && !adopting && !input.relaunchReleased && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
+    if (provider.kind === "acpx" && provider.agent === "antigravity") {
+      const refusal = antigravityConnectionRefusal({
+        apiKey: Boolean(input.runnerEnvironment?.GEMINI_API_KEY?.trim()),
+        remote: true,
+        lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+        releasePending: antigravityReleasePending(),
+        remoteCandidateAdmitted: false,
+      });
+      if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
+    }
     const credentials = await preparePluginRunnerCredentials({
       provider: provider.kind === "acpx" ? provider.agent : provider.kind,
       identity: input.managedAiCredentialIdentity, accountIdentity: input.managedAiAccountIdentity,
       home: input.managedAiCredentialHome, environment: input.runnerEnvironment ?? {},
     });
-    if (credentials.needsWriteback && !input.managedAiCredentialWriteback) throw new Error("Plugin Runner credential writeback authority unavailable");
+    if (credentials.needsWriteback && (!input.managedAiCredentialWriteback
+      || (credentials.credential?.type === "provider-env") !== Boolean(input.managedAiCredentialWriteback.google))) {
+      throw new Error("Plugin Runner credential writeback authority unavailable");
+    }
     // Same-lease recovery already has a writeback binding. A portable move creates a new lease.
     if ((!adopting || input.remoteWarmRecovery?.portableSourceTaskId) && input.managedAiCredentialWriteback && credentials.accountIdentity) {
       if (!remoteTarget.leaseId) throw new Error("Plugin Runner credential lease unavailable");
@@ -17354,17 +17442,28 @@ async function createRunnerdBackendWithinSessionClaim(
     : remoteTarget
     ? remoteOpenCodeArtifacts?.runnerBinary || remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
     : await resolvePaperclipRunnerBinaryAsync();
-  const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
-    stateDirectory: root,
-    binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-      workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
-      runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
-      remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
-    reattach,
-    retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
-    runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
-    current: () => providerArtifacts?.manifest as RemoteProviderPackManifest ?? resolveCurrentProviderPackManifest(),
-  }) : null;
+  let providerPackAuthorityFromFallback = false;
+  const providerPackAuthorityBinding = () => ({
+    companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
+    runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
+    remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider),
+  });
+  const selectProviderPackAuthority = (reattach: boolean) => {
+    providerPackAuthorityFromFallback = false;
+    return requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
+      stateDirectory: root,
+      binding: providerPackAuthorityBinding(),
+      reattach,
+      retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
+      runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
+      current: () => {
+        if (providerArtifacts?.manifest) return providerArtifacts.manifest as RemoteProviderPackManifest;
+        providerPackAuthorityFromFallback = true;
+        return resolveCurrentProviderPackManifest();
+      },
+    }) : null;
+  };
   let providerPackAuthority = adoptingPersistedRemoteRunner ? null : selectProviderPackAuthority(reattachProviderPack);
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
     ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
@@ -17502,9 +17601,55 @@ async function createRunnerdBackendWithinSessionClaim(
   // standard app-image path is the default transport source, not an upgrade request.
   const explicitProviderPackSelection = Boolean(input.runnerRemoteProviderPackPath?.trim()
     && input.runnerRemoteProviderPackPath.trim() !== "/opt/paperclip-runner/provider-pack");
-  const useInstalledProviderPack = async () => {
+  const loadAdmittedProviderPackReceipt = async (): Promise<AdmittedProviderPackReceipt | undefined> => {
+    if (!retainProviderPack || !providerPackAuthorityFromFallback || explicitProviderPackSelection) return undefined;
+    const candidateRunIds = [...new Set([
+      ...(input.remoteWarmRecovery ? [input.remoteWarmRecovery.identity.runId] : []),
+      ...(input.providerPackAdmissionSource ? [input.providerPackAdmissionSource.runId] : []),
+      durableIdentity?.runId,
+      input.execution.binding.runId,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0))];
+    const sessionId = nativeSessionKey(input.execution);
+    for (const sourceRunId of candidateRunIds) {
+      let source: { receipt?: unknown; state?: unknown } | undefined =
+        input.providerPackAdmissionSource?.runId === sourceRunId ? input.providerPackAdmissionSource : undefined;
+      if (!source && input.db && typeof input.db.select === "function") {
+        try {
+          source = (await input.db.select({
+            receipt: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmission'`,
+            state: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmissionState'`,
+          }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, sourceRunId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+            eq(heartbeatRuns.runtimeMode, "native"),
+          )).limit(1))[0];
+        } catch {
+          source = undefined;
+        }
+      }
+      const verified = verifiedProviderPackAdmissionReceipt({
+        receipt: source?.receipt,
+        state: source?.state,
+        companyId: input.execution.binding.companyId,
+        agentId: input.execution.binding.agentId,
+        runId: sourceRunId,
+        sessionId,
+        runnerInstanceId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.runnerInstanceId
+          : effectiveRunnerInstanceId,
+        environmentLeaseId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.environmentLeaseId
+          : effectiveEnvironmentLeaseId,
+      });
+      if (verified) return verified;
+    }
+    return undefined;
+  };
+  const useInstalledProviderPack = async (onImmutableRejected?: (error: unknown) => void) => {
     const expected = expectedProviderPackManifest;
     if (!expected || !remoteTarget || !remoteCommandRunner) return false;
+    const admittedReceipt = await loadAdmittedProviderPackReceipt();
     for (const installation of remoteNativeArtifacts?.providerPackInventory() ?? []) {
       try {
         const manifest = await measureNativeRunnerSpan(input.trace, "provider_pack.compatibility", () => verifyRemoteProviderPackIdentity({
@@ -17514,14 +17659,29 @@ async function createRunnerdBackendWithinSessionClaim(
           requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
           requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
+          ...(admittedReceipt ? { admittedReceipt } : {}),
         }), { attributes: { target: installation.root === stagedRemoteProviderPackRoot ? "workspace" : "image" } });
-        if (!retainProviderPack) providerPackAuthority!.select(manifest);
+        if (!retainProviderPack) {
+          providerPackAuthority!.select(manifest);
+        } else if (admittedReceipt && providerPackAuthority && manifest.digest !== providerPackAuthority.manifest.digest) {
+          const preservedRunner = providerPackAuthority.runnerArtifact;
+          providerPackAuthority = resolveRemoteProviderPackAuthority({
+            stateDirectory: root,
+            binding: providerPackAuthorityBinding(),
+            reattach: false,
+            retainProviderPack: false,
+            runnerArtifact: () => preservedRunner,
+            current: () => manifest,
+          });
+          providerPackAuthorityFromFallback = false;
+        }
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
         providerPackVerified = true;
         return true;
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
+        if (installation.immutable) onImmutableRejected?.(error);
       }
     }
     return false;
@@ -17544,13 +17704,30 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       await remoteNativeArtifacts?.verifyRemoteRunner(requiredMode, undefined, true);
-      if (requiresRemoteProviderPack && await useInstalledProviderPack()) {
+      if (artifactStorage && providerArtifacts) {
+        providerPackVerified = true;
         remotePrepared = true;
         return;
       }
-      if (requiresRemoteProviderPack && stagedRemoteProviderPackRoot) {
-        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
-        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      if (requiresRemoteProviderPack) {
+        let immutableRejection: unknown = null;
+        if (await useInstalledProviderPack(error => { immutableRejection ??= error; })) {
+          remotePrepared = true;
+          return;
+        }
+        if (stagedRemoteProviderPackRoot) {
+          try {
+            await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+          } catch (error) {
+            if (immutableRejection && isMissingProviderPackBinaryError(error)) {
+              throw immutableRejection;
+            }
+            throw error;
+          }
+          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        } else if (immutableRejection) {
+          throw immutableRejection;
+        }
       }
       remotePrepared = true;
       return;
@@ -17606,7 +17783,8 @@ async function createRunnerdBackendWithinSessionClaim(
       signal: providerArtifactsSignal() });
     const bootstrap = activeRemoteProviderPackRoot
       ? { root: activeRemoteProviderPackRoot, manifest: expectedProviderPackManifest }
-      : remoteNativeArtifacts?.providerPackInventory().find(pack => pack.immutable);
+      : remoteNativeArtifacts?.providerPackInventory().find(pack =>
+          pack.immutable && typeof (pack.manifest as RemoteProviderPackManifest | null)?.payload?.artifacts?.nodeCommand?.path === "string");
     if (!bootstrap) throw new Error("native_provider_artifacts_bootstrap_unavailable");
     const bootstrapManifest = bootstrap.manifest as RemoteProviderPackManifest;
     openCodeLaunchArtifacts = await prepareRemoteOpenCodeArtifacts({ runner: remoteCommandRunner,
@@ -18661,7 +18839,7 @@ async function createRunnerdBackendWithinSessionClaim(
   if (grokCredential) effectiveRunnerEnvironmentBase = grokCredential.environment;
   const antigravityCredential = isAntigravity ? await prepareAntigravityRunnerCredentials({
     environment: effectiveRunnerEnvironmentBase, remote: Boolean(remoteTarget), managedHome: input.managedAiCredentialHome,
-    lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+    lifecycleMode: input.execution.session.lifecyclePolicy.mode, accountEmail: input.managedAiAccountEmail,
   }) : null;
   if (antigravityCredential) effectiveRunnerEnvironmentBase = antigravityCredential.environment;
   // The server-held tool authority owns this credential. Do not deliver a
@@ -18798,12 +18976,20 @@ async function createRunnerdBackendWithinSessionClaim(
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }
         : undefined;
-  if (adoptingPersistedRemoteRunner && !adoptedProcess && requiresRemoteProviderPack) {
+  if (input.restartRecovery?.kind === "reattach_remote_runner" && !adoptedProcess && requiresRemoteProviderPack) {
     // Bind the relaunch to the pack this session was admitted with (the saved
     // authority, verified as an exact installed identity), never a newer one.
     relaunchesSettledRemoteRunner = true;
-    providerPackAuthority = selectProviderPackAuthority(true);
-    expectedProviderPackManifest = providerPackAuthority?.manifest ?? expectedProviderPackManifest;
+    if (artifactStorage && !providerArtifacts && durableBinding !== null && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+      providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+      if (providerArtifacts) legacyProviderContinuity = false;
+    }
+    if (adoptingPersistedRemoteRunner || providerArtifacts) {
+      providerPackAuthority = selectProviderPackAuthority(true);
+      expectedProviderPackManifest = providerPackAuthority?.manifest
+        ?? providerArtifacts?.manifest as RemoteProviderPackManifest
+        ?? expectedProviderPackManifest;
+    }
   }
   if (adoptedProcess && remoteTarget) {
     const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
@@ -19228,10 +19414,19 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     if (antigravityCredential?.home && antigravityCredential.credential && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
-      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "acpx", "acpx",
-        acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution)), "antigravity-home");
+      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/antigravity-home`;
+      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
+      const runtimeStore = remoteRunnerFilesystemRoot && remoteCommandRunner
+        ? createNativeCredentialStore({
+            provider: "antigravity",
+            localHome: join(runtimeHome, "antigravity-acp"),
+            remoteHome: posix.join(remoteRunnerFilesystemRoot, relativeHome, "antigravity-acp"),
+            runner: remoteCommandRunner,
+          })
+        : undefined;
       return bindAntigravityCredentialTurn(session, {
         managedHome: antigravityCredential.home, credential: antigravityCredential.credential, runtimeHome,
+        ...(runtimeStore ? { runtimeStore } : {}),
       });
     }
     const destinationHome = credentialProvider === "grok" ? grokCredential?.home : input.managedAiCredentialHome;

@@ -272,6 +272,23 @@ it("redacts Grok routine URL and key in setup failure logs", () => {
   expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
 });
 
+it("redacts hosted Google redirect URLs and browser codes unconditionally", () => {
+  const payload = {
+    browserCode: "http://127.0.0.1:41234/?state=state-canary&code=code-canary",
+    redirectUrl: "http://127.0.0.1:41234/?state=state-canary-2&code=code-canary-2",
+    redirect_url: "http://127.0.0.1:41234/?state=state-canary-3&code=code-canary-3",
+  };
+  const redacted = redactSensitive(payload) as Record<string, unknown>;
+  expect(redacted).toEqual({
+    browserCode: "[REDACTED]",
+    redirectUrl: "[REDACTED]",
+    redirect_url: "[REDACTED]",
+  });
+  expect(JSON.stringify(redacted)).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.browserCode);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.redirectUrl);
+});
+
 describe("invitation bearer URL paths", () => {
   it.each([
     ["/api/invites/invite-bearer-canary/accept?token=query-canary", "/api/invites/[REDACTED]/accept"],

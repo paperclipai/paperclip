@@ -4,7 +4,7 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { issueService } from "../issues.js";
-import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../remote-workspace-writer-hold.js";
+import { readRemoteWorkspaceWriterHold, releaseSupersededRemoteWorkspaceWriter, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../remote-workspace-writer-hold.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { deliverPendingRecoveryWakes, type PendingRecoveryWake, type RehomeWakeup } from "./legacy-workspace-rehome.js";
 
@@ -28,10 +28,14 @@ export const RELEASED_WORKSPACE_WRITER_NOTE = "This task could not start while a
  * continues from its last save), nothing a person could do remains. This pass
  * settles the escalation in one transaction: it resolves with a named outcome,
  * the task returns to `todo`, and a pending wake is recorded and delivered
- * after commit (a wake lost to a crash stays pending for the next pass). The
- * workspace itself is never changed here: the next run's admission takes it
- * through the normal writer rule. Bounded and idempotent: a resolved
- * escalation is never revisited, and a failed guard leaves the task as it is.
+ * after commit (a wake lost to a crash stays pending for the next pass). When
+ * the workspace is held only by a superseded ended writer whose successor has
+ * also ended (with no open recovery hold or uncommitted accepted result), that
+ * stale dirty epoch is abandoned first so the next run restores the last
+ * committed save into a new root; otherwise the workspace is never changed here
+ * and the next run's admission takes it through the normal writer rule. Bounded
+ * and idempotent: a resolved escalation is never revisited, and a failed guard
+ * leaves the task as it is.
  */
 export async function continueTasksAfterWorkspaceWriterReleased(db: Db, wake: RehomeWakeup | null,
   scope: { companyId?: string; issueId?: string } = {}) {
@@ -114,9 +118,13 @@ async function continueOne(tx: Db, input: { actionId: string; companyId: string;
   if (readiness.get(issue.id)?.isDependencyReady !== true) return null;
   // The hold that refused the run has settled: workspace reservation would now
   // admit a new writer. A writer still saving or running keeps the task as it is.
-  const [workspace] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
-    .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, issue.executionWorkspaceId)));
-  const authority = workspace ? readRemoteWorkspaceAuthority(workspace.metadata) : null;
+  const [workspace] = await tx.select().from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, issue.executionWorkspaceId))).for("update");
+  let authority = workspace ? readRemoteWorkspaceAuthority(workspace.metadata) : null;
+  if (workspace && authority?.dirty && authority.writerRunId) {
+    const released = await releaseSupersededRemoteWorkspaceWriter(tx, { workspace, authority });
+    if (released) authority = released.authority;
+  }
   if (!authority || (await readRemoteWorkspaceWriterHold(tx, { companyId: input.companyId, authority })).kind !== "free") return null;
   const now = new Date();
   await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,

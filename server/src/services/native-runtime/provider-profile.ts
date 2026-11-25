@@ -21,6 +21,7 @@ import {
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
+import { antigravityReleasePending } from "./antigravity-release.js";
 import { compatibleCodexModel } from "./codex-model-fallback.js";
 import {
   claudeCliVersionAtLeast,
@@ -43,11 +44,12 @@ export const DEFAULT_ACPX_RUNNER_MODELS = {
   copilot: null,
   pi: null,
   kimi: null,
+  antigravity: null,
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
   keyof typeof DEFAULT_ACPX_RUNNER_MODELS;
-type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate | "antigravity";
+type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate;
 
 export type PaperclipRunnerProviderProfile =
   | { provider: "cursor_cloud"; backend: "cursor_cloud_api"; model: string }
@@ -611,7 +613,12 @@ export function resolvePaperclipRunnerProviderProfile(
   if (acpxAgent === "copilot" && (!model || ["auto", "default"].includes(model.toLowerCase()))) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "GitHub Copilot requires an explicit model ID; there is no default model.");
   }
-  const pendingAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === acpxAgent && !profile.qualified);
+  if (acpxAgent === "antigravity" && (!model || ["auto", "default"].includes(model.toLowerCase()))) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "Google Antigravity requires an explicit model ID; there is no default model.");
+  }
+  const pendingAcpxProfile = acpxAgent === "antigravity"
+    ? (antigravityReleasePending() ? PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "antigravity") : undefined)
+    : PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === acpxAgent && !profile.qualified);
   if (pendingAcpxProfile) {
     if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
     if (pendingAcpxProfile.value === "antigravity") {
@@ -645,10 +652,10 @@ export function resolvePaperclipRunnerProviderProfile(
     }
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting native Runner acceptance. Its profile is not enabled for production runs.`);
   }
-  if ((acpxAgent === "cursor" || acpxAgent === "pi" || acpxAgent === "kimi") && !model) {
+  if ((acpxAgent === "cursor" || acpxAgent === "pi" || acpxAgent === "kimi" || acpxAgent === "antigravity") && !model) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "This ACPX agent requires an explicit model ID; there is no default model.");
   }
-  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi" && acpxAgent !== "kimi") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi" && acpxAgent !== "kimi" && acpxAgent !== "antigravity") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires a qualified agent profile.",

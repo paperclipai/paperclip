@@ -67,6 +67,7 @@ import {
 } from "@paperclipai/shared";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { ONE_CLICK_PARAM, SIGN_IN_GUIDANCE_SLUGS, availableToolConnectionMethods, canUseAutomaticOAuthFastPath, hasOneClickPopup, releaseOneClickPopup, takeOneClickPopup } from "./one-click-oauth";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -104,6 +105,7 @@ import {
   vercelConnectSourceHref,
 } from "@/pages/apps/app-connect-policy";
 import { parseGoogleSheetIds } from "@/pages/apps/google-sheets";
+import { withoutUnavailableActions } from "@/pages/apps/app-detail/action-permissions";
 import { connectionNameForGrantKind } from "@/pages/apps/connection-identity";
 import {
   defaultGenericMcpName,
@@ -430,14 +432,6 @@ function connectionMethodsForCredentialSource(
     : methods;
 }
 
-function availableToolConnectionMethods(
-  entry: AppDefinition,
-): ConnectionMethodDef[] {
-  return getAvailableConnectionMethods(entry).filter(
-    (method) => (method.purpose ?? "tool") !== "channel",
-  );
-}
-
 function availableToolConnectionMethod(
   entry: AppDefinition,
   methodKey?: string | null,
@@ -472,22 +466,6 @@ function recommendedManagedConnectorMethod(
               candidate.oauthStrategy === "paperclip_id_connector"),
         )
       : [],
-  );
-}
-
-// One-method sign-in skips the access step. These providers' warnings (Railway
-// project scope, Circleback sharing outside the workspace) must still be read
-// before authorizing, so the sign-in screen repeats them.
-const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback", "github"]);
-
-function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
-  if (!entry) return false;
-  const methods = availableToolConnectionMethods(entry);
-  const method = methods.length === 1 ? methods[0] : null;
-  return Boolean(
-    method
-    && connectionMethodSupportsAutomaticOAuth(method)
-    && !connectionMethodRequiresConfiguration(method),
   );
 }
 
@@ -934,6 +912,11 @@ function StandardConnectionSetupFlow({
 
   const reserveOAuthPopup = useCallback(() => {
     if (oauthPopupRef.current?.closed === false) return;
+    const handedOver = takeOneClickPopup();
+    if (handedOver) {
+      oauthPopupRef.current = handedOver;
+      return;
+    }
     try {
       oauthPopupRef.current = window.open("about:blank", "_blank", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
       // Task-bound setup can resume in either host and needs its existing
@@ -941,6 +924,25 @@ function StandardConnectionSetupFlow({
       if (oauthPopupRef.current && !connectionIntentId) oauthPopupRef.current.opener = null;
     } catch { oauthPopupRef.current = null; }
   }, [connectionIntentId]);
+
+  // One-click connect: Browse asked for sign-in to start without the
+  // confirmation screen and already opened the window. The render below says
+  // whether this app really qualifies; anything else keeps the screen and
+  // closes the window Browse opened.
+  const oneClickRequested = searchParams.get(ONE_CLICK_PARAM) === "1";
+  const oneClickRef = useRef<{ eligible: boolean; begin: () => void } | null>(null);
+  const oneClickHandledRef = useRef(false);
+  oneClickRef.current = null;
+  useEffect(() => {
+    if (!oneClickRequested || oneClickHandledRef.current) return;
+    const decision = oneClickRef.current;
+    if (!decision) return;
+    oneClickHandledRef.current = true;
+    // Only a window opened by the card's own click can carry sign-in. After a
+    // reload there is none, and the ordinary confirmation screen stays.
+    if (decision.eligible && hasOneClickPopup()) decision.begin();
+    else releaseOneClickPopup();
+  });
 
   const openAuthorization = useCallback((url: string) => {
     setAuthorizationFallbackUrl(url);
@@ -1186,7 +1188,7 @@ function StandardConnectionSetupFlow({
   useEffect(() => {
     if (host !== "page") return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: vercelConnectMode ? "Vercel Connect" : byoOnly ? "Connect your own tool" : "Connect an app" },
     ]);
     return () => setBreadcrumbs([]);
@@ -2068,12 +2070,13 @@ function StandardConnectionSetupFlow({
   const finishMutation = useMutation({
     mutationFn: async (input: { result: ConnectToolAppResult; enabled: Record<string, boolean> }) => {
       const { result: connected, enabled: enabledMap } = input;
-      const enabledIds = Object.entries(enabledMap)
-        .filter(([, on]) => on)
-        .map(([id]) => id);
+      const enabledIds = withoutUnavailableActions(
+        Object.entries(enabledMap).filter(([, on]) => on).map(([id]) => id),
+        connected.catalog,
+      );
       const askFirstIds = askFirstCatalogEntryIdsFor(
         connected,
-        (catalogEntryId) => Boolean(enabledMap[catalogEntryId]),
+        (catalogEntryId) => enabledIds.includes(catalogEntryId),
       );
       if (requiredAgentId && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
         throw new Error("Include the requesting agent or choose all agents to continue this task.");
@@ -2474,6 +2477,105 @@ function StandardConnectionSetupFlow({
     }}
   />;
 
+  const beginDirectOAuth = async () => {
+    if (!automaticOAuthEntry) return;
+    if (pendingOAuthLookupRef.current) return;
+    directOAuthAccessConfirmedRef.current = true;
+    setOAuthError(null);
+    setOAuthPhase("starting");
+    const connection = connectResult?.connection ?? resumableOAuthConnection;
+    if (connection && automaticCustomerClientFields && curatedOAuthClientId.trim()) {
+      // The draft exists but its client must change: resume it through
+      // connect so the operator's client replaces the refused registration.
+      customerClientResumeRef.current = connection.id;
+      connectApp(automaticOAuthEntry);
+      return;
+    }
+    if (connection) {
+      startOAuth(connection);
+      return;
+    }
+    // Cached empty lists cannot authorize creation. A fresh lookup also
+    // recovers an earlier create whose response never reached this tab.
+    // Reserve the dialog window while this click still has user activation.
+    if (automaticOAuthEntry?.slug !== "google-workspace" || workspaceSelectionRef.current) reserveOAuthPopup();
+    const lookup = { scope: oauthLookupScope, account: bindAccount(queryClient) };
+    pendingOAuthLookupRef.current = lookup;
+    const isCurrentLookup = () => pendingOAuthLookupRef.current === lookup && oauthLookupScopeRef.current === lookup.scope && lookup.account.isCurrentScope();
+    directOAuthRetryingRef.current = true;
+    try {
+      const [applications, connections] = await Promise.all([
+        toolsApi.listApplications(selectedCompanyId!, { cache: "no-store", fresh: true }),
+        toolsApi.listConnections(selectedCompanyId!, { cache: "no-store", fresh: true }),
+      ]);
+      if (!isCurrentLookup()) return;
+      queryClient.setQueryData(queryKeys.tools.applications(selectedCompanyId!), applications);
+      queryClient.setQueryData(queryKeys.tools.connections(selectedCompanyId!), connections);
+      const refreshedResumeConnection = resumeConnectionId
+        ? (connections.connections ?? []).find(
+            (candidate) => candidate.id === resumeConnectionId && candidate.authKind === "oauth",
+          ) ?? null
+        : null;
+      const refreshedConnection = refreshedResumeConnection ?? reusableOAuthConnection(
+        directOAuthSource,
+        applications.applications ?? [],
+        connections.connections ?? [],
+        createNewConnection
+          ? { applicationId: prefill.applicationId, draftOnly: true }
+          : {},
+      );
+      if (refreshedConnection && !resumeConnectionId) {
+        // Adopt the durable draft's identity before resuming it, so the
+        // stated default on screen matches what is about to be authorized.
+        setGrantKind(
+          refreshedConnection.credentialPolicy === "per_user"
+            ? "user"
+            : refreshedConnection.credentialPolicy === "per_agent"
+              ? "agent"
+              : "organization",
+        );
+      }
+      if (refreshedConnection) {
+        startOAuth(refreshedConnection);
+      } else {
+        connectApp(automaticOAuthEntry);
+      }
+    } catch {
+      if (!isCurrentLookup()) return;
+      oauthPopupRef.current?.close();
+      oauthPopupRef.current = null;
+      setOAuthPhase("error");
+      setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+    } finally {
+      if (pendingOAuthLookupRef.current === lookup) {
+        if (!isCurrentLookup()) {
+          cancelOAuthLookup();
+          setOAuthPhase("entry");
+          setOAuthError(null);
+        } else {
+          pendingOAuthLookupRef.current = null;
+          directOAuthRetryingRef.current = false;
+        }
+      }
+    }
+  };
+  if (entry && !directOAuthLookupPending) {
+    oneClickRef.current = {
+      eligible: Boolean(
+        showCuratedOAuthState
+        && automaticOAuthEntry
+        && directOAuthEntry
+        && oauthPhase === "entry"
+        && !resumeConnectionId
+        && !SIGN_IN_GUIDANCE_SLUGS.has(entry.slug)
+        && entry.slug !== "google-workspace"
+        && additionalSettingsValid
+        && instructionsValid,
+      ),
+      begin: () => void beginDirectOAuth(),
+    };
+  }
+
   if (showCuratedOAuthState && automaticOAuthEntry) {
     return (
       <OAuthConnectStateScreen
@@ -2499,87 +2601,7 @@ function StandardConnectionSetupFlow({
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         cancelling={cancellingSignIn}
-        onRetry={async () => {
-          if (pendingOAuthLookupRef.current) return;
-          directOAuthAccessConfirmedRef.current = true;
-          setOAuthError(null);
-          setOAuthPhase("starting");
-          const connection = connectResult?.connection ?? resumableOAuthConnection;
-          if (connection && automaticCustomerClientFields && curatedOAuthClientId.trim()) {
-            // The draft exists but its client must change: resume it through
-            // connect so the operator's client replaces the refused registration.
-            customerClientResumeRef.current = connection.id;
-            connectApp(automaticOAuthEntry);
-            return;
-          }
-          if (connection) {
-            startOAuth(connection);
-            return;
-          }
-          // Cached empty lists cannot authorize creation. A fresh lookup also
-          // recovers an earlier create whose response never reached this tab.
-          // Reserve the dialog window while this click still has user activation.
-          if (automaticOAuthEntry?.slug !== "google-workspace" || workspaceSelectionRef.current) reserveOAuthPopup();
-          const lookup = { scope: oauthLookupScope, account: bindAccount(queryClient) };
-          pendingOAuthLookupRef.current = lookup;
-          const isCurrentLookup = () => pendingOAuthLookupRef.current === lookup && oauthLookupScopeRef.current === lookup.scope && lookup.account.isCurrentScope();
-          directOAuthRetryingRef.current = true;
-          try {
-            const [applications, connections] = await Promise.all([
-              toolsApi.listApplications(selectedCompanyId!, { cache: "no-store", fresh: true }),
-              toolsApi.listConnections(selectedCompanyId!, { cache: "no-store", fresh: true }),
-            ]);
-            if (!isCurrentLookup()) return;
-            queryClient.setQueryData(queryKeys.tools.applications(selectedCompanyId!), applications);
-            queryClient.setQueryData(queryKeys.tools.connections(selectedCompanyId!), connections);
-            const refreshedResumeConnection = resumeConnectionId
-              ? (connections.connections ?? []).find(
-                  (candidate) => candidate.id === resumeConnectionId && candidate.authKind === "oauth",
-                ) ?? null
-              : null;
-            const refreshedConnection = refreshedResumeConnection ?? reusableOAuthConnection(
-              directOAuthSource,
-              applications.applications ?? [],
-              connections.connections ?? [],
-              createNewConnection
-                ? { applicationId: prefill.applicationId, draftOnly: true }
-                : {},
-            );
-            if (refreshedConnection && !resumeConnectionId) {
-              // Adopt the durable draft's identity before resuming it, so the
-              // stated default on screen matches what is about to be authorized.
-              setGrantKind(
-                refreshedConnection.credentialPolicy === "per_user"
-                  ? "user"
-                  : refreshedConnection.credentialPolicy === "per_agent"
-                    ? "agent"
-                    : "organization",
-              );
-            }
-            if (refreshedConnection) {
-              startOAuth(refreshedConnection);
-            } else {
-              connectApp(automaticOAuthEntry);
-            }
-          } catch {
-            if (!isCurrentLookup()) return;
-            oauthPopupRef.current?.close();
-            oauthPopupRef.current = null;
-            setOAuthPhase("error");
-            setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
-          } finally {
-            if (pendingOAuthLookupRef.current === lookup) {
-              if (!isCurrentLookup()) {
-                cancelOAuthLookup();
-                setOAuthPhase("entry");
-                setOAuthError(null);
-              } else {
-                pendingOAuthLookupRef.current = null;
-                directOAuthRetryingRef.current = false;
-              }
-            }
-          }
-        }}
+        onRetry={beginDirectOAuth}
         onBack={() => {
           oauthHandoffAbortRef.current?.abort();
           setOAuthPhase("entry");
@@ -3036,6 +3058,9 @@ function StandardConnectionSetupFlow({
             installCount: installAgentIds.size,
             lockedAgentId: requestedAgentId ?? null,
           })}
+          onChangeDefault={host === "page" && connectResult?.connectionId
+            ? () => navigate(`/apps/${connectResult.connectionId}/permissions`)
+            : undefined}
           onDone={onCancel ?? (() => navigate(
             host === "page" && connectResult?.connectionId
               ? `/apps/${connectResult.connectionId}/permissions`
@@ -4679,6 +4704,7 @@ export function ConnectionSetupCompletionScreen({
   darkLogoUrl,
   summary,
   statedDefault,
+  onChangeDefault,
   onDone,
 }: {
   appName: string;
@@ -4691,6 +4717,8 @@ export function ConnectionSetupCompletionScreen({
    * the reach that was granted is stated twice on the happy path (PAP-659 C0).
    */
   statedDefault?: string;
+  /** Opens where the stated default can be changed; one-click connect never showed that choice beforehand. */
+  onChangeDefault?: () => void;
   onDone: () => void;
 }) {
   return (
@@ -4702,7 +4730,19 @@ export function ConnectionSetupCompletionScreen({
         <AppLogo name={appName} logoUrl={logoUrl} darkLogoUrl={darkLogoUrl} size={28} />
         <h2 className="text-2xl font-bold tracking-tight">{appName} is ready.</h2>
       </div>
-      {statedDefault ? <p className="mt-3 text-sm text-muted-foreground">{statedDefault}</p> : null}
+      {statedDefault ? (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {statedDefault}
+          {onChangeDefault ? (
+            <>
+              {" "}
+              <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={onChangeDefault}>
+                Change
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
       <dl className="mx-auto mt-6 max-w-xs space-y-1 text-left">
         {summary.map((line) => (
           <div key={line.label} className="flex items-baseline justify-between gap-4">

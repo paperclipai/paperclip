@@ -77,9 +77,8 @@ These are two different features. The pinned 1.5.2 ACP server offers neither.
 A second distribution, Google's Antigravity CLI (`agy`) 1.5.15, build
 `1.5.15-5514532022517760`, is pinned for darwin-arm64, linux-x64 and
 linux-arm64 in `packages/paperclip-runner/antigravity-cli-distributions.json`.
-It is the planned route for native `/swarm`. This step adds only the pin,
-`paperclipai runtime setup antigravity-cli` and a launch resolver. No route
-selection, driver or command detection exists yet, so nothing runs the CLI.
+It is the route for native `/swarm` (experimental, off by default; see
+"/swarm on the Antigravity CLI" below).
 
 - **Experimental.** It is not part of the registry-server profile above and
   changes none of its pins, its admission patch or its qualification state.
@@ -98,6 +97,26 @@ selection, driver or command detection exists yet, so nothing runs the CLI.
   environment `AGY_CLI_DISABLE_AUTO_UPDATE=1`. The endpoint, `--gemini-dir`,
   modes and other flags are driver policy and are not pinned here.
 
+## Swarm channel (2026-11-24)
+
+The swarm route runs Google's Antigravity CLI (`agy acp`). On one paid sign-in,
+the CLI's default channel (`daily-cloudcode-pa`, the one Google's app and CLI
+use) offered 27 models, including Gemini 4 Neon at four levels, and answered a
+Neon prompt. Google's stable endpoint (`cloudcode-pa`) offered 13 models and
+no Neon, and its CLI quota pool (project `default-cli-project`, consumer
+sign-in) was exhausted while the same account's ordinary route answered.
+
+- The deployment chooses the channel with the server environment variable
+  `PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL`: `provider_default` (default; no
+  endpoint override, so the pinned CLI uses Google's default channel, which is
+  not Google's stable channel and can change with less notice) or `stable`.
+- The swarm's start step names the channel, and the run's diagnostics record
+  it and whether the CLI's own sign-in is the agent's Google connection
+  (`matches`, `does_not_match` or `unknown`). The CLI shows its account only in
+  its own log; the Runner compares digests and never records the account.
+- A usage limit on the swarm route holds only further swarms (quota scope
+  `antigravity_cli`); ordinary work on the same account continues.
+
 ## Routes to Neon
 
 State as of the end of 2026-11-22. "Admitted" means the patched server returned
@@ -107,7 +126,7 @@ evidence that Google serves inference for that model on that credential.
 | Route | State | Needs |
 | --- | --- | --- |
 | API key (exact-model admission in patch `1.5.2-paperclip.2`) | All four Neon levels admitted prompt-free with exact receipts on macOS and Linux x64; no `AGY_ACP_DEFAULT_MODEL` needed. No Neon prompt has completed: the only key is free tier (Neon quota 0) | A paid Gemini key, then one accepted prompt per level |
-| Personal Google sign-in (subscription catalog) | Local macOS sign-in journey proven on 1.4.3 (October); not re-run on 1.5.2; never offered in a cloud sandbox | An entitled account and the attended sign-in journey on 1.5.2 |
+| Personal Google sign-in (subscription catalog) | Local macOS sign-in journey proven on 1.4.3 (October). On 2026-11-25 (local darwin-arm64, subscription sign-in): ordinary tasks completed on Gemini 4 Neon at all four levels and a `/swarm` completed on Neon (Low), each with requested = effective model (see the acceptance ledger). Never offered in a cloud sandbox | The same in a cloud sandbox |
 | Agent Platform (Vertex/ADC) | Advertised by the server, never exercised here | A Google Cloud project and service credentials |
 
 ## Workstreams
@@ -136,8 +155,17 @@ Order: 1 and 2 in parallel; then 3, 4 and 5; then 6.
 
 ## Acceptance ledger
 
-Profile state: **pending**. The qualification flip has not happened and must
-not happen until every row marked NOT RUN below has passed live.
+Profile state: **qualified** (profile revision `2`, flipped on 2026-11-25).
+
+**Owner waiver (2026-11-25):** The owner waived the `runner-e2e-paid` live
+paid-key qualification gate as a blocker for flipping the profile from
+`pending` to `qualified` so Antigravity can ship to `paperclip.staging` and be
+tested there. All paid-key / Daytona / unattended rows below remain honestly
+marked **NOT RUN** (deferred to staging and post-waiver paid verification; no
+evidence is fabricated). `ACPX_CAPABILITY_PROFILES.antigravity.recovery`
+remains `"unverified"` because no live `session/load` call has been observed.
+Profile revision `2` refuses candidate-era v1 saved state permanently as
+`provider_state_incompatible`.
 
 **First prompts completed on 1.5.2 on 2026-11-23, local darwin-arm64 only,
 Google sign-in route, model `gemini-3.8-flash-low`** (see "First live tasks"
@@ -155,8 +183,8 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Model admission | Every model ID admitted by exact-model admission, prompt-free | Passed: all 28 IDs (14 Gemini 3, 14 Gemini 4 including Neon at four levels) get exact receipts under an API key on both platforms, without `AGY_ACP_DEFAULT_MODEL` |
 | Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. With completed prompts (2026-11-23, local, sign-in): native process kill recovered and the task finished. No live `session/load` call was observed in the logs |
 | Launch cost | Run start to native initialize | Sealed verified store: 1.46 s (macOS) / 1.74 s (Linux x64), from 3.45 / 3.65 s. Measured before the launcher regained its streamed executable hash (below); that hash measured ~60 ms for the 179 MB macOS server and is not yet re-measured for the ~722 MB Linux launcher |
-| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` accepted prompts over Google sign-in (local). The signed-in catalog listed only three Gemini 3.8 Flash levels, so the rest of the lineup is NOT RUN; the free API key still completes no prompt |
-| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0; the signed-in catalog does not list Neon) |
+| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` (2026-11-23) and Gemini 4 Neon at four levels (2026-11-25, below) accepted prompts over Google sign-in (local). The rest of the lineup and the lineup suites are NOT RUN; the free API key still completes no prompt |
+| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | Passed locally (darwin-arm64, Google subscription sign-in, commit 438ae60922, 2026-11-25): one ordinary task per level, each Done in one run with requested = effective model and no usage limit. Low 65.9 s; medium 50.7 s (30,978 in / 4,406 out tokens); high 53.8 s (31,176 / 4,711); xhigh 68.9 s (46,152 / 5,499). API-key route and cloud sandbox NOT RUN |
 | Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | Local darwin-arm64 passed on 1.5.2 (sign-in, 2026-11-23), including a follow-up on the same task. Daytona NOT RUN |
 | Scoped tools | Semantic and MCP round trip; wrong-company and stale authority denied | NOT RUN |
 | Questions and permissions | Native identity, one continuation, denial holds | Question passed locally (asked, answered, task finished). Permissions NOT RUN |
@@ -165,7 +193,7 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
-| Swarm (`/swarm`) | Native swarm starts from a task | Not supported by 1.5.2 (2026-11-23): not advertised, no swarm tools. A live `/swarm` task ran as a plain request |
+| Swarm (`/swarm`) | Native swarm starts from a task | Passed locally on the Antigravity CLI route behind the off-by-default flag (darwin-arm64, 2026-11-25): Gemini 3.8 Flash (Low) and Gemini 4 Neon (Low). See "/swarm live proof" below for what is and is not proven. Linux and cloud sandbox NOT RUN. The registry server 1.5.2 still has no swarm |
 
 ### First live tasks (2026-11-23, local, Google sign-in)
 
@@ -202,14 +230,18 @@ automatic retries, with no user action. This exposed three product issues:
 No live `session/load` call was observed in the logs, so the profile still
 must not claim `recovery: "session-load"`.
 
-### Must pass live before the qualification flip
+### Deferred live verification (waived as flip blocker on 2026-11-25)
+
+These items were waived by the owner on 2026-11-25 as blockers for the
+`pending` -> `qualified` flip so Antigravity can be tested on
+`paperclip.staging`, and remain NOT RUN until observed live:
 
 1. All 24 `antigravity-qualification` cells, local (darwin-arm64) and Daytona
    (linux-x64).
 2. The 14-cell API-key lineup, each with an accepted prompt.
 3. The Gemini 4 lineup, including Neon at every level, on a paid key.
 4. A live `session/load` observed before the profile claims
-   `recovery: "session-load"`.
+   `recovery: "session-load"` (profile keeps `recovery: "unverified"`).
 5. The attended Google sign-in journey on 1.5.2 (local only).
 6. Daytona image pull and startup time, measured.
 
@@ -236,15 +268,12 @@ must not claim `recovery: "session-load"`.
 4. Not supported: Google sign-in in a cloud sandbox, warm sessions,
    the Orchestrator model, `/swarm`, darwin-x64.
 
-While the profile is pending, a cloud (Daytona) run needs an operator grant
-for the company and exact model that names linux-x64 and the patched linux-x64
-closure, with an API-key connection, per-turn. The runner E2E harness stages
-that grant for Daytona cells; a local cell's grant names the host instead.
-With that grant, the agent picker offers Google Antigravity for a Core sandbox
-or SSH environment that is linux-x64 with a supported glibc (or the managed
-cloud image), and for this host only a grant that names this host. It offers
-nothing for a plugin Runner-task environment (the warm Agent Computer in
-Paperclip Cloud): that path cannot launch Antigravity yet (see Open decisions).
+After the 2026-11-25 qualification flip (profile revision `2`), no operator
+candidate grant is needed: ordinary runs and Core's `linux-x64` remote provider
+pack admit Antigravity directly under `providers.antigravity`, and candidate
+grants are rejected. A plugin Runner-task environment (the warm Agent Computer
+in Paperclip Cloud) still requires the Cloud rollout items (SDK credential,
+plugin/Launcher harness wiring, and ROM pin).
 
 ### Launch integrity follow-up (2026-11-22)
 
@@ -312,3 +341,112 @@ provider-death fixtures now target the store and per-launch directory layout.
   Claude and OpenCode, and Test refuses the path. Kimi, Copilot and Pi do not
   run there either. Closing it needs a plugin SDK contract change plus a Cloud
   plugin and image change.
+
+## /swarm on the Antigravity CLI (2026-11-24)
+
+What exists:
+
+- **Trusted start.** The task composer reads a leading `/swarm` with the shared
+  `parseLeadingUserCommand` rule and sends a structured `nativeCommand: "swarm"`
+  with the request text. The server accepts it only from a signed-in user,
+  records `issue.antigravity_swarm_requested` in the activity log and marks the
+  assignee's wake. Pasted, quoted, agent or API text stays text and is still
+  neutralised for the registry server.
+- **Flag.** `instance.experimental.enableAntigravitySwarm` (Settings,
+  Experimental, "Google Antigravity swarm"). Off by default. No Cloud policy in Core.
+- **Refusals, in plain language, before anything runs:** flag off, not an
+  Antigravity assignee, a chat, Plan mode, a remote or cloud environment, a
+  Gemini API key (no auto mode), an unpinned platform, extra tool servers.
+- **Driver.** `antigravity-swarm-*.ts` in the Runner. In place of the registry
+  patch receipt it verifies identity and version, the instruction channel, the
+  task folder as `cwd`, Paperclip's bridge as the only MCP server, `auto` mode
+  and the exact model by read-back, and fails closed on any later change. One
+  fresh session per run; at most one swarm per run; Paperclip delegation tools
+  are removed from the bridge for the swarm turn.
+- **Governance.** Helpers act in Antigravity's `auto` mode. The driver stops
+  the swarm on any visible change outside the task folder (file tools and shell
+  write targets, with `..`, `~`, `$HOME` and symlinks resolved), refuses every
+  permission prompt except Paperclip's own tools, and shows what changed in the
+  task folder. It does not settle on the first `end_turn` while helpers may run.
+- **Not confined by Paperclip.** Helper tool calls never reach the client, and
+  Paperclip's local process sandbox (`adapter-utils/local-process-sandbox.ts`,
+  used only by the classic Claude and Codex local adapters) does not wrap Runner
+  harnesses on macOS or Linux. Helper shell commands can therefore write outside
+  the task folder wherever the CLI's own sandbox allows (workspace plus temp
+  directories). The outside-path check is a detector for the coordinator's
+  visible calls, not a boundary. The feature stays off by default.
+- **Agent instructions (owner decision, 2026-11-25).** A swarm turn carries
+  the agent's own instructions, composed exactly as for an ordinary
+  Antigravity turn (the hand-in values follow the instruction entry, so the
+  prompt stays retargetable), then Paperclip's swarm rules. The rules state
+  that they take precedence, that the agent's instructions cannot widen the
+  Paperclip tools offered or Paperclip's permission decisions, and that helpers
+  must keep their work inside the task folder. #22733 had left the instructions out;
+  the owner reviewed that risk and chose to carry them. Enforced in code
+  whatever the prompt says: only Paperclip's own tools are approved and every
+  other permission request is refused, delegation tools are removed from the
+  bridge, no other tool server is accepted, a helper given its own copy of the
+  folder or a visible outside change stops the swarm, and a changed model,
+  thinking level or mode fails the run. Not enforced by Paperclip: helper
+  shell commands (see "Not confined by Paperclip" below). Prompt-only: the
+  precedence statement itself, keeping helper work inside the task folder, handing in once, naming files by task-folder
+  path, and not mentioning the rules. Residual
+  risk: an agent that can edit its own instructions can influence what its
+  swarm helpers do inside the task folder.
+- **Credentials.** On macOS the CLI uses its own Google sign-in from the login
+  keychain (the real HOME), not Paperclip's stored Google connection. CLI state
+  lives in a private `--gemini-dir`. Terms: a legal read of the consumer terms'
+  third-party-tool clause is pending.
+- **Usage.** One total from the coordinator, labelled as including the helpers.
+
+<a id="swarm-live-proof"></a>
+### /swarm live proof (local, attended)
+
+Setup: a local instance from the swarm branch, a Google sign-in connection, an
+Antigravity agent on `gemini-3.8-flash-low`, `paperclipai runtime setup
+antigravity-cli` run as the Paperclip user, the Antigravity CLI signed in on
+this computer, and the experimental flag on. Then, on a task for that agent:
+
+1. `/swarm two helpers: one writes a.txt containing A, one writes b.txt
+   containing B; a verifier checks both`: native swarm, both files in the task
+   folder, task Done, activity log names the swarm.
+2. The same, then Stop mid-swarm: run cancelled, no `agy` process left.
+3. The same, then kill the `agy` process mid-swarm: Paperclip recovers on its
+   own with a fresh swarm in the same folder (at most three attempts per
+   request); nothing posted twice. Retry starts one when recovery has stopped.
+4. An ordinary follow-up comment after a swarm: runs normally (fresh session).
+5. Flag off, `/swarm ...`: the composer shows "Swarm is not turned on ..." and
+   nothing is posted or run.
+
+| Gate | Result |
+| --- | --- |
+| Unit and fake-CLI tests (driver, guard, paths, route, server, composer) | Passed |
+| 1. Swarm, Gemini 3.8 Flash (Low), Antigravity CLI 1.5.15, Google's default channel | Passed: a real swarm (two helpers and a verifier) Done in 49.5 s, files correct, nothing posted twice |
+| 1. Swarm, Gemini 4 Neon (Low) | Passed: Done in 115 s (92,378 in / 6,733 out tokens), requested = effective model |
+| 2. Stop with 7 helpers active (Flash) | Passed: every CLI and helper process gone in 0.7 s, no re-run. Gap: the stopped run recorded no usage (fixed in this pull request) |
+| 3. Kill the CLI process mid-swarm (Flash) | Passed: recovered automatically with a fresh swarm, Done. Gaps: no usage recorded for the killed run, and the failure text asked for Retry while recovery continued on its own (both fixed in this pull request) |
+| 4. Ordinary follow-up after a swarm | Passed: 41 s (Flash), 105 s (Neon). A completed swarm was not run again (checked 10 minutes later) |
+| Refusals with the flag on | Passed: an empty request, Plan mode and Ask mode answer 422 in plain words and post nothing; a quoted `/swarm` runs as ordinary text |
+| Thread text | Gaps found and fixed in this pull request: the CLI's terminal hint ("Run /swarm board …") and a stray "." reached the thread; replies linked task-folder files by absolute local `file://` path (also on ordinary Antigravity runs); the coordinator named Paperclip's swarm rules. The settings receipt now reaches the run record as a provider notice |
+| 5. Flag off | NOT RUN live (unit tests only) |
+
+Not proven live: Stop or kill on a Neon swarm; pressing Retry on a swarm
+(recovery never needed it); typing `/swarm` in the browser composer (the live
+runs used the comments API with the composer's structured request); the Linux
+and cloud sandbox routes; the paid qualification cells and lineup suites.
+(The owner waived `runner-e2e-paid` on 2026-11-25 to flip the profile to
+**qualified** for staging testing; these paid cells remain NOT RUN.)
+
+Facts above: local darwin-arm64 instance at commit 438ae60922, 2026-11-25,
+Google subscription sign-in.
+
+### Re-check of the swarm fixes (local, 2026-11-25, commit cd8bcfba16)
+
+| Gate | Result |
+| --- | --- |
+| Usage on Stop (Flash) | Passed live: the stopped run recorded 36,910 in / 869 out tokens |
+| Usage on a killed CLI | Still 0 live: CLI 1.5.15 streams no token counts during a swarm prompt and reports them only when the turn ends, so a killed run has nothing to keep. Documented; not estimated |
+| Kill text and automatic recovery | Passed live: the failure says the CLI exited and files stay in the task folder, with no Retry; Paperclip recovered with a fresh swarm and the task finished |
+| Settings receipt in the run record | Passed live: one provider notice with requested and confirmed model, thinking level, mode, channel, CLI version and account match |
+| Thread text | Passed live: no terminal hint, no stray ".", no local paths or `file://` links, no mention of the swarm rules |
+| Helper processes after a killed CLI | Gap found live: helper shell commands lead their own process groups, outlived the killed CLI by about 14 s, one wrote a file 14 s after the kill, and the failure was recorded only when they exited (they held the CLI's output pipe). Fixed in a later pull request: the swarm records every process the CLI starts and stops them all before a failed or stopped turn is reported and on shutdown, and a lost CLI is detected on exit. Proven with the fake CLI (kill, Stop, shutdown; an unrelated process survives); live proof pending |

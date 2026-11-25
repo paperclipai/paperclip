@@ -25,15 +25,17 @@ describe("host ACPX qualification admission", () => {
   });
 
   it.each([undefined, "malformed", JSON.stringify([{ agent: "antigravity", model: "exact-model" }])])(
-    "keeps pending Antigravity closed despite host authorization (%s)", host => {
+    "admits released Antigravity without candidate authority (%s)", host => {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, host);
       vi.stubEnv(ACPX_QUALIFICATION_ENV, host);
-      const config = { provider: "acpx", acpxAgent: "antigravity", model: "exact-model",
-        env: { [ACPX_QUALIFICATION_ENV]: JSON.stringify([{ agent: "antigravity", model: "exact-model" }]) } };
-      for (const resolve of [() => resolvePaperclipRunnerProviderProfile(config),
-        () => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })]) {
-        expect(resolve).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
-        expect(resolve).toThrow("Google Antigravity is awaiting native Runner acceptance");
-      }
+      const config = { provider: "acpx", acpxAgent: "antigravity", model: "exact-model" };
+      expect(QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion).toBe(2);
+      expect(QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus).not.toBe("pending");
+      expect(resolvePaperclipRunnerProviderProfile(config, { companyId: "candidate-company" })).toMatchObject(config);
+      expect(resolvePaperclipRunnerNativeProviderInput({ companyId: "candidate-company", backend: "acpx_runtime", adapterConfig: config }))
+        .toMatchObject({ ...config, acpxPermissionMode: "approve-all" });
+      expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" }))
+        .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
     },
   );
 

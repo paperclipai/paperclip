@@ -193,7 +193,8 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { AI_CONNECTION_POOL_WAIT_RETRY_REASON, allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { releaseProviderLimitWaits } from "./provider-limit-wait.js";
 import { dispatchForAgent, outsideAgentDispatch } from "../agent-start-lock.js";
 import { AgentRunSlotsFull, assertAgentRunSlotFree } from "./run-slot-admission.js";
 import {
@@ -3513,6 +3514,22 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
     }
 
+    /**
+     * A user's wake folded into a usage wait rechecks it now instead of at its
+     * scheduled time. The recheck reads saved evidence only and holds the work
+     * again, without provider work, while the same account is still limited.
+     */
+    const recheckUsageWaitOnReply = async <Run extends { id: string; status: string; scheduledRetryReason: string | null }>(run: Run | null) => {
+      if (run?.status === "scheduled_retry" && run.scheduledRetryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON &&
+        opts.requestedByActorType === "user") {
+        await releaseProviderLimitWaits(db, {
+          companyId: agent.companyId, runId: run.id, reason: "user_reply",
+          ...(opts.requestedByActorId ? { actor: { actorType: "user" as const, actorId: opts.requestedByActorId } } : {}),
+        }).catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to recheck a usage wait after a reply"));
+      }
+      return run;
+    };
+
     if (issueId) {
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
@@ -3520,7 +3537,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const issueActivityPublications: ActivityPublication[] = [];
       const issuePostCommitActions: IssuePostCommitAction[] = [];
 
-      return wakeQueue.admitIssueWake(
+      return recheckUsageWaitOnReply(await wakeQueue.admitIssueWake(
         { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
         async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
           if (executionWaitRequestId) {
@@ -4023,7 +4040,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             executionBlocker: Pick<NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, "recoveryActionId" | "cause" | "nextAction">,
           ) => {
             if (caseRequest) waitForCaseAdmission("execution_reconciliation_required", executionBlocker.nextAction);
-            opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
+            opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause, executionBlocker.recoveryActionId ?? null);
             return recovery.defer({
               existingRequestId: executionWaitRequestId,
               commentId: wakeCommentId,
@@ -5054,7 +5071,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           attachSetupRequest: () => attachQueuedSetupRequest(agent),
           dispatch: () => startNextQueuedRunForAgent(agent.id),
         },
-      );
+      ));
     }
 
     if (durableRequest) throw new Error("chat_inbound_wakeup_binding_denied");
@@ -5148,7 +5165,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         runId: mergedRun.id,
         finishedAt: new Date(),
       });
-      return mergedRun;
+      return recheckUsageWaitOnReply(mergedRun);
     }
 
     const queuedRunId = randomUUID();

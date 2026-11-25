@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within, waitFor } from "storybook/test";
 import { NewAgent } from "@/pages/NewAgent";
-import { AgentBasicsDialog } from "@/components/new-agent/AgentBasicsDialog";
 import { models } from "@paperclipai/adapter-codex-local";
 import { storybookHiredAgent } from "../../../fixtures/paperclipData";
 import { resetOnboardingFixtureState, setOnboardingFixtureState } from "../../../fixtures/onboardingEnvironment";
@@ -65,7 +64,7 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Production NewAgent and AgentBasicsDialog with simulated accounts, target qualification, setup and hire replies. Covers automatic selection, saved Legacy choices, old native links and setup failures; no live credentials, cleanup, persistence or provider execution.",
+      notes: "Production NewAgent with simulated accounts, target qualification, setup and hire replies. Covers automatic selection, saved Legacy choices, old native links and setup failures; no live credentials, cleanup, persistence or provider execution.",
     },
   },
   beforeEach: ({ parameters }) => installCodexCreationFixture(parameters.codexCreationFixture),
@@ -120,21 +119,5 @@ export const TaskReady: Story = {
     const agent = await (await fetch(`/api/agents/${storybookHiredAgent.id}`)).json();
     await expect(agent.adapterType).toBe("paperclip_runner");
     await expect(agent.adapterConfig.provider).toBe("codex");
-  },
-};
-export const ExperimentalNativeHarnesses: Story = {
-  parameters: { codexCreationFixture: { nativeRunnerEnabled: true } },
-  render: () => <AgentBasicsDialog open onClose={() => {}} onContinue={() => {}} />,
-  play: async () => {
-    const dialog = within(document.body);
-    await userEvent.type(await dialog.findByRole("textbox", { name: "Agent name" }), "Nova");
-    await userEvent.click(await dialog.findByRole("button", { name: "Choose adapter" }));
-    await userEvent.click(await dialog.findByText("Advanced", { exact: true, selector: "summary" }));
-    await userEvent.click(await dialog.findByRole("button", { name: "Experimental harness" }));
-    await expect(await dialog.findByRole("option", { name: "Grok Build (Paperclip Runner)" })).toBeVisible();
-    await expect(await dialog.findByRole("option", { name: "OpenCode (Paperclip Runner)" })).toBeVisible();
-    await userEvent.click(await dialog.findByRole("option", { name: "Claude Code (Paperclip Runner)" }));
-    await expect(await dialog.findByRole("button", { name: "Experimental harness" })).toHaveTextContent("Claude Code");
-    await expect(await dialog.findByRole("button", { name: "Configure agent" })).toBeEnabled();
   },
 };

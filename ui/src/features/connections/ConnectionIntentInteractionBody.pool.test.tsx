@@ -265,4 +265,3 @@ describe("AI repair inside the card", () => {
   const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
 
 });
-

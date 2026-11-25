@@ -168,7 +168,7 @@ export function CompanySettingsSidebar() {
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-              label="Plugins"
+              label="System plugins"
               icon={Puzzle}
             />
           )}

@@ -51,7 +51,9 @@ export const Unavailable: Story = { parameters: { initialEntries: ["/PAP/apps/as
 export const Loading: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { loading: true } } };
 export const NavigationCheck: Story = { play: async ({ canvasElement }) => {
   const c = within(canvasElement);
-  await userEvent.click(await c.findByRole("button", { name: "Set up Assistant Connection (MCP)" }));
+  // Assistant connection setup now starts from the Add menu on the Plugins page.
+  await userEvent.click(await c.findByRole("button", { name: "Add" }));
+  await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole("menuitem", { name: /Assistant connection/ }));
   await expect(await c.findByRole("button", { name: "Copy invitation" })).toBeVisible();
   await userEvent.click(c.getByText("Set up manually"));
   await expect(c.getByText("opencode mcp auth paperclip")).toBeVisible();

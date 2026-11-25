@@ -1,6 +1,6 @@
 {
-  "id": "8751063c-1284-49c8-8d22-6921eb548422",
-  "prevId": "001ed6d5-4cc4-4f05-91ec-f3031c94bc98",
+  "id": "4bd70d28-af4b-4ac1-b18d-e8a262c69f1d",
+  "prevId": "01f5b33d-2353-4095-8b32-86aec4f8df2c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -36980,6 +36980,62 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_attention_resumed_idx": {
+          "name": "heartbeat_runs_attention_resumed_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"issue_id\"::text, \"native_issue_id\"::text,\n        \"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('running', 'succeeded')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_attention_history_idx": {
+          "name": "heartbeat_runs_attention_history_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('failed', 'timed_out') or \"heartbeat_runs\".\"error_code\" = 'provider_limit_wait'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_ctx_issue_created_idx": {
           "name": "heartbeat_runs_company_ctx_issue_created_idx",
           "columns": [
@@ -60400,6 +60456,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "tool_call_events_connection_error_idx": {
+          "name": "tool_call_events_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_call_events\".\"error_message\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -61241,6 +61319,13 @@
           "notNull": true,
           "default": "'pending'"
         },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'requested'"
+        },
         "requested_by_actor_type": {
           "name": "requested_by_actor_type",
           "type": "text",
@@ -61277,6 +61362,12 @@
         "last_error": {
           "name": "last_error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "not_before": {
+          "name": "not_before",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -62835,6 +62926,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_invocations_connection_error_idx": {
+          "name": "tool_invocations_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_invocations\".\"error_message\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

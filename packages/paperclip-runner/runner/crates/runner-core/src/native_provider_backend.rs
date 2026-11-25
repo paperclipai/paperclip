@@ -658,6 +658,11 @@ mod tests {
         )
     ))]
     fn released_antigravity_without_grant_recovers_a_prior_activation() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
         let directory = std::env::temp_dir().join(format!(
             "paperclip-native-released-antigravity-{}",
             uuid::Uuid::new_v4()
@@ -684,18 +689,6 @@ mod tests {
                 ..ordinary.clone()
             },
         );
-        candidate.validate().unwrap();
-        let refused = NativeProviderCommandExecutor::with_runner_config(&directory, &candidate)
-            .select_recovery()
-            .unwrap_err();
-        assert!(
-            refused
-                .to_string()
-                .contains("cannot adopt a prior durable runner activation"),
-            "{refused}"
-        );
-
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         assert!(candidate.validate().is_err());
         let ordinary = config(&directory, ordinary);
         ordinary.validate().unwrap();

@@ -21,14 +21,34 @@ const candidate = (): AcpxCandidateAdmission => ({ schema: "paperclip.acpx-candi
   nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
   platform: "darwin", architecture: "arm64", expiresAt: now + 60_000 });
 
-describe("operator candidate execution admission", () => {
-  it("binds an exact company/model/profile/native closure without changing release admission", () => {
-    const source = candidate();
-    const value = parseAcpxCandidateAdmission(source, expected, now);
-    expect(value).toEqual(source);
-    expect(value).not.toBe(source);
-    expect(() => assertAcpxProfileReleased("antigravity")).toThrow("qualification is pending");
-    expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile("antigravity", expected.model))).toThrow("qualification is pending");
+describe("released Antigravity admission rejects candidate grants", () => {
+  it("admits released Antigravity without candidate authority and rejects every candidate grant", () => {
+    const profile = resolveQualifiedAcpxProfile("antigravity", expected.model);
+    expect(profile.agentProfileVersion).toBe(2);
+    expect(profile.qualificationStatus).toBeUndefined();
+    expect(() => assertAcpxProfileReleased("antigravity")).not.toThrow();
+    expect(() => assertAcpxExecutionAdmission(profile)).not.toThrow();
+    expect(() => parseAcpxCandidateAdmission(candidate(), expected, now))
+      .toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+    expect(() => bindAcpxCandidateAdmission({ ...candidate(), expiresAt: Date.now() + 60_000 }, { runId: "actual-run", normalizedSessionId: "actual-session" }))
+      .toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+    const staleStartup = { ...candidate(), expiresAt: Date.now() + 60_000, runId: "actual-run", normalizedSessionId: "actual-session" };
+    expect(() => parseAcpxCandidateStartupAdmission(staleStartup, { ...expected, runId: "actual-run", normalizedSessionId: "actual-session" }))
+      .toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+    expect(() => assertAcpxExecutionAdmission(profile, staleStartup))
+      .toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+    for (const agent of ["codex", "claude", "grok", "cursor", "pi", "copilot", "kimi", "antigravity"] as const) {
+      expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile(agent, "caller-selected-model"))).not.toThrow();
+    }
+  });
+
+  it("declares verified native targets and rejects darwin-x64", () => {
+    expect(Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS).sort()).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
+    for (const target of Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS)) {
+      const [platform, architecture] = target.split("-");
+      expect(isAntigravityNativeTarget(platform, architecture)).toBe(true);
+    }
+    expect(isAntigravityNativeTarget("darwin", "x64")).toBe(false);
   });
 
   it.each([
@@ -36,59 +56,21 @@ describe("operator candidate execution admission", () => {
     { profileDigest: `sha256:${"a".repeat(64)}` }, { nativeClosureDigest: `sha256:${"b".repeat(64)}` },
     { platform: "linux" }, { architecture: "x64" }, { expiresAt: now }, { expiresAt: now + 86_400_001 },
     { expiresAt: "1800000060000" }, { unknown: true }, { runId: "injected-run" }, { model: "auto" },
-  ])("rejects mismatched or broadened authority %j", change => {
+  ])("rejects candidate authority %j", change => {
     expect(() => parseAcpxCandidateAdmission({ ...candidate(), ...change }, expected, now)).toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
-  });
-
-  it("admits each verified native closure only for its own platform", () => {
-    expect(Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS).sort()).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
-    for (const target of Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS) as Array<keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS>) {
-      const [platform, architecture] = target.split("-");
-      const record = { ...candidate(), platform, architecture, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256}` };
-      expect(parseAcpxCandidateAdmission(record, expected, now)).toEqual(record);
-      expect(isAntigravityNativeTarget(platform, architecture)).toBe(true);
-      for (const other of Object.keys(ANTIGRAVITY_DISTRIBUTION_PINS).filter(other => other !== target) as Array<keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS>) {
-        expect(() => parseAcpxCandidateAdmission({ ...record, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[other].closureSha256}` }, expected, now)).toThrow();
-      }
-    }
-    expect(isAntigravityNativeTarget("darwin", "x64")).toBe(false);
-    expect(() => parseAcpxCandidateAdmission({ ...candidate(), architecture: "x64" }, expected, now)).toThrow();
-  });
-
-  it("binds actual startup run/session and refuses replay against another identity", () => {
-    const current = { ...candidate(), expiresAt: Date.now() + 60_000 };
-    const startup = bindAcpxCandidateAdmission(current, { runId: "actual-run", normalizedSessionId: "actual-session" });
-    expect(parseAcpxCandidateStartupAdmission(startup, { ...expected, runId: "actual-run", normalizedSessionId: "actual-session" })).toEqual(startup);
-    for (const identity of [{ runId: "other-run" }, { normalizedSessionId: "other-session" }, { model: "other-model" }]) {
-      expect(() => parseAcpxCandidateStartupAdmission(startup, { ...expected, ...identity })).toThrow();
-    }
-    expect(() => parseAcpxCandidateStartupAdmission({ ...startup, trusted: true }, expected)).toThrow();
-    expect(() => parseAcpxCandidateStartupAdmission(startup, expected, startup.expiresAt)).toThrow();
-  });
-
-  it("permits only the pinned native candidate at the execution exception", () => {
-    const startup = bindAcpxCandidateAdmission({ ...candidate(), expiresAt: Date.now() + 60_000 }, { runId: "actual-run", normalizedSessionId: "actual-session" });
-    const profile = resolveQualifiedAcpxProfile("antigravity", expected.model);
-    if (process.platform === "darwin" && process.arch === "arm64") expect(() => assertAcpxExecutionAdmission(profile, startup)).not.toThrow();
-    else expect(() => assertAcpxExecutionAdmission(profile, startup)).toThrow();
-    expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile("codex", expected.model), startup)).toThrow();
-    expect(() => assertAcpxExecutionAdmission({ ...profile, commandDigest: `sha256:${"c".repeat(64)}` }, startup)).toThrow();
-    for (const agent of ["codex", "claude", "grok", "cursor", "pi", "copilot"] as const) {
-      expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile(agent, "caller-selected-model"))).not.toThrow();
-    }
   });
 });
 
-describe("candidate installation remains cryptographically verified", () => {
+describe("released Antigravity installation remains cryptographically verified", () => {
   const profile = resolveQualifiedAcpxProfile("antigravity", "gemini-3.8-flash-low");
-  const admission = () => bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model: profile.qualificationModel,
+  const staleAdmission = () => ({ schema: "paperclip.acpx-candidate-admission.v1" as const, companyId: "company-candidate", agent: "antigravity" as const, model: profile.qualificationModel,
     profileDigest: profile.commandDigest, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
-    platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 }, { runId: "run-candidate", normalizedSessionId: "session-candidate" });
+    platform: "darwin" as const, architecture: "arm64" as const, expiresAt: Date.now() + 60_000, runId: "run-candidate", normalizedSessionId: "session-candidate" });
 
-  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("delegates the admitted exception to the exact complete native closure verifier", async () => {
+  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("delegates released Antigravity to the exact complete native closure verifier without a candidate grant", async () => {
     const native = { commandDigest: "native-closure-verifier-result" } as integrity.VerifiedAcpxInstallation;
     vi.mocked(integrity.verifyNativeAcpxInstallation).mockResolvedValue(native);
-    const result = await verifyAcpxProfileInstallation(profile, admission());
+    const result = await verifyAcpxProfileInstallation(profile);
     expect(result.commandDigest).toBe(profile.commandDigest);
     expect(integrity.verifyNativeAcpxInstallation).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       expectedClosureSha256: ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256,
@@ -96,17 +78,16 @@ describe("candidate installation remains cryptographically verified", () => {
     }));
   });
 
-  it("denies absent, altered, or other-provider authority before any native files are opened", async () => {
+  it("denies any injected candidate authority before any native files are opened", async () => {
     vi.mocked(integrity.verifyNativeAcpxInstallation).mockClear();
-    await expect(verifyAcpxProfileInstallation(profile)).rejects.toMatchObject({ code: "ACPX_PROFILE_QUALIFICATION_PENDING" });
-    await expect(verifyAcpxProfileInstallation(profile, { ...admission(), model: "gemini-3.8-flash-high" })).rejects.toMatchObject({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" });
-    await expect(verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("codex", profile.qualificationModel), admission())).rejects.toMatchObject({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" });
+    await expect(verifyAcpxProfileInstallation(profile, staleAdmission())).rejects.toMatchObject({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" });
+    await expect(verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("codex", profile.qualificationModel), staleAdmission())).rejects.toMatchObject({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" });
     expect(integrity.verifyNativeAcpxInstallation).not.toHaveBeenCalled();
   });
 
-  it("rejects a candidate session mismatch before installation, credentials, or runtime acquisition", async () => {
+  it("rejects any candidate admission at AcpxRuntimeHost.open before installation, credentials, or runtime acquisition", async () => {
     const verifyInstallation = vi.fn(), openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ candidateAdmission: admission(), runtimeDirectory: "/unused", normalizedSessionId: "another-session", workingDirectory: "/unused", agent: "antigravity", model: profile.qualificationModel,
+    await expect(AcpxRuntimeHost.open({ candidateAdmission: staleAdmission(), runtimeDirectory: "/unused", normalizedSessionId: "session-candidate", workingDirectory: "/unused", agent: "antigravity", model: profile.qualificationModel,
       permissionMode: "deny-all", providerPolicy: { readOnly: true } }, { verifyInstallation, openRuntime, retainAdmissionCleanup: () => {}, reportRetainedCleanupFailure: () => {} })).rejects.toMatchObject({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" });
     expect(verifyInstallation).not.toHaveBeenCalled();
     expect(openRuntime).not.toHaveBeenCalled();

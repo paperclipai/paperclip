@@ -54,18 +54,15 @@ describe("buildCodexLocalConfig", () => {
     expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } })))
       .toThrow("kimi requires an explicit provider model");
   });
-  it("refuses pending Antigravity selection before saving Runner config", () => {
-    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
+  it("round-trips qualified Google Antigravity with its exact selected model", () => {
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
+      adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } }));
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+    expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" });
+    expect(first).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "",
       adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } })))
-      .toThrow("Google Antigravity is not enabled for production");
-  });
-  it("builds only the exact candidate model from non-persisted UI context", () => {
-    const values = makeValues({ model: "exact-antigravity-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } });
-    const context = { candidateHarnesses: [{ agent: "antigravity" as const, model: "exact-antigravity-model" }] };
-    expect(buildPaperclipRunnerConfig(values, context)).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: values.model });
-    expect(buildPaperclipRunnerConfig(values, context)).not.toHaveProperty("candidateHarnesses");
-    expect(() => buildPaperclipRunnerConfig({ ...values, model: "another-model" }, context)).toThrow();
-    expect(() => buildPaperclipRunnerConfig(values)).toThrow();
+      .toThrow("antigravity requires an explicit provider model");
   });
 
   it("preserves explicitly disabled hosted search in native Codex configuration", () => {

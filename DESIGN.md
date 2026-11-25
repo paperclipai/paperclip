@@ -1105,6 +1105,13 @@ Further consolidation proposals, pending visual review:
 
 ### Collection empty states and roster selection
 
+Center the empty-state artwork, labels and actions together in the space below
+the page controls. The default artwork is the 200px square Paperclip mark in
+the muted surface color. Collections with dedicated illustrations use their
+own artwork in the same position. In Goals, Routines, Secrets and Inbox, center
+the group horizontally and place its midpoint 35% down the available space.
+On short screens, keep the full group and its action accessible.
+
 Projects uses the large artifact stack with a dark grey Paperclip mark on an off-white
 image front. The empty-state action is “Create project”. Artwork, message and
 primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
