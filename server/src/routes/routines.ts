@@ -1,10 +1,14 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
+import { triggerUpdateActivityAction } from "../services/routine-trigger-update-plan.js";
+import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createRoutineTriggerSchema,
+  ROUTINE_STATUSES,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateDocumentAnnotationThreadSchema,
@@ -13,11 +17,26 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
-import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
+import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
+import { instanceSettingsService as experimentSettings } from "../services/instance-settings.js";
+import { dashboardOwner } from "./responsibility-owner.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
+import { agentPersonInCompany } from "./agent-person-authz.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
+import { badRequest, forbidden, unauthorized, unprocessable, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+/** Filters for the routine list; all are applied in the query, before any limit. */
+const listRoutinesQuerySchema = z.object({
+  projectId: z.string().optional(),
+  q: z.string().trim().min(1).max(200).optional(),
+  status: z.enum(ROUTINE_STATUSES).optional(),
+  assigneeAgentId: z.string().guid().optional(),
+  responsibleUserId: z.string().trim().min(1).max(200).optional(),
+  responsibilityId: z.string().guid().optional(),
+  unfiled: z.enum(["true", "false"]).optional(),
+});
 
 export function routineRoutes(
   db: Db,
@@ -96,6 +115,17 @@ export function routineRoutes(
     }
   }
 
+  async function canChangeResponsibleUser(req: Request, companyId: string) {
+    if (req.actor.type !== "board") return false;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    // Match assertCompanyAccess's write restrictions even on this GET route.
+    if (Array.isArray(req.actor.memberships)) {
+      const membership = req.actor.memberships.find((item) => item.companyId === companyId);
+      if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") return false;
+    }
+    return access.canUser(companyId, req.actor.userId, "tasks:assign");
+  }
+
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
@@ -105,14 +135,37 @@ export function routineRoutes(
     }
   }
 
+  /**
+   * The person an agent acts for on this routine: the person who directed its
+   * run, when that person is responsible for the routine. Null otherwise.
+   */
+  async function agentActsForRoutinePerson(req: Request, routine: { companyId: string; responsibleUserId: string | null }) {
+    const person = await agentPersonInCompany(db, req, routine.companyId);
+    return person && routine.responsibleUserId === person.userId ? person.userId : null;
+  }
+
+  /**
+   * What a person needs tasks:assign for (who runs a routine, turning it on,
+   * its schedule): an agent may do it on a routine it runs and keeps running,
+   * and on any other only when the person it acts for may assign tasks.
+   */
+  async function assertAgentCanAssign(req: Request, routine: { companyId: string; responsibleUserId: string | null }, runsIt: boolean) {
+    if (req.actor.type !== "agent" || runsIt) return;
+    const actsFor = await agentActsForRoutinePerson(req, routine);
+    if (!actsFor || !(await access.canUser(routine.companyId, actsFor, "tasks:assign"))) {
+      throw forbidden("Agents can change who runs a routine, turn it on or change its schedule only on routines they run, unless the person they act for may assign tasks");
+    }
+  }
+
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
     const routine = await svc.get(routineId);
     if (!routine || !hasCompanyAccess(req, routine.companyId)) return null;
     assertCompanyAccess(req, routine.companyId);
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
-    if (routine.assigneeAgentId !== req.actor.agentId) {
-      throw forbidden("Agents can only manage routines assigned to themselves");
+    // An agent manages its own routines, and those of the person its run works for.
+    if (routine.assigneeAgentId !== req.actor.agentId && !(await agentActsForRoutinePerson(req, routine))) {
+      throw forbidden("Agents can only manage routines assigned to themselves, or routines the person they work for is responsible for");
     }
     return routine;
   }
@@ -149,8 +202,14 @@ export function routineRoutes(
   router.get("/companies/:companyId/routines", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const result = await svc.list(companyId, { projectId });
+    const { q, unfiled, ...filters } = listRoutinesQuerySchema.parse(req.query);
+    // The responsibility filters read filed work, which is part of the Responsibilities experiment.
+    if ((filters.responsibilityId || unfiled === "true")
+      && (await experimentSettings(db).getExperimental()).enableResponsibilities !== true) {
+      throw responsibilitiesDisabledError();
+    }
+    const ownerUserId = filters.responsibilityId || unfiled === "true" ? await dashboardOwner(db, req, companyId) : undefined;
+    const result = await svc.list(companyId, { ...filters, ownerUserId, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
     res.json(result);
   });
 
@@ -161,6 +220,7 @@ export function routineRoutes(
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      ...(req.actor.type === "agent" ? { actorResponsibleUserId: req.actor.onBehalfOfUserId ?? null } : {}),
       runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);
@@ -188,13 +248,15 @@ export function routineRoutes(
       changeSummary: "Created routine",
       triggerCount: 0,
     });
-    res.status(201).json(created);
+    const configurationWarnings = req.body.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+    res.status(201).json({ ...created, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.get("/routines/:id", async (req, res) => {
     const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
     if (!detail) return;
-    res.json(detail);
+    res.json({ ...detail, canChangeResponsibleUser: await canChangeResponsibleUser(req, detail.companyId) });
   });
 
   router.get("/routines/:id/revisions", async (req, res) => {
@@ -369,23 +431,26 @@ export function routineRoutes(
     const assigneeWillChange =
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== routine.assigneeAgentId;
+    if (req.body.responsibleUserId !== undefined) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only people can change routine responsibility");
+      }
+      await assertBoardCanAssignTasks(req, routine.companyId);
+    }
     if (assigneeWillChange) {
       await assertBoardCanAssignTasks(req, routine.companyId);
+      // Taking a routine from another agent, or handing one on, is an assignment the person must be allowed to make.
+      await assertAgentCanAssign(req, routine, false);
     }
     const statusWillActivate =
       req.body.status !== undefined &&
       req.body.status === "active" &&
       routine.status !== "active";
-    if (statusWillActivate) {
+    if (statusWillActivate || req.body.schedule !== undefined) {
       await assertBoardCanAssignTasks(req, routine.companyId);
+      await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId && !assigneeWillChange);
     }
-    if (
-      req.actor.type === "agent" &&
-      req.body.assigneeAgentId !== undefined &&
-      req.body.assigneeAgentId !== req.actor.agentId
-    ) {
-      throw forbidden("Agents can only assign routines to themselves");
-    }
+    const actsFor = req.actor.type === "agent" ? await agentActsForRoutinePerson(req, routine) : null;
     const updated = await svc.update(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -402,7 +467,14 @@ export function routineRoutes(
       action: "routine.updated",
       entityType: "routine",
       entityId: routine.id,
-      details: { title: updated?.title ?? routine.title },
+      details: {
+        title: updated?.title ?? routine.title,
+        ...(actsFor ? { onBehalfOfUserId: actsFor } : {}),
+        ...(req.body.responsibleUserId !== undefined ? {
+          previousResponsibleUserId: updated?.previousResponsibleUserId,
+          responsibleUserId: updated?.responsibleUserId,
+        } : {}),
+      },
     });
     if (updated && updated.latestRevisionId !== routine.latestRevisionId) {
       await remapRoutineDescriptionAnnotations(req, routine.id);
@@ -415,7 +487,14 @@ export function routineRoutes(
         triggerCount: null,
       });
     }
-    res.json(updated);
+    if (updated) {
+      const { previousResponsibleUserId: _previousResponsibleUserId, ...response } = updated;
+      const configurationWarnings = req.body.env !== undefined
+        ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+      res.json({ ...response, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
+    } else {
+      res.json(null);
+    }
   });
 
   router.post("/routines/:id/revisions/:revisionId/restore", async (req, res) => {
@@ -425,6 +504,10 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    // A restore can make the agent run the routine and turn it on: on a routine it does not run, the
+    // person it acts for must be allowed to assign. (The service refuses any agent restore that would
+    // hand the routine to another agent.)
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const result = await svc.restoreRevision(routine.id, req.params.revisionId as string, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -468,6 +551,12 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
+    // A standing check runs on its agent's heartbeat wake-ups, which only
+    // happens while the responsibilities experiment is on.
+    if (req.body.kind === "heartbeat" && (await instanceSettingsService(db).getExperimental()).enableResponsibilities !== true) {
+      throw unprocessable("Standing checks are not enabled", { code: "standing_checks_not_enabled" });
+    }
     const created = await svc.createTrigger(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -509,6 +598,7 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const updated = await svc.updateTrigger(trigger.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -522,7 +612,7 @@ export function routineRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
-      action: req.body.archived === true ? "routine.trigger_removed" : req.body.archived === false ? "routine.trigger_restored" : req.body.setupPending === false ? "routine.trigger_setup_finished" : "routine.trigger_updated",
+      action: triggerUpdateActivityAction(req.body),
       entityType: "routine",
       entityId: routine.id,
       details: { triggerId: trigger.id, kind: updated?.trigger.kind ?? trigger.kind },
@@ -551,6 +641,8 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
+    // Removing a schedule changes when the routine runs, like changing it.
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const deleted = await svc.deleteTrigger(trigger.id, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -633,9 +725,13 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    const run = await svc.runRoutine(routine.id, req.body, {
+    // Starting another agent's routine starts that agent's work, as an assignment does.
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
+    const input = req.actor.type === "agent" ? { ...req.body, source: "manual" as const } : req.body;
+    const run = await svc.runRoutine(routine.id, input, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -660,7 +756,13 @@ export function routineRoutes(
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       throw badRequest("Webhook payload must be a JSON object");
     }
+    const idempotencyScope = req.header("x-paperclip-idempotency-scope");
+    if (idempotencyScope != null && idempotencyScope !== "trigger" && idempotencyScope !== "routine") {
+      throw badRequest("X-Paperclip-Idempotency-Scope must be trigger or routine");
+    }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
+      sourceRunToken: req.header("x-paperclip-source-run-token"),
+      idempotencyScope: idempotencyScope as "trigger" | "routine" | undefined,
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),

@@ -1,5 +1,5 @@
 /** Redacted presentation contracts shared with the production API. */
-import type { AiProvider, AiAuthMethod, AiManagedConnectionSummary, AiConnectionBinding } from "@paperclipai/shared";
+import { isAiConnectionCompatible, type AiConnectionMetadata, type AiProvider, type AiAuthMethod, type AiManagedConnectionSummary, type AiConnectionBinding } from "@paperclipai/shared";
 export type { AiProvider, AiAuthMethod, AiConnectionBinding } from "@paperclipai/shared";
 export type AiConnectionStatus = AiManagedConnectionSummary["status"];
 
@@ -7,7 +7,8 @@ export const AI_PROVIDERS: Record<
   AiProvider,
   { name: string; subscriptionName?: string; logo?: string }
 > = {
-  google: { name: "Google", logo: "/brands/apps/google.svg" },
+  github: { name: "GitHub Copilot", logo: "/brands/apps/github-copilot.svg" },
+  google: { name: "Google", subscriptionName: "Google Antigravity account", logo: "/brands/apps/google.svg" },
   anthropic: {
     name: "Claude",
     subscriptionName: "Claude subscription",
@@ -27,6 +28,15 @@ export const AI_PROVIDERS: Record<
 };
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
+
+/** Before model selection, test harness support without excluding multi-provider accounts. */
+export function isAiConnectionCompatibleForSelection(
+  connection: AiConnectionMetadata | AiConnectionBinding,
+  adapterType: string,
+  model?: string,
+) {
+  return isAiConnectionCompatible(connection, adapterType, model || `${connection.provider}/`);
+}
 
 export interface AiConnectionRequirement {
   companyId: string;
@@ -53,7 +63,17 @@ export function defaultAiConnectionName(ownerName: string | undefined, provider:
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
-    : "API key";
+    : provider === "github" ? "Personal access token" : "API key";
+}
+
+export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
+  const personal = connection.ownership === "personal";
+  return [
+    connection.name,
+    aiMethodLabel(connection.provider, connection.method),
+    personal ? "Personal" : "Company shared",
+    connection.accountLabel || connection.ownerName,
+  ].filter(Boolean).join(" · ");
 }
 
 export function matchesAiRequirement(

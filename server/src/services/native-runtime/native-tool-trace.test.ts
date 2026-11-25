@@ -72,3 +72,11 @@ describe("native tool timing", () => {
     expect(spans.filter((span) => span.span === "tool.request.input_stream").map((span) => span.durationMs)).toEqual([10, 31]);
   });
 });
+
+it("marks the first completion tool request once per turn without arguments",async()=>{
+ const {spans,timing}=fixture();
+ const completion=(id:string)=>({...event("started",id,1000),payload:{executionId:id,name:"paperclip_finish",arguments:"private"}});
+ await timing.observe(completion("a"));await timing.observe(completion("b"));
+ expect(spans.filter(span=>span.span==="completion.request.first")).toHaveLength(1);
+ expect(JSON.stringify(spans)).not.toContain("private");
+});
