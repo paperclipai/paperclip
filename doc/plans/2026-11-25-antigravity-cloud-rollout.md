@@ -17,7 +17,9 @@ Owner decisions (2026-11-25):
   canonical ID is `antigravity_runtime`.
 
 Evidence below was read on 2026-11-25 from Core `master` at `87083fe982` and
-paperclip-cloud `master` at `f3b9e76`. "Core" paths are in this repository.
+paperclip-cloud `master` at `f3b9e76`. Between `87083fe982` and this PR's base,
+no cited Core file changed (the only change under the cited trees is one
+unrelated chat test fixture), so the Core line numbers hold at the base. "Core" paths are in this repository.
 "Cloud" paths are in the private paperclip-cloud repository. Nothing here was
 observed in a live staging run; rows that need a live check say so.
 
@@ -29,8 +31,9 @@ Copied from the kickoff success criteria. Re-read before saying "done".
    normal picker (no operator grant), binds a Google connection by
    subscription sign-in **or** API key, picks a model (Flash and Neon levels),
    assigns ordinary work, and the run completes Done in the Cloud sandbox (the
-   Agent Computer path Cloud actually uses), with usage recorded and a
-   plain-language thread.
+   environment kind staging actually uses: Agent Computer or managed sandbox;
+   item 12 establishes which first), with usage recorded and a plain-language
+   thread.
 2. Recovery holds in Cloud: Stop works; a mid-run deploy or restart resumes,
    or Retry works (0% needed-retry target).
 3. The profile is qualified (pending to qualified) on live evidence, per the
@@ -203,8 +206,11 @@ sign-in outright (`plugin-runner-credentials.ts:58`).
 
 Reuse the Claude delivery for the token and the Codex path for write-back:
 
-1. **Token material:** the sanitized sign-in JSON only (client ID, token URI,
-   client secret, refresh token). Never an access token cache, never the
+1. **Token material:** exactly the output of `sanitizeAntigravityCredential`
+   (`antigravity-auth.ts:31-45`): client ID, client secret, refresh token,
+   token URI, the required `scopes` list, and `project_id` when present.
+   Delivery must carry that output unchanged; dropping `scopes` makes the
+   Runner reject the credential. Never an access token cache, never the
    account email (the Runner gets only a digest).
 2. **Delivery:** a typed task credential that the Launcher puts in the task's
    private environment, as `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`. The
@@ -222,7 +228,11 @@ Reuse the Claude delivery for the token and the Codex path for write-back:
    and saves the connection. The existing `.../local/attempts/:sessionId/code`
    route already carries a pasted code for local sign-in
    (`server/src/routes/ai-connections.ts:213-222`); the hosted route must not
-   need the local-login exemption. **Spike first:** confirm Google issues a
+   need the local-login exemption. The pasted value is a bearer credential
+   until exchanged, so: it travels only in a POST body (never a query string),
+   it is never written to access, activity, error or analytics logs, it is
+   single-use, it is bound to the user and attempt that started the flow, and
+   it expires with the server-side attempt. **Spike first:** confirm Google issues a
    refresh token for this client on a loopback redirect that Paperclip's
    listener did not receive, and that the flow works in Google's consent
    screen for consumer accounts. If it does not, the fallback is the Agent
@@ -233,9 +243,9 @@ Reuse the Claude delivery for the token and the Codex path for write-back:
 
 | Requirement | Mechanism |
 | --- | --- |
-| Token never logged | The credential only travels in typed task credentials and private task environment. The Launcher must reject the key in any configured or project environment (reserved prefix), as for Copilot's `COPILOT_` prefix. Add a test that searches the run log and Launcher logs for the token after a run. |
+| Token never logged | The credential only travels in typed task credentials and private task environment. The Launcher must reject `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET` (exact name) and the `GEMINI_` and `GOOGLE_` prefixes in any configured or project environment, as it does for Copilot's `COPILOT_` prefix. Add a test that searches the run log and Launcher logs for the token after a run. |
 | Scoped to the run | One task credential per task, bound to the account binding and session (Cloud `task_credentials.go:64-70` `credentialBinding`); per-turn only. |
-| Not readable by other tasks | Private task environment and per-run home owned by the task user; no profile file slot (unlike Codex) so nothing persists on the computer disk between runs. Test: a second task on the same computer cannot read the first task's home or environment. |
+| Not readable by other tasks | Today's mechanism: each agent has its own computer or sandbox (the task drivers declare `requiresAgent: true`, Cloud `extensions/plugin-agent-computer/src/manifest.ts:26-48`), so other agents' tasks never share it. Inside one computer, every task of that agent runs as the **same** UID/GID 1000 on a shared kernel; each task gets its own private mount namespace and user namespace, and `/home/agent` is shared (Cloud `agent-computer/launcher/README.md`, "Namespace isolation" and the task entry row). Same-UID tasks are therefore not a boundary by themselves. The implementation must add: the credential home under the task's private path (`/run/paperclip-runner-tasks/<task-id>`), never `/home/agent` or a profile slot; removal when the task ends; and proof that a concurrent task of the same agent cannot read it, neither the file nor `/proc/<pid>/environ` or memory of the Runner process. If that proof fails, pass the token through a file in the private task mount instead of the environment, or run Antigravity tasks one at a time per computer. Keep the cross-task read test as a regression test. |
 | Revoked on disconnect | New: on disconnect or reconnect, call Google's token revocation for the stored refresh token, then retire it. Running tasks fail at their next refresh. Record an activity log entry. |
 
 ## 4. The qualification flip
@@ -261,7 +271,7 @@ Where they run: `runner-full-stack-e2e.yml` (`workflow_dispatch`, suite
 Paid runs use repository secrets, so they may only run CODEOWNER code from
 `master` (the workflow runs from `master` and tests a named branch) and need
 gate approval. The Daytona cells use Core's sandbox path, not the Agent
-Computer, so they do not prove finish line 1; work item 8 does that on staging.
+Computer, so they do not prove finish line 1; work item 12 does that on staging.
 
 ## 5. Other blockers for "enable everywhere"
 
@@ -315,13 +325,13 @@ in that repository.
 | 3 | Keep per-turn-only harnesses per-turn on warm plugin environments | Core | `server/src/services/runner-environment-lifecycle.ts`, `server/src/routes/agents.ts` (save check), tests | An Antigravity agent on a plugin environment with `runnerLifecycleMode: "warm"` runs per-turn, or save refuses it in plain words; no run fails with the warm refusal | none | A |
 | 4 | Hosted Google sign-in (spike, then route and UI) | Core | `server/src/routes/ai-connections.ts`, `server/src/services/local-ai-login.ts`, `local-ai-browser-login.ts`, Runner `antigravity-auth.ts`, UI connection dialog | Spike answers the loopback question first. Then: on an authenticated public instance, a user completes Google sign-in by pasting the redirect; wrong `state`, reused code and another user's attempt are refused; the connection lists models | none | A |
 | 5 | Revoke the Google token on disconnect | Core | AI connection removal and reconnect paths in `server/src/services/ai-connections.ts`, activity log | Disconnect calls Google revocation once (retried on network failure), the secret is retired, an activity entry is written, a later run asks to reconnect | none | A |
-| 6 | Allow Antigravity on plugin Runner-task and remote sign-in targets | Core | `antigravity-release.ts`, `antigravity-connection-probe.ts` (use the plugin probe path, `server/src/services/native-runtime/plugin-runner-probe.ts`), `antigravity-connection-policy.ts`, `antigravity-runner-credentials.ts`, `agents.ts` | With a released profile: picker offers Antigravity on a plugin environment; Test runs the plugin probe; save and run accept sign-in on remote targets when 2 is present. The Core sandbox path gets the same sign-in support | 1, 2, 3 | C |
+| 6 | Allow Antigravity on plugin Runner-task and remote sign-in targets | Core | `antigravity-release.ts`, `antigravity-connection-probe.ts` (use the plugin probe path, `server/src/services/native-runtime/plugin-runner-probe.ts`), `antigravity-connection-policy.ts`, `antigravity-runner-credentials.ts`, `agents.ts` | Tested against a released-profile fixture (the real profile is still pending when this merges): picker offers Antigravity on a plugin environment; Test runs the plugin probe; save and run accept sign-in on remote targets when 2 is present. The Core sandbox path gets the same sign-in support. Re-verified live in item 12 | 1, 2, 3 | C |
 | 7 | Qualification runs on a paid key | Core (ledger) | `doc/plans/2026-11-22-antigravity-qualification.md` | All NOT RUN rows in section 4 pass live (24 cells local and Daytona, both lineups, session-load or no claim, attended sign-in journey, image pull time) | paid key (owner) | A (starts when the key exists) |
 | 8 | Flip Antigravity from pending to qualified | Core | `packages/paperclip-runner` release declaration and generated profiles, capability profile, docs, UI copy | Ledger rule met; the Core image's provider pack includes the closure without a candidate flag; no operator grant needed | 7, 3 | D |
-| 9 | Run Antigravity on agent computers through ACPX | Cloud | `extensions/plugin-agent-computer/src/harnesses.ts`, `agent-computer/harness/harnesses.json`, `harness.go`, Launcher `task_credentials.go`, `configured_environment.go`, `agent-computer/runtime/select-pack.mjs`, `assemble.mjs`, `pack-manifest.mjs`, `verify*.mjs`, tests (copy Cloud #1696) | Row `antigravity`: driver `acpx`, `acpxAgent: "antigravity"`, `projectAuthProvider: "google"`, credential `task-env` with key sets `GEMINI_API_KEY` or the sign-in key, reserved prefixes `GEMINI_` and `GOOGLE_`, blocked project settings for `.gemini/settings.json` endpoint and key fields, per-turn, closure under `provider-assets/antigravity/linux-x64` copied into the ROM. Tests pin the two tables together | 1, 2 (types); ROM content needs 8 | B (code), E (ROM) |
+| 9 | Run Antigravity on agent computers through ACPX | Cloud | `extensions/plugin-agent-computer/src/harnesses.ts`, `agent-computer/harness/harnesses.json`, `harness.go`, Launcher `task_credentials.go`, `configured_environment.go`, `agent-computer/runtime/select-pack.mjs`, `assemble.mjs`, `pack-manifest.mjs`, `verify*.mjs`, tests (copy Cloud #1696) | Row `antigravity`: driver `acpx`, `acpxAgent: "antigravity"`, `projectAuthProvider: "google"`, credential `task-env` with key sets `GEMINI_API_KEY` or the sign-in key, reserved prefixes `GEMINI_` and `GOOGLE_`, reserved exact key `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET` with a negative test (a configured or project environment that sets it is refused), blocked project settings for `.gemini/settings.json` endpoint and key fields, credential home in the private task path, per-turn, closure under `provider-assets/antigravity/linux-x64` copied into the ROM. Tests pin the two tables together | 1, 2 (types); ROM content needs 8 | B (code), E (ROM) |
 | 10 | Pin the Runner ROM to a Core with the flip | Cloud | `agent-computer/runner-source.lock.json`, `runner-pnpm-lock.yaml` | ROM and fleet sandbox image build; closure verified at build; ROM size, build time, boot and first-token time recorded before and after | 8, 9 | E |
 | 11 | Staging policy campaign | Fleet (operator action, no code) | `env_config` campaign with the full array plus `antigravity_runtime`, canary first | Staging `/api/health` lists the exact array; picker shows Google Antigravity | 10 deployed on staging, 6 deployed | F |
-| 12 | Staging acceptance | none (verification, ledger update) | ledger | Finish line 1, 2 and 5 on staging, both credential routes, Flash and Neon, Paperclip Computer and the managed sandbox; Stop; a restart mid-run resumes; disconnect revokes | 11, 4, 5 | F |
+| 12 | Staging acceptance (staging is the canary) | none (verification, ledger update) | ledger | First establish which environment kind staging stacks use (fleet environment defaults, `paperclipComputerDefault`). Then finish line 1, 2 and 5 on staging before any production exposure, both credential routes, Flash and Neon, Paperclip Computer and the managed sandbox; Stop; a restart mid-run resumes; disconnect revokes | 11, 4, 5 | F |
 | 13 | Update the Cloud bootstrap default | Cloud | `src/fleet/cloud-harness-availability.ts`, `docs/harness-availability.md` | New stacks born before fleet policy get the same list | 12 | G |
 | 14 | Production campaign | Fleet (operator action) | as 11, production | Production `/api/health` lists the array; one production run Done | 12, owner go-ahead | G |
 
@@ -332,8 +342,9 @@ last.
 Not recommended: carrying a pending candidate grant through the plugin launch
 contract so staging could run before the flip. It adds a contract field, a
 Launcher change and a 24-hour operator grant per company and model, only to be
-removed at the flip. Item 12 proves the Agent Computer path right after the
-flip, before the fleet list exposes it anywhere.
+removed at the flip. Staging is the canary: item 11 exposes Antigravity on
+staging only, and item 12 proves the Agent Computer path there before any
+broader or production exposure (items 13 and 14).
 
 ## 7. Waiting on the owner
 
