@@ -259,6 +259,8 @@ export interface TaskChatToolItem {
   blockedReason?: string;
   /** Execution id of the delegation (subagent) that made this call. */
   parentToolUseId?: string;
+  /** A failed call the agent repeated on the same target and the repeat succeeded. */
+  retried?: boolean;
 }
 
 /**
@@ -450,6 +452,8 @@ export interface TaskChatProviderActivityItem {
   startedAt?: string;
   /** Automatic approval review that let this tool execution run. */
   autoReview?: TaskChatAutoReview;
+  /** A failed tool execution the agent repeated on the same target and the repeat succeeded. */
+  retried?: boolean;
 }
 
 export type TaskChatSubagentStatus = "running" | "completed" | "failed" | "cancelled";

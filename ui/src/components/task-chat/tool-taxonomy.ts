@@ -81,6 +81,14 @@ export interface ToolActivityPresentation {
   summaryGroup: ToolSummaryGroup;
 }
 
+/** Families whose rows read as "<verb> <subject>", for example "Read README.md". */
+export const SUBJECT_FAMILIES: ReadonlySet<ToolFamily> = new Set(["terminal", "read", "edit", "grep", "search", "web"]);
+
+/** "Read · failed" → "Read · retried", for a failure a later call of the same tool recovered. */
+export function retriedLabel(failedLabel: string): string {
+  return failedLabel.replace(/ · failed$/, " · retried");
+}
+
 /** ACPX's placeholder title must never displace real lifecycle identity. */
 const GENERIC_TOOL_NAMES = new Set(["tool", "tool call", "tool_call", "acp_tool"]);
 
@@ -205,7 +213,10 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   report_progress: { action: "post", running: "Reporting progress", completed: "Reported progress" },
   answer_status_question: { action: "post", running: "Answering a status question", completed: "Answered a status question" },
   write_document: { action: "update", running: "Writing a document", completed: "Wrote a document" },
-  register_deliverable: { action: "create", running: "Registering a deliverable", completed: "Registered a deliverable" },
+  // With the file as its subject the row reads "Attached u1.txt".
+  register_deliverable: { action: "create", running: "Attaching a file", completed: "Attached a file" },
+  // Antigravity's swarm progress lines; the subject is the whole plain sentence.
+  swarm_update: { action: "other", running: "Swarm", completed: "Swarm", family: "agent", group: group("swarm_update", "swarm update", "swarm updates") },
   finish_task: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
   paperclip_finish: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
   block_task: { action: "block", running: "Reporting a blocker", completed: "Reported a blocker" },

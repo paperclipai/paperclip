@@ -31,7 +31,7 @@ import {
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
-import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
+import { retriedLabel, SUBJECT_FAMILIES, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
@@ -40,8 +40,6 @@ import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
 
-/** Families whose rows read as "<verb> <subject>", for example "Ran $ node --test". */
-const SUBJECT_FAMILIES = new Set(["terminal", "read", "edit", "grep", "search", "web"]);
 const READ_RUN_MIN = 3;
 
 /** "120ms", "1.2s", "14s", "2m 03s". */
@@ -114,7 +112,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
       active && (item.status === "pending" || item.status === "in_progress");
     const label =
       item.status === "failed"
-        ? tool.failedLabel
+        ? item.retried ? retriedLabel(tool.failedLabel) : tool.failedLabel
         : item.status === "interrupted"
           ? tool.interruptedLabel
           : running

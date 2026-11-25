@@ -766,9 +766,13 @@ function createRuntimeEventStep(
   const trackSubagents = initializedAgent === "claude"
     ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
     : null;
-  const accept = (event: AcpRuntimeEvent): void => {
-    toolUseAdmission?.observe(currentTurnId, event);
-    toolEvidence?.tool(event);
+  const projectToolEvent = acpxProfileActivity(openParams?.agent ?? initializedAgent).createToolEventProjection?.()
+    ?? ((event: AcpRuntimeEvent) => event);
+  const accept = (raw: AcpRuntimeEvent): void => {
+    toolUseAdmission?.observe(currentTurnId, raw);
+    toolEvidence?.tool(raw);
+    const event = projectToolEvent(raw);
+    if (!event) return;
     // Claude hook lifecycle rides on session_info_update `_meta`; publish it
     // as schema-validated display activity rather than a raw status event.
     const hook = claudeHookCanonicalEvent(event);
@@ -1330,7 +1334,8 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
  */
 function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): AcpRuntimeEvent {
   if (raw.type !== "tool_call" || bounded.type !== "tool_call") return bounded;
-  const detail = acpxToolDetailFromRuntimeEvent(raw);
+  // A provider projection (profile-activity.ts) may already name the tool.
+  const detail = { ...acpxToolDetailFromRuntimeEvent(raw), ...record(record(raw).paperclipToolDetail) };
   const inputPath = bounded.locations?.length ? undefined : acpxToolInputPath(raw);
   const locations = inputPath
     ? safeAcpxLocations([{ path: inputPath }], openParams?.workingDirectory, bounded.kind, bounded.title)

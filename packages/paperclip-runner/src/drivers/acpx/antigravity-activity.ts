@@ -1,5 +1,6 @@
 import type { CanonicalProviderEvent } from "../../provider-events.js";
 import { antigravitySwarmChannelLabel } from "./antigravity-swarm-route.js";
+import { antigravityToolDetail, isAntigravityInternalRead } from "./antigravity-tool-identity.js";
 import type { AcpxActivityAdapter } from "./profile-activity.js";
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -42,6 +43,31 @@ export function antigravitySwarmReceiptNotice(before: unknown, after: unknown, r
   };
 }
 
+/**
+ * Antigravity names no tool (its ACP titles are display text), so each call
+ * gets the identity other harnesses send. A swarm turn's events already carry
+ * theirs (antigravity-swarm-presentation.ts); reads of the CLI's own built-in
+ * files are dropped, with every later update of the same call.
+ */
+export function createAntigravityToolEventProjection(): <T extends { type: string }>(event: T) => T | null {
+  const hidden = new Set<string>();
+  return <T extends { type: string }>(event: T): T | null => {
+    if (event.type !== "tool_call") return event;
+    const value = event as unknown as Record<string, unknown>;
+    const id = typeof value.toolCallId === "string" ? value.toolCallId : null;
+    if (id && hidden.has(id)) return null;
+    if (isAntigravityInternalRead(value)) {
+      if (id && hidden.size < 1_024) hidden.add(id);
+      return null;
+    }
+    if (text(record(value.paperclipToolDetail).toolName)) return event;
+    const detail = antigravityToolDetail(value);
+    // The title is display text such as `paperclip_set_task_title`; a named call's progress is its subject.
+    return detail ? { ...event, text: detail.subject ?? "", paperclipToolDetail: { ...record(value.paperclipToolDetail), ...detail } } : event;
+  };
+}
+
 export const antigravityActivityAdapter: AcpxActivityAdapter = Object.freeze<AcpxActivityAdapter>({
+  createToolEventProjection: createAntigravityToolEventProjection,
   usageNotice: (before, after, requestId, turnId) => antigravitySwarmReceiptNotice(before, after, requestId, `${turnId}:antigravity-swarm-receipt`),
 });
