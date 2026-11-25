@@ -115,6 +115,7 @@ What Paperclip still does before it sends a call to Google's MCP server:
 - A confirmation question from Google (MCP elicitation) goes on the task's
   question card for a person. Skipping it sends "decline"; until it is
   answered, the call stops again and nothing is changed.
+- Switch-back fix (Nov 25, `fix/google-mcp-adopt-saved-rest-definitions`): #22815 recognised only the current REST schemas, so rows saved by #22634 (before the #22706 strict schemas) were held for review on the staging tester (34 of 36). A refresh now adopts Google's definition for any shipped REST schema hash (`shipped-schema-hashes.ts`). Actions already held stay held for a person to review: the hold replaced the saved definition, and no record proves the row's definition before the hold (an auto-release from call history was dropped after review, because a refresh can save rows and stop before its audit).
 
 What only the REST tools did, and does not happen on MCP:
 
@@ -407,7 +408,7 @@ nested run answers and migrated log originals.
 | Approval requests and their approval cards in the task | Preview, arguments and the executed result | Yes, for settled requests. | Yes. Cards are deleted with the task; requests are cleared. | Yes, rows deleted |
 | Results passed to a later run (run context and wake payload) | Approved action results | Yes, for settled runs and wakes. | Yes | Yes, rows deleted |
 | App views | Tool input, result and shared context | Yes, rows deleted. | Yes, rows deleted | Yes, rows deleted |
-| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts and answer text at any depth of the run result | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. | Yes, for each of the task's runs that called a connection or received an approved result. The runs themselves stay. | Yes. Rows deleted, then every run log is removed from storage in the background. |
+| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts, answer text at any depth of the run result, the free text of every `paperclip.run_result.v1` object in `result_json` (for example `nativeResult` evidence refs, verification details and completion-claim evidence refs), and the session checkpoint copy in `runner_profile_json.sessionCheckpoint` (`semanticResult`, `governedWait.result` and `governedWait.sourceEvent.payload`; `terminalTurns[]` fingerprints become `sha256:` hashes). In a run result only the fixed enum fields (by exact path) and `completionClaim.contractRevision` stay; criterion ids, target agent ids, `idempotencyKey` and `handoffId` become `sha256:` hashes; every other string becomes "Removed because the connection data was deleted.", so the result stays valid | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. | Yes, for each of the task's runs that called a connection or received an approved result. The runs themselves stay. | Yes. Rows deleted, then every run log is removed from storage in the background. |
 | Saved tool results over 500,000 bytes (`runner-api` files and their asset rows) | Full result | Yes, for the runs whose transcript is deleted. Files attached to a task stay. | Yes, for those runs | Yes, file and row |
 | Comments, documents and attached files agents wrote into tasks | Whatever the agent copied | No, by design. The user edits or deletes them, or the task. | Yes. Attached files are also removed from storage, and retried until it succeeds. | Yes. Every company file is removed from storage in the background. |
 | Transcripts of later runs that read an app view's shared context | Shared context | No. Nothing records which runs read it. | Only when the run belongs to the deleted task | Yes |
@@ -505,6 +506,31 @@ the person chose to disconnect that identity.
   crash between saving and clearing is never resumed.
 - A refresh failure counts only if the refresh still holds the grant's
   refresh lease; a late answer after a new sign-in deletes nothing.
+- Connection state (November 25): when a refresh marks a grant
+  `needs_reauthorization` and no grant on the connection is still active, the
+  connection gets the existing expired-sign-in state: `health_status` `error`,
+  `last_error` `oauth_reauthorization_required` and the message "Access to
+  this app ended. Reconnect to continue." Its status and
+  enabled flag do not change, so the app list shows "Needs attention" (not
+  "Paused") and a reconnect keeps the chosen tools. The tool gateway does not
+  offer a connection's tools while it has a `needs_reauthorization` grant and
+  no active grant. A successful reconnect refreshes the catalog and sets
+  health back to `ok`. The removal message and dialog count a connection as
+  "available to agents" only when it is on, is not waiting for a new sign-in,
+  and its tools are offered (healthy, personal, or plugin).
+- Each store carries its own mark: `result_json.answerCopiesDeletedAt` and
+  `sessionCheckpoint.contentDeletedAt`. A run in scope whose run result or
+  checkpoint lacks its mark is cleaned again, so runs cleaned by an older
+  build, and a checkpoint rewritten later, are fixed by the next deletion.
+  The control-plane port also cleans a checkpoint it writes for a run whose
+  result has `contentDeletedAt`.
+- Kept on purpose: the task description and prompt copies
+  (`contextSnapshot.paperclipIssue.description`,
+  `runnerProfileJson.nativeExecutionInput.task`), which are the user's text,
+  and structural run fields (status, schema, disposition, criterion ids,
+  check status, counts, hashes). Not yet covered: the encrypted controller
+  checkpoint rows (`native_runner_checkpoints`), which the harness backup
+  expiration removes.
 - New in the job for every app: tool error text (`tool_invocations` and
   `tool_call_events` `error_message`, the approval card's
   `toolAction.errorMessage`), and the session pointers above.

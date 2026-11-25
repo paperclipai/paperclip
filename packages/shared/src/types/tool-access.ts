@@ -429,6 +429,13 @@ export interface ToolConnectionRemovalSummary {
     manageUrl: string;
   } | null;
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
+}
+
+export interface AiSignInRemoval {
+  provider: "google";
+  savedSignIn: "deleted" | "kept_shared" | "not_deleted";
+  providerSignIn: "still_valid";
 }
 
 export type ManagedGoogleRevocationOutcome =
@@ -452,6 +459,7 @@ export interface ManagedGoogleAccessRemoval {
 
 export type ConnectionGrantRevocationResult = ConnectionGrant & {
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
 };
 
 export interface ToolConnectionRemovalResult {

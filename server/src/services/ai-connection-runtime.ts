@@ -583,6 +583,11 @@ export async function prepareManagedAiRuntime(
         credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
           versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
+      ...(antigravitySubscription && credentialRef && freshness ? {
+        credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
+          versionSelector: credentialRef.versionSelector ?? "latest",
+          google: { credentialSha256: createHash("sha256").update(originalCredential, "utf8").digest("hex") } } satisfies ManagedAiCredentialWritebackBinding,
+      } : {}),
       config: {
         ...input.config,
         ...projected?.config,

@@ -25,9 +25,9 @@ import { logActivity, type LogActivityInput } from "../../activity-log.js";
 import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
-import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
+import { CHECKPOINT_CONTENT_DELETED_MARKER, DELETED_TEXT, RESULT_TEXT_KEYS, withoutActionResults, withoutCheckpointAnswers, withoutResultText, withoutRunAnswers } from "./content-cleaning.js";
 import { forgetRunCopies, forgetRunInTrainingExamples, runCopiesRemainSql } from "./run-copies.js";
-import { forgetRunSessions, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
+import { forgetRunSessions, RUN_ANSWER_COPIES_DELETED_MARKER, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 import {
   initialContentDeletionProgress,
   nextPhase,
@@ -183,15 +183,20 @@ export function runUsedToolsSql(companyId: string): SQL {
 
 export function runsWithStoredContentSql(scope: Scope): SQL {
   const resultText = sql.join(RESULT_TEXT_KEYS.map((key) =>
-    sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."result_json", '{}'::jsonb), 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
+    sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."result_json", '{}'::jsonb), 'lax $.**.${key} ? (@.type() == "string" && @ != "" && @ != "${DELETED_TEXT}")')`)), sql` or `);
   const inScope = scope.connectionId && scope.cutoff
     ? runsCallingConnectionSql({ ...scope, connectionId: scope.connectionId, cutoff: scope.cutoff })
     : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)}) and ${runUsedToolsSql(scope.companyId)}`;
+  const answerCopiesRemainSql = sql`((jsonb_path_exists(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), 'lax $.** ? (@.schema == "paperclip.run_result.v1")')
+      and not coalesce(${heartbeatRuns.resultJson} ? ${RUN_ANSWER_COPIES_DELETED_MARKER}, false))
+    or (jsonb_typeof(${heartbeatRuns.runnerProfileJson} -> 'sessionCheckpoint') = 'object'
+      and not coalesce((${heartbeatRuns.runnerProfileJson} -> 'sessionCheckpoint') ? ${CHECKPOINT_CONTENT_DELETED_MARKER}, false)))`;
   return sql`${heartbeatRuns.companyId} = ${scope.companyId}
     and ${inScope}
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
+      or ${answerCopiesRemainSql}
       or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, issueId: sql`${heartbeatRuns.issueId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
@@ -629,20 +634,25 @@ export function createConnectionContentDeletion(db: Db, deps: {
         stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
         stderrExcerpt: heartbeatRuns.stderrExcerpt,
         resultJson: heartbeatRuns.resultJson,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)))
       .for("update");
     if (!row) return;
-    const result = withoutResultText(row.resultJson);
-    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || row.error !== null || result.changed) run.changed = true;
+    const text = withoutResultText(row.resultJson);
+    const result = withoutRunAnswers(text.value);
+    const checkpoint = withoutCheckpointAnswers(row.runnerProfileJson);
+    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || row.error !== null || text.changed || result.changed || checkpoint.changed) run.changed = true;
     await tx
       .update(heartbeatRuns)
       .set({
         stdoutExcerpt: null,
         stderrExcerpt: null,
         error: null,
-        resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}), [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString() },
+        resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}),
+          [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString(), [RUN_ANSWER_COPIES_DELETED_MARKER]: new Date().toISOString() },
+        ...(checkpoint.changed ? { runnerProfileJson: checkpoint.value } : {}),
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
     await forgetRunInTrainingExamples(tx, companyId, run);

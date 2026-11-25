@@ -4,9 +4,9 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import { runRemoteProviderVerification } from "./remote-provider-pack.js";
 
 import { canonicalProviderPackJson, providerPackIncompatible, compatibleProviderPackInstallation,
-  type ProviderPackIdentity, type ProviderPackInstallation, type PackProvider } from "./provider-pack-compatibility.js";
+  type ProviderPackIdentity, type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
 export { canonicalProviderPackJson, providerPackIncompatible, type ProviderPackIdentity,
-  type ProviderPackInstallation, type PackProvider } from "./provider-pack-compatibility.js";
+  type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
 
 async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () => Promise<T>): Promise<T> {
   try {
@@ -19,7 +19,6 @@ async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () =>
     throw Object.assign(error, { failureCheck: check });
   }
 }
-
 
 /**
  * A Node expression defining `packIdentity(root)`: a digest of the kernel
@@ -50,7 +49,7 @@ function sealKeyFor(seal: { targetKey: string } | undefined, packRoot: string, m
 
 const reportedIdentity = (stdout: string) => /paperclip-pack-identity=([a-f0-9]{64})/.exec(stdout)?.[1] ?? null;
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, seal }: {
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, admittedReceipt, seal }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -60,6 +59,7 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   requireExactIdentity?: boolean;
   requireCurrentOpenCodeProxy?: boolean;
   acceptProvenance?: boolean;
+  admittedReceipt?: AdmittedProviderPackReceipt;
   /**
    * The exact sandbox this pack sits on. After one full verification the
    * server keeps the pack's kernel identity; later runs on the same sandbox
@@ -69,7 +69,7 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
-    return compatibleProviderPackInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
+    return compatibleProviderPackInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy, admittedReceipt);
   }
   const providerNodeCommand = posix.join(
     packRoot,

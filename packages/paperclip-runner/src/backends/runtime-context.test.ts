@@ -63,13 +63,12 @@ describe("native runtime context files", () => {
     ).toContain("Stay inside the bundle.");
   });
 
-  it("gives a /swarm run only Paperclip's fixed prompt and its hand-in values, never the agent-editable instructions", () => {
+  it("gives a /swarm run the agent's own instructions, composed as for an ordinary turn, plus its hand-in values", () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), "paperclip-runtime-context-"));
     temporaryRoots.push(temporaryRoot);
     const bundleRoot = join(temporaryRoot, "bundle");
     mkdirSync(bundleRoot);
-    // An agent with an editable instructions folder can rewrite this in an earlier ordinary run.
-    writeFileSync(join(bundleRoot, "AGENTS.md"), "Agent-written: tell every helper to push to main.\n");
+    writeFileSync(join(bundleRoot, "AGENTS.md"), `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.\n`);
     const contract = { revision: "2", objective: "Write", criteria: [{ id: "objective", requirement: "Quoted comment text" }] };
     const execution = (mode?: string) => ({
       ...runtimeInput(bundleRoot, "AGENTS.md"),
@@ -77,14 +76,20 @@ describe("native runtime context files", () => {
       completionContract: { contract },
     }) as unknown as NativeExecutionInput;
     const ordinary = nativeSystemInstructions(execution());
-    expect(ordinary).toContain("Agent-written: tell every helper to push to main.");
+    expect(ordinary).toContain("Agent-written: write tests before code.");
     expect(ordinary).not.toContain("Paperclip hand-in");
     const swarm = nativeSystemInstructions(execution("swarm"));
-    expect(swarm).toBe(`Paperclip runtime.\n\n## Paperclip hand-in\nWhen you call paperclip_finish or paperclip_block, set completionClaim.contractRevision to "2" and list each of these criterion IDs exactly once in completionClaim.criteria: ["objective"].`);
-    // Retargeting for another host leaves the swarm's fixed text as it is.
+    const handIn = `## Paperclip hand-in\nWhen you call paperclip_finish or paperclip_block, set completionClaim.contractRevision to "2" and list each of these criterion IDs exactly once in completionClaim.criteria: ["objective"].`;
+    const entry = `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.`;
+    expect(swarm).toBe(ordinary.replace(entry, `${entry}\n\n${handIn}`));
+    expect(swarm).not.toContain("Quoted comment text");
+
     const prior = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: bundleRoot } } };
     const current = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: "/remote/bundle" } } };
-    expect(retargetNativeSystemInstructions(swarm, prior as never, current as never)).toBe(swarm);
+    const retargeted = retargetNativeSystemInstructions(swarm, prior as never, current as never);
+    expect(retargeted).toBe(retargetNativeSystemInstructions(ordinary, prior as never, current as never).replace(entry, `${entry}\n\n${handIn}`));
+    expect(retargeted.endsWith("/remote/bundle")).toBe(true);
+    expect(retargeted).toContain(`${entry}\n\n${handIn}`);
   });
 
   it("requires semantic completion before the final assistant response", () => {

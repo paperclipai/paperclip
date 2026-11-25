@@ -3543,6 +3543,20 @@
       "when": 1795561452000,
       "tag": "0507_special_kang",
       "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795572002132,
+      "tag": "0508_normal_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 509,
+      "version": "7",
+      "when": 1795602445143,
+      "tag": "0509_recover_exhausted_github_responses",
+      "breakpoints": true
     }
   ]
 }

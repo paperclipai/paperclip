@@ -329,4 +329,40 @@ describe("installed provider pack compatibility", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("re-pins an immutable installation from a durable admittedReceipt across controller releases while rejecting mismatches and unprotected paths", async () => {
+    const admitted = manifest("a");
+    admitted.payload.contractDigest = sha("old-contracts");
+    admitted.payload.acpxProfileDigests = { claude: sha("old-claude") };
+    const sealedAdmitted = reseal(admitted);
+    const deployed = manifest("b");
+    deployed.payload.contractDigest = sha("new-contracts");
+    deployed.payload.acpxProfileDigests = { claude: sha("new-claude") };
+    const sealedDeployed = reseal(deployed);
+    const receipt = {
+      providerPackDigest: sealedAdmitted.digest,
+      opencodeProxySha256: sealedAdmitted.payload.artifacts.opencodeProxy!.sha256,
+      sourceRevision: sealedAdmitted.payload.runnerSourceRevision,
+    };
+    const execute = vi.fn();
+    const baseInput = {
+      runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: sealedDeployed,
+      installation: { root: "/opt/paperclip-runner/provider-pack", manifest: sealedAdmitted, immutable: true },
+      requireExactIdentity: true,
+      admittedReceipt: receipt,
+    };
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" } })).resolves.toEqual(sealedAdmitted);
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "acpx", agent: "claude" } })).resolves.toEqual(sealedAdmitted);
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "acpx", agent: "codex" } }))
+      .rejects.toMatchObject({ failureCheck: "acpx_profile" });
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      installation: { ...baseInput.installation, immutable: false } })).rejects.toMatchObject({ failureCheck: "installation_unprotected" });
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      admittedReceipt: { ...receipt, providerPackDigest: sha("other-pack") } })).rejects.toMatchObject({ failureCheck: "exact_identity" });
+    const tampered = { ...sealedAdmitted, payload: { ...sealedAdmitted.payload, runnerSourceRevision: "c".repeat(40) } };
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      installation: { ...baseInput.installation, manifest: tampered } })).rejects.toMatchObject({ failureCheck: "manifest_digest" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
 });

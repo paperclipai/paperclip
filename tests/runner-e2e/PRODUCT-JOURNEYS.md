@@ -571,3 +571,15 @@ The recovery wait gates the shared task snapshot before it reaches any journey
 consumer. Plan revision, Plan approval and protected-action decisions cannot use
 a pending card while its producing run is still recovering. A recovery that
 outlives the original campaign deadline fails without making a decision.
+
+The hire-delegate-reuse observer applies the same exact-session retry wait to
+lead and hired-agent runs. Its idle check still requires every run to succeed.
+A journey failure from a hosted API call keeps its fixed code, such as
+`api_status_500` or `api_request_failed`; other errors stay
+`journey_operation_failed`.
+
+`ConnectionApi` repeats a JSON read up to three times after a dropped connection
+or a 408, 429, 502, 503 or 504 response, inside the caller's original timeout. It
+honors a `Retry-After` of up to five seconds. It never repeats a write or a binary
+download (`bytes`). The observed reader opts out, so its own retry loop records
+every transient failure in `observation-read-failures.json`.

@@ -1,4 +1,4 @@
-import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, SUPERSEDED_REUSABLE_SANDBOX_KEY, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
@@ -1633,7 +1633,7 @@ export function environmentService(db: Db) {
                       // A source whose harness backup was restored into another
                       // lease holds older session state. That claim and this
                       // handoff compete on this row, so only one of them wins.
-                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'reusableSandboxLeaseSuperseded')`,
+                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${SUPERSEDED_REUSABLE_SANDBOX_KEY})`,
                       sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'portableTaskSuccessor')`,
                     ),
                   )
