@@ -21,7 +21,7 @@ describe("Antigravity swarm activity, in plain language", () => {
     expect(antigravitySwarmEvent(tool("post_message", { text: "@verifier [done] Verification verified: checked 2 files" }), WORKSPACE))
       .toMatchObject({ title: "Coordinator: Verification verified: checked 2 files" });
     expect(antigravitySwarmEvent(tool("swarm", { action: "title", title: "Two writers and a verifier" }), WORKSPACE))
-      .toMatchObject({ title: "Swarm: Two writers and a verifier" });
+      .toMatchObject({ title: "Goal: Two writers and a verifier", paperclipToolDetail: { toolName: "swarm_update", subject: "Goal: Two writers and a verifier" } });
   });
 
   it("keeps the opening title on later updates of the same call", () => {

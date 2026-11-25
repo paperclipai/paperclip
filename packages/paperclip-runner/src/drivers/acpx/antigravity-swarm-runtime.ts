@@ -14,7 +14,7 @@ import {
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
 import { GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
-import { antigravitySwarmEvent, createAntigravityTerminalHintFilter } from "./antigravity-swarm-presentation.js";
+import { antigravitySwarmEvent, antigravitySwarmLine, createAntigravityTerminalHintFilter } from "./antigravity-swarm-presentation.js";
 import { acpRuntimeEventFromValidatedSessionUpdate } from "./acp-session-update-event.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
@@ -316,8 +316,7 @@ function failed(code: string, message: string): AcpRuntimeTurnResult {
   return { status: "failed", error: { code, message, retryable: false } };
 }
 
-const line = (id: string, title: string): AcpRuntimeEvent =>
-  ({ type: "tool_call", tag: "tool_call", toolCallId: `paperclip-swarm-${id}`, text: title, title, kind: "other", status: "completed" });
+const line = (id: string, title: string): AcpRuntimeEvent => antigravitySwarmLine(`paperclip-swarm-${id}`, title, "tool_call", "completed");
 
 export type AntigravityCliAccountMatch = "matches" | "does_not_match" | "unknown";
 const CLI_LOG_TAIL_BYTES = 512 * 1024;
