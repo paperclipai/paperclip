@@ -192,6 +192,11 @@ export async function readCustomerSuccessResource(
   q: InspectionQuery,
   options: CustomerSuccessInspectionOptions = {},
 ): Promise<unknown> {
+  // runs.search manages its own read-only repeatable-read DB transaction so
+  // fallback RunLogStore reads happen cleanly outside any open DB transaction.
+  if (q.operation === "runs.search") {
+    return searchCustomerSuccessRuns(db, q);
+  }
   return db.transaction(
     async (rawTx) => {
       const tx = rawTx as unknown as Db;
@@ -201,9 +206,6 @@ export async function readCustomerSuccessResource(
           .from(schema.companies)
           .where(eq(schema.companies.id, q.companyId));
         if (!company) throw notFound("Inspection company not found");
-      }
-      if (q.operation === "runs.search") {
-        return searchCustomerSuccessRuns(tx, q);
       }
       if (q.operation === "list" || q.operation === "get" || q.operation === "count") {
         const reader = inspectionReaders[q.resource!];

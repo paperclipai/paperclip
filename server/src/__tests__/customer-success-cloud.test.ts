@@ -475,6 +475,52 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         await client.query("RESET ROLE");
         client.release();
       }
+      // Exercise PostgresInspectionStore.recordDiagnostics + SQL aggregateDiagnostics end-to-end.
+      await store.recordDiagnostics([
+        {
+          stackId: "qualification-stack",
+          runId: "diag-run-1",
+          diagnosticCode: "git_storage_guard_unavailable",
+          runStatus: "succeeded",
+          driverKind: "codex",
+          runtimeMode: "native",
+          appVersion: "v2026.1125.0",
+          sandboxSnapshot: "snap-qual",
+          occurredAt: new Date(now.getTime() - 60_000).toISOString(),
+        },
+        {
+          stackId: "qualification-stack",
+          runId: "diag-run-1",
+          diagnosticCode: "github_capability_missing",
+          runStatus: "succeeded",
+          driverKind: "codex",
+          runtimeMode: "native",
+          appVersion: "v2026.1125.0",
+          sandboxSnapshot: "snap-qual",
+          occurredAt: new Date(now.getTime() - 60_000).toISOString(),
+        },
+      ]);
+      const pgDiagSummary = await store.aggregateDiagnostics(
+        [
+          {
+            stackId: "qualification-stack",
+            host: "fixture.example.test",
+            createdAt: now.toISOString(),
+          },
+        ],
+        {},
+      );
+      expect(pgDiagSummary.matchedStacks).toBe(1);
+      expect(pgDiagSummary.matchedRuns).toBe(1);
+      expect(pgDiagSummary.diagnostics).toHaveLength(2);
+      expect(pgDiagSummary.coOccurrence).toEqual([
+        {
+          diagnosticCodes: ["git_storage_guard_unavailable", "github_capability_missing"],
+          matchedStacks: 1,
+          matchedRuns: 1,
+        },
+      ]);
+
       const { applyInspectionRetention } = await load("customer-success/retention.js");
       await expect(applyInspectionRetention(pool, 364)).rejects.toThrow("at least one year");
       await pool.query(

@@ -25,6 +25,9 @@ import {
   RUN_SUMMARY_COLUMNS,
   primaryKeyColumns,
 } from "../services/customer-success-inspection.js";
+import { searchCustomerSuccessRuns } from "../services/customer-success-run-search.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import type { RunLogStore } from "../services/run-log-store.js";
 import {
   customerSuccessRoutes,
   fitInspectionResponse,
@@ -1060,6 +1063,190 @@ describe("customer-success read authority", () => {
     })) as { status: string; diagnostics: string[] };
     expect(summaryRun.status).toBe("succeeded");
     expect(summaryRun.diagnostics).toEqual(["git_storage_guard_unavailable"]);
+  });
+
+  it("runs.search redacts registered secrets before excerpt slicing, decodes escaped literals, and marks unreadable/slow logs truncated", async () => {
+    const [co] = await db
+      .insert(schema.companies)
+      .values({ name: "SearchEdgeCo", issuePrefix: "SEC" })
+      .returning();
+    const [agent] = await db
+      .insert(schema.agents)
+      .values({ companyId: co.id, name: "EdgeAgent", adapterType: "codex_local" })
+      .returning();
+
+    // 1) Secret crossing the 240-char excerpt boundary AND a multiline secret must be
+    // redacted in full BEFORE slicing or whitespace collapsing.
+    const boundarySecret = "sk-boundary-secret-0123456789abcdef-tail";
+    const multilineSecret = "BEGIN-SECRET-LINE1\nMIDDLE-SECRET-LINE2\nEND-SECRET-LINE3";
+    const [secretRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId: co.id,
+        agentId: agent.id,
+        status: "succeeded",
+        runtimeMode: "native",
+        driverKind: "codex",
+      })
+      .returning();
+    const redactions = createRunSecretRedactionRegistry(db);
+    await redactions.register(co.id, secretRun.id, boundarySecret);
+    await redactions.register(co.id, secretRun.id, multilineSecret);
+
+    await db.insert(schema.heartbeatRunEvents).values({
+      companyId: co.id,
+      runId: secretRun.id,
+      agentId: agent.id,
+      seq: 1,
+      eventType: "item.completed",
+      stream: "system",
+      payload: {
+        prpEvent: {
+          payload: {
+            kind: "commandExecution",
+            aggregatedOutput:
+              `MARKER_BOUNDARY ${"x".repeat(100)} ${boundarySecret} ` +
+              `and multiline ${multilineSecret} plus say "hello"\\world`,
+          },
+        },
+      },
+    });
+
+    const redactedSearch = await searchCustomerSuccessRuns(db, {
+      operation: "runs.search",
+      companyId: co.id,
+      patterns: ["MARKER_BOUNDARY", 'say "hello"\\world'],
+      includeExcerpts: true,
+    });
+    expect(redactedSearch.patterns[0]!.matchedRuns).toBe(1);
+    const boundaryExcerpt = redactedSearch.patterns[0]!.sampleRuns[0]!.excerpt ?? "";
+    expect(boundaryExcerpt).toContain("MARKER_BOUNDARY");
+    expect(boundaryExcerpt).not.toContain("sk-boundary");
+    expect(boundaryExcerpt).not.toContain("0123456789");
+    expect(boundaryExcerpt).not.toContain("BEGIN-SECRET");
+    expect(boundaryExcerpt).not.toContain("MIDDLE-SECRET");
+    // Literal pattern with quotes and backslash matches decoded JSON payload.
+    expect(redactedSearch.patterns[1]!.matchedRuns).toBe(1);
+    const escapedExcerpt = redactedSearch.patterns[1]!.sampleRuns[0]!.excerpt ?? "";
+    expect(escapedExcerpt).toContain('say "hello"\\world');
+    expect(escapedExcerpt).not.toContain("BEGIN-SECRET");
+    expect(escapedExcerpt).not.toContain("END-SECRET");
+
+    // 2) Legacy RunLogStore fallback: decodes NDJSON chunks, preserves UTF-8 split
+    // across read boundaries, and marks failed or timed-out log reads truncated.
+    const [logRun, missingLogRun, slowLogRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values([
+        {
+          companyId: co.id,
+          agentId: agent.id,
+          status: "succeeded",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          logStore: "local_file",
+          logRef: "utf8-and-quotes.ndjson",
+        },
+        {
+          companyId: co.id,
+          agentId: agent.id,
+          status: "succeeded",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          logStore: "local_file",
+          logRef: "missing.ndjson",
+        },
+        {
+          companyId: co.id,
+          agentId: agent.id,
+          status: "succeeded",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          logStore: "local_file",
+          logRef: "slow.ndjson",
+        },
+      ])
+      .returning();
+
+    const ndjsonBytes = Buffer.from(
+      `${JSON.stringify({ ts: "2026-11-25T00:00:00Z", stream: "stderr", chunk: 'prefix café 🚀 say "quoted"\n' })}\n` +
+        `${JSON.stringify({ ts: "2026-11-25T00:00:01Z", stream: "stderr", chunk: "tail line" })}\n`,
+      "utf8",
+    );
+
+    const makeFakeStore = (mode: "utf8" | "missing" | "slow"): RunLogStore => ({
+      begin: async () => ({ store: "local_file", logRef: "unused" }),
+      append: async () => 0,
+      finalize: async () => ({ bytes: 0, compressed: false }),
+      read: async (handle, opts) => {
+        if (handle.logRef === "utf8-and-quotes.ndjson" && mode === "utf8") {
+          const offset = opts?.offset ?? 0;
+          // Force a tiny 45-byte page that cuts straight through multibyte UTF-8 / JSON.
+          const step = Math.min(45, opts?.limitBytes ?? 45);
+          const slice = ndjsonBytes.subarray(offset, offset + step);
+          const nextOffset = offset + slice.length < ndjsonBytes.length ? offset + slice.length : undefined;
+          return { content: slice.toString("utf8"), nextOffset };
+        }
+        if (handle.logRef === "missing.ndjson") {
+          throw new Error("ENOENT: log missing after pod roll");
+        }
+        if (handle.logRef === "slow.ndjson" && mode === "slow") {
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        }
+        return { content: "" };
+      },
+    });
+
+    // UTF-8 split & JSON-escaped quotes match cleanly when log is readable.
+    const utf8Only = await searchCustomerSuccessRuns(
+      db,
+      {
+        operation: "runs.search",
+        companyId: co.id,
+        patterns: ['café 🚀 say "quoted"'],
+      },
+      {
+        logStore: {
+          ...makeFakeStore("utf8"),
+          read: async (handle, opts) =>
+            handle.logRef === "utf8-and-quotes.ndjson"
+              ? makeFakeStore("utf8").read(handle, opts)
+              : { content: "" },
+        },
+      },
+    );
+    expect(utf8Only.truncated).toBe(false);
+    expect(utf8Only.patterns[0]!.matchedRuns).toBe(1);
+    expect(utf8Only.patterns[0]!.sampleRuns[0]!.runId).toBe(logRun.id);
+
+    // Failed log read sets truncated: true rather than reporting a clean negative.
+    const missingResult = await searchCustomerSuccessRuns(
+      db,
+      {
+        operation: "runs.search",
+        companyId: co.id,
+        patterns: ["never-matches-anything"],
+      },
+      { logStore: makeFakeStore("missing") },
+    );
+    expect(missingResult.truncated).toBe(true);
+    expect(missingLogRun.id).toBeTruthy();
+
+    // Slow log read is aborted by wallBudgetMs and sets truncated: true promptly.
+    const started = Date.now();
+    const slowResult = await searchCustomerSuccessRuns(
+      db,
+      {
+        operation: "runs.search",
+        companyId: co.id,
+        patterns: ["never-matches-anything"],
+      },
+      { logStore: makeFakeStore("slow"), wallBudgetMs: 200 },
+    );
+    expect(slowResult.truncated).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(slowLogRun.id).toBeTruthy();
   });
   it("the operation contract has no writes, credentials or unknown parameters", () => {
     for (const value of [

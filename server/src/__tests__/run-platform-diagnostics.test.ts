@@ -48,6 +48,18 @@ describe("run platform diagnostics", () => {
       ),
     ).toEqual(["git_storage_limit", "sandbox_disk_full"]);
 
+    // Storage budget refusal is NOT disk/inode exhaustion.
+    expect(
+      detectRunPlatformDiagnostics(
+        "paperclip_git_storage_limit: Git stopped at its storage budget.",
+      ),
+    ).toEqual(["git_storage_limit"]);
+
+    // Arbitrary customer command output unrelated to sandbox disk exhaustion is ignored.
+    expect(
+      detectRunPlatformDiagnostics("customer script stderr: No space left on device"),
+    ).toEqual([]);
+
     expect(
       detectRunPlatformDiagnostics(
         "Paperclip: GitHub capability_missing; continuing without managed credentials.\n" +
@@ -117,7 +129,7 @@ describe("run platform diagnostics", () => {
     );
     expect(first).toEqual(["git_storage_guard_unavailable", "github_capability_missing"]);
 
-    // Second recording for the same run/codes is idempotent (no duplicate DB rows).
+    // Second recording for the same run/codes is idempotent (no duplicate DB rows, no extra Cloud POST).
     const second = await recordRunPlatformDiagnostics(
       db,
       {
@@ -129,9 +141,10 @@ describe("run platform diagnostics", () => {
         driverKind: "codex",
         runtimeMode: "native",
       },
-      { env, fetcher, reportToCloud: false },
+      { env, fetcher },
     );
     expect(second).toEqual([]);
+    expect(sent).toHaveLength(1);
 
     const listed = await listRunPlatformDiagnostics(db, [run.id], companyId);
     expect(listed.get(run.id)).toEqual([
@@ -165,5 +178,103 @@ describe("run platform diagnostics", () => {
       runtimeMode: "native",
       occurredAt: "2026-11-25T15:00:00.000Z",
     });
+  });
+
+  it("persists distinct diagnostic codes recorded in separate calls without sequence collisions", async () => {
+    const [run] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "running",
+        runtimeMode: "native",
+        driverKind: "codex",
+      })
+      .returning();
+
+    const first = await recordRunPlatformDiagnostics(
+      db,
+      {
+        companyId,
+        runId: run.id,
+        agentId,
+        codes: ["github_capability_missing"],
+      },
+      { reportToCloud: false },
+    );
+    const second = await recordRunPlatformDiagnostics(
+      db,
+      {
+        companyId,
+        runId: run.id,
+        agentId,
+        codes: ["git_storage_guard_unavailable"],
+      },
+      { reportToCloud: false },
+    );
+    expect(first).toEqual(["github_capability_missing"]);
+    expect(second).toEqual(["git_storage_guard_unavailable"]);
+
+    const listed = await listRunPlatformDiagnostics(db, [run.id], companyId);
+    expect(listed.get(run.id)).toEqual([
+      "git_storage_guard_unavailable",
+      "github_capability_missing",
+    ]);
+  });
+
+  it("reloads missing error and metadata fields from heartbeat_runs during finalization", async () => {
+    const [run] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "failed",
+        exitCode: 1,
+        runtimeMode: "legacy",
+        driverKind: "claude",
+        error: "remote_workspace_archive_failed: reason=git_storage_guard_unavailable",
+        stderrExcerpt: "Paperclip: GitHub capability_rejected; token denied",
+      })
+      .returning();
+
+    const sent: unknown[] = [];
+    const fetcher: typeof fetch = vi.fn(async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body ?? "{}")));
+      return new Response(JSON.stringify({ recorded: 2 }), { status: 200 });
+    });
+    const env = {
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example.test",
+      PAPERCLIP_PRIMARY_HOST: "tenant.example.test",
+      [RUNTIME_DIAGNOSTICS_CAPABILITY_ENV]: "b".repeat(64),
+    };
+
+    // Pass only minimal fields — error/stderrExcerpt/driverKind/runtimeMode are omitted.
+    const finalized = await reportFinalizedRunDiagnostics(
+      db,
+      {
+        id: run.id,
+        companyId,
+        agentId,
+        status: "failed",
+        finishedAt: new Date("2026-11-25T16:00:00.000Z"),
+      },
+      { env, fetcher },
+    );
+    expect(finalized).toEqual(["git_storage_guard_unavailable", "github_capability_rejected"]);
+    const listed = await listRunPlatformDiagnostics(db, [run.id], companyId);
+    expect(listed.get(run.id)).toEqual([
+      "git_storage_guard_unavailable",
+      "github_capability_rejected",
+    ]);
+    expect(sent).toEqual([
+      {
+        runId: run.id,
+        diagnosticCodes: ["git_storage_guard_unavailable", "github_capability_rejected"],
+        runStatus: "failed",
+        driverKind: "claude",
+        runtimeMode: "legacy",
+        occurredAt: "2026-11-25T16:00:00.000Z",
+      },
+    ]);
   });
 });

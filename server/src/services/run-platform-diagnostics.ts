@@ -4,6 +4,7 @@ import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import {
   detectRunPlatformDiagnostics,
   isRunPlatformDiagnosticCode,
+  RUN_PLATFORM_DIAGNOSTIC_CODES,
   type RunPlatformDiagnosticCode,
 } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -106,6 +107,10 @@ export async function recordRunPlatformDiagnostics(
 
   const recorded: RunPlatformDiagnosticCode[] = [];
   for (const code of uniqueCodes) {
+    // Stable per-code sequence so separate calls on the same run for different
+    // codes never collide on the native (sourceInstanceId, sourceSeq) replay key.
+    const sourceSeq = RUN_PLATFORM_DIAGNOSTIC_CODES.indexOf(code) + 1;
+    if (sourceSeq <= 0) continue;
     try {
       const result = await appendHeartbeatRunEvent(db, {
         companyId: input.companyId,
@@ -123,7 +128,7 @@ export async function recordRunPlatformDiagnostics(
         nativeSource: {
           sourceInstanceId: `${input.runId}:platform-diagnostic`,
           sourceEventId: `${RUN_PLATFORM_DIAGNOSTIC_SOURCE_PREFIX}${code}`,
-          sourceSeq: uniqueCodes.indexOf(code) + 1,
+          sourceSeq,
           protocolSchemaVersion: 1,
           canonicalPayload: { code },
         },
@@ -134,11 +139,11 @@ export async function recordRunPlatformDiagnostics(
     }
   }
 
-  if (options.reportToCloud !== false) {
+  if (options.reportToCloud !== false && recorded.length > 0) {
     await sendRunPlatformDiagnosticsToCloud(
       {
         runId: input.runId,
-        diagnosticCodes: uniqueCodes,
+        diagnosticCodes: recorded,
         runStatus: input.runStatus ?? "running",
         driverKind: input.driverKind ?? null,
         runtimeMode: input.runtimeMode ?? "native",
@@ -270,12 +275,18 @@ export async function reportFinalizedRunDiagnostics(
   options: { env?: NodeJS.ProcessEnv; fetcher?: typeof fetch } = {},
 ): Promise<RunPlatformDiagnosticCode[]> {
   try {
-    let errorText = run.error ?? null;
-    let stderrText = run.stderrExcerpt ?? null;
-    let driverKind = run.driverKind ?? null;
-    let runtimeMode = run.runtimeMode ?? null;
+    const needsReload =
+      run.error === undefined ||
+      run.stderrExcerpt === undefined ||
+      run.driverKind === undefined ||
+      run.runtimeMode === undefined;
 
-    if (errorText === undefined || driverKind === undefined || runtimeMode === undefined) {
+    let errorText: string | null = run.error ?? null;
+    let stderrText: string | null = run.stderrExcerpt ?? null;
+    let driverKind: string | null = run.driverKind ?? null;
+    let runtimeMode: string | null = run.runtimeMode ?? null;
+
+    if (needsReload) {
       const [row] = await db
         .select({
           error: heartbeatRuns.error,
@@ -287,10 +298,10 @@ export async function reportFinalizedRunDiagnostics(
         .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
         .limit(1);
       if (row) {
-        errorText = errorText ?? row.error;
-        stderrText = stderrText ?? row.stderrExcerpt;
-        driverKind = driverKind ?? row.driverKind;
-        runtimeMode = runtimeMode ?? row.runtimeMode;
+        if (run.error === undefined) errorText = row.error;
+        if (run.stderrExcerpt === undefined) stderrText = row.stderrExcerpt;
+        if (run.driverKind === undefined) driverKind = row.driverKind;
+        if (run.runtimeMode === undefined) runtimeMode = row.runtimeMode;
       }
     }
 
