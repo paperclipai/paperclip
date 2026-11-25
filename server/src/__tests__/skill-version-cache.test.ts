@@ -298,7 +298,7 @@ describePostgres("immutable skill version cache", () => {
     return action!;
   }
 
-  it("deletes a skill whose only pin is a blocked failed run that nothing will resume", async () => {
+  it("evicts and deletes a skill whose only pin is a blocked failed run that nothing will resume", async () => {
     const f = await fixture();
     await f.resolve(f.versions[0]!.id);
     await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
@@ -317,7 +317,9 @@ describePostgres("immutable skill version cache", () => {
     await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: "native-finalizer:other" })
       .where(eq(nativeRunFinalizations.runId, run.id));
     await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.protected_version).toBe(1);
     await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
     await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).resolves.toMatchObject({ id: f.skillId });
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
