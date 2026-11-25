@@ -57,7 +57,7 @@ const credentials: [string, unknown, boolean][] = [
   ["an extra provider credential field", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" }, home: "/home/agent" }, false],
   ["a Gemini API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } }, true],
   ["an Antigravity sign-in document", { type: "provider-env", provider: "antigravity",
-    environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, false],
+    environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, true],
   ["a Gemini API key mixed with a sign-in document", { type: "provider-env", provider: "antigravity",
     environment: { GEMINI_API_KEY: "fixture-gemini", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, false],
   ["a Google API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GOOGLE_API_KEY: "fixture-google" } }, false],
