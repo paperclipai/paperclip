@@ -40,6 +40,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { buildMineRevealSources, mineRevealSourcesQueryKey, readMineRevealSources, type MineRevealSources } from "../lib/inbox-mine-reveal-sources";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -1362,13 +1363,15 @@ function StreamlinedInbox({
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),

@@ -35,6 +35,7 @@ import {
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
+import { createFreshIssueRunAdmission } from "../application/fresh-issue-run.js";
 import { withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 
 // Proves the atomicity and company-scope properties the security review
@@ -241,6 +242,43 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         await expect(fresh.readCommentCandidates({ ...input, receiptScope, checkExecutionBlocker: false }))
           .resolves.toMatchObject({ handoffAgentId: formerAgentId, candidates: [{ id: wakeId }] });
         expect(blocker).toHaveBeenCalledTimes(1);
+
+        // When a required interrupt receipt owned by the admitting agent cannot
+        // be adopted because an execution blocker is active, fresh admission
+        // must consult the blocker and abort before inserting a wake request or
+        // queued run that would fail claim-time interrupt authority.
+        const interruptWakeId = await seedDeferredWake({ companyId, agentId, issueId });
+        const admitFresh = createFreshIssueRunAdmission(fresh);
+        const commentId = randomUUID();
+        const blockedInterruptRun = await admitFresh({
+          receipt: {
+            agentId, source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+            payload: { issueId, commentId }, requestedByActorType: "user", requestedByActorId: "operator-1",
+            idempotencyKey: `queued-comment-interrupt:${interruptWakeId}`,
+          },
+          issue: { id: issueId, assigneeAgentId: agentId, isConversation: true },
+          executionWaitRequestId: interruptWakeId,
+          queuedCommentInterruptId: interruptWakeId,
+          ownsReconstructionContinuation: false,
+          contextSnapshot: { issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] },
+          resolveSessionIdBefore: async () => null,
+          continuationAttempt: 0,
+          explicitContinuationRunId: null,
+          retryOfRunId: null,
+          reconciledSourceRunId: null,
+          reconciledRestoreRetryCount: null,
+          resolveResponsibleUserId: async () => "operator-1",
+          recordContinuationDelivery: async () => {},
+        });
+        expect(blockedInterruptRun).toBeUndefined();
+        expect(blocker).toHaveBeenCalledTimes(2);
+        expect(blocker).toHaveBeenLastCalledWith(tx, companyId, issueId);
+        const insertedInterruptWakes = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, `queued-comment-interrupt:${interruptWakeId}`)));
+        expect(insertedInterruptWakes).toEqual([]);
+        const insertedQueuedRuns = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+        expect(insertedQueuedRuns).toEqual([]);
 
         const select = vi.spyOn(tx, "select");
         try {

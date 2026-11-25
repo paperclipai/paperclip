@@ -26,7 +26,7 @@ We are intentionally not shipping the UI for this yet. The runtime code remains 
 
 When both `enableIsolatedWorkspaces` and `enableIsolatedWorkspacesByDefault` are enabled, projects with a configured workspace and no stored execution workspace policy default to isolated worktrees. A project with no configured workspace keeps using its plain managed directory. Tasks without a project also keep their existing behavior.
 
-Explicit project policies and issue workspace settings still take precedence. A request for a Git worktree still requires a valid Git checkout; a missing or invalid checkout fails validation. Trust policy requirements still apply.
+When a repository-free task or conversation requests `isolated_workspace` without an explicit `workspaceStrategy` on local, sandbox, or plugin environments, Paperclip prepares a private isolated task directory instead of requiring a Git checkout. Explicit project policies, issue workspace strategies, and trust policy requirements still apply. A request for a Git worktree still requires a valid Git checkout; a missing or invalid checkout fails validation.
 
 ## Shared workspace concurrency policy
 

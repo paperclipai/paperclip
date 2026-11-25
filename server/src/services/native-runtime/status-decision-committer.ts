@@ -8,6 +8,7 @@ import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { nativeBlockerUserId } from "./native-blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
@@ -1780,7 +1781,13 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
-    const [originRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+    const [originRun] = await tx.select({
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      driverKind: heartbeatRuns.driverKind,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
     if (input.requireReassessmentSource) {
       const expected = input.requireReassessmentSource;
@@ -1908,6 +1915,30 @@ export async function commitNativeStatusDecision(input: {
           assigneeUserId: assessedUserId, texts: [input.decision.unblockDescriptor!.action], lock: true });
       } catch (error) {
         if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
+    if (input.decision.handoffAgentId) {
+      try {
+        const handoff = await evaluateBlockerAgentHandoff(tx as unknown as Db, {
+          companyId: input.companyId,
+          issue,
+          runId: input.runId,
+          actorAgentId: originRun?.agentId ?? null,
+          responsibleUserId: originRun?.responsibleUserId ?? null,
+          driverKind: originRun?.driverKind ?? null,
+          contextSnapshot: originRun?.contextSnapshot,
+          runnerProfileJson: originRun?.runnerProfileJson,
+          targetAgentId: input.decision.handoffAgentId,
+          unblockAction: input.decision.unblockDescriptor?.action ?? "",
+          requireTaskOwner: true,
+          lockSources: true,
+        });
+        if (!handoff.allowed) throw new NativeStatusRaceError();
+      } catch (error) {
+        if (error instanceof NativeStatusRaceError || record(error).code === "55P03" || record(record(error).cause).code === "55P03") {
+          throw new NativeStatusRaceError();
+        }
         throw error;
       }
     }
@@ -2439,6 +2470,11 @@ export async function commitNativeStatusDecision(input: {
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
+          // A blocker naming another agent hands it the task, so its blocker
+          // wake is delivered. Only the reporting assignee can hand it off.
+          ...(input.decision.handoffAgentId && !issue.assigneeUserId &&
+            originRun?.agentId && issue.assigneeAgentId === originRun.agentId
+            ? { assigneeAgentId: input.decision.handoffAgentId } : {}),
           actorAgentId: originRun?.agentId ?? null,
           actorUserId: null,
         },

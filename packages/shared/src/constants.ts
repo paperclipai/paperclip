@@ -534,6 +534,9 @@ export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[num
 export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
 export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
 
+export const DOCUMENT_ANNOTATION_COMMENT_REACTIONS = ["done", "check", "thumbs_up", "question"] as const;
+export type DocumentAnnotationCommentReactionName = (typeof DOCUMENT_ANNOTATION_COMMENT_REACTIONS)[number];
+
 export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
 export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
 
