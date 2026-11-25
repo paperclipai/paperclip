@@ -1,12 +1,10 @@
-import { googleWorkspaceToolTitle, type ToolCatalogEntryStatus } from "@paperclipai/shared";
+import { googleWorkspaceToolTitle, isCatalogEntryOffered, type ToolCatalogEntry } from "@paperclipai/shared";
 
 export function withoutUnavailableActions(
   ids: Iterable<string>,
-  catalog: ReadonlyArray<{ id: string; status: ToolCatalogEntryStatus }>,
+  catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>,
 ): string[] {
-  const unavailable = new Set(catalog
-    .filter((entry) => entry.status === "disabled" || entry.status === "removed")
-    .map((entry) => entry.id));
+  const unavailable = new Set(catalog.filter((entry) => !isCatalogEntryOffered(entry)).map((entry) => entry.id));
   return [...ids].filter((id) => !unavailable.has(id));
 }
 

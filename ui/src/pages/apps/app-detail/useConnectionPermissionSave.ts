@@ -13,7 +13,7 @@ export interface PermissionDraft {
   reviewed?: Set<string>;
 }
 
-export function finishAppPermissions(next: PermissionDraft, catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status">>) {
+export function finishAppPermissions(next: PermissionDraft, catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>) {
   const enabled = new Set(withoutUnavailableActions(next.enabled, catalog));
   return {
     enabledCatalogEntryIds: [...enabled],
@@ -27,7 +27,7 @@ export function useConnectionPermissionSave({ companyId, connectionId, connectio
   companyId: string | null;
   connectionId: string;
   connection: ToolConnection | undefined;
-  catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status">>;
+  catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>;
   onError: (error: Error) => void;
 }) {
   const client = useQueryClient();

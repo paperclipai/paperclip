@@ -522,13 +522,16 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(held.length).toBeGreaterThan(0);
       const choices = (enabled: string[]) => f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
         enabledCatalogEntryIds: enabled, askFirstCatalogEntryIds: [],
-        reviewedCatalogEntryIds: held.map((row) => row.id), access: { agentIds: [f.agent.id] },
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
       }, f.actor);
 
       await expect(choices([...held, blocked!].map((row) => row.id)))
         .rejects.toMatchObject({ status: 400, message: "Disabled actions cannot be enabled" });
 
       await choices([...held, ...removed].map((row) => row.id));
+      const after = await byName(f.connectionId);
+      expect(after.get("gmail__list_threads")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
+      expect(after.get("gmail__search_messages")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
       const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
       expect(offered).toContain("gmail__get_message");
       expect(offered).not.toContain("gmail__list_threads");
