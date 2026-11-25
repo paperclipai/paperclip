@@ -6755,7 +6755,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/attention/run-history",
   tags: ["inbox"],
   summary: "List recent failures in inbox run history",
-  description: "Requires a board user. Returns up to 100 recent failed runs on tasks visible to the caller, newest first. For the next page, pass the last row’s recordedAt and runId as at and id together.",
+  description: "Requires a board user. Returns up to 100 recent failed runs on tasks visible to the caller, newest first. For the next page, pass the last row’s recordedAt and runId as at and id together. Limited to 60 requests per minute per board user and company.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({ at: z.string().datetime().optional(), id: z.string().uuid().optional() }).strict(),
@@ -6769,6 +6769,7 @@ registry.registerPath({
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    429: r.tooManyRequests,
   },
 });
 

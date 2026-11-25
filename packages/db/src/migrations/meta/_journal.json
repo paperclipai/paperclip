@@ -3536,6 +3536,13 @@
       "when": 1795560008849,
       "tag": "0506_nappy_agent_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795571050057,
+      "tag": "0507_woozy_rocket_racer",
+      "breakpoints": true
     }
   ]
 }

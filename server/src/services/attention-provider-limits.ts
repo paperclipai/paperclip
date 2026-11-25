@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import { agentWakeupRequests, agents, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import type { AttentionItem, AttentionProviderLimit, AttentionRunHistoryEntry } from "@paperclipai/shared";
 import { alias } from "drizzle-orm/pg-core";
@@ -10,7 +10,7 @@ const taskId = sql<string>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatR
 const account = sql<string | null>`coalesce(nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,subscriptionId}', ''),
   nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,connectionId}', ''))`;
 
-/** A reset passing or a retry being queued is not proof that work resumed. */
+/** A reset or queued retry does not establish recovery. Keep this probe aligned with the attention resumed index. */
 export const providerWorkResumed = sql<boolean>`exists(select 1 from heartbeat_runs later where later.company_id = ${heartbeatRuns.companyId}
   and later.created_at > ${heartbeatRuns.createdAt} and later.status in ('running','succeeded')
   and coalesce(later.issue_id::text,later.native_issue_id::text,later.context_snapshot->>'issueId',later.context_snapshot->>'taskId') = ${taskId})`;
@@ -174,9 +174,8 @@ export function groupProviderLimits(items: AttentionItem[], legacyDismissals?: R
 }
 
 /** Only load diagnostic history when opened. Every run must join a task the board actor may read. */
-export async function attentionRunHistory(db: Db, companyId: string, readCondition: SQL,
-  before?: { at: string; id: string }): Promise<AttentionRunHistoryEntry[]> {
-  const rows = await db.select({ runId: heartbeatRuns.id, agentId: agents.id, agentName: agents.name,
+export function attentionRunHistoryQuery(db: Db, companyId: string, readCondition: SQL, before?: { at: string; id: string }) {
+  return db.select({ runId: heartbeatRuns.id, agentId: agents.id, agentName: agents.name,
     taskId: issues.id, taskTitle: issues.title, identifier: issues.identifier, status: issues.status,
     holdStatus: issueRecoveryActions.status, recordedAt: sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`, code: heartbeatRuns.errorCode,
     resumed: providerWorkResumed })
@@ -184,10 +183,16 @@ export async function attentionRunHistory(db: Db, companyId: string, readConditi
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, companyId)))
     .leftJoin(issueRecoveryActions, and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
       sql`${issueRecoveryActions.evidence}->>'runId' = ${heartbeatRuns.id}::text`, eq(issueRecoveryActions.cause, "native_provider_usage_limit")))
-    .where(and(eq(heartbeatRuns.companyId,companyId), or(inArray(heartbeatRuns.status, ["failed","timed_out"]),
-      eq(heartbeatRuns.errorCode,"provider_limit_wait")), attentionIssueCondition(), readCondition,
+    .where(and(eq(heartbeatRuns.companyId,companyId),
+      sql`(${heartbeatRuns.status} in ('failed', 'timed_out') or ${heartbeatRuns.errorCode} = 'provider_limit_wait')`,
+      attentionIssueCondition(), readCondition,
       before ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) < (${before.at}::timestamptz, ${before.id}::uuid)` : undefined))
-    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(100);
+    .orderBy(sql`${heartbeatRuns.createdAt} desc nulls last`, sql`${heartbeatRuns.id} desc nulls last`).limit(100);
+}
+
+export async function attentionRunHistory(db: Db, companyId: string, readCondition: SQL,
+  before?: { at: string; id: string }): Promise<AttentionRunHistoryEntry[]> {
+  const rows = await attentionRunHistoryQuery(db, companyId, readCondition, before);
   return rows.map(({ status, holdStatus, recordedAt, code, resumed, ...row }) => ({ ...row, recordedAt,
     reason: ["native_provider_usage_limit", "provider_limit_wait"].includes(code ?? "") ? "Provider usage limit" : "Failed run",
     outcome: status === "done" ? "Task completed" : status === "cancelled" ? "Task cancelled" : resumed ? "Work resumed"

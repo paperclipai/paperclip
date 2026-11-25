@@ -138,7 +138,8 @@ Omit query parameters for the first page. For the next page, pass the last
 row’s exact `recordedAt` string as `at` and its `runId` as `id`. Keep the
 timestamp’s fractional seconds. The next page starts after that row. A page
 with fewer than 100 rows is the last page. A partial or invalid cursor returns
-HTTP 400.
+HTTP 400. Each company and board user can make up to 60 run-history
+requests per minute. HTTP 429 includes a `Retry-After` header in seconds.
 
 ## Errors
 

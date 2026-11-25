@@ -33,6 +33,7 @@ import {
 } from "../services/attention.js";
 import { expirePendingInteractionsOnClosedIssues } from "../services/closed-issue-interaction-sweep.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.js";
+import { attentionRunHistory, attentionRunHistoryQuery } from "../services/attention-provider-limits.js";
 import { pendingUserRequestRowCondition } from "../services/issue-participation.js";
 
 const TOOL_ACTION = {
@@ -396,6 +397,42 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     expect(await list(companyId, SCOTT, "waiting")).toEqual([expect.objectContaining({
       providerLimit: expect.objectContaining({ attempts: 1, runId: retry!.id }),
     })]);
+  });
+
+  it("uses indexed history pages and recovery probes as unrelated runs accumulate", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const task = await insertIssue({ companyId, createdByUserId: SCOTT });
+    const unrelated = await insertIssue({ companyId, createdByUserId: SCOTT });
+    await db.execute(sql`
+      insert into ${heartbeatRuns} (company_id, agent_id, issue_id, scope_kind, status, created_at)
+      select ${companyId}::uuid, ${workerId}::uuid, ${unrelated}::uuid, 'issue', 'succeeded',
+        now() - n * interval '1 second'
+      from generate_series(1, 5000) n
+    `);
+    await db.execute(sql`
+      insert into ${heartbeatRuns} (company_id, agent_id, issue_id, scope_kind, status, created_at)
+      select ${companyId}::uuid, ${workerId}::uuid, ${task}::uuid, 'issue', 'failed',
+        now() - interval '1 day' - n * interval '1 microsecond'
+      from generate_series(1, 101) n
+    `);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, scopeKind: "issue", status: "succeeded", contextSnapshot: { taskId: task },
+    });
+    await db.execute(sql`analyze ${heartbeatRuns}`);
+
+    const allowed = sql`true`;
+    const first = await attentionRunHistory(db, companyId, allowed);
+    expect(first).toHaveLength(100);
+    expect(new Set(first.map(row => row.outcome))).toEqual(new Set(["Work resumed"]));
+    const before = { at: first.at(-1)!.recordedAt, id: first.at(-1)!.runId };
+    const second = await attentionRunHistory(db, companyId, allowed, before);
+    expect(second).toEqual([expect.objectContaining({ taskId: task, outcome: "Work resumed" })]);
+    expect(first.some(row => row.runId === second[0]?.runId)).toBe(false);
+
+    const query = attentionRunHistoryQuery(db, companyId, allowed, before);
+    const plan = JSON.stringify(await db.execute(sql`explain (format json) ${query}`));
+    expect(plan).toContain("heartbeat_runs_attention_history_idx");
+    expect(plan).toContain("heartbeat_runs_attention_resumed_idx");
   });
 
   function find(items: AttentionItem[], sourceId: string) {
