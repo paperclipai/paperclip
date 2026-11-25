@@ -1,4 +1,4 @@
-import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup } from "@paperclipai/shared";
+import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup, pluginAppSlug } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   MCP_DIRECT_OAUTH_CONNECT_SLUGS,
@@ -11,6 +11,12 @@ import {
 } from "./app-connect-policy";
 
 describe("app connect policy", () => {
+  it("admits a saved AI login handoff without a catalog source", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=saved-login"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin="))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=%20"))).toBe(false);
+  });
+
   it("derives automatic OAuth entry points from app capabilities", () => {
     expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(expect.arrayContaining(["jira", "notion", "sentry"]));
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);
@@ -82,6 +88,12 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-1"))).toBe(false);
   });
 
+  it("lets plugin-provided connectors reach host catalog validation", () => {
+    const slug = pluginAppSlug("example.meetings", "circleback");
+    expect(canEnterAppsConnect(new URL(appSourceConnectHref(slug), "http://paperclip.test").searchParams)).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=plugin-zz-circleback"))).toBe(false);
+  });
+
   it("routes every capability-backed catalog definition through its source deep link", () => {
     const connectableApps = APP_STORE_DEFINITIONS.filter(appSupportsCatalogSetup);
 
@@ -114,7 +126,7 @@ describe("app connect policy", () => {
   it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
-    for (const source of ["discord", "telegram", "microsoft-teams"]) {
+    for (const source of ["discord", "telegram", "microsoft-teams", "speko"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
       expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);
     }

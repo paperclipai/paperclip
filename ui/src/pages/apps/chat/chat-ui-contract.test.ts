@@ -111,7 +111,10 @@ describe("chat connector UI contract", () => {
     expect(detail).not.toContain("Change agent");
     for (const label of ["Pause", "Resume", "Reconnect", "Remove connection"]) {
       expect(activity).toContain(label);
-      expect(settings).not.toContain(label);
+      // Guidance may name an action that lives on Activity; only controls
+      // must stay out of the Settings surface.
+      const settingsButtons = settings.match(/<Button\b[\s\S]*?<\/Button>/g) ?? [];
+      expect(settingsButtons.join("\n")).not.toContain(label);
     }
   });
 
@@ -242,7 +245,8 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("defaultSlackAppConfiguration");
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
-    expect(setup).toContain("endpoint.providerAccountId && !repairing");
+    expect(setup).toContain("slackSetupState({ endpoint, repairing");
+    expect(source("./slack/setup-state.ts")).toContain("endpoint.providerAccountId && !repairing");
     expect(setup).not.toContain('field("webhookSecret"');
     expect(setup).not.toContain("@paperclipai/teams-connect");
     expect(setup).not.toContain("Copy setup command");

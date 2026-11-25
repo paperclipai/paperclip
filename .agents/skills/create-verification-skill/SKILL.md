@@ -32,7 +32,24 @@ Write `.agents/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verif
 
 ## 3. Seed the feature map
 
-For Paperclip, use the existing repo-root `feature-map/` directory and its `README.md`; have the generated verification skill reference that map instead of creating a second map inside the skill directory. Reuse existing feature files and use Poteto's format below for new or updated entries. For other projects, create `.agents/skills/verify-<app>/features/README.md` plus one file per user-facing feature you can identify (aim for the top 3-5 to start, from routes, commands, menus, or docs). Follow the shape in [`references/feature-map-example/`](references/feature-map-example/), with a README index and one file per feature. Each file answers, from the user's point of view: what the feature is, how to reach it, how to drive it with the harness, and what observable end state proves it works. The four H2s are `Sub-features`, `How to get to it (user POV)`, `Driving it with <harness>`, and `Gotchas`. The map is the repo's maintained verification source; a proof that drives one convenient entry point is incomplete when the map lists others.
+For Paperclip, read the [map contract](../../../maps/README.md) and use the sibling
+`maps/feature-map/` and `maps/agent-access-map/` directories. The generated
+verification skill consumes both maps and reports drift; maintenance owns their
+updates. Reuse existing feature files and preserve Poteto's product format. Every
+new feature file needs a same-named agent access companion with matching stable
+sub-feature IDs. Record APIs, actual agent entry points, policy, evidence and gaps
+using the contract. Mark representative source inventory as `baseline` /
+`source-only`; enumerate operations before claiming full access coverage. Reuse
+Paperclip's APIs, admitted tools and existing verification infrastructure. Run
+`node scripts/check-maps.mjs` after map changes. Do not create maps inside a skill
+directory or generate a second runtime.
+
+For Paperclip, add navigation metadata to each feature recipe as described in the
+map contract. Discovery generates the indexes; do not register new features in a
+central table or commit generated catalogs. Keep review/run evidence in the PR
+or evidence report and use Git for source history.
+
+For other projects, create `.agents/skills/verify-<app>/features/README.md` plus one file per user-facing feature you can identify (aim for the top 3-5 to start, from routes, commands, menus, or docs). Follow the shape in [`references/feature-map-example/`](references/feature-map-example/), with a README index and one file per feature. Each file answers, from the user's point of view: what the feature is, how to reach it, how to drive it with the harness, and what observable end state proves it works. The four H2s are `Sub-features`, `How to get to it (user POV)`, `Driving it with <harness>`, and `Gotchas`. The map is the repo's maintained verification source; a proof that drives one convenient entry point is incomplete when the map lists others.
 
 ## 4. Prove the generated skill before handing it over
 
