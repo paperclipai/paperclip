@@ -760,7 +760,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     acquireTaskLease,
     onTaskPrepared: ensure => { ensureTaskWorkspace = ensure; },
     mode: requestedExecutionWorkspaceMode,
-    strategy: (fresh || useIsolatedTaskDirectory) && !remoteAuthority
+    strategy: useIsolatedTaskDirectory && !remoteAuthority
       ? "project_primary"
       : resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),
     branchMode: typeof parseObject(mergedConfig.workspaceStrategy).existingBranch === "string" ? "existing" : "create",
