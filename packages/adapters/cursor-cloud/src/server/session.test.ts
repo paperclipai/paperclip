@@ -21,6 +21,26 @@ describe("cursorCloud sessionCodec", () => {
     });
   });
 
+  it("preserves the paperclipJwt session flag used to force a new cloud agent after JWT injection", () => {
+    expect(
+      sessionCodec.deserialize({
+        cursorAgentId: "agent-jwt",
+        latestRunId: "run-jwt",
+        paperclipJwt: true,
+        repos: [{ url: "https://github.com/paperclipai/paperclip.git" }],
+      }),
+    ).toMatchObject({
+      cursorAgentId: "agent-jwt",
+      paperclipJwt: true,
+    });
+    expect(
+      sessionCodec.deserialize({
+        cursorAgentId: "agent-old",
+        paperclipJwt: false,
+      }),
+    ).not.toHaveProperty("paperclipJwt");
+  });
+
   it("drops invalid session payloads and exposes the display id", () => {
     expect(sessionCodec.deserialize({ latestRunId: "run-1" })).toBeNull();
     expect(sessionCodec.getDisplayId?.({
