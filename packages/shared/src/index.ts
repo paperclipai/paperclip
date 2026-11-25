@@ -3035,6 +3035,7 @@ export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSet
 export * from "./announcements.js";
 
 export { REMOTE_MCP_CONNECTOR_METHODS, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod, type RemoteMcpConnectorId } from "./remote-mcp-connectors.js";
+export { isCatalogEntryBlocked, isCatalogEntryOffered, isCatalogEntryRemovedByProvider } from "./tool-catalog-availability.js";
 
 export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
 
@@ -3154,4 +3155,4 @@ export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
-export { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";
+export { antigravitySwarmAvailable, antigravitySwarmWorkModeAllows, isAntigravityAgent, parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";

@@ -269,6 +269,21 @@ reaches the agent. The REST `delete_event` makes the same read. A whole recurrin
 refused, as on REST. If the read does not return the event, nothing is
 deleted.
 
+Each refusal has a stable code: `unknown_argument`, `invalid_arguments`,
+`invalid_file_id`, `request_kind_refused`, `recurring_series_delete_refused`
+or `delete_target_unverified`. Paperclip wrote the refusal text, so an agent
+on the Paperclip Runner sees the code and the full text. For an error that
+Google returns, the agent sees only a code. `googleWorkspaceMcpErrorDetails`
+takes Google's HTTP status or status name and classifies it with the REST
+tools' `googleError`, for example `google_permission_denied`,
+`google_insufficient_scope` or `google_unavailable`, else `google_error`.
+`google_rate_limited` is retryable. `google_unavailable` is retryable only for a
+read action, because a write can already be applied when Google reports a
+server error. Google's own text is not sent to the
+agent. The failed call event records the code in
+`errorCode`, and the text in `errorMessage`, which the 30-day Google Technical
+Information sweep clears.
+
 The REST tools' other checks describe a REST limit or a stricter REST rule, so
 they do not run on MCP: mandatory `requiredRevisionId`, the Sheets comment and
 data-source refusals, the result size budget, and the Drive search query
@@ -334,11 +349,25 @@ A connection whose catalog was refreshed while its services were on
 `paperclip_rest` has this folder's definitions saved. After the switch back,
 agents see those saved definitions until the next catalog refresh, and the
 argument checks use them. That refresh saves Google's definitions. It does not
-hold an action for review when the saved row is this folder's definition
-(`formerPaperclipDefinedTool` in
+hold an action for review when the saved row's schema hash is one of this
+folder's shipped definitions (`shippedPaperclipSchemaHashes` in
 `server/src/services/connectors/paperclip-defined-tools.ts` and the hold rule
-in `server/src/services/tool-access/catalog/publication.ts`), and it keeps Off
-and Ask first. An action that Google's server does not list (for example Gmail
+in `server/src/services/tool-access/catalog/publication.ts`), and it keeps Off,
+Ask first and the review fields.
+
+`shipped-schema-hashes.ts` lists the input schema hash of every revision of
+every tool that a connection could have saved: the first launch (#22634) and
+the strict-argument revision (#22706). `fixtures/input-schemas-22634.json`
+holds the #22634 schemas. A test fails when a tool's current schema is not in
+the list, so add the new hash whenever a schema changes.
+
+The first switch-back refresh on builds before this list held each action
+whose row carried the #22634 schemas (`quarantined`, `pending_review`). That
+hold replaced the saved definition with Google's. No record keeps the earlier
+definition: a refresh can save rows and stop before it writes its audit event,
+so neither the audit history nor the call records prove which definition a row
+had just before the hold. A refresh does not release such an action. A person
+reviews it. An action that Google's server does not list (for example Gmail
 `get_draft`, `list_threads` or `search_messages`, if Google does not have
 them) is removed by that refresh.
 

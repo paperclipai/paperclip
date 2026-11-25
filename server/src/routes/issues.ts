@@ -78,7 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest, withAntigravitySwarmMarkers } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -17385,7 +17385,7 @@ export function issueRoutes(
   }) {
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
-      const comments = recent.slice(0, 20);
+      const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, recent.slice(0, 20));
       return runRedactions.redactForIssue(issue.companyId, issue.id, {
         comments,
         latestCommentId: comments[0]?.id ?? null,
@@ -17400,7 +17400,8 @@ export function issueRoutes(
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
-    const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id,
+      [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()]);
     const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
@@ -17452,7 +17453,8 @@ export function issueRoutes(
       limit,
     });
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comments),
+      await runRedactions.redactForIssue(issue.companyId, issue.id,
+        await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, comments)),
     );
   });
 
@@ -18981,8 +18983,9 @@ export function issueRoutes(
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [comment]);
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comment),
+      await runRedactions.redactForIssue(issue.companyId, issue.id, marked),
     );
   });
 
@@ -19481,7 +19484,9 @@ export function issueRoutes(
             }),
           });
           await externalObjectsSvc.syncCommentSafely(receipt.id);
-          res.status(201).json(receipt);
+          // A resent /swarm request answers with the same marker as its first send.
+          const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [receipt]);
+          res.status(201).json(marked);
           return;
         }
       }
@@ -20442,7 +20447,11 @@ export function issueRoutes(
 
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-      res.status(201).json(comment);
+      // The swarm marker comes from the request record committed with the comment.
+      const [response] = swarmRequested
+        ? await withAntigravitySwarmMarkers(db, currentIssue.companyId, currentIssue.id, [comment])
+        : [comment];
+      res.status(201).json(response);
     },
   );
 

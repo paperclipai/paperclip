@@ -165,6 +165,9 @@ vi.mock("../services/access.js", () => ({
 const mockSwarm = vi.hoisted(() => ({
   refusal: vi.fn(async (): Promise<string | null> => null),
   record: vi.fn(async () => undefined),
+  // Stands in for the stored request record: marks every comment it is given.
+  markers: vi.fn(async (_db: unknown, _companyId: string, _issueId: string, comments: Array<Record<string, unknown>>) =>
+    comments.map(comment => ({ ...comment, nativeCommand: "swarm" }))),
 }));
 vi.mock("../services/antigravity-swarm.js", async () => ({
   ...await vi.importActual<object>("../services/antigravity-swarm.js"),
@@ -172,6 +175,7 @@ vi.mock("../services/antigravity-swarm.js", async () => ({
   ANTIGRAVITY_SWARM_UNAVAILABLE: "antigravity_swarm_unavailable",
   antigravitySwarmCommentRefusal: mockSwarm.refusal,
   recordAntigravitySwarmRequest: mockSwarm.record,
+  withAntigravitySwarmMarkers: mockSwarm.markers,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -1321,6 +1325,7 @@ describe("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "two helpers write a.txt and b.txt", nativeCommand: "swarm" });
     expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ id: "comment-1", nativeCommand: "swarm" });
     // Written in the same transaction as the comment, so neither can exist without the other.
     expect(mockSwarm.record).toHaveBeenCalledWith(mockTx, expect.objectContaining({ commentId: "comment-1", userId: "local-board" }));
     expect(mockIssueService.addComment).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), mockTx);
@@ -1382,6 +1387,9 @@ describe("issue comment reopen routes", () => {
       .send({ body: "two helpers", nativeCommand: "swarm", clientRequestId: "77777777-7777-4777-8777-777777777777" });
     expect(response.status).toBe(201);
     expect(response.body.id).toBe("comment-1");
+    // The resent receipt carries the same marker as the first send, from the stored record.
+    expect(response.body.nativeCommand).toBe("swarm");
+    expect(mockSwarm.markers).toHaveBeenCalledWith(expect.anything(), issue.companyId, issue.id, [expect.objectContaining({ id: "comment-1" })]);
     expect(mockSwarm.record).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

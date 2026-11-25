@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, readRunFailureCause, withoutSqlStatementText, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
-import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
+import { isCommittedToolReceiptResult, semanticResultCandidates, summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -68,6 +68,38 @@ function readResultSummary(resultJson: Record<string, unknown> | null | undefine
     asNonEmptyString(resultJson.error) ??
     null
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefined): string[] {
+  const receipts = asRecord(resultJson?.semanticToolReceipts);
+  if (!receipts) return [];
+  const files = new Set<string>();
+  for (const value of Object.values(receipts)) {
+    const receipt = asRecord(value);
+    if (receipt?.operationId !== "register_deliverable" || !isCommittedToolReceiptResult(receipt.result)) continue;
+    const filename = asNonEmptyString(asRecord(receipt.input)?.filename);
+    if (filename && filename.length <= 200 && !/[`\u0000-\u001f]/.test(filename)) files.add(filename);
+    if (files.size >= 12) break;
+  }
+  return [...files];
+}
+
+function readVerification(resultJson: Record<string, unknown> | null | undefined): string[] {
+  const checks = semanticResultCandidates(resultJson ?? {}).map((candidate) => candidate.verification).find(Array.isArray);
+  if (!checks) return [];
+  return checks.slice(0, 6).flatMap((value) => {
+    const check = asRecord(value);
+    const name = asNonEmptyString(check?.commandOrCheck);
+    const status = asNonEmptyString(check?.status);
+    if (!name || !status) return [];
+    const detail = asNonEmptyString(check?.detail);
+    const oneLine = (text: string, max: number) => truncateText(text.replace(/\s+/g, " "), max).replace(/\n/g, " ");
+    return [`Check ${oneLine(name, 160)}: ${status}${detail ? ` (${oneLine(detail, 240)})` : ""}.`];
+  });
 }
 
 function extractMarkdownSection(markdown: string | null | undefined, heading: string) {
@@ -150,13 +182,17 @@ export function buildContinuationSummaryMarkdown(input: {
   const modelError = summarizeRunErrorForModel(
     run.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run.error, terminalFailureCategory);
   const recentActions = [
-    `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
+    `The latest run finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
+    ...readVerification(run.resultJson),
   ];
   if (modelError) {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
+  const previousDelivered = [...(extractMarkdownSection(input.previousSummaryBody, "Files Delivered") ?? "")
+    .matchAll(/^[-*]\s+`([^`\n]+)`\s*$/gm)].map((match) => match[1]!);
+  const delivered = [...new Set([...readDeliveredFiles(run.resultJson), ...previousDelivered])].slice(0, 12);
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
@@ -170,8 +206,7 @@ export function buildContinuationSummaryMarkdown(input: {
     `- Status: ${issue.status}`,
     `- Priority: ${issue.priority}`,
     `- Current mode: ${mode}`,
-    `- Last updated by run: ${run.id}`,
-    `- Agent: ${agent.name} (${agent.adapterType ?? "unknown"})`,
+    `- Agent: ${agent.name}`,
     "",
     "## Objective",
     "",
@@ -189,16 +224,7 @@ export function buildContinuationSummaryMarkdown(input: {
     "",
     bulletList(paths.map((path) => `\`${path}\``), "No file or route paths were detected in the captured run summary."),
     "",
-    "## Commands Run",
-    "",
-    bulletList(
-      [
-        `Heartbeat run \`${run.id}\` invoked adapter \`${agent.adapterType ?? "unknown"}\`.`,
-        "Detailed shell/tool commands remain in the run log and transcript.",
-      ],
-      "No command metadata captured.",
-    ),
-    "",
+    ...(delivered.length > 0 ? ["## Files Delivered", "", bulletList(delivered.map((name) => `\`${name}\``), ""), ""] : []),
     "## Blockers / Decisions",
     "",
     bulletList(
@@ -214,6 +240,17 @@ export function buildContinuationSummaryMarkdown(input: {
   ].join("\n");
 
   return truncateText(body, ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
+}
+
+const LEGACY_RUN_LINE = /^- (?:Last updated by run: \S+|Heartbeat run `[^`\n]+` invoked adapter `[^`\n]*`\.|Detailed shell\/tool commands remain in the run log and transcript\.)$/;
+const LEGACY_RUN_STATUS_LINE = /^- Run `[^`\n]+` finished with status /;
+
+export function withoutLegacyRunLines(body: string): string {
+  return body.split("\n")
+    .filter((line) => !LEGACY_RUN_LINE.test(line))
+    .map((line) => line.replace(LEGACY_RUN_STATUS_LINE, "- The latest run finished with status "))
+    .join("\n")
+    .replace(/^## Commands Run\n\n\n(?=## )/m, "");
 }
 
 export async function getIssueContinuationSummaryDocument(
@@ -239,7 +276,7 @@ export async function getIssueContinuationSummaryDocument(
   return {
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     title: row.title,
-    body: row.body,
+    body: withoutLegacyRunLines(row.body),
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
     sourceTrust: row.sourceTrust ?? null,

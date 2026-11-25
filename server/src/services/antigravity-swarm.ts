@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
+import { antigravitySwarmWorkModeAllows, SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
 import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -47,7 +47,7 @@ export function antigravitySwarmRefusal(input: {
   }
   if (!isAntigravityAgent(input.agent)) return "Swarm works only for tasks assigned to a Google Antigravity agent.";
   if (input.planning || input.workMode === "planning") return "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
-  if (input.workMode !== undefined && input.workMode !== "standard") {
+  if (input.workMode !== undefined && !antigravitySwarmWorkModeAllows(input.workMode)) {
     return "Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.";
   }
   if (input.remote) return "Swarm is not available for this agent: it runs only on this computer, not in a cloud or remote environment.";
@@ -129,6 +129,21 @@ async function pendingSwarmCommentId(db: Db, companyId: string, issueId: string)
       isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId)))
     .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
   return latest && !latest.deletedAt ? latest.id : null;
+}
+
+/**
+ * Read-only `nativeCommand: "swarm"` on the comments that are recorded /swarm
+ * requests: the server's own activity record for that user and comment, never
+ * the comment's client-writable metadata or its text.
+ */
+export async function withAntigravitySwarmMarkers<T extends { id: string; authorUserId: string | null; authorAgentId: string | null }>(
+  db: Db, companyId: string, issueId: string, comments: readonly T[],
+): Promise<Array<T & { nativeCommand?: typeof ANTIGRAVITY_SWARM_COMMAND }>> {
+  const candidates = comments.filter(comment => comment.authorUserId && !comment.authorAgentId).map(comment => comment.id);
+  if (candidates.length === 0) return [...comments];
+  // The one definition of a recorded request (recordedSwarmRequestSql), read from the stored rows.
+  const requests = new Set(await recordedSwarmRequestIds(db, companyId, issueId, candidates));
+  return comments.map(comment => requests.has(comment.id) ? { ...comment, nativeCommand: ANTIGRAVITY_SWARM_COMMAND } : comment);
 }
 
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {
