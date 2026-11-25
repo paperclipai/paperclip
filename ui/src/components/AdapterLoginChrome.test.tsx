@@ -278,4 +278,67 @@ describe("session replay", () => {
     await render(<LocalProviderLoginInstructions adapterType="claude_local" login={{ ...login, status: "ready", accountLabel: "hollis.brennan@example.test" }} />);
     expect(replayLeaks("hollis.brennan@example.test", document.body)).toEqual({ rendered: true, recorded: false });
   });
+
+  it("blocks hosted Google redirect input from session replay and preserves retryable errors", async () => {
+    const submitCode = vi.fn().mockRejectedValueOnce(new Error("The pasted URL does not match this Google sign-in attempt.")).mockResolvedValueOnce(undefined);
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test-state",
+          submitCode,
+        }}
+      />,
+    );
+    const link = container.querySelector('a[href="https://accounts.google.com/o/oauth2/v2/auth?state=test-state"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("target")).toBe("_blank");
+    expect(link!.getAttribute("rel")).toBe("noreferrer noopener");
+    expect(container.textContent).toContain("127.0.0.1");
+
+    const input = container.querySelector('input[aria-label="Google redirect URL"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input!.getAttribute("autocomplete")).toBe("off");
+    expect(input!.getAttribute("spellcheck")).toBe("false");
+    expect(input!.className).toContain("ph-mask");
+    expect(input!.className).toContain("ph-no-capture");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "http://127.0.0.1:41234/?state=bad&code=abc");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submitButton = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { submitButton.click(); });
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("does not match"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=bad&code=abc");
+    // Input stays open after a retryable bad paste.
+    const retryInput = container.querySelector('input[aria-label="Google redirect URL"]') as HTMLInputElement | null;
+    expect(retryInput).not.toBeNull();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(retryInput, "http://127.0.0.1:41234/?state=good&code=xyz");
+      retryInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const retrySubmit = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { retrySubmit.click(); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Finishing sign-in"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=good&code=xyz");
+  });
+
+  it("keeps the direct local Google prompt without a paste field when hostedRedirect is false", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect={false}
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=local-state",
+        }}
+      />,
+    );
+    expect(container.querySelector('input[aria-label="Google redirect URL"]')).toBeNull();
+    expect(container.textContent).toContain("Finish signing in in the Google browser window");
+  });
 });
