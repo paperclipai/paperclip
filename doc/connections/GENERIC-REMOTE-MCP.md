@@ -158,8 +158,10 @@ You never choose this; Paperclip resolves it and the wizard shows none of it.
 Recorded here for security review and diagnostics. In preference order:
 
 1. **Deployment-preconfigured client.** `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID`
-   / `_SECRET`, or the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`.
-   Always wins when set.
+   / `_SECRET` and the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`
+   apply only to gallery apps, at the token endpoint their app definition
+   fixes. A pasted server never gets a deployment client. Add a client of your
+   own to the connection, or use CIMD or dynamic registration.
 2. **Client ID Metadata Document (CIMD).** When the authorization server
    advertises `client_id_metadata_document_supported`, Paperclip presents the URL
    of its own published metadata document as the `client_id`. Nothing is

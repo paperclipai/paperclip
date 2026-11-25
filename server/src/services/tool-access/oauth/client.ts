@@ -4,6 +4,8 @@ import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provid
 import type { OAuthProviderEndpoints, OAuthTokenEndpointAuthMethod, OAuthTransport } from "./types.js";
 import { oauthApplicationType } from "./client-metadata.js";
 import { CLIENT_ASSERTION_TYPE } from "./client-credentials.js";
+import { recordOAuthProviderFailure } from "./provider-failure-diagnostics.js";
+import { markMcpHttpResponseFailure } from "../../mcp-connection-failure.js";
 
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 
@@ -208,7 +210,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     );
     if (!response.ok) {
       const providerError = normalizeOAuthProviderError(record.error);
-      throw new HttpError(
+      const error = new HttpError(
         502,
         oauthProviderErrorMessage(
           providerError,
@@ -220,6 +222,12 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
           status: response.status,
         },
       );
+      recordOAuthProviderFailure(error, {
+        operation: "dynamic_client_registration",
+        httpStatus: response.status,
+        providerError,
+      });
+      throw markMcpHttpResponseFailure(response, error);
     }
     const clientId = parseOAuthDcrString(record, "client_id", {
       required: true,

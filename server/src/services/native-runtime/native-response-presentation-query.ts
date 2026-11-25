@@ -1,4 +1,5 @@
 import { alias, QueryBuilder } from "drizzle-orm/pg-core";
+import { nativeEffectiveRunTerminalStateSql } from "./native-accepted-outcome.js";
 import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
@@ -39,8 +40,8 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       sql`${heartbeatRuns.contextSnapshot}->'skipIssueComment' is distinct from 'true'::jsonb`,
       sql`coalesce(${statusDecisions.decisionJson}->'externalChatReviewPresentation', 'null'::jsonb) in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb)`,
       sql`${nativeRunResults.resultJson} #>> '{result,schema}' = 'paperclip.run_result.v1'`,
-      sql`${nativeRunResults.resultJson} #>> '{terminal,runTerminalState}' = 'succeeded'`,
-      sql`${nativeRunResults.resultJson} #>> '{terminal,turnTerminalState}' = 'completed'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson, "turnTerminalState")} = 'completed'`,
       or(
         and(eq(heartbeatRuns.status, "succeeded"),
           or(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,

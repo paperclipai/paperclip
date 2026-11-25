@@ -42,6 +42,7 @@ export function getValuesResult(response: RestValueRange): CallToolResult {
 export const getValues = defineTool({
   definition: {
     name: "get_values",
+    title: "Read cell values",
     description: "Returns the values in one range of a spreadsheet, row by row, exactly as Google Sheets displays them (formatted values): numbers, currency, percentages, dates and booleans come back as the formatted text shown in the cell (for example \"$1,200.50\", \"12%\", \"1/5/2026\", \"TRUE\"), and formula cells return their result, not the formula. Empty rows and columns at the end of the range are left out, so rows can have different lengths and an empty range has no values. In a merged area only the top-left cell holds the value. Reads at most 50,000 cells per call; a larger result is an error asking for a smaller range, never a cut-off result. For several ranges at once, formulas, or unformatted numbers and date serial numbers, use get_spreadsheet with ranges and includeGridData.",
     inputSchema: {
       type: "object",

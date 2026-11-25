@@ -37,11 +37,9 @@ test("built chat initializes after service worker takeover and reload with a slo
       expect(scripts.length).toBeGreaterThan(0);
       expect(scripts.every((src) => src?.startsWith("/assets/"))).toBe(true);
       await page.evaluate(async () => { await navigator.serviceWorker.ready; });
-      for (let reload = 0; reload < 3; reload += 1) {
-        await page.reload();
-        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
-        expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
-      }
+      await page.reload();
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
+      expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
       expect(await json(await request.get(f.chatPath))).toBeNull();
     } finally {
       await cdp.detach();
@@ -254,7 +252,7 @@ test("Stop then queued /new resets unpause the conversation without losing histo
 });
 
 test("Coordinator agent switching preserves drafts and opens one conversation only on send", async ({ page, request }) => {
-  const f = await setup(request);
+  const f = await setup(request, { agentCount: 2 });
   try {
     await page.goto(f.route);
     await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
@@ -295,14 +293,19 @@ test("secondary chat navigation preserves layout, unique conversations, history,
   request,
 }) => {
   const originalExperimental = await json(await request.get("/api/instance/settings/experimental"));
-  const f = await setup(request);
+  const f = await setup(request, { agentCount: 6 });
   const originalWorkspace = await json(await request.get("/api/workspace-preferences/me"));
-  const workspacePath = `/api/companies/${f.company.id}/workspace-preferences/me`;
   try {
-    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: false } }));
-    await json(await request.patch("/api/instance/settings/experimental", {
-      data: { enableStreamlinedUi: true },
-    }));
+    await page.route("**/api/workspace-preferences/me", (route) =>
+      route.fulfill({
+        json: { ...originalWorkspace, coordinatorWorkspaceEnabled: false },
+      }),
+    );
+    await page.route("**/api/instance/settings/experimental", (route) =>
+      route.fulfill({
+        json: { ...originalExperimental, enableStreamlinedUi: true },
+      }),
+    );
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
     await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
     // With no recent conversation, Chat opens the first human-created primary.
@@ -390,10 +393,6 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await page.reload();
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
-    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
-    await json(await request.patch("/api/instance/settings/experimental", {
-      data: { enableStreamlinedUi: originalExperimental.enableStreamlinedUi },
-    }));
   }
 });

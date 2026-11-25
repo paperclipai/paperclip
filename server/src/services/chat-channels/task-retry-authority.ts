@@ -1,4 +1,5 @@
 import { hasCommittedNativeControllerContainment } from "../native-runtime/native-failed-run-owner-release.js";
+import { nativeEffectiveRunTerminalStateSql } from "../native-runtime/native-accepted-outcome.js";
 import { and, eq, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, issues, type Db } from "@paperclipai/db";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -68,7 +69,7 @@ async function taskChatRetryExecutionContained(db: Db, run: typeof heartbeatRuns
       eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
       eq(nativeRunResults.issueId, run.nativeIssueId!), eq(nativeRunResults.id, coordinator.resultId),
       eq(nativeRunResults.schemaStatus, "accepted"), eq(nativeRunResults.completionContractId, run.completionContractId),
-      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'failed'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'failed'`,
     )).limit(1);
     if (!failedResult) return false;
   }

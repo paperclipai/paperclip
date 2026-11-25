@@ -117,6 +117,7 @@ describeEmbeddedPostgres("routine suggestions", () => {
       priority: "medium",
       assigneeAgentId: agent.id,
       originKind: input.originKind ?? "manual",
+      responsibleUserId: OWNER,
       parentId: input.parentId ?? null,
       createdByUserId: OWNER,
     }).returning().then((rows) => rows[0]!);

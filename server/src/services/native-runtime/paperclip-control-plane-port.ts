@@ -1,4 +1,6 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { applyNativeAcceptedOutcome, deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
+import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { and, asc, eq, gt, or, sql } from "drizzle-orm";
@@ -742,9 +744,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         return false;
       }
       if (owner?.resultId) throw new Error("structured_result_replay_conflict");
+      const acceptedOutcome = value.terminal.runTerminalState === "failed" && value.terminal.reportedWorkDisposition === "done"
+        ? deriveNativeAcceptedOutcome({ terminal: value.terminal,
+          ...await readPersistedNativeFailureEvidence(tx as unknown as Db, run, value.turnId ?? null, value.terminal) })
+        : null;
+      const effectiveTerminal = applyNativeAcceptedOutcome(acceptedOutcome, value.terminal);
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,
+        ...(acceptedOutcome ? { [NATIVE_ACCEPTED_OUTCOME_KEY]: acceptedOutcome } : {}),
         normalizationDiagnostics: {
           ignoredAttentionRequests: normalizationDiagnostics.ignoredAttentionRequests,
         },
@@ -792,8 +800,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           // Publish the accepted contract with its durable receipt. Recovery
           // may settle this run without the original adapter ever returning.
           nativeTerminal: value.terminal,
-          prpTurnTerminalState: value.terminal.turnTerminalState,
-          prpRunTerminalState: value.terminal.runTerminalState,
+          prpTurnTerminalState: effectiveTerminal.turnTerminalState,
+          prpRunTerminalState: effectiveTerminal.runTerminalState,
           prpReportedWorkDisposition: value.terminal.reportedWorkDisposition,
         },
         updatedAt: new Date(),

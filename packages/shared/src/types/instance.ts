@@ -157,6 +157,11 @@ export interface InstanceExperimentalSettings {
    */
   enableMcpTasks: boolean;
   /**
+   * Let a signed-in user start Google Antigravity's native swarm with `/swarm`
+   * at the start of a task comment. Local hosts with a Google sign-in only. Default off.
+   */
+  enableAntigravitySwarm: boolean;
+  /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.
    */
