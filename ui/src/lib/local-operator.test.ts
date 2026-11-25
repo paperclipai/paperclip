@@ -86,7 +86,11 @@ describe("sockets the board page opens", () => {
     installLocalOperatorWebSocket(target);
     new target.WebSocket(`ws://${window.location.host}/api/plugins/p1/api/socket`);
     new target.WebSocket("wss://elsewhere.test/socket");
+    const terminal = `ws://${window.location.host}/api/environment-custom-image-setup-sessions/s1/terminal/ws`;
+    new target.WebSocket(terminal);
     expect(new URL(opened[0]!).searchParams.get("operator")).toBe("v1.token");
     expect(opened[1]).toBe("wss://elsewhere.test/socket");
+    // Sockets that authenticate another way never receive the token.
+    expect(opened[2]).toBe(terminal);
   });
 });

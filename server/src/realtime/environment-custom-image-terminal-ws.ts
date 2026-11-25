@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
+import { LOCAL_OPERATOR_SOCKET_PARAM } from "@paperclipai/shared/local-operator-constants";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import type { Db } from "@paperclipai/db";
@@ -183,8 +184,8 @@ function safeUpgradePath(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
   try {
     const url = new URL(rawUrl, "http://localhost");
-    if (url.searchParams.has("token")) {
-      url.searchParams.set("token", "[redacted]");
+    for (const secret of ["token", LOCAL_OPERATOR_SOCKET_PARAM]) {
+      if (url.searchParams.has(secret)) url.searchParams.set(secret, "[redacted]");
     }
     return `${url.pathname}${url.search}`;
   } catch {

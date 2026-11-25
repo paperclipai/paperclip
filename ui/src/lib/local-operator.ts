@@ -65,9 +65,15 @@ export function installLocalOperatorFetch(target: typeof globalThis = globalThis
   };
 }
 
+/** The only sockets that authenticate with the operator token. Others never receive it. */
+const OPERATOR_SOCKET_PATHS = [
+  /^\/api\/companies\/[^/]+\/events\/ws$/,
+  /^\/api\/plugins\/[^/]+\/api\//,
+];
+
 /**
- * Adds the operator token to every same-origin socket this page opens,
- * including plugin sockets, since a browser cannot set headers on a WebSocket.
+ * Adds the operator token to the live-events and plugin sockets this page
+ * opens, since a browser cannot set headers on a WebSocket.
  */
 export function installLocalOperatorWebSocket(target: typeof globalThis = globalThis): void {
   const Original = target.WebSocket;
@@ -85,6 +91,7 @@ export function withLocalOperatorSocketToken(url: string): string {
   if (!token) return url;
   const parsed = new URL(url, window.location.href);
   if (parsed.host !== browserReachableHost(window.location)) return url;
+  if (!OPERATOR_SOCKET_PATHS.some((pattern) => pattern.test(parsed.pathname))) return url;
   parsed.searchParams.set(LOCAL_OPERATOR_SOCKET_PARAM, token);
   return parsed.toString();
 }
