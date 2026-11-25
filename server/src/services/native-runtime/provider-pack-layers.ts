@@ -6,6 +6,13 @@ import { join, posix } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import {
+  isProviderAssetPathIncluded,
+  providerAssetExcludeArgs,
+  requiredProviderAssetNames,
+  type PackProvider,
+  type ProviderPackIdentity,
+} from "./provider-pack-compatibility.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 
 type Archive = { sha256: string; bytes: number };
@@ -138,20 +145,32 @@ export type ProviderPackReuseStep = {
 
 /** Store repeated bytes once: the first private copy of each digest and mode is
  * shared by hardlinks, and a path the image lacks may come from a same-bytes twin. */
-export function providerPackReusePlan(files: readonly Pick<FileLayer, "path" | "sha256" | "mode">[]): ProviderPackReuseStep[] {
+export function providerPackReusePlan(
+  files: readonly Pick<FileLayer, "path" | "sha256" | "mode">[],
+  sourceFiles: readonly Pick<FileLayer, "path" | "sha256">[] = files,
+): ProviderPackReuseStep[] {
   const pathsBySha = new Map<string, string[]>();
-  for (const file of files) pathsBySha.set(file.sha256, [...(pathsBySha.get(file.sha256) ?? []), file.path]);
+  for (const file of sourceFiles) pathsBySha.set(file.sha256, [...(pathsBySha.get(file.sha256) ?? []), file.path]);
   const groups = new Map<string, number>();
   return files.map(file => {
     const key = `${file.sha256}:${file.mode}`;
     if (!groups.has(key)) groups.set(key, groups.size);
-    return { sources: [file.path, ...pathsBySha.get(file.sha256)!.filter(path => path !== file.path)], group: groups.get(key)! };
+    const twins = (pathsBySha.get(file.sha256) ?? []).filter(path => path !== file.path);
+    return { sources: [file.path, ...twins], group: groups.get(key)! };
   });
 }
 
-export function providerPackLayersArgument(archive: ProviderPackLayers, targetPath: string, reuseRoots: readonly string[]) {
-  const plan = providerPackReusePlan(archive.files);
-  const files = archive.files.map((file, index) => ({ ...file, ...plan[index] }));
+export function providerPackLayersArgument(
+  archive: ProviderPackLayers,
+  targetPath: string,
+  reuseRoots: readonly string[],
+  provider?: PackProvider,
+  manifest?: Pick<ProviderPackIdentity, "payload">,
+) {
+  const required = requiredProviderAssetNames(provider, manifest);
+  const selected = archive.files.filter(file => isProviderAssetPathIncluded(file.path, required));
+  const plan = providerPackReusePlan(selected, archive.files);
+  const files = selected.map((file, index) => ({ ...file, ...plan[index] }));
   const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files })).toString("base64");
   return Buffer.byteLength(spec) > 120_000 ? null : spec;
 }
@@ -162,11 +181,17 @@ export async function stageProviderPackLayers(input: {
   targetPath: string;
   reuseRoots: readonly string[];
   trace?: NativeRunTrace;
+  provider?: PackProvider;
+  manifest?: Pick<ProviderPackIdentity, "payload">;
 }): Promise<boolean> {
   const { archive, runner } = input;
   if (!runner.syncIn) throw Error("runner_remote_provider_archive_transport_unavailable");
   const measure = <T>(name: string, fn: () => Promise<T>) => input.trace ? input.trace.measure(name, fn) : fn();
-  const spec = providerPackLayersArgument(archive, input.targetPath, input.reuseRoots);
+  const required = requiredProviderAssetNames(input.provider, input.manifest);
+  const selectedEntries = archive.files
+    .map((file, index) => ({ file, index }))
+    .filter(({ file }) => isProviderAssetPathIncluded(file.path, required));
+  const spec = providerPackLayersArgument(archive, input.targetPath, input.reuseRoots, input.provider, input.manifest);
   // Respect the per-argument Linux limit; unusual packs retain directory staging.
   if (spec === null) return false;
   const capability = await measure("provider_pack.archive.probe", () => runner.execute({
@@ -181,13 +206,21 @@ export async function stageProviderPackLayers(input: {
   let missing: number[];
   try { missing = JSON.parse(reused.stdout); } catch { throw Error("runner_remote_provider_archive_reuse_failed"); }
   if (!Array.isArray(missing) || new Set(missing).size !== missing.length
-    || missing.some(index => !Number.isSafeInteger(index) || index < 0 || index >= archive.files.length)) {
+    || missing.some(index => !Number.isSafeInteger(index) || index < 0 || index >= selectedEntries.length)) {
     throw Error("runner_remote_provider_archive_reuse_failed");
   }
   const layers = [
-    ...missing.map(index => ({ name: `${index}.tar.zst`, ...archive.files[index]!.archive })),
+    ...missing.map(selectedIndex => {
+      const entry = selectedEntries[selectedIndex]!;
+      return { name: `${entry.index}.tar.zst`, ...entry.file.archive };
+    }),
     { name: "overlay.tar.zst", ...archive.overlay },
   ];
+  const excludeFlags = providerAssetExcludeArgs({
+    provider: input.provider,
+    manifest: input.manifest,
+    filePaths: archive.files.map(file => file.path),
+  }).map(quote).join(" ");
   const temporary = await mkdtemp(join(tmpdir(), "paperclip-provider-layers-"));
   const bundlePath = join(temporary, "selected.tar.zst");
   const scratch = `${input.targetPath}.upload-${randomUUID()}`;
@@ -219,7 +252,7 @@ export async function stageProviderPackLayers(input: {
       command: "sh", args: ["-c", ["set -eu; umask 077;",
         `test ! -L ${quote(input.targetPath)}; test -d ${quote(input.targetPath)};`,
         `test ! -L ${quote(remoteArchive)}; test "$(sha256sum -- ${quote(remoteArchive)} | cut -d ' ' -f 1)" = ${quote(sha256)};`,
-        `tar --zstd --ignore-zeros -xf ${quote(remoteArchive)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(input.targetPath)};`,
+        `tar --zstd --ignore-zeros${excludeFlags ? ` ${excludeFlags}` : ""} -xf ${quote(remoteArchive)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(input.targetPath)};`,
         `chmod 700 ${quote(input.targetPath)};`,
       ].join(" ")], bypassSession: true, timeoutMs: 120_000,
     }));

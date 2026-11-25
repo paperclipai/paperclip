@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import {
+  providerAssetExcludeArgs,
+  type PackProvider,
+  type ProviderPackIdentity,
+} from "./provider-pack-compatibility.js";
 import { invalidArchive, readProviderPackLayers, stageProviderPackLayers, verifyArchive } from "./provider-pack-layers.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 
@@ -38,11 +43,17 @@ export async function stageProviderPackArchive(input: {
   targetPath: string;
   trace?: NativeRunTrace;
   reuseRoots?: readonly string[];
+  provider?: PackProvider;
+  manifest?: Pick<ProviderPackIdentity, "payload">;
 }): Promise<boolean> {
   if ("kind" in input.archive) return stageProviderPackLayers({ ...input, archive: input.archive, reuseRoots: input.reuseRoots ?? [] });
   const archive = input.archive;
   if (!input.runner.syncIn) throw new Error("runner_remote_provider_archive_transport_unavailable");
   const archivePath = `${input.targetPath}.upload-${randomUUID()}.tar.zst`;
+  const excludeFlags = providerAssetExcludeArgs({
+    provider: input.provider,
+    manifest: input.manifest,
+  }).map(quote).join(" ");
   const measure = <T>(name: string, fn: () => Promise<T>) => input.trace ? input.trace.measure(name, fn) : fn();
   const capability = await measure("provider_pack.archive.probe", () => input.runner.execute({
     command: "sh", args: ["-c", providerPackExtractionProbe],
@@ -61,7 +72,7 @@ export async function stageProviderPackArchive(input: {
         `test ! -L ${quote(archivePath)}; test -f ${quote(archivePath)};`,
         `test "$(sha256sum -- ${quote(archivePath)} | cut -d ' ' -f 1)" = ${quote(archive.sha256)};`,
         `test ! -L ${quote(input.targetPath)}; mkdir -p ${quote(input.targetPath)};`,
-        `tar --zstd -xf ${quote(archivePath)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(input.targetPath)};`,
+        `tar --zstd${excludeFlags ? ` ${excludeFlags}` : ""} -xf ${quote(archivePath)} --no-same-owner --same-permissions --delay-directory-restore -C ${quote(input.targetPath)};`,
         `chmod 700 ${quote(input.targetPath)};`,
       ].join(" ")],
       bypassSession: true,

@@ -1,7 +1,7 @@
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
-import type { ProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import type { PackProvider, ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { resolveProviderPackUploadSource } from "./retained-provider-pack-source.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 import { providerPackLayersArgument } from "./provider-pack-layers.js";
@@ -16,6 +16,7 @@ export async function uploadVerifiedProviderPack(input: {
   /** Identity selected for this execution; a retained session can pin an older release. */
   expectedDigest: string;
   manifest?: ProviderPackIdentity;
+  provider?: PackProvider;
   signal?: AbortSignal;
   runner: CommandManagedRuntimeRunner;
   cwd: string;
@@ -44,7 +45,7 @@ export async function uploadVerifiedProviderPack(input: {
     readProviderPackArchive(source.root, input.expectedDigest, input.signal));
   if (source.archiveOnly) {
     if (!archive) throw Error("runner_remote_provider_source_invalid");
-    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots) === null) {
+    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots, input.provider, input.manifest) === null) {
       throw Error("runner_remote_provider_archive_transport_unavailable");
     }
     const capability = await measure("provider_pack.archive.probe", () => input.runner.execute({
@@ -66,6 +67,7 @@ export async function uploadVerifiedProviderPack(input: {
     if (archive && await stageProviderPackArchive({
       archive, runner: input.runner, targetPath: input.targetPath,
       reuseRoots: input.reuseRoots, trace: input.trace,
+      provider: input.provider, manifest: input.manifest,
     })) return;
     if (source.archiveOnly) throw Error("runner_remote_provider_archive_transport_unavailable");
     if (archive) await verifyDirectory();
