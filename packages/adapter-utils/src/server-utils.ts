@@ -588,6 +588,7 @@ type PaperclipWakeAnnotationDelta = {
   bodyTruncated: boolean;
   createdAt: string | null;
   author: PaperclipWakePlanReviewAuthor | null;
+  reaction: { name: string; author: PaperclipWakePlanReviewAuthor | null } | null;
 };
 
 type PaperclipWakePlanReviewComment = {
@@ -980,6 +981,11 @@ function normalizePaperclipWakeAnnotationDelta(
   const body = asString(delta.body, "");
   const createdAt = asString(delta.createdAt, "").trim() || null;
   const author = normalizePaperclipWakePlanReviewAuthor(delta.author);
+  const reactionValue = parseObject(delta.reaction);
+  const reactionName = asString(reactionValue.name, "").trim();
+  const reaction = reactionName
+    ? { name: reactionName, author: normalizePaperclipWakePlanReviewAuthor(reactionValue.author) }
+    : null;
   if (!id && !threadId && !documentKey && !quote.trim() && !body.trim())
     return null;
   return {
@@ -998,6 +1004,7 @@ function normalizePaperclipWakeAnnotationDelta(
     bodyTruncated: asBoolean(delta.bodyTruncated, false),
     createdAt,
     author,
+    reaction,
   };
 }
 
@@ -2837,6 +2844,11 @@ function renderPaperclipWakePromptBody(
       lines.push(delta.body);
       if (delta.bodyTruncated) {
         lines.push("[annotation comment body truncated]");
+      }
+      if (delta.reaction?.name === "question") {
+        lines.push(
+          `  ${delta.reaction.author ? planReviewAuthorLabel(delta.reaction.author) : "A person"} reacted with a question to this comment. Answer it with a reply in this annotation thread.`,
+        );
       }
     }
   }

@@ -249,6 +249,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
   const enableFirstTaskPlanProposal =
     experimentalQuery.data?.enableFirstTaskPlanProposal === true;
+  const enableCloudTrialInference =
+    experimentalQuery.data?.enableCloudTrialInference === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const isVisible = (key: InstanceFeatureKey) => !hiddenSettings.has(experimentalSettingKey(key));
@@ -376,6 +378,19 @@ export function InstanceExperimentalSettings() {
           settingKey="enableChatConnectors"
           managed={managedKeys.enableChatConnectors}
           ariaLabel="Toggle chat connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Cloud starter inference"
+          description="Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider."
+          checked={enableCloudTrialInference}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableCloudTrialInference: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableCloudTrialInference"
+          managed={managedKeys.enableCloudTrialInference}
+          ariaLabel="Toggle Cloud starter inference experimental setting"
         />
 
         <ExperimentalToggleCard

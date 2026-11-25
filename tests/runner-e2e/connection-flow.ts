@@ -203,7 +203,7 @@ async function createConnectionThroughUi(input: ConnectionFlowInput, agentURL: s
       (mode === "bedrock" && connection.routing?.region !== input.settings.route?.region)) throw new ConnectionFailure("saved_routing_mismatch");
   } else if (connection.provider !== harness.provider) throw new ConnectionFailure("saved_provider_mismatch");
   // Navigate away and return through the normal list: proof includes durable UI state.
-  await page.goto(`${api.origin}/${company.issuePrefix}/apps`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${api.origin}/${company.issuePrefix}/apps?source=installed`, { waitUntil: "domcontentloaded" });
   await expect(page.getByText(connection.name, { exact: true }).first()).toBeVisible();
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText(connection.name, { exact: true }).first()).toBeVisible();

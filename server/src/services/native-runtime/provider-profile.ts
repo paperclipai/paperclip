@@ -162,6 +162,7 @@ export class PaperclipRunnerProviderProfileError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly detailReason?: string,
   ) {
     super(message);
     this.name = "PaperclipRunnerProviderProfileError";
@@ -216,10 +217,17 @@ export function resolvePaperclipRunnerCursorCloudConfig(config: Record<string, u
 /** Configuration can be saved before pairing; task admission requires a binding. */
 export function validatePaperclipRunnerDotConfig(config: Record<string, unknown>, requireBinding = true): string | null {
   const bindingId = optionalString(config.dotBindingId);
-  if ((requireBinding && !bindingId) || (bindingId && !/^[0-9a-f-]{36}$/i.test(bindingId))
-      || config.allowUnmeteredProvider !== true || (config.lifecycleMode && config.lifecycleMode !== "per_turn")
-      || optionalString(config.model)) {
-    throw new PaperclipRunnerProviderProfileError("paperclip_runner_dot_config_invalid", "Dot requires per-turn lifecycle and explicit externally billed, unmetered-provider acknowledgement. Pair a binding before assigning work.");
+  const invalidSettings =
+    Boolean(bindingId && !/^[0-9a-f-]{36}$/i.test(bindingId))
+    || config.allowUnmeteredProvider !== true
+    || Boolean(config.lifecycleMode && config.lifecycleMode !== "per_turn")
+    || Boolean(optionalString(config.model));
+  if (invalidSettings || (requireBinding && !bindingId)) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_dot_config_invalid",
+      "Dot requires per-turn lifecycle and explicit externally billed, unmetered-provider acknowledgement. Pair a binding before assigning work.",
+      invalidSettings ? "dot_config_invalid" : "dot_pairing_required",
+    );
   }
   return bindingId;
 }

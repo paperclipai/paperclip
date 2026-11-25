@@ -3,10 +3,11 @@ import type { ActorInfo } from "../types.js";
 import { isPluginAppSlug, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueThreadInteractions, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { issueThreadInteractions, toolConnectionInstalls, toolConnections, toolProfiles } from "@paperclipai/db";
 import type { ConnectToolAppResult, FinishToolApp, ToolCatalogEntry } from "@paperclipai/shared";
 
 import type { FinishConnectionSetup } from "../catalog/contracts.js";
+import { hasAgentAccessConfiguredMarker } from "../connection-access-boundary.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -66,18 +67,30 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
         : suggestedAgentIds.length > 0
           ? { agentIds: suggestedAgentIds }
           : "all_agents";
+    const [existingAppProfile] = installs.length === 0
+      ? await db
+          .select({ id: toolProfiles.id })
+          .from(toolProfiles)
+          .where(and(
+            eq(toolProfiles.companyId, input.connection.companyId),
+            eq(toolProfiles.profileKey, `app:${input.connection.id}`),
+            eq(toolProfiles.status, "active"),
+          ))
+          .limit(1)
+      : [];
     // Workspace setup saves the operator's install selection before OAuth too.
     // An empty selection means no agents, not permission to apply all-agent
     // defaults after the user returns from Google.
     // A plugin connector never gets agent access from signing in: an agent or
     // company install is always an explicit operator choice.
-    const preserveEmptyInstalls = isPluginAppSlug(input.connection.config.sourceTemplateKey)
+    const preserveEmptyInstalls = Boolean(existingAppProfile)
+      || isPluginAppSlug(input.connection.config.sourceTemplateKey)
       || input.connection.config.sourceTemplateKey === "google-workspace"
       || isRemoteMcpConnectorMethod(
-      input.connection.config.sourceTemplateKey,
-      input.connection.config.connectionMethodKey,
-    ) || (input.connection.transport === "mcp_remote"
-      && input.connection.config.mcpAgentAccessConfigured === true);
+        input.connection.config.sourceTemplateKey,
+        input.connection.config.connectionMethodKey,
+      )
+      || hasAgentAccessConfiguredMarker(input.connection.config);
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0

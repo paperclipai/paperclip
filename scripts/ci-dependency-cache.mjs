@@ -16,13 +16,22 @@ const postinstallHooks = new Map([
   ["packages/paperclip-runner", "node scripts/install-copilot-assets.mjs"],
 ]);
 
+export const DEPENDENCY_SCRIPT_INPUTS = new Set([
+  "scripts/ci-dependency-cache.mjs",
+  "scripts/link-plugin-dev-sdk.mjs",
+  "scripts/ensure-workspace-package-links.mjs",
+  "scripts/replay-workspace-postinstall.mjs",
+  "server/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+  "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+]);
+
 export function cachePlan({ files, read, scope, packageDirs }) {
   const dependencyInputs = files.filter((file) =>
     /(^|\/)package\.json$/.test(file)
     || ["pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", "pnpmfile.cjs"].includes(file)
-    || file.startsWith("scripts/")
-    || file.startsWith("server/scripts/")
-    || file.startsWith("packages/paperclip-runner/scripts/")
+    || DEPENDENCY_SCRIPT_INPUTS.has(file)
     || file.startsWith("patches/"));
   const digest = (inputs, salt) => {
     const hash = createHash("sha256").update(JSON.stringify(salt));

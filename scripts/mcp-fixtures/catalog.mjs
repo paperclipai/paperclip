@@ -515,7 +515,7 @@ export async function executeFixtureTool(toolName, input = {}, state = createFix
       if (!options.secrets?.MISSING_FIXTURE_SECRET) return missingSecretResult("MISSING_FIXTURE_SECRET");
       return { ok: true, result: { value: "configured" } };
     case "fixture.schemaFlip":
-      state.schemaVariant = "changed";
+      state.schemaVariant = state.schemaVariant === "changed" ? "baseline" : "changed";
       return { ok: true, result: { schemaVariant: state.schemaVariant, toolName: input.toolName } };
     default:
       return { ok: false, error: { code: "unknown_tool", message: `Unknown fixture tool ${toolName}.` } };

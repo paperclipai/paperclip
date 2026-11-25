@@ -17,6 +17,8 @@ import {
   issuePriorityOrder,
   issueQuickFilterPresets,
   issueStatusOrder,
+  issueUpdatedWithinOptions,
+  issueUpdatedWithinPatch,
   searchIssueFilterOptions,
   toggleIssueFilterValue,
   type IssueFilterState,
@@ -27,6 +29,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxApprovalFilter, InboxCategoryFilter } from "../lib/inbox";
 import { cn } from "../lib/utils";
 import { IssueFilterPanel } from "./IssueFilterPanel";
+import { IssueUpdatedRangeInputs } from "./IssueUpdatedRangeInputs";
 import { FlyoutAppearanceProvider } from "./ui/flyout";
 
 type AgentOption = {
@@ -312,6 +315,31 @@ export function IssueFiltersPopover({
                 );
               })}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <span className="text-xs text-muted-foreground">Updated</span>
+            <div className="flex flex-wrap gap-1.5" data-filter-options="updated">
+              {issueUpdatedWithinOptions.map((option) => {
+                const isActive = (state.updatedWithin ?? null) === option.value;
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    aria-pressed={isActive}
+                    className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                      isActive
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                    }`}
+                    onClick={() => onChange(issueUpdatedWithinPatch(isActive ? null : option.value))}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            {state.updatedWithin === "custom" ? <IssueUpdatedRangeInputs state={state} onChange={onChange} /> : null}
           </div>
 
           <div className="border-t border-border" />

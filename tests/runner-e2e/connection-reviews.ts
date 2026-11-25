@@ -52,16 +52,8 @@ export async function setupConnectionReview(input: {
       connection = { id: connected.connectionId };
     } else {
       await page.goto(`/${input.prefix}/apps`, { waitUntil: "domcontentloaded" });
-      const connector = page
-        .getByRole("list", { name: "Connector list" })
-        .getByRole("listitem")
-        .filter({ hasText: "Connect your own tool" });
-      await connector
-        .getByRole("button", { name: "Connect", exact: true })
-        .click();
-      await connector
-        .getByRole("button", { name: "Connect your own MCP server" })
-        .click();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
       await page
         .getByPlaceholder("https://example.com/actions")
         .fill(provider.url);

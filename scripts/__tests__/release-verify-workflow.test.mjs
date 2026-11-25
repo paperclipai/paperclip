@@ -51,7 +51,10 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
   assert.match(docker, /platform: linux\/arm64/);
   assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
   assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  assert.match(docker, /cache-from: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /CACHE_REF: ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /run: node scripts\/docker-cache-export-policy\.mjs/);
+  assert.match(docker, /cache-to: \$\{\{ steps\.cache-policy\.outputs\.cache_to \}\}/);
   assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
   assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
   assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);

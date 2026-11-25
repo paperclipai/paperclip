@@ -185,7 +185,7 @@ const states: Record<string, Record<string, State>> = {
   },
   "feature-plugin-management": {
     installed: { text: "Preview plugin" },
-    empty: { text: "No plugins installed" },
+    empty: { text: "No system plugins installed" },
     loading: { text: "Loading plugins..." },
     failed: { text: "Failed to load plugins." },
     "permission-denied": { text: "Failed to load plugins." },

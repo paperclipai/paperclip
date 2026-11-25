@@ -103,6 +103,15 @@ GET /api/routines/{routineId}/revisions
 
 Returns append-only routine definition revisions newest first. Snapshots include routine fields and safe trigger metadata only; webhook secret values and `secretId` are never returned.
 
+## Description Comment Reactions
+
+```
+PUT    /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+DELETE /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
+Adds or removes a `done`, `check`, `thumbs_up` or `question` reaction on a routine description annotation comment. See [Comment Reactions](issues.md#comment-reactions) for the response shape and rules. Routine reactions do not wake an agent.
+
 ## Restore Revision
 
 ```

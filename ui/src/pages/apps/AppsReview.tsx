@@ -1,4 +1,7 @@
 import { useEffect } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Link } from "@/lib/router";
+import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ReviewQueueCard } from "./ReviewQueueCard";
@@ -19,7 +22,7 @@ export function AppsReview() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Review" },
     ]);
     return () => setBreadcrumbs([]);
@@ -30,7 +33,10 @@ export function AppsReview() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6 pb-12">
+    <div className="mx-auto w-full max-w-3xl space-y-6 pb-12">
+      <Button asChild variant="ghost" size="sm" className="-ml-3 h-8 text-muted-foreground">
+        <Link to="/apps"><ArrowLeft className="size-4" aria-hidden />Plugins</Link>
+      </Button>
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Review</h1>
         <p className="mt-1 text-sm text-muted-foreground">
