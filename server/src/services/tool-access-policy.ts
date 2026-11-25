@@ -1754,6 +1754,13 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         // The connection's Ask first control restricts an existing action grant;
         // it must never grant access to agents outside that connection's profile.
         if (["app_gallery_finish", "connection_intent"].includes(String(policy.config?.source)) && !permittedByProfile) continue;
+        if (blockedByConnectionInstall) {
+          if (explicitBlock) {
+            return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+          }
+          return decision("deny", "deny_connection_not_installed",
+            "This connection is not installed for this agent.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+        }
         if (policy.config?.source === "connection_intent" && explicitBlock) {
           return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
         }
