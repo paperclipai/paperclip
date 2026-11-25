@@ -345,7 +345,10 @@ and attribute values are always masked.
     masks any other. Task previews convert at most 2,048 source characters to
     plain text, then limit the summary to 180 characters. When the source cap
     applies, the preview always masks: a cut source can contain incomplete
-    credential text. Opening the full task still uses the normal work-content
+    credential text. When only the 180-character limit applies, the preview
+    masks if the text before the cut holds anything the replay redaction
+    masks, because a credential that crosses the cut is too short to match
+    its format. Opening the full task still uses the normal work-content
     rule.
   - A missing or disabled deployment opt-in, loading, a failed latest fetch
     (even with an older answer cached), a list that waits on a refresh, no

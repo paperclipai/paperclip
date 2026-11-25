@@ -185,14 +185,16 @@ function redactSecretAssignments(text: string, nodeStart: number, continues: (of
 
 /**
  * A command-line flag whose name says secret, with its value after a space:
- * `--password hunter2`, `--api-key "a b"`. (`--password=hunter2` is an
- * assignment.)
+ * `--password hunter2`, `--api-key "a b"`, `--db_password x`.
+ * (`--password=hunter2` is an assignment.) A quoted value runs to its closing
+ * quote, past escaped quotes (`"correct \"horse\" battery"`), or to the end
+ * of the line.
  */
 const SECRET_FLAG_NAME = /password|passwd|passphrase|pwd|token|secret|api-?key|credential/i;
 
 function redactSecretFlags(text: string): string {
-  const names = /--[A-Za-z0-9-]*/g;
-  const values = /"[^"\n\r]*"?|'[^'\n\r]*'?|\S+/y;
+  const names = /--[A-Za-z0-9_-]*/g;
+  const values = /"(?:\\[^\n\r]?|[^"\\\n\r])*"?|'(?:\\[^\n\r]?|[^'\\\n\r])*'?|\S+/y;
   let result = "";
   let copied = 0;
   let match: RegExpExecArray | null;

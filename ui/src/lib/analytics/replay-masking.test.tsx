@@ -412,6 +412,9 @@ describe("session replay text masking", () => {
     ["a bold Markdown label in a raw file", "**Password**: hunter2", "hunter2"],
     ["a command-line flag", "mysql --password hunter2 --host db", "hunter2"],
     ["a quoted command-line flag", "deploy --api-key \"left right\" --region us", "\"left right\""],
+    ["a quoted flag value with escaped quotes", "mysql --password \"correct \\\"horse\\\" battery staple\" --host db", "\"correct \\\"horse\\\" battery staple\""],
+    ["a single-quoted flag value with an escaped quote", "run --token 'it\\'s a secret' --dry-run", "'it\\'s a secret'"],
+    ["a flag name with an underscore", "run --verbose --db_password hunter2 --host db", "hunter2"],
   ])("redactReplaySecrets masks %s", (_label, input, secret) => {
     expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
   });
@@ -643,6 +646,35 @@ describe("session replay text masking", () => {
       expect(recordedTextOf(html, value)).toBe(`Use ${stars(token)} for the review.`);
       expect(document.querySelector('[data-slot="task-preview-description"]')?.textContent)
         .toBe(`Use ${token} for the review.`);
+    } finally {
+      company.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("masks a cut task preview whose text holds a credential", () => {
+    // The preview shows 177 characters. A credential that crosses that cut is
+    // too short to match its format, so its first characters would record.
+    const lead = "Please rotate the deploy credential for the staging cluster before the Friday release and tell the team in the channel when it is done so nobody is blocked on it. ";
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      for (const token of ["ghp_abcdefghijklmnopqrstuvwxyz0123", "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx1234", "Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aCXk9pQ2mZ7rT4"]) {
+        const html = renderTaskPreview(`${lead}${token} and confirm.`);
+        const rendered = document.createElement("div");
+        rendered.innerHTML = html;
+        const shown = rendered.querySelector('[data-slot="task-preview-description"]')?.textContent ?? "";
+        // The person sees the cut text, with the start of the credential.
+        expect(shown.endsWith("...")).toBe(true);
+        expect(shown).toContain(token.slice(0, 8));
+        // The replay records none of it.
+        expect(recordedTextOf(html, "Please rotate")).toBe(stars(shown));
+      }
+      // A cut preview with no credential still shows.
+      const plain = renderTaskPreview(`${lead}${lead}`);
+      expect(recordedTextOf(plain, "Please rotate")).toContain("Please rotate the deploy credential");
     } finally {
       company.mockRestore();
       document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
