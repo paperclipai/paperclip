@@ -6,6 +6,7 @@ import path from "node:path";
 import vm from "node:vm";
 import test from "node:test";
 import { planTasks } from "../../.github/scripts/ci-plan.mjs";
+import { refineTestPlan } from "./test-selection-plan.mjs";
 
 const workflow = readFileSync(".github/workflows/pr-trusted.yml", "utf8");
 const block = (job) => workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
@@ -98,4 +99,48 @@ test("failed-job retries use the original selector artifact, not the retry attem
   }
   assert.notEqual(run(selected, "").status, 0, "a selection cannot be published without its uploaded artifact");
   assert.equal(run(plan, "").status, 0, "fallback plans need no selection artifact");
+});
+
+test("ubuntu-latest uses compact hosted matrices in test_selection and on selector fallback", () => {
+  const selection = block("test_selection");
+  assert.match(selection, /CI_RUNNER_PROFILE: \$\{\{ needs\.gate\.outputs\.runner == 'ubuntu-latest' && 'hosted' \|\| 'aws' \}\}/);
+
+  const serverPlan = planTasks({
+    config: JSON.parse(readFileSync("turbo.json", "utf8")),
+    lanes: JSON.parse(readFileSync(".github/ci-task-matrix.json", "utf8")),
+    paths: ["server/src/routes/issues.ts"],
+  });
+  const hostedFallbackNeeds = {
+    gate: { result: "success", outputs: { runner: "ubuntu-latest", full_ci: "true", plan: JSON.stringify(serverPlan) } },
+    test_selection: { result: "failure", outputs: { plan: "" } },
+  };
+  const generalMatrix = evaluate(block("general_tests").match(/matrix: \$\{\{ (.*) \}\}/)[1], hostedFallbackNeeds);
+  const serializedMatrix = evaluate(block("verify_serialized_server").match(/matrix: \$\{\{ (.*) \}\}/)[1], hostedFallbackNeeds);
+  assert.deepEqual(JSON.parse(JSON.stringify(generalMatrix)), serverPlan.jobs.general_tests.hosted_matrix);
+  assert.deepEqual(JSON.parse(JSON.stringify(serializedMatrix)), serverPlan.jobs.verify_serialized_server.hosted_matrix);
+  assert.equal(generalMatrix.include.filter((e) => e.group === "general-server-without-chat").length, 8);
+  assert.equal(serializedMatrix.include.length, 4);
+
+  const files = Array.from({ length: 40 }, (_, i) => `server/src/s${i}.test.ts`);
+  const serialFiles = Array.from({ length: 20 }, (_, i) => `server/src/z${i}.test.ts`);
+  const chatFiles = ["server/src/c0.test.ts"];
+  const wsFiles = ["packages/shared/src/a.test.ts"];
+  const owners = {
+    "general-server-without-chat": { "@paperclipai/server": files },
+    "general-chat": { "@paperclipai/server": chatFiles },
+    "general-workspaces-b": { "@paperclipai/shared": wsFiles },
+    serialized: { "@paperclipai/server": serialFiles },
+  };
+  const graphs = [
+    { project: "@paperclipai/server", inventory: [...files, ...serialFiles, ...chatFiles], selected: [...files, ...serialFiles, ...chatFiles] },
+    { project: "@paperclipai/shared", inventory: wsFiles, selected: wsFiles },
+  ];
+  const hostedRefined = refineTestPlan({ plan: serverPlan, head: "a".repeat(40), owners, graphs, runnerProfile: "hosted" });
+  const awsRefined = refineTestPlan({ plan: serverPlan, head: "a".repeat(40), owners, graphs, runnerProfile: "aws" });
+  assert.equal(hostedRefined.manifest.lanes["general-server-without-chat"].shards.length, 8);
+  assert.equal(hostedRefined.manifest.lanes.serialized.shards.length, 4);
+  assert.equal(awsRefined.manifest.lanes["general-server-without-chat"].shards.length, 20);
+  assert.equal(awsRefined.manifest.lanes.serialized.shards.length, 9);
+  assert.deepEqual(hostedRefined.plan.jobs.general_tests.hosted_matrix, hostedRefined.plan.jobs.general_tests.matrix);
+  assert.deepEqual(hostedRefined.plan.jobs.verify_serialized_server.hosted_matrix, hostedRefined.plan.jobs.verify_serialized_server.matrix);
 });
