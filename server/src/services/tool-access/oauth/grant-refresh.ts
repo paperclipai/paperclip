@@ -43,6 +43,29 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
   const oauthGrantRefreshFlights = new Map<string, Promise<unknown>>();
   const { getOAuthGrantRow, resolveOAuthGrantSecret, createOrRotateOAuthSecret, oauthClientForConnection, syncCredentialBindings } = store;
   const { acquireOAuthGrantRefreshLease, clearOAuthGrantRefreshLease } = leases;
+  async function markConnectionNeedsSignInWhenNoGrantIsActive(tx: Db, connection: typeof toolConnections.$inferSelect) {
+    return writeToolConnectionHealthChange(tx, connection, async inner => {
+      const connectionScope = and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId));
+      await inner.select({ id: toolConnections.id }).from(toolConnections).where(connectionScope).for("update");
+      const [active] = await inner.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.status, "active"),
+      )).limit(1);
+      if (active) return null;
+      const [updated] = await inner
+        .update(toolConnections)
+        .set({
+          healthStatus: "error",
+          healthMessage: "Access to this app ended. Reconnect to continue.",
+          lastError: "oauth_reauthorization_required",
+          updatedAt: now(),
+        })
+        .where(connectionScope)
+        .returning();
+      return updated ?? null;
+    });
+  }
   async function refreshOAuthGrantCredentials(input: {
     companyId: string;
     connectionId: string;
@@ -160,7 +183,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 const accessEndedAtGoogle = profile.provider === "google"
                   && error.code === "REAUTHORIZATION_REQUIRED"
                   && error.brokerReason === "PROVIDER_REAUTHORIZATION_REQUIRED";
-                await db.transaction(async (tx) => {
+                const needsSignIn = await db.transaction(async (tx) => {
                   const [marked] = await tx
                     .update(connectionGrants)
                     .set({ status: "needs_reauthorization", updatedAt: now() })
@@ -174,7 +197,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                     )
                     .returning({ id: connectionGrants.id });
                   if (marked && accessEndedAtGoogle) await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "provider_access_ended");
+                  return marked ? markConnectionNeedsSignInWhenNoGrantIsActive(tx as unknown as Db, connection) : null;
                 });
+                if (needsSignIn) emitConnectionUpdated(needsSignIn, connection, "credential_refresh");
                 throw unprocessable(
                   cloudOnly ? `Reconnect required. ${GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE}` : "Managed authorization must be reconnected",
                   {
@@ -443,6 +468,8 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 "credential_refresh",
               );
             } else {
+              const needsSignIn = await markConnectionNeedsSignInWhenNoGrantIsActive(db, connection);
+              if (needsSignIn) emitConnectionUpdated(needsSignIn, connection, "credential_refresh");
               const activeGrantRefs = await db
                 .select({
                   refs: connectionGrants.credentialSecretRefs,

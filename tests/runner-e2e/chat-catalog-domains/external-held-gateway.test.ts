@@ -9,12 +9,13 @@ import type { ExternalObservation } from "./external-support.js";
 function pageFixture(missing?: string, connectorsInFlyout = false) {
   const actions: string[] = [];
   const page = {
-    getByRole: (role: string, options?: { name?: string }) => {
-      const name = options?.name ?? "";
+    getByRole: (role: string, options?: { name?: string | RegExp }) => {
+      // The Add menu's custom-server item is matched by pattern; record its source.
+      const name = typeof options?.name === "string" ? options.name : options?.name?.source ?? "";
       const locator = {
         filter: () => locator,
         first: () => locator,
-        isVisible: async () => !(connectorsInFlyout && name === "Connectors" && !actions.includes("More workspace pages")),
+        isVisible: async () => !(connectorsInFlyout && name === "Plugins" && !actions.includes("More workspace pages")),
         getByRole: (_r: string, o: { name: string }) => ({
           click: async () => {
             if (o.name === missing) throw new Error("Missing real control");
@@ -40,13 +41,13 @@ function pageFixture(missing?: string, connectorsInFlyout = false) {
   return { page, actions };
 }
 describe("finite held external diagnostics and visible entry correction", () => {
-  it("uses visible catalog controls including the expanded custom server option", async () => {
+  it("uses visible catalog controls including the Add menu custom server option", async () => {
     const { page, actions } = pageFixture();
     await enterGenericMcpThroughCatalog(page, "RUN");
     expect(actions).toEqual([
-      "Connectors",
-      "Connect",
-      "Connect your own MCP server",
+      "Plugins",
+      "Add",
+      "MCP server URL",
       "actual /RUN/apps/byo",
     ]);
   });
@@ -55,17 +56,17 @@ describe("finite held external diagnostics and visible entry correction", () => 
     await enterGenericMcpThroughCatalog(page, "RUN");
     expect(actions).toEqual([
       "More workspace pages",
-      "Connectors",
-      "Connect",
-      "Connect your own MCP server",
+      "Plugins",
+      "Add",
+      "MCP server URL",
       "actual /RUN/apps/byo",
     ]);
   });
   it("does not rescue a missing catalog entry with direct navigation", async () => {
     for (const name of [
-      "Connectors",
-      "Connect",
-      "Connect your own MCP server",
+      "Plugins",
+      "Add",
+      "MCP server URL",
     ]) {
       const { page, actions } = pageFixture(name);
       await expect(enterGenericMcpThroughCatalog(page, "RUN")).rejects.toThrow(

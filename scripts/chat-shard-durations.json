@@ -5,14 +5,17 @@
     "github-actions:45592683902@57638686dc"
   ],
   "coverage": {
-    "measured": 19,
-    "inventory": 19
+    "measured": 23,
+    "inventory": 23
   },
   "durations": {
     "server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts": 62795,
+    "server/src/__tests__/chat-channels/discord-command-registration.integration.test.ts": 12500,
+    "server/src/__tests__/chat-channels/discord-gateway-lease.integration.test.ts": 7200,
     "server/src/__tests__/chat-channels/discord-modals-and-publications.integration.test.ts": 36248,
-    "server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts": 94936,
-    "server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts": 98825,
+    "server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts": 72200,
+    "server/src/__tests__/chat-channels/github-lifecycle-and-revocation.integration.test.ts": 17500,
+    "server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts": 67500,
     "server/src/__tests__/chat-channels/github-review-finding-threads.integration.test.ts": 57428,
     "server/src/__tests__/chat-channels/github-review-publications.integration.test.ts": 28492,
     "server/src/__tests__/chat-channels/github-review-response-maintenance.integration.test.ts": 34444,
@@ -25,7 +28,8 @@
     "server/src/__tests__/chat-channels/slack-setup-and-registration.integration.test.ts": 91332,
     "server/src/__tests__/chat-channels/teams-authority-and-transfer.integration.test.ts": 70577,
     "server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts": 57795,
-    "server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts": 80279,
+    "server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts": 59100,
+    "server/src/__tests__/chat-channels/telegram-first-seen-controls.integration.test.ts": 27400,
     "server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts": 43737,
     "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts": 52158
   }

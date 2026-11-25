@@ -47,8 +47,14 @@ test("the shared outputs are written before dependent checks start, while emit-o
     assert.ok(prepare.some((task) => task.name === `typecheck ${name}`), name);
     assert.ok(!tasks.some((task) => task.name === `typecheck ${name}`), name);
   }
-  const guidance = prepare.find((task) => task.name === "CLI guidance safety");
+  const runnerTypecheck = byName.get("typecheck @paperclipai/paperclip-runner");
+  assert.ok(runnerTypecheck);
+  assert.deepEqual(runnerTypecheck.needs, [PREPARE_RUNNER_VENDOR]);
+  assert.equal(runnerTypecheck.background, true);
+  assert.ok(!prepare.some((task) => task.name === "CLI guidance safety"));
+  const guidance = byName.get("CLI guidance safety");
   assert.ok(guidance.args.includes("server/src/__tests__/cli-invocation-safety.test.ts"));
+  assert.equal(guidance.needs, undefined);
   assert.equal(guidance.background, undefined);
   const programs = byName.get("typecheck test programs");
   assert.ok(programs.args.includes("--skip-prepare"));
@@ -89,11 +95,12 @@ test("every check of the sequential job is planned with exact DAG dependencies",
   assert.deepEqual(byName.get("typecheck @paperclipai/ui").env, { GOMAXPROCS: "2" });
   assert.deepEqual(byName.get("release registry tests").args, ["run", "test:release-registry"]);
   assert.equal(byName.get("release registry tests").needs, undefined);
-  assert.ok(!byName.has("CLI guidance safety"));
+  assert.ok(byName.has("CLI guidance safety"));
   const declarationReaders = tasks.filter((task) => task.needs?.includes("server declarations"));
   assert.equal(declarationReaders.length, 2 + PROJECTS.length);
-  // Longest non-incremental project (tests/runner-e2e) is scheduled first among declaration readers.
   assert.equal(declarationReaders[0].name, "test project tests/runner-e2e");
+  assert.equal(declarationReaders[1].name, "server layer tests");
+  assert.equal(declarationReaders[2].name, "server layer test-tree-0");
   // UI starts ahead of smaller build-gap packages so it overlaps with prepare runner vendor from t=0.
   assert.ok(
     tasks.findIndex((t) => t.name === "typecheck @paperclipai/ui") <
@@ -132,11 +139,10 @@ test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS acr
     testProgramsConcurrency: 4,
     testProgramsCheckers: 1,
   });
-  // 8-core / 32 GiB (m8i.2xlarge): higher checkers and concurrency.
   const m8i = computeResourceProfile({ cpus: 8, totalMemoryBytes: 32 * GiB });
   assert.deepEqual(m8i, {
-    laneConcurrency: 6,
-    serverDeclCheckers: 4,
+    laneConcurrency: 8,
+    serverDeclCheckers: 6,
     serverLayerCheckers: 2,
     testProjectCheckers: 2,
     uiGomaxprocs: 4,
@@ -218,9 +224,11 @@ test("PR mode for a server-only change skips release registry, UI, runner, sandb
   const taskNames = tasks.map((task) => task.name);
 
   assert.ok(!prepareNames.includes("build server without type checks"));
-  assert.ok(prepareNames.includes("CLI guidance safety"));
+  assert.ok(!prepareNames.includes("CLI guidance safety"));
+  assert.ok(taskNames.includes("CLI guidance safety"));
   assert.ok(!prepareNames.includes("install test program dependencies"));
   assert.ok(!prepareNames.includes("typecheck @paperclipai/paperclip-runner"));
+  assert.ok(!taskNames.includes("typecheck @paperclipai/paperclip-runner"));
 
   assert.ok(taskNames.includes(PREPARE_RUNNER_VENDOR));
   assert.ok(taskNames.includes(BUILD_SERVER_EMIT_ONLY));
@@ -272,7 +280,8 @@ test("PR mode for a pure UI component change skips server build/declarations, re
   const prepareNames = prepare.map((task) => task.name);
   const taskNames = tasks.map((task) => task.name);
 
-  assert.ok(prepareNames.includes("CLI guidance safety"));
+  assert.ok(!prepareNames.includes("CLI guidance safety"));
+  assert.ok(taskNames.includes("CLI guidance safety"));
   assert.ok(!prepareNames.includes("build server without type checks"));
   assert.ok(!prepareNames.includes("install test program dependencies"));
   assert.ok(!taskNames.includes("server declarations"));
@@ -316,7 +325,7 @@ test("PR mode fails closed for unknown build-gap packages and global typecheck i
     changedFiles: ["tsconfig.base.json"],
   });
   assert.ok(globalPlan.prepare.some((t) => t.name === "install test program dependencies"));
-  assert.ok(globalPlan.prepare.some((t) => t.name === "typecheck @paperclipai/paperclip-runner"));
+  assert.ok(globalPlan.tasks.some((t) => t.name === "typecheck @paperclipai/paperclip-runner"));
   assert.ok(globalPlan.tasks.some((t) => t.name === "typecheck @paperclipai/ui"));
   assert.ok(globalPlan.tasks.some((t) => t.name === "test project tests/runner-e2e"));
 });
@@ -433,16 +442,18 @@ test("PR mode skips Runner Rust typecheck when only shared TypeScript packages c
     testLayers: ["tests"],
     changedFiles: ["packages/shared/src/customer-success.ts"],
   });
-  const runnerTask = sharedPr.prepare.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
+  const runnerTask = sharedPr.tasks.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
   assert.deepEqual(runnerTask.args, ["--filter", "@paperclipai/paperclip-runner", "run", "typecheck:typescript"]);
+  assert.deepEqual(runnerTask.needs, [PREPARE_RUNNER_VENDOR]);
 
   const runnerPr = planLane({
     buildGapPackages: ["@paperclipai/paperclip-runner"],
     testLayers: ["tests"],
     changedFiles: ["packages/paperclip-runner/protocol/schemas/result.schema.json"],
   });
-  const runnerFullTask = runnerPr.prepare.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
+  const runnerFullTask = runnerPr.tasks.find((t) => t.name === "typecheck @paperclipai/paperclip-runner");
   assert.deepEqual(runnerFullTask.args, ["--filter", "@paperclipai/paperclip-runner", "typecheck"]);
+  assert.deepEqual(runnerFullTask.needs, [PREPARE_RUNNER_VENDOR]);
 });
 
 test("typecheckUiIncremental runs storybook catalog then incremental tsc with a portable tsBuildInfoFile", () => {

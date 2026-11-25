@@ -82,7 +82,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
     }
   }, [poolsQuery.data, connection, editing, pluginKey, canManage]);
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: connection ? draft.name : "Add a connection pool" }]);
+    setBreadcrumbs([{ label: "Plugins", href: "/apps" }, { label: connection ? draft.name : "Add a connection pool" }]);
     return () => setBreadcrumbs([]);
   }, [connection, draft.name, setBreadcrumbs]);
   useEffect(() => {

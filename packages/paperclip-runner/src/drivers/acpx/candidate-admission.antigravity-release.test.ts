@@ -7,9 +7,8 @@ vi.mock("./qualified-profiles.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./qualified-profiles.js")>();
   const profile = (agent: string) => {
     const value = actual.QUALIFIED_ACPX_PROFILES[agent as keyof typeof actual.QUALIFIED_ACPX_PROFILES];
-    if (agent !== "antigravity" || !status.released) return value;
-    const { qualificationStatus: _pending, ...released } = value;
-    return released;
+    if (agent !== "antigravity" || status.released) return value;
+    return { ...value, qualificationStatus: "pending" as const };
   };
   const QUALIFIED_ACPX_PROFILES = Object.fromEntries(Object.keys(actual.QUALIFIED_ACPX_PROFILES).map(agent => [agent, undefined]));
   for (const agent of Object.keys(QUALIFIED_ACPX_PROFILES)) Object.defineProperty(QUALIFIED_ACPX_PROFILES, agent, { get: () => profile(agent), enumerable: true });

@@ -53,7 +53,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
             requires_provider_policy: true,
-            qualification_pending: true,
+            qualification_pending: false,
         },
         "grok" => AcpxReleaseProfile {
             agent_server_package: "builtin:grok-acp",

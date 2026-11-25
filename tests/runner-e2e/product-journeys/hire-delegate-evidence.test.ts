@@ -252,6 +252,9 @@ describe("deployment hiring qualification", () => {
     }
     expect(() => grade({ ...document, issueId: "other" })).toThrow();
     expect(() => grade({ ...document, key: "plan" })).toThrow();
+    for (const changed of ["Reference: independent-marker-old", "Reference: xindependent-marker"]) {
+      expect(() => grade({ ...document, body: changed }, [{ ...revision, body: changed }])).toThrow();
+    }
     expect(() => grade(document, [])).toThrow();
     expect(() => grade(document, [revision], [])).toThrow();
   });

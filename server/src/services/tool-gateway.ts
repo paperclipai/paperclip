@@ -1897,6 +1897,10 @@ export function createToolGatewayService(
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
         eq(toolConnections.credentialPolicy, "per_user"),
         eq(toolConnections.transport, "plugin"),
+        sql`(exists (select 1 from ${connectionGrants} where ${connectionGrants.companyId} = ${companyId}
+            and ${connectionGrants.connectionId} = ${toolConnections.id} and ${connectionGrants.status} = 'needs_reauthorization')
+          and not exists (select 1 from ${connectionGrants} where ${connectionGrants.companyId} = ${companyId}
+            and ${connectionGrants.connectionId} = ${toolConnections.id} and ${connectionGrants.status} = 'active'))`,
       ),
       eq(toolApplications.companyId, companyId),
       inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api", "paperclip_plugin"]),
@@ -3777,6 +3781,12 @@ export function createToolGatewayService(
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
     if (connectionIds.length) {
+      const signInRequired = new Set((await db.select({ connectionId: connectionGrants.connectionId }).from(connectionGrants)
+        .where(and(eq(connectionGrants.companyId, session.companyId), inArray(connectionGrants.connectionId, connectionIds)))
+        .groupBy(connectionGrants.connectionId)
+        .having(sql`bool_or(${connectionGrants.status} = 'needs_reauthorization') and not bool_or(${connectionGrants.status} = 'active')`))
+        .map((row) => row.connectionId));
+      connectedTools = connectedTools.filter((tool) => !tool.connectionId || !signInRequired.has(tool.connectionId));
       const connections = await db.select().from(toolConnections).where(and(
         eq(toolConnections.companyId, session.companyId), inArray(toolConnections.id, connectionIds),
       ));

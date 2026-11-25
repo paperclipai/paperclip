@@ -45,7 +45,7 @@ const moreDestinations = [
   { label: "Artifacts", to: "/artifacts", icon: Boxes },
   { label: "Agents", to: "/agents/all", icon: Network },
   { label: "Skills", to: "/skills", icon: Boxes },
-  { label: "Connectors", to: "/apps", icon: Unplug },
+  { label: "Plugins", to: "/apps", icon: Unplug },
   { label: "Audit", to: "/activity", icon: History },
   { label: "Settings", to: "/settings", icon: Settings },
 ] as const;
