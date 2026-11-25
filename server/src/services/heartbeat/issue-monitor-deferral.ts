@@ -1,5 +1,7 @@
-import { issueRecoveryActions, issues } from "@paperclipai/db";
-import { sql } from "drizzle-orm";
+import { issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { executionBlockerPredicate } from "../execution-blocker.js";
 
 export const ISSUE_MONITOR_DEFERRAL_BASE_DELAY_MS = 30_000;
 export const ISSUE_MONITOR_DEFERRAL_MAX_DELAY_MS = 60 * 60_000;
@@ -143,16 +145,29 @@ function deferralMatchesMonitorSql() {
     and (${issues.executionState}->'monitorDeferral'->>'nextCheckAt')::timestamptz = ${issues.monitorNextCheckAt}), false)`;
 }
 
+/**
+ * Matches any recovery action that still blocks execution admission: open
+ * (`active`/`escalated`) holds as well as resolved holds that remain effective
+ * blockers (such as `automaticRecovery.replay = 'blocked'` or unreconciled
+ * native workspace exports).
+ */
+export function parkableRecoveryHoldCondition() {
+  return or(
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    executionBlockerPredicate(),
+  )!;
+}
+
 function parkedOnUnchangedRecoveryHoldSql() {
   return sql`coalesce((${deferralMatchesMonitorSql()}
     and (${issues.executionState}->'monitorDeferral'->>'recoveryActionId') ~ '^[0-9a-fA-F-]{36}$'
     and (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
-    and exists (select 1 from ${issueRecoveryActions} parked_hold
-      where parked_hold.company_id = ${issues.companyId}
-        and parked_hold.source_issue_id = ${issues.id}
-        and parked_hold.id::text = (${issues.executionState}->'monitorDeferral'->>'recoveryActionId')
-        and parked_hold.status in ('active', 'escalated')
-        and parked_hold.updated_at <= (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt')::timestamptz)), false)`;
+    and exists (select 1 from ${issueRecoveryActions}
+      where ${issueRecoveryActions.companyId} = ${issues.companyId}
+        and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+        and ${issueRecoveryActions.id}::text = (${issues.executionState}->'monitorDeferral'->>'recoveryActionId')
+        and (${parkableRecoveryHoldCondition()})
+        and ${issueRecoveryActions.updatedAt} <= (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt')::timestamptz)), false)`;
 }
 
 function nonWakeOwnerTimeoutAtSql() {
@@ -189,6 +204,56 @@ export function eligibleDeferredMonitorCondition(now: Date) {
 
 export function nextIssueMonitorWhereCondition() {
   return sql`(not ${parkedOnUnchangedRecoveryHoldSql()} or ${nonWakeOwnerTimeoutAtSql()} is not null)`;
+}
+
+export async function resolveScheduledMonitorDeferralUpdate(
+  tx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    issueId: string;
+    executionState: Record<string, unknown> | null;
+    scheduledAtIso: string;
+    now: Date;
+    activitySource: "manual" | "scheduled";
+    reason: string;
+    blockerRecoveryActionId?: string | null;
+    timeoutAt?: Date | null;
+  },
+): Promise<{ patch: Record<string, unknown>; quietWindowMs: number }> {
+  if (input.activitySource !== "scheduled") {
+    return {
+      patch: { monitorWakeRequestedAt: null },
+      quietWindowMs: ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS,
+    };
+  }
+  let recoveryHold: { id: string; updatedAtIso: string } | null = null;
+  if (input.blockerRecoveryActionId && isUuidLike(input.blockerRecoveryActionId)) {
+    const [hold] = await tx.select({
+      id: issueRecoveryActions.id,
+      updatedAtIso: sql<string>`to_char(${issueRecoveryActions.updatedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+    }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, input.issueId),
+      eq(issueRecoveryActions.id, input.blockerRecoveryActionId),
+      parkableRecoveryHoldCondition(),
+    )).limit(1);
+    if (hold) recoveryHold = hold;
+  }
+  const { state, quietWindowMs } = buildIssueMonitorDeferralState({
+    existing: readIssueMonitorDeferral(input.executionState, input.scheduledAtIso),
+    scheduledAtIso: input.scheduledAtIso,
+    now: input.now,
+    timeoutAt: input.timeoutAt ?? null,
+    reason: input.reason,
+    recoveryHold,
+  });
+  return {
+    patch: {
+      monitorWakeRequestedAt: null,
+      executionState: monitorDeferralExecutionStateSql(state),
+    },
+    quietWindowMs,
+  };
 }
 
 export function nextIssueMonitorAtSelectSql() {

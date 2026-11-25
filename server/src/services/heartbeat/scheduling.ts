@@ -5,7 +5,6 @@ import { insertIssueComment } from "../issue-comment-writes.js";
 import {
   issues,
   issueComments,
-  issueRecoveryActions,
   heartbeatRuns,
   nativeRunFinalizations,
   companies,
@@ -67,13 +66,10 @@ import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retri
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { NativeSessionGoalControl } from "../../vendor/paperclip-runner/index.js";
 import {
-  ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS,
-  buildIssueMonitorDeferralState,
   eligibleDeferredMonitorCondition,
-  monitorDeferralExecutionStateSql,
   nextIssueMonitorAtSelectSql,
   nextIssueMonitorWhereCondition,
-  readIssueMonitorDeferral,
+  resolveScheduledMonitorDeferralUpdate,
 } from "./issue-monitor-deferral.js";
 
 type HeartbeatQueue = ReturnType<typeof createHeartbeatQueue>;
@@ -626,42 +622,18 @@ export function createHeartbeatScheduling(
   ) {
     const publications: ActivityPublication[] = [];
     const scheduledAtIso = claimed.monitorNextCheckAt!.toISOString();
-    const resolveReleaseUpdate = async (tx: Pick<Db, "select">) => {
-      if (input.activitySource !== "scheduled") {
-        return {
-          patch: { monitorWakeRequestedAt: null } as Record<string, unknown>,
-          quietWindowMs: ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS,
-        };
-      }
-      let recoveryHold: { id: string; updatedAtIso: string } | null = null;
-      if (diagnostic.blockerRecoveryActionId && isUuidLike(diagnostic.blockerRecoveryActionId)) {
-        const [hold] = await tx.select({
-          id: issueRecoveryActions.id,
-          updatedAtIso: sql<string>`to_char(${issueRecoveryActions.updatedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-        }).from(issueRecoveryActions).where(and(
-          eq(issueRecoveryActions.companyId, claimed.companyId),
-          eq(issueRecoveryActions.sourceIssueId, claimed.id),
-          eq(issueRecoveryActions.id, diagnostic.blockerRecoveryActionId),
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
-        )).limit(1);
-        if (hold) recoveryHold = hold;
-      }
-      const { state, quietWindowMs } = buildIssueMonitorDeferralState({
-        existing: readIssueMonitorDeferral(claimed.executionState, scheduledAtIso),
+    const resolveReleaseUpdate = (tx: Pick<Db, "select">) =>
+      resolveScheduledMonitorDeferralUpdate(tx, {
+        companyId: claimed.companyId,
+        issueId: claimed.id,
+        executionState: claimed.executionState,
         scheduledAtIso,
         now: input.now,
-        timeoutAt: diagnostic.timeoutAt ?? null,
+        activitySource: input.activitySource,
         reason: diagnostic.reason,
-        recoveryHold,
+        blockerRecoveryActionId: diagnostic.blockerRecoveryActionId,
+        timeoutAt: diagnostic.timeoutAt,
       });
-      return {
-        patch: {
-          monitorWakeRequestedAt: null,
-          executionState: monitorDeferralExecutionStateSql(state),
-        } as Record<string, unknown>,
-        quietWindowMs,
-      };
-    };
 
     try {
       await db.transaction(async (tx) => {

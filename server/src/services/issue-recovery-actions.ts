@@ -432,10 +432,18 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
         if (existing.cause === "native_workspace_finalization_owner_unverified"
           && input.cause === existing.cause && input.fingerprint === existing.fingerprint
           && !existing.evidence?.workspaceOwnerStop && existing.nextAction !== input.nextAction) {
-          const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], tx => tx.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
-            .where(and(eq(issueRecoveryActions.id, existing.id),
-              inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning(), { companyId: input.companyId, issueId: input.sourceIssueId });
+          const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
+            const [monitored] = await tx.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.companyId, input.companyId),
+              eq(issues.id, input.sourceIssueId),
+              isNotNull(issues.monitorNextCheckAt),
+            )).limit(1);
+            if (monitored) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+            return tx.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
+              .where(and(eq(issueRecoveryActions.id, existing.id),
+                inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+                sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning();
+          }, { companyId: input.companyId, issueId: input.sourceIssueId });
           if (updated) return toReadModel(updated);
         }
         return existing;
