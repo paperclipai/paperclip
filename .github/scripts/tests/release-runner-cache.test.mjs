@@ -36,12 +36,20 @@ test("the shared cache excludes workspace artifacts and only restores or saves t
 
 test("parallel lanes cover check:all exactly once and never bypass verification", () => {
   const scripts = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/package.json", import.meta.url))).scripts;
-  const checks = [...runner.matchAll(/^            checks: (.+)$/gm)].flatMap(([, value]) => value.split(" "));
+  const matrixBlock = runner.split("      matrix:\n        include:\n")[1].split("\n    steps:")[0];
+  const matrixEntries = matrixBlock.split(/^          - /m).slice(1).map((entry) => {
+    const row = { lane: "", checks: "", vitest_lane: "" };
+    for (const line of entry.trim().split("\n")) {
+      const match = /^\s*(lane|checks|vitest_lane):\s*(.+?)\s*$/.exec(line);
+      assert.ok(match, `unexpected matrix field line: ${line}`);
+      row[match[1]] = match[2];
+    }
+    return row;
+  });
+  const checks = matrixEntries.filter((row) => row.checks).flatMap((row) => row.checks.split(" "));
   assert.deepEqual(checks, scripts["check:all-without-vitest"].split(" && ").map((command) => command.replace(/^pnpm run /, "")));
-  const lanes = [...runner.matchAll(/^          - lane: (.+)$/gm)].map(([, value]) => value);
-  assert.deepEqual(lanes, ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "server-integration"]);
-  const vitestLanes = [...runner.matchAll(/^            vitest_lane: (.+)$/gm)].map(([, value]) => value);
-  assert.deepEqual(vitestLanes, ["1/4", "2/4", "3/4", "4/4"]);
+  assert.deepEqual(matrixEntries.map((row) => row.lane), ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "server-integration"]);
+  assert.deepEqual(matrixEntries.filter((row) => row.vitest_lane).map((row) => row.vitest_lane), ["1/4", "2/4", "3/4", "4/4"]);
   assert.match(runner, /fail-fast: false/);
   assert.doesNotMatch(runner, /max-parallel: 1|^    needs:|continue-on-error:/m);
   const verify = runner.split("      - name: Verify Paperclip Runner\n")[1].split("      - name:")[0];
@@ -57,18 +65,13 @@ test("parallel lanes cover check:all exactly once and never bypass verification"
   assert.equal(vitestIf, "matrix.vitest_lane != ''");
   const serverStep = runner.split("      - name: Run native server integration suites\n")[1].split("      - name:")[0];
   const serverIf = serverStep.match(/^\s*if: \$\{\{ (.+) \}\}$/m)?.[1];
-  const matrixEntries = [
-    { lane: "protocol-static", vitest_lane: "" },
-    { lane: "protocol (1/4)", vitest_lane: "1/4" },
-    { lane: "protocol (2/4)", vitest_lane: "2/4" },
-    { lane: "protocol (3/4)", vitest_lane: "3/4" },
-    { lane: "protocol (4/4)", vitest_lane: "4/4" },
-    { lane: "rust", vitest_lane: "" },
-    { lane: "server-integration", vitest_lane: "" },
-  ];
   for (const matrix of matrixEntries) {
-    const matched = [verifyIf, vitestIf, serverIf].filter((expr) => runInNewContext(expr, { matrix }));
-    assert.equal(matched.length, 1, `lane ${matrix.lane} must match exactly one verification step`);
+    const runsVerify = runInNewContext(verifyIf, { matrix });
+    const runsVitest = runInNewContext(vitestIf, { matrix });
+    const runsServer = runInNewContext(serverIf, { matrix });
+    assert.equal([runsVerify, runsVitest, runsServer].filter(Boolean).length, 1, `lane ${matrix.lane} must match exactly one verification step`);
+    assert.equal(Boolean(matrix.checks), runsVerify, `lane ${matrix.lane} checks field must match Verify Paperclip Runner condition`);
+    assert.equal(Boolean(matrix.vitest_lane), runsVitest, `lane ${matrix.lane} vitest_lane field must match Vitest lane condition`);
   }
   assert.doesNotMatch(verify, /cache-hit/);
   assert.doesNotMatch(vitestStep, /cache-hit/);
