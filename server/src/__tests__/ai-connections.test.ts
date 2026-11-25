@@ -1676,6 +1676,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }
   });
 
+  it("files Copilot accounts under the GitHub Copilot connector, not GitHub", async () => {
+    const saved = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Copilot catalog", apiKey: "github_pat_fixture_catalog", agentIds: [], allAgents: false }, "github_pat_fixture_catalog");
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored!.config.sourceTemplateKey).toBe("github-copilot");
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, stored!.applicationId));
+    expect(application).toMatchObject({ applicationKey: "app-gallery:github-copilot", name: "GitHub Copilot", metadata: { sourceTemplateKey: "github-copilot" } });
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
@@ -1708,9 +1716,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   });
 
   it.each([
-    ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
-  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {
-    const userId = `auth-recovery-${provider}-${switchMethod}`;
+    ["anthropic", false, false], ["openai", false, false], ["anthropic", true, false], ["openai", true, false],
+    ["anthropic", false, true], ["openai", false, true],
+  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s, typed: %s)", async (provider, switchMethod, typed) => {
+    const userId = `auth-recovery-${provider}-${switchMethod}-${typed}`;
     const id = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
@@ -1721,10 +1730,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: typed ? "native_session_interrupted" : "acpx_auth_required", responsibleUserId: userId,
+      ...(typed ? { resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider, phase: "turn",
+        category: "authentication", message: "Invalid API key", retryability: "requires_action" } } } : {}),
       contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await runtime.cleanup();
     const intents = connectionIntentService(db);
+    if (typed) {
+      const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...failed.contextSnapshot, aiConnection: {
+        ...runtime.attribution, identity: runtime.identity, provider: provider === "openai" ? "anthropic" : "openai",
+      } } }).where(eq(heartbeatRuns.id, runId));
+      expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0].status).toBe("active");
+      await db.update(heartbeatRuns).set({ contextSnapshot: failed.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+    }
     const card = await intents.requestForRunAuthFailure(runId);
     expect(card).toMatchObject({ state: "needs_user_action", service: provider });
     expect((await intents.requestForRunAuthFailure(runId))?.interactionId).toBe(card!.interactionId);

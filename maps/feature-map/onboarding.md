@@ -50,7 +50,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `web-wizard`
 
-Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
+Automated: [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment (mocked `OnboardingWizard` component tests were removed). Live model execution is a separate check.
 
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
@@ -92,9 +92,8 @@ selected model and account stay unchanged and that the compatible executable is
 actually used. A failed installation still blocks hiring. Cloud failures must
 not display Manual debug shell commands or legacy operator hints; self-hosted
 failures retain that help.
-[Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx) and
-[runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
-cover these boundaries. They do not establish live Cloud onboarding success.
+[Runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+cover the adapter runtime boundary (mocked `OnboardingWizard` component tests were removed; verify wizard error help manually). They do not establish live Cloud onboarding success.
 
 For a new Claude agent on an explicit immutable sandbox image or a Daytona
 named snapshot, use Connect to
@@ -191,7 +190,7 @@ Capability ID: `onboarding/resume`.
 Scope: ui
 Storybook: Restored incomplete wizard; invalid or unauthorized saved company; temporarily withheld draft; account switch; storage failure.
 Production: Reload company-prefixed onboarding without duplicating company; restore only authorized account/company draft and retain input after recoverable loading failure.
-Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [OnboardingWizard.test.tsx](../../ui/src/components/OnboardingWizard.test.tsx), [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
+Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
 
 #### `instance`
 

@@ -45,6 +45,7 @@ import {
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
@@ -200,6 +201,22 @@ function TaskChatBubbleContent({
   const isHuman = item.author === "human";
   const isOwnMessage = isHuman && item.isCurrentUser === true;
   const sentFromIMessage = isHuman && item.sourceChannel === "imessage-photon";
+  // Short notes before the timestamp: the message ran as a swarm, or came from iMessage.
+  const footerNotes = [
+    isHuman && item.nativeCommand === "swarm" ? "Swarm" : null,
+    sentFromIMessage ? "Sent from iMessage" : null,
+  ].filter((note): note is string => note !== null);
+  const footerLine = (
+    <>
+      {footerNotes.map((note, index) => (
+        <span key={note} data-testid={note === "Swarm" ? "task-chat-swarm-marker" : undefined}>
+          {index > 0 ? " · " : null}{note}
+        </span>
+      ))}
+      {footerNotes.length > 0 && timestamp ? " · " : null}
+      {timestamp}
+    </>
+  );
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
   const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
@@ -372,7 +389,7 @@ function TaskChatBubbleContent({
                     onClick={video ? () => openImage(ref.url) : undefined}
                     render={video ? <button type="button" /> :
                       <a
-                        href={ref.openPath ?? ref.url}
+                        href={safeNavigableUrl(ref.openPath ?? ref.url) ?? undefined}
                         onClick={(event) => {
                           if (openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
                             event.preventDefault(); openText(ref.id, ref.name);
@@ -438,9 +455,7 @@ function TaskChatBubbleContent({
             <TaskChatBubbleActions copyText={item.text} />
           </div>
           <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-            {sentFromIMessage ? "Sent from iMessage" : null}
-            {sentFromIMessage && timestamp ? " · " : null}
-            {timestamp}
+            {footerLine}
           </span>
         </div>
       ) : actions ? (
@@ -463,12 +478,10 @@ function TaskChatBubbleContent({
             ) : null}
           </div>
         )
-      ) : timestamp || sentFromIMessage ? (
+      ) : timestamp || footerNotes.length > 0 ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-          {sentFromIMessage ? "Sent from iMessage" : null}
-          {sentFromIMessage && timestamp ? " · " : null}
-          {timestamp}
+          {footerLine}
         </span>
       ) : null}
       {artifactsV1 && imageRefs.length + attachmentRefs.length > 0 ? (

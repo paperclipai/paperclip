@@ -1,5 +1,9 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
+export function projectPinKey(project: { companyId: string; id: string }) {
+  return `project:${project.companyId}:${project.id}`;
+}
+
 const UPDATED = "paperclip:pinned-navigation-updated";
 const EMPTY = "[]";
 
@@ -29,6 +33,8 @@ export function usePinnedNavigation(userId: string | null | undefined) {
   const snapshot = useSyncExternalStore(subscribe, () => read(key), () => EMPTY);
   const pins = useMemo(() => parse(snapshot), [snapshot]);
 
+  const keys = useMemo(() => new Set(pins), [pins]);
+
   function save(next: string[]) {
     if (!key) return;
     try {
@@ -56,5 +62,5 @@ export function usePinnedNavigation(userId: string | null | undefined) {
     save(current.map(entry => visible.has(entry) ? ordered[index++] : entry));
   }
 
-  return { pins, toggle, reorder, canPin: !!key, error: failure?.key === key ? failure.message : null };
+  return { pins, keys, toggle, reorder, canPin: !!key, error: failure?.key === key ? failure.message : null };
 }

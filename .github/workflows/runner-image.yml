@@ -40,6 +40,7 @@ on:
       - patches/**
       - packages/paperclip-runner/**
       - packages/paperclip-eval-kernel/**
+      - packages/shared/src/antigravity-models.generated.ts
       - packages/shared/src/provider-failure.generated.ts
       - scripts/create-provider-pack-archive.mjs
       - scripts/link-plugin-dev-sdk.mjs

@@ -211,6 +211,7 @@ export function updateSpreadsheetResult(input: UpdateSpreadsheetArgs, response: 
 export const updateSpreadsheet = defineTool({
   definition: {
     name: "update_spreadsheet",
+    title: "Edit a spreadsheet",
     description: "Applies one or more Sheets API batchUpdate requests to a spreadsheet, in order and all together: if any request is invalid, none is applied. Each request is an object with one operation, such as updateCells, repeatCell, mergeCells, addSheet, updateSheetProperties, addChart, sortRange or findReplace. Some operations remove content: deleteSheet, deleteDimension, deleteRange, deleteDuplicates and deleteTable delete sheets, rows, columns or cells, and cutPaste, findReplace, sortRange and pasteData overwrite cells. It never deletes the spreadsheet itself, changes who it is shared with, or creates a spreadsheet. Comment and data source operations are refused, and so is writeControl. updateCells and appendCells may write at most 50,000 cells per call. The result's status lists each operation and the range it changed. A failed update is never retried automatically.",
     inputSchema: {
       type: "object",

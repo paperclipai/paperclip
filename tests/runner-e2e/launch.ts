@@ -83,6 +83,7 @@ import {
 } from "./redaction.js";
 import {
   buildMatrixJobs,
+  daytonaCandidateProviders,
   parseRunnerSelectors,
   RunnerSelectorError,
   selectorArgumentsWithEnvironment,
@@ -1237,6 +1238,7 @@ async function main() {
       JSON.stringify({
         include: jobs,
         needsDaytona: jobs.some((job) => job.needsDaytona),
+        candidateProviders: daytonaCandidateProviders(executions),
         executionIds: executions.map((execution) => execution.id),
       }),
     );
@@ -1250,6 +1252,10 @@ async function main() {
     await runAntigravityJourneyCampaign({ executions, catalog: runnerMatrix, configFile: options.antigravityJourneyConfig, repositoryRoot,
       preflight: options.antigravityJourneyPreflight, recoverFile: options.antigravityJourneyRecover });
     return;
+  }
+  if (executions.some(execution => execution.task.flow === "antigravity_swarm_journey")) {
+    const { ANTIGRAVITY_SWARM_RECIPE } = await import("./antigravity-swarm-cases.js");
+    throw new Error(`The Antigravity swarm cells are attended; run them with the live recipe in ${ANTIGRAVITY_SWARM_RECIPE}.`);
   }
   if (options.antigravityJourneyConfig || options.antigravityJourneyPreflight || options.antigravityJourneyRecover) throw new Error("Antigravity journey options require its explicit registered cell.");
   if (executions.some(execution => execution.task.flow === "github_review_journey")) {

@@ -716,6 +716,7 @@ export const toolGatewaySessions = pgTable(
     clientName: text("client_name"),
     mcpSessionId: text("mcp_session_id"),
     correlationId: text("correlation_id"),
+    createdByUserId: text("created_by_user_id"),
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
@@ -815,6 +816,7 @@ export const toolInvocations = pgTable(
     index("tool_invocations_run_idx").on(table.companyId, table.runId),
     index("tool_invocations_issue_idx").on(table.companyId, table.issueId),
     index("tool_invocations_gateway_idx").on(table.companyId, table.gatewayId),
+    index("tool_invocations_connection_error_idx").on(table.connectionId, table.createdAt).where(sql`${table.errorMessage} is not null`),
     uniqueIndex("tool_invocations_company_idempotency_uq").on(table.companyId, table.idempotencyKey),
   ],
 );
@@ -918,6 +920,7 @@ export const toolMcpTasks = pgTable(
     actorId: text("actor_id"),
     /** The person whose grant applied, and the run identity, so background checks see the same caller. */
     responsibleUserId: text("responsible_user_id"),
+    createdByUserId: text("created_by_user_id"),
     identityContextId: uuid("identity_context_id"),
     catalogToolName: text("catalog_tool_name").notNull(),
     /** Endpoint, tool, and full arguments; a call attaches only on an exact match. */
@@ -1140,6 +1143,7 @@ export const toolCallEvents = pgTable(
     index("tool_call_events_issue_idx").on(table.companyId, table.issueId),
     index("tool_call_events_invocation_idx").on(table.invocationId),
     index("tool_call_events_gateway_idx").on(table.companyId, table.gatewayId),
+    index("tool_call_events_connection_error_idx").on(table.connectionId, table.createdAt).where(sql`${table.errorMessage} is not null`),
   ],
 );
 

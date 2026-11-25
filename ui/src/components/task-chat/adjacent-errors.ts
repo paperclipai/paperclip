@@ -71,7 +71,7 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
   return { items: result, retryMarkers };
 }
 
-const RETRYABLE_FAILURE_LABELS = new Set(["Run failed", "Usage limit reached", "Model unavailable"]);
+const RETRYABLE_FAILURE_LABELS = new Set(["Run failed", "Usage limit reached", "Model unavailable", "Swarm did not finish"]);
 
 export function isRetryableFailureMarker(marker: Pick<TaskChatMarkerItem, "variant" | "label">) {
   return marker.variant === "interrupted" && RETRYABLE_FAILURE_LABELS.has(marker.label);

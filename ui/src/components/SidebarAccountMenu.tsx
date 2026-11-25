@@ -13,7 +13,8 @@ import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useCloudSidebarLinks } from "@/hooks/useCloudSidebarLinks";
+import { SidebarSlackFeedback } from "./SidebarSlackFeedback";
 import { useCanInviteCompanyMembers } from "@/hooks/useCompanyInviteAccess";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -129,7 +130,7 @@ export function SidebarAccountMenu({
   // On Cloud the shortcut exists only for the current stack's owner/admin and
   // only once the stack metadata is known; the in-app Invites tab is never a
   // fallback there because it drives a different invitation flow.
-  const cloudInviteUrl = useCloudInviteUrl();
+  const { inviteUrl: cloudInviteUrl, slackFeedback } = useCloudSidebarLinks(cloud);
   // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
   // to boards with role-default access (company owner/admin/operator,
   // instance admins, local boards). The server checks the actual grants.
@@ -275,6 +276,7 @@ export function SidebarAccountMenu({
             </FlyoutOptions>
           </FlyoutContent>
         </Popover>
+        {slackFeedback && <SidebarSlackFeedback feedback={slackFeedback} className="hover:bg-sidebar-accent" />}
         {!isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
