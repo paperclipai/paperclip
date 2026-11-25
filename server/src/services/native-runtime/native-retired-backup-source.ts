@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
-import { retiredReusableLeasePredecessors } from "../environment-lease-handoff.js";
+import { retiredReusableLeasePredecessors, supersedeReusableSandboxLease } from "../environment-lease-handoff.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
 import { LEGACY_WORKSPACE_RECOVERY_KEY, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../workspace-restore-recovery-state.js";
@@ -94,35 +94,21 @@ export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: 
   return !idleSource || await supersedeIdleWarmSource(db, lease, input);
 }
 
-export const SUPERSEDED_REUSABLE_SANDBOX_KEY = "reusableSandboxLeaseSuperseded";
+export { SUPERSEDED_REUSABLE_SANDBOX_KEY } from "../environment-lease-handoff.js";
 
 /**
  * Claims an idle warm source before its backup is restored elsewhere. The
  * source still holds the checkpointed session, and the restored lease will
- * move past it, so the source must never be resumed again. Removing its reuse
- * scope makes the next acquisition for this workspace treat it as obsolete and
- * clean it up through the existing obsolete-lease path. The write is a
- * compare-and-swap on the checked row: a run that resumed or changed the lease
- * in the meantime wins, and the restore does not happen.
+ * move past it, so the source must never be resumed again. A run that resumed
+ * or changed the lease in the meantime wins, and the restore does not happen.
  */
 async function supersedeIdleWarmSource(db: Db, lease: typeof environmentLeases.$inferSelect, input: {
   companyId: string; currentRunId: string; manifestSha256: string; targetProviderLeaseId?: string | null;
 }) {
-  const { reusableSandboxLease: scope, ...metadata } = lease.metadata ?? {};
-  const [claimed] = await db.update(environmentLeases).set({
-    metadata: { ...metadata, [SUPERSEDED_REUSABLE_SANDBOX_KEY]: {
-      schema: "paperclip.reusable-sandbox-lease-superseded.v1", reason: "harness_backup_restored_elsewhere",
-      supersededByRunId: input.currentRunId, supersededByProviderLeaseId: input.targetProviderLeaseId ?? null,
-      manifestSha256: input.manifestSha256, reusableSandboxLease: scope ?? null, supersededAt: new Date().toISOString(),
-    } },
-    updatedAt: new Date(),
-  }).where(and(
-    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, lease.id),
-    eq(environmentLeases.status, lease.status), eq(environmentLeases.leasePolicy, "reuse_by_environment"),
-    eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!),
-    sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
-  )).returning({ id: environmentLeases.id });
-  return Boolean(claimed);
+  if (lease.companyId !== input.companyId) return false;
+  return supersedeReusableSandboxLease(db, lease, { reason: "harness_backup_restored_elsewhere",
+    supersededByRunId: input.currentRunId, supersededByProviderLeaseId: input.targetProviderLeaseId ?? null,
+    manifestSha256: input.manifestSha256 });
 }
 
 const TERMINAL_SOURCE_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);

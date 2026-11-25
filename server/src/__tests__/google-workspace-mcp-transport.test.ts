@@ -1,19 +1,24 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions,
-  toolAccessAuditEvents, toolActionRequests, toolCatalogEntries, toolInvocations,
+  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations, toolPolicies, toolProfileEntries,
 } from "@paperclipai/db";
 import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
   type GoogleWorkspaceService, type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import * as restDispatch from "../services/google-workspace-rest-dispatch.js";
+import { stableHash } from "../services/tool-catalog-hash.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { forgetMcpHttpSessions, MCP_MODERN_PROTOCOL_VERSION } from "../services/mcp-http.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import { assignedToolName, createAssignedMcpTools } from "../services/native-runtime/assigned-mcp-tools.js";
+import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -27,6 +32,7 @@ vi.mock("../services/google-workspace-rest-dispatch.js", async (importOriginal) 
     ...actual,
     callGoogleWorkspaceRest: vi.fn(actual.callGoogleWorkspaceRest),
     probeGoogleWorkspaceRest: vi.fn(actual.probeGoogleWorkspaceRest),
+    googleWorkspaceRestShippedSchemaHashes: vi.fn(actual.googleWorkspaceRestShippedSchemaHashes),
   };
 });
 
@@ -47,6 +53,7 @@ const SCHEMAS: Record<string, Record<string, unknown>> = {
   list_threads: { type: "object", properties: { pageSize: { type: "integer" }, pageToken: { type: "string" }, query: { type: "string" }, labelIds: { type: "array", items: { type: "string" } } } },
   create_draft: { type: "object", properties: { to: { type: "array", items: { type: "string" } }, subject: { type: "string" }, body: { type: "string" } } },
   get_file_metadata: { type: "object", properties: { fileId: { type: "string" } }, required: ["fileId"] },
+  list_calendars: { type: "object", properties: { pageSize: { type: "integer" }, pageToken: { type: "string" } } },
   update_doc: {
     type: "object",
     properties: {
@@ -65,9 +72,15 @@ const READ_ONLY_PERMISSIONS = ["gmail.readonly", "drive.readonly", "documents.re
   "calendar.calendarlist.readonly", "calendar.events.freebusy", "calendar.events.readonly"];
 const allowlisted = (keep: (name: string) => boolean = () => true) => LAUNCH_SERVICES
   .flatMap((service) => googleWorkspaceServiceToolNames(service).map((name) => `${service}__${name}`)).filter(keep).sort();
+const SCHEMAS_22634: Record<string, Record<string, unknown>> = JSON.parse(
+  readFileSync(new URL("../google-workspace-rest-tools/fixtures/input-schemas-22634.json", import.meta.url), "utf8"));
+const UNLISTED = new Set<string>();
 const names = (catalog: Array<{ toolName: string }>) => catalog.map((entry) => entry.toolName).sort();
 
 type Confirmation = "none" | "legacy" | "modern";
+
+const GOOGLE_ORGANIZER_ERROR = JSON.stringify({ error: { code: 403, status: "PERMISSION_DENIED",
+  message: "The organizer cannot respond to their own event." } });
 
 interface Recorded { host: string; method: string; name?: string; body: Record<string, any> }
 
@@ -114,7 +127,7 @@ function fakeGoogle(options: { confirm?: Confirmation } = {}) {
     }
     if (body.method === "tools/list") {
       const service = (Object.keys(HOSTS) as Array<keyof typeof HOSTS>).find((key) => HOSTS[key] === url.hostname)!;
-      const tools = [...googleWorkspaceServiceToolNames(service), ...(FORBIDDEN[url.hostname] ?? [])].map((name) => ({
+      const tools = [...googleWorkspaceServiceToolNames(service), ...(FORBIDDEN[url.hostname] ?? [])].filter((name) => !UNLISTED.has(name)).map((name) => ({
         name, description: `Google's ${name}.`, inputSchema: SCHEMAS[name] ?? { type: "object" },
         annotations: { readOnlyHint: /^(get|list|search|read|download|suggest)_/.test(name) },
       }));
@@ -151,6 +164,9 @@ function fakeGoogle(options: { confirm?: Confirmation } = {}) {
           : { id: eventId, summary: "Lunch" };
       return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(event) }], structuredContent: event } });
     }
+    if (body.params.name === "respond_to_event" && body.params.arguments?.eventId === "own1") {
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: GOOGLE_ORGANIZER_ERROR }] } });
+    }
     return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: `ok from Google MCP ${body.params.name}` }] } });
   };
   return {
@@ -175,6 +191,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await database?.cleanup();
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
     vi.mocked(restDispatch.callGoogleWorkspaceRest).mockClear();
     vi.mocked(restDispatch.probeGoogleWorkspaceRest).mockClear();
@@ -244,9 +261,23 @@ const support = await getEmbeddedPostgresTestSupport();
     const call = async (name: string, parameters: unknown) =>
       gateway.executeTool({ sessionToken: session.token, tool: (await toolNamed(name)).name, parameters, timeoutMs: 5_000 });
     const interactions = issueThreadInteractionService(db);
+    const runnerCall = async (name: string, parameters: unknown) => {
+      vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3100");
+      const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: run!.id });
+      const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id, expectedAssignmentDigest: snapshot.digest });
+      const assigned = await createAssignedMcpTools({ gateway, companyId: company!.id,
+        gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token });
+      try {
+        return await assigned.execute({ tool: assignedToolName((await toolNamed(name)).name), arguments: parameters });
+      } finally {
+        assigned.close();
+      }
+    };
     return {
       company: company!, actor, agent: agent!, issue: issue!, service, gateway, connectionId: connected.connectionId, catalog: completed.catalog,
-      google, listed, toolNamed, call,
+      google, listed, toolNamed, call, runnerCall,
+      failedEvents: () => db.select().from(toolCallEvents)
+        .where(and(eq(toolCallEvents.companyId, company!.id), eq(toolCallEvents.eventType, "call_failed"))),
       cards: () => db.select().from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, company!.id), eq(issueThreadInteractions.issueId, issue!.id))),
       skip: (cardId: string) => interactions.skipInteraction({ id: issue!.id, companyId: company!.id }, cardId, {}, { userId }),
@@ -372,6 +403,57 @@ const support = await getEmbeddedPostgresTestSupport();
     });
   });
 
+  describe("what an agent on the Paperclip Runner sees when a call fails", () => {
+    it("sees Paperclip's own refusal of an unknown argument, with a stable code, and nothing goes to Google", async () => {
+      const f = await connectWorkspace();
+      await expect(f.runnerCall("calendar__list_calendars", { bogus: 1 })).rejects.toMatchObject({
+        status: 422, reasonCode: "tool_error",
+        message: "unknown_argument: Invalid arguments for list_calendars: unknown argument \"bogus\". Accepted arguments: pageSize, pageToken. Nothing was sent to Google.",
+      });
+      expect(f.google.calls()).toEqual([]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "unknown_argument", errorMessage: expect.stringContaining("unknown argument \"bogus\"") });
+      expect(JSON.stringify(event!.metadata)).toContain("\"dispatched\":false");
+    });
+
+    it("is told to pass one occurrence when it deletes a whole recurring series", async () => {
+      const f = await connectWorkspace();
+      await expect(f.runnerCall("calendar__delete_event", { calendarId: "primary", eventId: "series1" })).rejects.toMatchObject({
+        status: 422, reasonCode: "tool_error",
+        message: expect.stringMatching(/^recurring_series_delete_refused: This ID is a whole recurring series\..*Pass one occurrence's ID \(from list_events\)\. Nothing was deleted\.$/),
+      });
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com get_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "recurring_series_delete_refused" });
+      expect(JSON.stringify(event!.metadata)).toContain("\"dispatched\":false");
+    });
+
+    it("records Google's error code on the failed call event of an approved Ask first action", async () => {
+      const f = await connectWorkspace({ askFirst: ["calendar__respond_to_event"] });
+      const reply = { calendarId: "primary", eventId: "own1", responseStatus: "accepted" };
+      await expect(f.call("calendar__respond_to_event", reply)).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id));
+      await expect(f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action!.id, actor: { userId: f.actor.actorId } }))
+        .resolves.toMatchObject({ status: "failed" });
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com respond_to_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "google_permission_denied", errorMessage: GOOGLE_ORGANIZER_ERROR });
+    });
+
+    it("sees a stable code from Google's structured error, never Google's own text, and the activity log records the code", async () => {
+      const f = await connectWorkspace();
+      const failure = await f.runnerCall("calendar__respond_to_event", { calendarId: "primary", eventId: "own1", responseStatus: "accepted" })
+        .then(() => null, (error: unknown) => error as Error & { status: number });
+      expect(failure).toMatchObject({ status: 422, reasonCode: "tool_error", message: "google_permission_denied: The connected tool reported an error." });
+      expect(failure!.message).not.toContain("organizer");
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com respond_to_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "google_permission_denied", errorMessage: GOOGLE_ORGANIZER_ERROR });
+      const [invocation] = (await f.invocations()).filter((row) => row.status === "failed");
+      expect(invocation).toMatchObject({ errorCode: "tool_error", errorMessage: GOOGLE_ORGANIZER_ERROR });
+    });
+  });
+
   describe.each(["legacy", "modern"] as const)("a confirmation Google's %s server asks for", (confirm) => {
     const edit = { documentId: "doc1", requests: [{ insertText: { text: "Hi", location: { index: 1 } } }, { insertText: { text: "There", location: { index: 3 } } }] };
 
@@ -426,5 +508,182 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.google.calls()).toEqual(["gmailmcp.googleapis.com get_message"]);
     await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
       .rejects.toMatchObject({ reasonCode: "approval_required" });
+  });
+  describe("a connection saved on REST before the switch back", () => {
+    const savedRows = (connectionId: string) => db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connectionId));
+    const byName = async (connectionId: string) => new Map((await savedRows(connectionId)).map((row) => [row.toolName, row]));
+    const permissions = ["gmail.readonly", "gmail.compose", "documents.readonly"];
+
+    async function savedOnRest(options: { askFirst?: string[]; off?: string[] } = {}) {
+      const f = await connectWorkspace({ permissions, ...options });
+      expect((await byName(f.connectionId)).get("gmail__get_message")?.inputSchema).toEqual(SCHEMAS.get_message);
+      useTransport("paperclip_rest");
+      forgetMcpHttpSessions(f.connectionId);
+      const onRest = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(onRest.catalog.filter((entry) => entry.status === "quarantined")).toEqual([]);
+      expect((await byName(f.connectionId)).get("gmail__get_message")?.inputSchema).not.toEqual(SCHEMAS.get_message);
+      return f;
+    }
+
+    async function backOnGoogle(f: Awaited<ReturnType<typeof connectWorkspace>>) {
+      useTransport("google_mcp");
+      forgetMcpHttpSessions(f.connectionId);
+      return f.service.refreshCatalog(f.connectionId, f.actor);
+    }
+
+    it.each(["#22634", "#22706"])("adopts Google's definitions with no hold when the rows carry the %s REST definitions, keeping Off, Ask first and review", async (revision) => {
+      const f = await savedOnRest({ off: ["gmail__search_threads"], askFirst: ["gmail__create_draft"] });
+      const reviewedAt = new Date("2026-11-23T20:00:00Z");
+      for (const row of await savedRows(f.connectionId)) {
+        const old = revision === "#22634" ? SCHEMAS_22634[row.toolName] : undefined;
+        await db.update(toolCatalogEntries).set({
+          reviewedAt, reviewedByUserId: f.actor.actorId,
+          ...(old ? { inputSchema: old, schemaHash: stableHash(old) } : {}),
+        }).where(eq(toolCatalogEntries.id, row.id));
+      }
+
+      const refreshed = await backOnGoogle(f);
+      expect(refreshed.quarantinedCount).toBe(0);
+      expect(refreshed.catalog.filter((entry) => entry.status !== "active")).toEqual([]);
+      const saved = await byName(f.connectionId);
+      expect(saved.get("gmail__get_message")?.inputSchema).toEqual(SCHEMAS.get_message);
+      expect([...saved.values()].every((row) => row.reviewedAt?.getTime() === reviewedAt.getTime() && row.reviewedByUserId === f.actor.actorId)).toBe(true);
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__search_threads");
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
+        .rejects.toMatchObject({ reasonCode: "approval_required" });
+    });
+
+    it("holds for review a Google definition that Paperclip never shipped", async () => {
+      const f = await savedOnRest();
+      const unknown = await db.update(toolCatalogEntries).set({ schemaHash: "a-definition-paperclip-never-shipped" })
+        .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_thread"))).returning();
+      expect(unknown).toHaveLength(1);
+      const switched = await backOnGoogle(f);
+      expect(switched.catalog.filter((entry) => entry.status === "quarantined").map((entry) => entry.toolName)).toEqual(["gmail__get_thread"]);
+
+      const original = SCHEMAS.get_message;
+      SCHEMAS.get_message = { ...original, properties: { ...(original.properties as object), exportTo: { type: "string" } } };
+      try {
+        forgetMcpHttpSessions(f.connectionId);
+        const changed = await f.service.refreshCatalog(f.connectionId, f.actor);
+        expect(changed.quarantinedCount).toBe(1);
+        expect(changed.catalog.filter((entry) => entry.status === "quarantined").map((entry) => entry.toolName).sort())
+          .toEqual(["gmail__get_message", "gmail__get_thread"]);
+        expect((await byName(f.connectionId)).get("gmail__get_message")?.quarantineReason).toBe("pending_review");
+      } finally {
+        SCHEMAS.get_message = original;
+      }
+    });
+
+    it("saves the review when Google no longer offers actions that were on, and still refuses a disabled action", async () => {
+      const f = await savedOnRest();
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      UNLISTED.add("list_threads").add("search_messages");
+      try {
+        await backOnGoogle(f);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+        UNLISTED.clear();
+      }
+      const [blocked] = await db.update(toolCatalogEntries).set({ status: "disabled", quarantineReason: null, quarantinedAt: null })
+        .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_draft"))).returning();
+      const rows = await savedRows(f.connectionId);
+      const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
+      expect(names(removed)).toEqual(["gmail__list_threads", "gmail__search_messages"]);
+      expect(removed.every((row) => row.status === "disabled")).toBe(true);
+      const held = rows.filter((row) => row.status === "quarantined");
+      expect(held.length).toBeGreaterThan(0);
+      const choices = (enabled: string[], askFirst: string[] = []) => f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: enabled, askFirstCatalogEntryIds: askFirst,
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
+      }, f.actor);
+
+      await expect(choices([...held, blocked!].map((row) => row.id)))
+        .rejects.toMatchObject({ status: 400, message: "Disabled actions cannot be enabled" });
+
+      await choices([...held, removed[0]!].map((row) => row.id), [removed[1]!.id]);
+      const after = await byName(f.connectionId);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[1]!.id);
+      expect(after.get("gmail__list_threads")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
+      expect(after.get("gmail__search_messages")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__list_threads");
+      expect(offered).not.toContain("gmail__search_messages");
+      expect(offered).not.toContain("gmail__get_draft");
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      const relisted = await byName(f.connectionId);
+      expect(relisted.get("gmail__list_threads")?.status).toBe("active");
+      expect(relisted.get("gmail__search_messages")?.status).toBe("active");
+      const offeredAgain = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offeredAgain).toContain("gmail__get_message");
+      expect(offeredAgain).not.toContain("gmail__list_threads");
+      expect(offeredAgain).not.toContain("gmail__search_messages");
+    });
+
+    it("does not keep a removed action on when a save keeps the existing access", async () => {
+      const f = await savedOnRest();
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      UNLISTED.add("list_threads");
+      try {
+        await backOnGoogle(f);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+        UNLISTED.clear();
+      }
+      const rows = await savedRows(f.connectionId);
+      const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
+      expect(names(removed)).toEqual(["gmail__list_threads"]);
+      const held = rows.filter((row) => row.status === "quarantined");
+      const [draftRow] = rows.filter((row) => row.toolName === "gmail__get_draft");
+      await db.update(toolCatalogEntries).set({ status: "disabled", quarantineReason: "mcp_tool_removed" }).where(eq(toolCatalogEntries.id, draftRow!.id));
+      const excluded = await db.update(toolProfileEntries).set({ effect: "exclude" })
+        .where(eq(toolProfileEntries.catalogEntryId, draftRow!.id)).returning();
+      expect(excluded).toHaveLength(1);
+      await f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [removed[0]!.id],
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
+        preserveExistingAccess: true,
+      }, f.actor);
+      const kept = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, excluded[0]!.profileId));
+      expect(kept.filter((entry) => entry.catalogEntryId === draftRow!.id).map((entry) => entry.effect)).toEqual(["exclude"]);
+      expect(kept.some((entry) => entry.catalogEntryId === removed[0]!.id)).toBe(false);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[0]!.id);
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect((await byName(f.connectionId)).get("gmail__list_threads")?.status).toBe("active");
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__list_threads");
+    });
+
+    it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {
+      const f = await savedOnRest();
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      try {
+        const held = await backOnGoogle(f);
+        expect(held.catalog.filter((entry) => entry.status === "active")).toEqual([]);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+      }
+
+      forgetMcpHttpSessions(f.connectionId);
+      const later = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(later.quarantinedCount).toBe(0);
+      expect(later.catalog.filter((entry) => entry.status === "active")).toEqual([]);
+      expect((await byName(f.connectionId)).get("gmail__get_message")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
+      expect(await f.listed()).toEqual([]);
+    });
   });
 });

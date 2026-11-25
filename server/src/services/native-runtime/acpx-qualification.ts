@@ -24,6 +24,7 @@ export function resolveAntigravityCandidateAdmission(
   input: { companyId?: string; model?: string; target?: { platform: string; architecture: string } },
   hostEnvironment: NodeJS.ProcessEnv = process.env,
 ): AcpxCandidateAdmission | undefined {
+  if (QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus !== "pending") return undefined;
   const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
   if (!encoded || !input.companyId) return undefined;
   const hostNative = isAntigravityNativeTarget(process.platform, process.arch);

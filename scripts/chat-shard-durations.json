@@ -1,29 +1,32 @@
 {
-  "$comment": "Per-file Vitest durations (ms) for server/src/__tests__/chat-channels/*.integration.test.ts used by scripts/run-vitest-stable.mjs (--group general-chat) to balance file-level shards via LPT. Missing files take the partitioner's median weight. Timing changes only partition work; they never skip a test.",
+  "$comment": "Per-file Vitest durations (ms) for server/src/__tests__/chat-channels/*.integration.test.ts used by scripts/run-vitest-stable.mjs (--group general-chat) to balance file-level shards via LPT. Refreshed from 8-core PR run 45592683902 with the 4-way split of github-review-workflow.integration.test.ts. Missing files take the partitioner's median weight. Timing changes only partition work; they never skip a test.",
   "unit": "ms",
   "sources": [
-    "local-shared-pg-benchmark:refactor/split-optimize-chat-channel-tests@b9618367ff"
+    "github-actions:45592683902@57638686dc"
   ],
   "coverage": {
-    "measured": 16,
-    "inventory": 16
+    "measured": 19,
+    "inventory": 19
   },
   "durations": {
-    "server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts": 45011,
-    "server/src/__tests__/chat-channels/discord-modals-and-publications.integration.test.ts": 6507,
-    "server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts": 54809,
-    "server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts": 41634,
-    "server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts": 171270,
-    "server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts": 20202,
-    "server/src/__tests__/chat-channels/github-webhook-recovery.integration.test.ts": 20859,
-    "server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts": 9836,
-    "server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts": 28768,
-    "server/src/__tests__/chat-channels/slack-protocol.integration.test.ts": 8705,
-    "server/src/__tests__/chat-channels/slack-setup-and-registration.integration.test.ts": 42468,
-    "server/src/__tests__/chat-channels/teams-authority-and-transfer.integration.test.ts": 12088,
-    "server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts": 15672,
-    "server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts": 30015,
-    "server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts": 10615,
-    "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts": 9966
+    "server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts": 62795,
+    "server/src/__tests__/chat-channels/discord-modals-and-publications.integration.test.ts": 36248,
+    "server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts": 94936,
+    "server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts": 98825,
+    "server/src/__tests__/chat-channels/github-review-finding-threads.integration.test.ts": 57428,
+    "server/src/__tests__/chat-channels/github-review-publications.integration.test.ts": 28492,
+    "server/src/__tests__/chat-channels/github-review-response-maintenance.integration.test.ts": 34444,
+    "server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts": 58821,
+    "server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts": 62020,
+    "server/src/__tests__/chat-channels/github-webhook-recovery.integration.test.ts": 52606,
+    "server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts": 45584,
+    "server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts": 94522,
+    "server/src/__tests__/chat-channels/slack-protocol.integration.test.ts": 17846,
+    "server/src/__tests__/chat-channels/slack-setup-and-registration.integration.test.ts": 91332,
+    "server/src/__tests__/chat-channels/teams-authority-and-transfer.integration.test.ts": 70577,
+    "server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts": 57795,
+    "server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts": 80279,
+    "server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts": 43737,
+    "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts": 52158
   }
 }

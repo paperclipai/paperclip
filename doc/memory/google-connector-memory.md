@@ -115,6 +115,7 @@ What Paperclip still does before it sends a call to Google's MCP server:
 - A confirmation question from Google (MCP elicitation) goes on the task's
   question card for a person. Skipping it sends "decline"; until it is
   answered, the call stops again and nothing is changed.
+- Switch-back fix (Nov 25, `fix/google-mcp-adopt-saved-rest-definitions`): #22815 recognised only the current REST schemas, so rows saved by #22634 (before the #22706 strict schemas) were held for review on the staging tester (34 of 36). A refresh now adopts Google's definition for any shipped REST schema hash (`shipped-schema-hashes.ts`). Actions already held stay held for a person to review: the hold replaced the saved definition, and no record proves the row's definition before the hold (an auto-release from call history was dropped after review, because a refresh can save rows and stop before its audit).
 
 What only the REST tools did, and does not happen on MCP:
 
@@ -519,7 +520,7 @@ the person chose to disconnect that identity.
 
 User data obtained from Google:
 
-| Place | Delete data before | When access ends (first PR) | Next |
+| Place | Delete data before | When access ends (first PR) | Second PR |
 | --- | --- | --- | --- |
 | Tool-call records: request and result previews | Yes | Yes | |
 | Tool-call error text (invocations, call events, approval card) | No | Yes | |
@@ -530,14 +531,14 @@ User data obtained from Google:
 | Run transcripts: run log in every copy, run events, excerpts, answer text | Yes | Yes, also for runs that were still working | |
 | Saved large results (`runner-api` files) | Yes | Yes | |
 | Saved harness session pointers | No | Yes | |
-| The harness's own transcript files on the agent's machine or sandbox (Codex `sessions`, Claude `projects`, ACP) | No | No; no longer resumed | Second PR: delete the session files where Paperclip owns the folder |
-| `paperclip_runner` harness backups and runner checkpoints (encrypted) | No | No; removed 7 days after the task closes | Second PR |
-| Task document `continuation-summary` and its revisions (system copy of the run summary and run error) | No | No | Second PR |
-| Handoff copy of the last run summary in the next run's context | No | No | Second PR |
-| `native_run_results.result_json`, `heartbeat_runs.error` | No | No | Second PR |
-| Decision training examples (manual snapshots of runs and cards; JSONL export) | No | No | Second PR (training finding) |
-| Feedback exports (local payload; bundle sent to Paperclip Labs when sharing is on) | No | No | Second PR (training finding) |
-| Customer observability export (OTLP or Braintrust, tool content on by default) | Outside Paperclip | Outside Paperclip | Second PR |
+| The harness's own transcript files on the agent's machine or sandbox (Codex `sessions`, Claude `projects`, ACP) | No | No; no longer resumed | Not yet. Open: delete the session files where Paperclip owns the folder (local adapters) and the sandbox copy |
+| `paperclip_runner` harness backups and runner checkpoints (encrypted) | No | No; removed 7 days after the task closes | Not yet. Open: remove the backups of a cleaned run's task at once |
+| Task document `continuation-summary` and its revisions (system copy of the run summary and run error) | No | No | Yes: revisions the cleaned run wrote are emptied, and the document body if that revision is the latest. Later revisions can keep paths or a next action carried over from it |
+| Handoff copy of the last run summary in the next run's context | No | No | Yes: removed from later settled runs of the same task, and from a run still working when it finishes; never included in training or feedback exports |
+| `native_run_results.result_json`, `heartbeat_runs.error` | No | No | Yes: every free-text value in the native result cleared (structural keys stay), and the run error cleared |
+| Decision training examples (manual snapshots of runs and cards; JSONL export) | No | No | Yes: a new snapshot stores only id, status and times for runs that called Google, received an approved Google result, or share a harness session with such a run, and drops the Google action from the card; the JSONL export applies the same rule to examples saved earlier; a cleaned run is replaced the same way in stored snapshots |
+| Feedback exports (local payload; bundle sent to Paperclip Labs when sharing is on) | No | No | Yes: a shared trace whose run, or any run of its harness session, called Google carries only run id, status and times; no events, log or harness files |
+| Customer observability export (OTLP or Braintrust, tool content on by default) | Outside Paperclip | Outside Paperclip | Not changed. Owner question below |
 | Raw provider traces | Expire in 24 hours | Expire in 24 hours | |
 | Comments, documents, descriptions, work products, agent memory files and attachments that agents wrote | No, by design | No | Owner question below |
 | Text search indexes | Follow their rows | Follow their rows | |
@@ -545,18 +546,53 @@ User data obtained from Google:
 
 Google Technical Information (derived, not user data):
 
-| Place | Next |
+| Place | Second PR |
 | --- | --- |
-| Tool catalog from Google's `tools/list` (names, descriptions, schemas) | Second PR: 30-day limit |
-| Connection health message and last error (Google failure text) | Second PR: 30-day limit |
-| Tool-call error codes and messages (failure patterns) | Messages cleared when access ends; second PR: 30-day limit |
-| Grant scope evidence (`providerTenant.oauth`) | Second PR: decide |
-| Prompt-injection screening findings (codes, no content) | Second PR: decide |
+| Tool catalog from Google's `tools/list` (title, description, schemas, annotations, app view, icons) | Stripped 30 days after Google last listed the tool, and at once when the connection is removed. Name, risk and status stay. An active connection's catalog is marked stale, so the next read lists the tools again |
+| Connection health message and last error (Google failure text) | Cleared 30 days after the last check, and at once when the connection is removed |
+| Tool-call error messages (invocations, call events, approval card) | Cleared 30 days after the call, and at once when access ends (first PR). Status and error code stay |
+| Scope evidence on a revoked grant (`providerTenant.oauth`) | Removed at once. A live grant keeps it: it is the record of the user's current consent, needed to run the grant |
+| Prompt-injection screening findings (labels, no content) | Kept: Paperclip's own classification of a result, not information from Google's access points |
 | `google_pending_revocations` | Already: 30-day hard stop |
 | Activity rows for tool calls (IDs and status only) | Kept: activity log invariant |
 
+The sweep (`google-technical-information.ts`, worker
+`google-technical-information-work.ts`) follows the sleep-aware rule: its next
+deadline is the oldest item plus 30 days. While a Google connection that is
+not removed exists, it is never later than the start of today (UTC) plus 30
+days, a value that stays the same all day. Any item created later is due later
+than that, so no deadline is missed without hooking every gateway path that
+writes an error. With no live Google connection and nothing left to clear it
+schedules nothing. Removing a connection, ending access and a catalog refresh wake it
+through a transaction-aware notification. The idle deadline proof includes the
+same deadline, so a sleeping instance wakes for it. Two partial indexes
+(`tool_invocations` and `tool_call_events` on `connection_id, created_at`
+where `error_message` is set, migration 0507, built concurrently) keep the
+deadline query cheap.
+
 Google tools create no attachments: Drive downloads come back inside the tool
 result (covered above), so there is no byte-copy attachment to delete.
+
+### No training or scraping (checked November 24)
+
+- Product analytics (connector telemetry and browser PostHog) carry no tool
+  arguments or results: connector events send only the app key, domain,
+  transport, status, origin and duration; browser text is masked.
+- Server OpenTelemetry runs only when configured and adds no content.
+- Decision training examples and Feedback exports to Paperclip Labs could
+  carry Google results. Both now leave them out (second PR).
+- No embeddings, vector stores, evaluation datasets or model training use
+  Paperclip data. Tool calls happen only in an agent's task; the catalog is
+  listed when a connection is set up or its cache expires on use.
+
+### Owner question: customer observability export
+
+A company admin can send agent traces to their own OTLP endpoint or to
+Braintrust. Tool content is on by default, so Google results go there too.
+This is the customer's own processing, not Paperclip's, but Braintrust is an
+evaluation platform. Options: keep it (customer's choice; say so in the
+policy), turn tool content off by default for Google tools, or refuse
+Google tool content in that export.
 
 ### Owner question: content agents wrote from Google data
 

@@ -307,29 +307,29 @@ blocks new imports rather than resetting the budget. See the
 [local qualification record](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
 for runnable acceptance cells and the remaining live qualification gates.
 
-Google Antigravity is an **unqualified, pending** native ACPX integration on
-Google's official ACP server 1.5.2 with Paperclip's owned admission patch
-(`1.5.2-paperclip.2`). The explicit `paperclipai runtime setup antigravity`
-command installs it on macOS ARM64, Linux x64 and Linux ARM64; macOS Intel stays
-inventory-only (no native host). Setup verifies both the official vendor closure
-and the separately pinned patched closure; npm installation downloads no
-Antigravity runtime. The Daytona image and remote provider pack carry the Linux
-x64 closure only when built with `--candidate-providers=antigravity`; while the
-profile is pending it is listed under `candidateProviders`.
+Google Antigravity is a **qualified** (profile revision `2`, `recovery:
+"unverified"`) native ACPX integration on Google's official ACP server 1.5.2
+with Paperclip's owned admission patch (`1.5.2-paperclip.2`). The explicit
+`paperclipai runtime setup antigravity` command installs it on macOS ARM64,
+Linux x64 and Linux ARM64; macOS Intel stays inventory-only (no native host).
+Setup verifies both the official vendor closure and the separately pinned
+patched closure; npm installation downloads no Antigravity runtime. The Core
+image's `linux-x64` remote provider pack includes the patched Linux x64 closure
+under `providers.antigravity` without any candidate flag.
 
 Two connection routes exist: a Gemini API key (`gemini-api-key`, locally and in
-a cloud environment once released) and personal Google sign-in (Paperclip host
-only, one turn at a time). Agent save and Test refuse any other combination in
-plain language. Models are the server's own catalog. The 1.5.2 catalog lists
-Gemini 4 families only for Agent Platform, but patch `1.5.2-paperclip.2` admits
-an exact requested model ID under an API key, so Gemini 4 (Neon included) runs
-on the API-key route with a paid key; a refused model is named with its fix. Global release qualification remains pending and normal execution
-admission stays closed: an isolated operator can admit one company, exact
-model, execution platform (this host, or linux-x64 for a cloud environment with
-an API key) and pinned patched closure/profile, per-turn only, until a fixed
-expiry through trusted server startup authority. Live acceptance on 1.5.2 (API key, Linux,
-Daytona, the model lineups) has not passed yet. Google Workspace OAuth does not
-substitute for a runtime credential. See the
+a cloud environment) and personal Google sign-in (Paperclip host only, one turn
+at a time). Agent save and Test refuse any other combination in plain language.
+Models are the server's own catalog. The 1.5.2 catalog lists Gemini 4 families
+only for Agent Platform, but patch `1.5.2-paperclip.2` admits an exact
+requested model ID under an API key, so Gemini 4 (Neon included) runs on the
+API-key route with a paid key; a refused model is named with its fix. Release
+qualification was flipped on 2026-11-25 under an owner waiver of the
+`runner-e2e-paid` gate so Antigravity can be tested on staging; no operator
+candidate grant is accepted or needed, candidate-era v1 saved state is refused
+as `provider_state_incompatible`, and paid-key qualification suites remain
+deferred/NOT RUN in the ledger. Google Workspace OAuth does not substitute for
+a runtime credential. See the
 [current qualification plan](../../doc/plans/2026-11-22-antigravity-qualification.md)
 and the [October integration record](../../doc/plans/2026-10-28-antigravity-integration.md).
 

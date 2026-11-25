@@ -1141,7 +1141,22 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
   }
 
   if (stagePatch.executionState !== undefined || !monitorStatesEqual(currentMonitorState, targetMonitorState)) {
-    patch.executionState = executionStateWithMonitor(stageState, targetMonitorState);
+    const nextExecutionState = executionStateWithMonitor(stageState, targetMonitorState);
+    const previousDeferral =
+      !input.monitorExplicitlyUpdated &&
+      targetMonitorState?.status === "scheduled" &&
+      currentMonitorState?.status === "scheduled" &&
+      currentMonitorState.nextCheckAt === targetMonitorState.nextCheckAt &&
+      input.issue.executionState &&
+      typeof input.issue.executionState === "object" &&
+      !Array.isArray(input.issue.executionState) &&
+      "monitorDeferral" in input.issue.executionState
+        ? (input.issue.executionState as Record<string, unknown>).monitorDeferral
+        : undefined;
+    patch.executionState =
+      nextExecutionState && previousDeferral !== undefined
+        ? { ...nextExecutionState, monitorDeferral: previousDeferral }
+        : nextExecutionState;
   }
 
   return patch;

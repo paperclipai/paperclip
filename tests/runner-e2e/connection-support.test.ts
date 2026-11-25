@@ -154,6 +154,51 @@ describe("target and selected credential boundaries", () => {
     await expect(api.get("/api/health", { timeoutMs: 0 })).rejects.toThrow("invalid_api_timeout");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+  it("retries a transient read failure but never repeats a write", async () => {
+    const ok = { ok: () => true, status: () => 200, json: async () => ({ id: "agent" }) };
+    const unavailable = { ok: () => false, status: () => 503 };
+    const fetch = vi.fn().mockRejectedValueOnce(new Error("socket hang up")).mockResolvedValueOnce(unavailable).mockResolvedValueOnce(ok);
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await expect(api.get("/api/agents/agent")).resolves.toEqual({ id: "agent" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockReset().mockRejectedValue(new Error("socket hang up"));
+    await expect(api.get("/api/agents/agent")).rejects.toThrow("api_request_failed");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockReset().mockResolvedValue({ ok: () => false, status: () => 404 });
+    await expect(api.get("/api/agents/agent")).rejects.toThrow("api_status_404");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    for (const method of ["post", "patch", "delete"] as const) {
+      fetch.mockReset().mockRejectedValueOnce(new Error("socket hang up")).mockResolvedValue(ok);
+      await expect((api as any)[method]("/api/agents/agent", {})).rejects.toThrow("api_request_failed");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+    // Binary downloads and readers with their own retry ledger stay single attempts.
+    fetch.mockReset().mockResolvedValueOnce(unavailable).mockResolvedValue({ ...ok, body: async () => Buffer.from("x") });
+    await expect(api.bytes("/api/attachments/file/content")).rejects.toThrow("api_status_503");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockReset().mockResolvedValueOnce(unavailable).mockResolvedValue(ok);
+    await expect(api.get("/api/agents/agent", { retry: false })).rejects.toThrow("api_status_503");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("honors a bounded Retry-After and keeps every attempt inside the caller's timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const ok = { ok: () => true, status: () => 200, json: async () => ({ id: "agent" }) };
+      const throttled = { ok: () => false, status: () => 429, headers: () => ({ "retry-after": "2" }) };
+      const fetch = vi.fn().mockResolvedValueOnce(throttled).mockResolvedValueOnce(ok);
+      const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+      const read = api.get("/api/agents/agent", { timeoutMs: 10_000 });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(read).resolves.toEqual({ id: "agent" });
+      expect((fetch.mock.calls[1]![1] as { timeout: number }).timeout).toBeLessThanOrEqual(8_000);
+      // No retry when the wait would leave no useful time before the caller's timeout.
+      fetch.mockReset().mockResolvedValue(throttled);
+      await expect(api.get("/api/agents/agent", { timeoutMs: 2_500 })).rejects.toThrow("api_status_429");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
   it("keeps scoped requests on tenant APIs and bounds extended probe timeouts", async () => {
     const fetch = vi.fn(async (_url: string, _options: unknown) => ({ ok: () => true, json: async () => ({ passed: true }) }));
     const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");

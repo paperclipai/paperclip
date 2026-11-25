@@ -26,6 +26,7 @@ import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
+import { forgetRunCopies, forgetRunInTrainingExamples, runCopiesRemainSql } from "./run-copies.js";
 import { forgetRunSessions, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 import {
   initialContentDeletionProgress,
@@ -191,6 +192,7 @@ export function runsWithStoredContentSql(scope: Scope): SQL {
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
+      or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, issueId: sql`${heartbeatRuns.issueId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
 }
@@ -619,6 +621,9 @@ export function createConnectionContentDeletion(db: Db, deps: {
     const [row] = await tx
       .select({
         agentId: heartbeatRuns.agentId,
+        issueId: heartbeatRuns.issueId,
+        createdAt: heartbeatRuns.createdAt,
+        error: heartbeatRuns.error,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
         stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
@@ -630,15 +635,18 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .for("update");
     if (!row) return;
     const result = withoutResultText(row.resultJson);
-    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || result.changed) run.changed = true;
+    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || row.error !== null || result.changed) run.changed = true;
     await tx
       .update(heartbeatRuns)
       .set({
         stdoutExcerpt: null,
         stderrExcerpt: null,
+        error: null,
         resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}), [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString() },
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
+    await forgetRunInTrainingExamples(tx, companyId, run);
+    await forgetRunCopies(tx, companyId, run, row);
     if (await forgetRunSessions(tx, companyId, run.id, row)) run.changed = true;
   }
 

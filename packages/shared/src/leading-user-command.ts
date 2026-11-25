@@ -33,3 +33,36 @@ export function parseLeadingUserCommand<Name extends string>(
   if (!match || !(allowlist as readonly string[]).includes(match[1]!)) return null;
   return { command: match[1] as Name, argument: userAuthoredText.slice(match[0].length).replace(TRIM, "") };
 }
+
+/**
+ * The longest `/swarm` request (the text after the command) a swarm accepts,
+ * in UTF-16 code units. The composer and the server refuse longer requests up
+ * front; the Paperclip Runner enforces the same bound on its own.
+ */
+export const SWARM_REQUEST_MAX_CHARS = 16_000;
+
+/** A Google Antigravity agent: the only kind of agent that runs a /swarm. */
+export function isAntigravityAgent(agent: { adapterType: string; adapterConfig: unknown } | null | undefined): boolean {
+  const config = agent?.adapterConfig !== null && typeof agent?.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+    ? agent.adapterConfig as Record<string, unknown> : {};
+  return agent?.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "antigravity";
+}
+
+/** Helpers change files, so only a standard task runs a swarm (an allow-list; Plan, Ask and others never do). */
+export function antigravitySwarmWorkModeAllows(workMode: string | null | undefined): boolean {
+  return workMode === "standard";
+}
+
+/**
+ * Whether `/swarm` reaches this assignee as a swarm: a Google Antigravity agent,
+ * the instance's experimental Antigravity swarm setting on, and a standard
+ * task. The composer uses it for its hint; the server checks the same rule
+ * (and more, such as a remote environment) on send.
+ */
+export function antigravitySwarmAvailable(
+  agent: { adapterType: string; adapterConfig: unknown } | null | undefined,
+  experimental: { enableAntigravitySwarm?: boolean } | null | undefined,
+  workMode: string | null | undefined,
+): boolean {
+  return experimental?.enableAntigravitySwarm === true && isAntigravityAgent(agent) && antigravitySwarmWorkModeAllows(workMode);
+}

@@ -205,4 +205,201 @@ describe("Antigravity setup-only Google authentication", () => {
       expect(() => validateAntigravityAuthorizationUrl(url)).toThrow();
     }
   });
+
+  async function loopbackFixture(responseStatus = 200) {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "paperclip-antigravity-loopback-test-"))); roots.push(home);
+    const peer = join(home, "loopback-peer.cjs");
+    await writeFile(peer, `
+const fs = require('node:fs');
+const http = require('node:http');
+const path = require('node:path');
+const readline = require('node:readline');
+const home = process.argv[2];
+const statusCode = Number(process.argv[3] || 200);
+const received = [];
+const state = 'loopback_state_0123456789_' + Math.random().toString(36).slice(2, 10);
+let server;
+const reader = readline.createInterface({ input: process.stdin });
+reader.on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0', id: request.id,
+      result: { protocolVersion: 1, agentInfo: { name: 'antigravity-acp', version: '1.5.2' }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } }, authMethods: [{ id: 'oauth-personal' }] },
+    }) + '\\n');
+  } else if (request.method === 'authenticate') {
+    server = http.createServer((req, res) => {
+      received.push({ method: req.method, url: req.url });
+      fs.writeFileSync(path.join(home, 'loopback-requests.json'), JSON.stringify(received));
+      res.statusCode = statusCode;
+      res.setHeader('Content-Type', 'text/plain');
+      res.end(statusCode === 200 ? 'Authentication complete.' : 'sensitive-loopback-error-body');
+      if (statusCode === 200) {
+        server.close(() => {
+          fs.mkdirSync(path.join(home, 'antigravity-acp'), { mode: 0o700 });
+          fs.writeFileSync(path.join(home, 'antigravity-acp/acp_token.json'), ${JSON.stringify(JSON.stringify(credential))}, { mode: 0o600 });
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }) + '\\n');
+        });
+      }
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      const params = new URLSearchParams({
+        client_id: ${JSON.stringify(CLIENT_ID)},
+        response_type: 'code',
+        redirect_uri: 'http://127.0.0.1:' + port + '/',
+        scope: ${JSON.stringify(credential.scopes.join(" "))},
+        state,
+        code_challenge: 'a'.repeat(43),
+        code_challenge_method: 'S256',
+        access_type: 'offline',
+        prompt: 'consent',
+      });
+      process.stderr.write('Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?' + params.toString() + '\\n');
+    });
+  }
+});
+reader.on('close', () => {
+  if (server) server.close(() => process.exit(0));
+  else process.exit(0);
+});
+`);
+    setup.verify.mockResolvedValue({ openCommand: async () => ({ spawn: setup.spawn, close: setup.close }) });
+    setup.spawn.mockImplementation((_args, options) => {
+      const child = spawn(process.execPath, [peer, home, String(responseStatus)], { ...options, detached: true }); children.push(child); return child;
+    });
+    return home;
+  }
+
+  function stubGoogleAllowLoopback() {
+    const realFetch = globalThis.fetch;
+    const googleFetch = googleIdentity();
+    const wrapped = vi.fn().mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith("http://127.0.0.1:")) return realFetch(input, init);
+      return googleFetch(url, init ?? {});
+    });
+    vi.stubGlobal("fetch", wrapped);
+    return { wrapped, googleFetch };
+  }
+
+  it("relays a validated loopback redirect URL to the local ACP listener and completes sign-in", async () => {
+    const home = await loopbackFixture(200);
+    const { wrapped } = stubGoogleAllowLoopback();
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.submitRedirect).toBeTypeOf("function"), { timeout: 5_000 });
+    const parsedAuth = new URL(login.authorizationUrl!);
+    const redirectUri = parsedAuth.searchParams.get("redirect_uri")!;
+    const expectedState = parsedAuth.searchParams.get("state")!;
+    const uniqueCode = `4/0valid-relay-code-${Date.now()}`;
+    const pasted = `${redirectUri}?state=${encodeURIComponent(expectedState)}&code=${encodeURIComponent(uniqueCode)}&scope=email&extra=ignored`;
+
+    await login.submitRedirect!(pasted);
+    expect(login.submitRedirect).toBeUndefined();
+    await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5_000 });
+    const received = JSON.parse(await readFile(join(home, "loopback-requests.json"), "utf8")) as Array<{ method: string; url: string }>;
+    expect(received).toEqual([{
+      method: "GET",
+      url: `/?state=${encodeURIComponent(expectedState)}&code=${encodeURIComponent(uniqueCode)}`,
+    }]);
+    expect(wrapped).toHaveBeenCalledWith(
+      `${redirectUri}?state=${encodeURIComponent(expectedState)}&code=${encodeURIComponent(uniqueCode)}`,
+      expect.objectContaining({ method: "GET", redirect: "manual" }),
+    );
+    await login.abort();
+  });
+
+  it("rejects bad redirect pastes without burning the loopback listener, and rejects reused codes and second submissions", async () => {
+    const home = await loopbackFixture(200);
+    stubGoogleAllowLoopback();
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.submitRedirect).toBeTypeOf("function"), { timeout: 5_000 });
+    const parsedAuth = new URL(login.authorizationUrl!);
+    const redirectUri = parsedAuth.searchParams.get("redirect_uri")!;
+    const expectedState = parsedAuth.searchParams.get("state")!;
+    const port = Number(new URL(redirectUri).port);
+
+    // Wrong state, wrong port/host/protocol/pathname, duplicate params, error param, oversized, control chars.
+    const invalidInputs = [
+      `${redirectUri}?state=wrong_state_canary_999&code=secret-code-canary`,
+      `http://127.0.0.1:${port === 65535 ? port - 1 : port + 1}/?state=${expectedState}&code=secret-code-canary`,
+      `http://localhost:${port}/?state=${expectedState}&code=secret-code-canary`,
+      `https://127.0.0.1:${port}/?state=${expectedState}&code=secret-code-canary`,
+      `${redirectUri}callback?state=${expectedState}&code=secret-code-canary`,
+      `http://user:pass@127.0.0.1:${port}/?state=${expectedState}&code=secret-code-canary`,
+      `${redirectUri}?state=${expectedState}&code=secret-code-canary#frag`,
+      `${redirectUri}?state=${expectedState}&state=${expectedState}&code=secret-code-canary`,
+      `${redirectUri}?state=${expectedState}&code=a&code=b`,
+      `${redirectUri}?error=access_denied&error_description=do-not-echo-canary&state=${expectedState}`,
+      `${redirectUri}?state=${expectedState}&code=${"c".repeat(2049)}`,
+      `${redirectUri}?state=${expectedState}&code=bad\ncode`,
+      `${redirectUri}?state=${expectedState}&code=${"x".repeat(4097)}`,
+    ];
+
+    // Check first 4 invalid pastes stay retryable without touching the loopback server or leaking secrets.
+    for (const bad of invalidInputs.slice(0, 4)) {
+      const err = await login.submitRedirect!(bad).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
+      expect(err.message).not.toContain(expectedState);
+      expect(err.message).not.toContain("secret-code-canary");
+      expect(err.message).not.toContain("wrong_state_canary");
+      expect(login.submitRedirect).toBeTypeOf("function");
+    }
+    await expect(access(join(home, "loopback-requests.json"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // Valid paste still succeeds after 4 bad pastes.
+    const usedCode = `4/0single-use-code-${Date.now()}`;
+    const submitRef = login.submitRedirect!;
+    await submitRef(`${redirectUri}?state=${expectedState}&code=${usedCode}`);
+    // Second submission on the consumed handler is rejected immediately.
+    await expect(submitRef(`${redirectUri}?state=${expectedState}&code=another-code`)).rejects.toThrow("can no longer accept");
+    await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5_000 });
+    await login.abort();
+
+    // Check remaining invalid shapes + reused code on a fresh attempt, plus the 5-attempt cap.
+    const home2 = await loopbackFixture(200);
+    stubGoogleAllowLoopback();
+    const login2 = startAntigravityBrowserLogin(home2);
+    await vi.waitFor(() => expect(login2.submitRedirect).toBeTypeOf("function"), { timeout: 5_000 });
+    const parsedAuth2 = new URL(login2.authorizationUrl!);
+    const redirectUri2 = parsedAuth2.searchParams.get("redirect_uri")!;
+    const expectedState2 = parsedAuth2.searchParams.get("state")!;
+    const port2 = Number(new URL(redirectUri2).port);
+    for (const bad of [
+      `${redirectUri2}?error=access_denied&error_description=do-not-echo-canary&state=${expectedState2}`,
+      `${redirectUri2}?state=${expectedState2}&code=${usedCode}`,
+      `${redirectUri2}?state=${expectedState2}&state=${expectedState2}&code=unique-1`,
+      `http://user:pass@127.0.0.1:${port2}/?state=${expectedState2}&code=unique-2`,
+    ]) {
+      const err = await login2.submitRedirect!(bad).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
+      expect(err.message).not.toContain("do-not-echo-canary");
+      expect(err.message).not.toContain(usedCode);
+      expect(err.message).not.toContain(expectedState2);
+    }
+    // 5th bad paste terminates the attempt cleanly.
+    await expect(login2.submitRedirect!(`${redirectUri2}?state=${expectedState2}&code=${"c".repeat(2049)}`)).rejects.toThrow("Too many invalid");
+    expect(login2.submitRedirect).toBeUndefined();
+    await vi.waitFor(() => expect(login2.outcome).toBe("failure"), { timeout: 5_000 });
+    await expect(access(join(home2, "loopback-requests.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await login2.abort();
+  });
+
+  it("fails cleanly without leaking body when the loopback listener returns non-200", async () => {
+    const home = await loopbackFixture(500);
+    stubGoogleAllowLoopback();
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.submitRedirect).toBeTypeOf("function"), { timeout: 5_000 });
+    const parsedAuth = new URL(login.authorizationUrl!);
+    const redirectUri = parsedAuth.searchParams.get("redirect_uri")!;
+    const expectedState = parsedAuth.searchParams.get("state")!;
+    const err = await login.submitRedirect!(`${redirectUri}?state=${expectedState}&code=4/0non-200-code-${Date.now()}`).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    if (!(err instanceof Error)) throw new Error("Expected redirect rejection");
+    expect(err.message).not.toContain("sensitive-loopback-error-body");
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    await login.abort();
+  });
 });

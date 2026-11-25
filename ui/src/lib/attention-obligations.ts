@@ -30,7 +30,9 @@ export function foldAttentionObligations(items: readonly AttentionItem[]): Folde
   const evidenceByLeadId = new Map<string, AttentionItem[]>();
   for (const item of items) {
     if (isAttentionObligationEvidence(item) && ids.has(item.obligationLeadId!)) {
-      evidenceByLeadId.set(item.obligationLeadId!, [...(evidenceByLeadId.get(item.obligationLeadId!) ?? []), item]);
+      const evidence = evidenceByLeadId.get(item.obligationLeadId!);
+      if (evidence) evidence.push(item);
+      else evidenceByLeadId.set(item.obligationLeadId!, [item]);
     } else {
       cards.push(item);
     }
@@ -43,6 +45,40 @@ export function attentionObligationEvidence(
   item: AttentionItem,
 ): readonly AttentionItem[] {
   return folded.evidenceByLeadId.get(item.id) ?? NO_EVIDENCE;
+}
+
+/** The task rows a provider-limit card represents in the inbox toolbar. */
+function inboxCardMembers(folded: FoldedAttentionObligations, item: AttentionItem) {
+  return item.providerLimit ? [item, ...attentionObligationEvidence(folded, item)] : [item];
+}
+
+export function inboxProjectOptions(folded: FoldedAttentionObligations, cards: readonly AttentionItem[],
+  receipts: readonly { projectId: string | null; projectName: string | null }[]) {
+  const projects = new Map<string, string>();
+  for (const card of cards) {
+    for (const member of inboxCardMembers(folded, card)) {
+      const project = member.project;
+      if (project) projects.set(project.id, project.name);
+    }
+  }
+  for (const receipt of receipts) {
+    if (receipt.projectId) projects.set(receipt.projectId, receipt.projectName ?? "Unnamed project");
+  }
+  return [...projects.entries()];
+}
+
+export function inboxCardMatchesFilters(folded: FoldedAttentionObligations, item: AttentionItem,
+  filters: { query: string; agentId: string; agentName?: string; projectId: string }) {
+  const query = filters.query.trim().toLocaleLowerCase();
+  return inboxCardMembers(folded, item).some(member => {
+    if (filters.projectId && member.project?.id !== filters.projectId) return false;
+    const agentId = member.providerLimit?.agentId ?? member.subject.metadata?.createdByAgentId ?? member.subject.metadata?.originAgentId;
+    if (filters.agentId && agentId !== filters.agentId
+      && (agentId || !filters.agentName || member.originAgentName !== filters.agentName)) return false;
+    if (!query) return true;
+    return [member.subject.title, member.relatedIssue?.title, member.relatedIssue?.identifier, member.originAgentName,
+      member.providerLimit?.agentName, member.project?.name, attentionDetailLine(member)].join(" ").toLocaleLowerCase().includes(query);
+  });
 }
 
 /**

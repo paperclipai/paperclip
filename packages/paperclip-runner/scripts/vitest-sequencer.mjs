@@ -2,7 +2,13 @@ import { BaseSequencer } from "vitest/node";
 
 const slowFiles = [
   "runnerd-codex-transport.test.ts",
+  "runnerd-codex-transport-backlog-proxy.test.ts",
+  "runnerd-codex-transport-cold-admission.test.ts",
   "runnerd-codex-transport-settlement.test.ts",
+  "runnerd-codex-transport-settlement-revocation.test.ts",
+  "runnerd-codex-transport-lease-expiry.test.ts",
+  "runnerd-codex-transport-held-calls.test.ts",
+  "runnerd-codex-transport-provider-turns.test.ts",
   "cursor-cloud-runner-launch.test.ts",
   "runnerd-codex-transport-deadlines.test.ts",
   "opencode-server-driver.test.ts",

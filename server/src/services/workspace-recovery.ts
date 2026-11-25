@@ -10,7 +10,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { reclaimInactiveNativeProviderCache } from "./native-runtime/retained-provider-cache.js";
-import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
+import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -27,7 +27,7 @@ import { TRANSIENT_WORKSPACE_PREPARATION_CODES } from "./failed-preparation-retr
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery, type WorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
-import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
+import { classifyNativeWorkspaceFailure, workspaceSaveRestCause } from "./native-runtime/native-workspace-failure.js";
 
 import { handOffExhaustedSystemRecovery, adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { SYSTEM_RECOVERY_MAX_RETRIES, createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -48,7 +48,7 @@ const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspa
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
 export const SANDBOX_DISK_FULL_RECOVERY_CAUSE = { label: "sandbox_disk_full", code: "ENOSPC", status: null } as const;
-const isSandboxDiskFullSave = (error: unknown) => error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
+export const GIT_OPERATION_IN_PROGRESS_RECOVERY_CAUSE = { label: "git_operation_in_progress", code: null, status: null } as const;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 
 type StopEvidenceSource = Omit<Source, "actionId"> & { actionId?: string };
@@ -380,7 +380,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             let saved: Awaited<ReturnType<typeof save>>;
             try { saved = await save(); }
             catch (error) {
-              if (!isSandboxDiskFullSave(error)) throw error;
+              if (workspaceSaveRestCause(error) !== "sandbox_disk_full") throw error;
               let reclaimed = false;
               try {
                 const reclaim = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
@@ -489,9 +489,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         return;
       }
       const classification = classifyNativeWorkspaceFailure(error);
-      const diskFull = !(error instanceof SystemRecoveryFailure) && !cacheReclaimUnconfirmed && isSandboxDiskFullSave(error);
+      const saveRestCause = error instanceof SystemRecoveryFailure ? null : workspaceSaveRestCause(error);
+      const diskFull = saveRestCause === "sandbox_disk_full" && !cacheReclaimUnconfirmed;
+      const gitOperationInProgress = saveRestCause === "git_operation_in_progress";
       const failure = error instanceof SystemRecoveryFailure ? error
-        : diskFull ? new SystemRecoveryFailure("export_interrupted", "user_action_required")
+        : diskFull || gitOperationInProgress ? new SystemRecoveryFailure("export_interrupted", "user_action_required")
         : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
           ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
@@ -505,7 +507,13 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       // A classified failure already names its subsystem.
       const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
         && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
-      const cause = diskFull ? { ...SANDBOX_DISK_FULL_RECOVERY_CAUSE } : generic ? sandboxProviderFailureLabel(error) : undefined;
+      const cause = diskFull
+        ? { ...SANDBOX_DISK_FULL_RECOVERY_CAUSE }
+        : gitOperationInProgress
+          ? { ...GIT_OPERATION_IN_PROGRESS_RECOVERY_CAUSE }
+          : generic
+            ? sandboxProviderFailureLabel(error)
+            : undefined;
       const failed = failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),
