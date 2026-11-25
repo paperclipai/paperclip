@@ -42,12 +42,10 @@ function authRateLimit(): RequestHandler {
 
 export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnType<typeof createPublicMcpExecutor>, events?: PublicMcpEvents, extension?: PublicMcpToolExtension) {
   const router = Router();
-  const { origin, resource } = oauth.config;
-  const endpoint = new URL(resource).pathname;
+  const endpoint = new URL(oauth.config.resource).pathname;
   const agentConnection = endpoint === DOT_RUNNER_MCP_PATH;
   const oauthPath = agentConnection ? endpoint + "/oauth" : "/mcp/oauth";
   const metadataPath = "/.well-known/oauth-authorization-server" + (agentConnection ? oauthPath : "");
-  const resourceMetadata = origin + "/.well-known/oauth-protected-resource" + endpoint;
   if (!agentConnection) router.get(["/mcp/setup", "/mcp/setup.md"], async (req, res) => {
     await oauth.assertEnabled();
     const company = z.uuid().optional().safeParse(req.query.company);
@@ -58,8 +56,8 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     res.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     res.vary("Accept");
     if (req.path.endsWith(".md") || req.accepts(["html", "text/markdown"]) === "text/markdown") {
-      res.type("text/markdown").send(mcpSetupMarkdown(resource, company.data));
-    } else res.type("html").send(renderMcpSetup(resource, company.data));
+      res.type("text/markdown").send(mcpSetupMarkdown(oauth.config.resource, company.data));
+    } else res.type("html").send(renderMcpSetup(oauth.config.resource, company.data));
   });
   router.use([oauthPath, endpoint], (_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -70,8 +68,9 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     await oauth.assertEnabled();
     next();
   });
-  for (const entry of mcpDiscoveryDocuments({ origin, authorizationOrigin: oauth.config.authorizationOrigin ?? origin,
-    profiles: [agentConnection ? "dot-mcp" : "personal-mcp"] })) router.get(entry.path, (_req,res) => res.json(entry.document));
+  const discoveryDocuments = () => mcpDiscoveryDocuments({ origin: oauth.config.origin, authorizationOrigin: oauth.config.authorizationOrigin ?? oauth.config.origin,
+    profiles: [agentConnection ? "dot-mcp" : "personal-mcp"] });
+  for (const entry of discoveryDocuments()) router.get(entry.path, (_req,res) => res.json(discoveryDocuments().find((current) => current.path === entry.path)!.document));
   router.use(oauthPath, authRateLimit(), express.urlencoded({ extended: false, limit: "16kb" }));
   router.post(oauthPath + "/register", async (req, res) => res.status(201).json(await oauth.register(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown")));
   router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown",verifyMcpDeviceMintContext(req,oauth.config.resource))));
@@ -82,12 +81,12 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     await oauth.revokeToken(req.body.token, req.body.client_id); res.status(200).end();
   });
   router.all(endpoint, async (req, res) => {
-    if (req.headers.origin && req.headers.origin !== origin) { res.status(403).json({ error: "Invalid origin" }); return; }
+    if (req.headers.origin && req.headers.origin !== oauth.config.origin) { res.status(403).json({ error: "Invalid origin" }); return; }
     const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
     let principal;
     try { if (!token) throw new Error(); principal = await oauth.authenticate(token); }
     catch {
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? "paperclip:agent" : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${oauth.config.origin + "/.well-known/oauth-protected-resource" + endpoint}", scope="${agentConnection ? "paperclip:agent" : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
       res.status(401).json({ error: "invalid_token" }); return;
     }
     if (req.method !== "POST") { res.setHeader("Allow", "POST"); res.status(405).end(); return; }

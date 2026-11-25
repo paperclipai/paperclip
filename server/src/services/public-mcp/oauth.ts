@@ -56,6 +56,13 @@ export function publicMcpConfig(env: NodeJS.ProcessEnv = process.env, authPublic
   return { origin: publicOrigin, resource: publicOrigin + PUBLIC_MCP_PATH, ...(authorizationOrigin ? { authorizationOrigin } : {}) };
 }
 export type PublicMcpConfig = NonNullable<ReturnType<typeof publicMcpConfig>>;
+export function livePublicMcpConfig(origin: () => string, resourcePath: string, authorizationOrigin?: string): PublicMcpConfig {
+  return {
+    get origin() { return origin(); },
+    get resource() { return origin() + resourcePath; },
+    ...(authorizationOrigin ? { authorizationOrigin } : {}),
+  };
+}
 export type McpPrincipal = {
   grant: typeof mcpOauthGrants.$inferSelect;
   actor: Request["actor"];
@@ -92,12 +99,12 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   const scopesSupported = museAgentConnection ? MUSE_OAUTH_SCOPES : dotAgentConnection ? DOT_RUNNER_MCP_SCOPES : PUBLIC_MCP_SCOPES;
   const requiredScope = agentConnection ? "paperclip:agent" : "paperclip:read";
   const defaultScope = museAgentConnection ? MUSE_OAUTH_SCOPES.join(" ") : requiredScope;
-  const issuer = museAgentConnection ? config.origin + MUSE_OAUTH_PATH : dotAgentConnection ? config.origin + DOT_RUNNER_MCP_PATH + "/oauth" : config.origin;
+  const issuer = () => museAgentConnection ? config.origin + MUSE_OAUTH_PATH : dotAgentConnection ? config.origin + DOT_RUNNER_MCP_PATH + "/oauth" : config.origin;
   function withResource(input: unknown) {
     return museAgentConnection && input && typeof input === "object" && !Array.isArray(input) && !("resource" in input)
       ? { ...input, resource: config.resource } : input;
   }
-  const authorizationOrigin = config.authorizationOrigin ?? config.origin;
+  const authorizationOrigin = () => config.authorizationOrigin ?? config.origin;
   const resolveMetadata = createClientMetadataResolver(options.metadataFetch);
   const settings = instanceSettingsService(db);
   const isEnabled = async (queryDb: Db = db) => {
@@ -422,7 +429,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   const authenticateAccess=(token:string)=>authenticateToken(token);
 
   return {
-    config, mode, issuer, isEnabled, assertEnabled,
+    config, mode, get issuer() { return issuer(); }, isEnabled, assertEnabled,
     async ownsRequest(id: string) {
       const [row] = await db.select({ resource: mcpOauthRequests.resource }).from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id));
       return row?.resource === config.resource;
@@ -460,7 +467,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.insert(mcpOauthDeviceRequests).values({ clientId: client.id, ingressOwner:mintAuthority?"cloud":"tenant",deviceCodeHash: hashMcpSecret(deviceCode), userCodeHash: deviceHash(userCode),
           resource: config.resource, scopes, requestedCompanyId: p.data.company_id ?? null, sourceHash, expiresAt: new Date(now.getTime() + 10 * minute) });
       });
-      return { device_code: deviceCode, user_code: userCode, verification_uri: authorizationOrigin + "/mcp-device", verification_uri_complete: authorizationOrigin + "/mcp-device?user_code=" + userCode, expires_in: 600, interval: 5 };
+      return { device_code: deviceCode, user_code: userCode, verification_uri: authorizationOrigin() + "/mcp-device", verification_uri_complete: authorizationOrigin() + "/mcp-device?user_code=" + userCode, expires_in: 600, interval: 5 };
     },
     async describeDevice(userCode: string, actor: Request["actor"]): Promise<McpConnectionRequest> {
       await assertEnabled();
@@ -541,7 +548,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           await logActivity(tx as unknown as Db, { companyId: binding.companyId, actorType: "user", actorId: binding.operatorId,
             action: "muse.paired", entityType: "agent", entityId: binding.agentId,
             details: { bindingId: binding.id, generation: binding.generation, grantId: grant.id, via: "oauth_pkce_ticket" } });
-          const redirect = new URL(p.redirect_uri); redirect.searchParams.set("iss", issuer);
+          const redirect = new URL(p.redirect_uri); redirect.searchParams.set("iss", issuer());
           if (p.state !== undefined) redirect.searchParams.set("state", p.state);
           redirect.searchParams.set("code", code); return redirect.toString();
         }));
@@ -563,7 +570,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           state: p.state ?? null, challenge: p.code_challenge, expiresAt: new Date(now.getTime() + 10 * minute),
         });
       });
-      return authorizationOrigin + (agentConnection ? "/dot-connect/" : "/mcp-connect/") + id;
+      return authorizationOrigin() + (agentConnection ? "/dot-connect/" : "/mcp-connect/") + id;
     },
     async describeRequest(id: string, actor: Request["actor"], setupUrl: string | null): Promise<McpConnectionRequest> {
       await assertEnabled();
@@ -594,7 +601,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         const [row] = await tx.select().from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id)).for("update");
         if (!row || row.resource !== config.resource || row.decidedAt || row.expiresAt <= new Date()) throw invalidGrant();
         const redirect = new URL(row.redirectUri);
-        redirect.searchParams.set("iss", issuer);
+        redirect.searchParams.set("iss", issuer());
         if (row.state !== null) redirect.searchParams.set("state", row.state);
         if (input.decision === "deny") {
           await tx.update(mcpOauthRequests).set({ decidedAt: new Date() }).where(eq(mcpOauthRequests.id, id));
@@ -651,7 +658,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.update(mcpOauthRequests).set({ grantId: grant.id, codeHash: hashMcpSecret(code), decidedAt: new Date(),
           expiresAt: new Date(Date.now() + minute) }).where(eq(mcpOauthRequests.id, id));
         const redirect = new URL(request.redirectUri);
-        redirect.searchParams.set("iss", issuer);
+        redirect.searchParams.set("iss", issuer());
         if (request.state !== null) redirect.searchParams.set("state", request.state);
         redirect.searchParams.set("code", code);
         return { redirectUrl: redirect.toString() };

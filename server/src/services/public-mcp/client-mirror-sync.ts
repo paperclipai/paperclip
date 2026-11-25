@@ -22,7 +22,7 @@ export function sameMcpClientMirrorReceipt(left:McpClientMirrorReceipt,right:Mcp
 }
 
 export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>,"register">,
-  origin: string | undefined, input: {authorizationOrigin?:string;instanceId?:string;publish?:(request:McpClientMirrorRequest)=>Promise<unknown>} = {}) {
+  originSource: string | undefined | (() => string | undefined), input: {authorizationOrigin?:string;instanceId?:string;publish?:(request:McpClientMirrorRequest)=>Promise<unknown>} = {}) {
   const config = paperclipCloudConnectorConfigFromEnv();
   const connector = config ? createPaperclipCloudConnector({config}) : undefined;
   const instanceId = input.instanceId ?? config?.instanceId;
@@ -33,6 +33,7 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
     retryMs:5_000,pausePassiveMaintenance:true,onSettled:()=>{pending=true;},
     async run(signal) {
       pending=false;
+      const origin=typeof originSource==="function"?originSource():originSource;
       const managedIdentity=getCloudRuntimeIdentity();
       if(!managedIdentity)return;
       if (!origin || !instanceId || !publish) return;

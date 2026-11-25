@@ -37,7 +37,7 @@ import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
-import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
+import { createPublicMcpOAuth, livePublicMcpConfig, publicMcpConfig } from "./services/public-mcp/oauth.js";
 import { createDotPrincipalHttp } from "./modules/external-agents/index.js";
 import { createDotRunnerMcpTools, dotRunnerBroker } from "./services/dot-runner-broker.js";
 import { agentProfileAvatarRoutes } from "./routes/agent-profile-avatar.js";
@@ -71,6 +71,8 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import {
+  DOT_RUNNER_MCP_PATH,
+  PUBLIC_MCP_PATH,
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
   type DeploymentMode,
@@ -98,6 +100,7 @@ import { healthRoutes } from "./routes/health.js";
 import { readinessRoutes } from "./routes/ready.js";
 import { livenessRoutes } from "./routes/liveness.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
+import { runtimeCanonicalOrigin } from "./services/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { runnerCallOutcomeMiddleware } from "./middleware/runner-call-outcome.js";
 import { cloudRoutes } from "./routes/cloud.js";
@@ -601,7 +604,10 @@ export async function createApp(
     }),
   );
   let mcpConfig: ReturnType<typeof publicMcpConfig> = null;
-  try { mcpConfig = publicMcpConfig(process.env, opts.authPublicBaseUrl); }
+  try {
+    const startupMcpConfig = publicMcpConfig(process.env, opts.authPublicBaseUrl);
+    mcpConfig = startupMcpConfig && livePublicMcpConfig(() => runtimeCanonicalOrigin() ?? startupMcpConfig.origin, PUBLIC_MCP_PATH, startupMcpConfig.authorizationOrigin);
+  }
   catch { logger.warn("Assistant connections require an HTTPS public URL (HTTP loopback is allowed for development)."); }
   const publicMcpOAuth = mcpConfig ? createPublicMcpOAuth(db, mcpConfig) : null;
   const publicMcpIngress = Router();
@@ -1135,7 +1141,7 @@ export async function createApp(
     const transfers = createPublicMcpTransfers(db, publicMcpOAuth, dispatch, opts.storageService);
     publicMcpIngress.use(transfers.router);
     publicMcpIngress.use(publicMcpIngressRoutes(publicMcpOAuth, createPublicMcpExecutor(db, publicMcpOAuth, dispatch, transfers), publicMcpEvents));
-    const dotOAuth = createPublicMcpOAuth(db, { ...publicMcpOAuth.config, resource: publicMcpOAuth.config.origin + "/mcp/runner" });
+    const dotOAuth = createPublicMcpOAuth(db, livePublicMcpConfig(() => publicMcpOAuth.config.origin, DOT_RUNNER_MCP_PATH, publicMcpOAuth.config.authorizationOrigin));
     dotPrincipalOAuth = dotOAuth;
     dotMcpEvents = createPublicMcpEvents(db, dotOAuth, dispatch, { enableDotRunner: true, isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive() });
     const grokTransfers = createPublicMcpTransfers(db, dotOAuth, dispatch, opts.storageService, { pathPrefix: "/mcp/runner/files",
@@ -1143,8 +1149,8 @@ export async function createApp(
     publicMcpIngress.use(grokTransfers.router);
     publicMcpIngress.use(publicMcpIngressRoutes(dotOAuth, createPublicMcpExecutor(db, dotOAuth, dispatch), dotMcpEvents, createDotRunnerMcpTools(db, connectionIntentHeartbeat, grokTransfers)));
     api.use(publicMcpManagementRoutes(publicMcpOAuth, dotOAuth));
-    api.use(dotRunnerRoutes(db, publicMcpOAuth.config.origin + "/mcp/runner"));
-    api.use(grokBotRoutes(db, publicMcpOAuth.config.origin + "/mcp/runner"));
+    api.use(dotRunnerRoutes(db, () => dotOAuth.config.resource));
+    api.use(grokBotRoutes(db, () => dotOAuth.config.resource));
   }
 
   api.use(museBoardRoutes(db, opts.authPublicBaseUrl));
@@ -1350,7 +1356,7 @@ export async function createApp(
     nextRunAt: () => agentLifecycle.nextRunAt(),
   });
   agentLifecycle.setWake(agentLifecycleDelivery.wake);
-  const clientMirror = startMcpClientMirrorSync(db, deliveryWork, mcpConfig?.origin,{authorizationOrigin:mcpConfig?.authorizationOrigin});
+  const clientMirror = startMcpClientMirrorSync(db, deliveryWork, () => mcpConfig?.origin,{authorizationOrigin:mcpConfig?.authorizationOrigin});
   const unregisterMcpOwners = registerIdleMcpOwners(db, { config: mcpConfig, personal: publicMcpEvents, dot: dotMcpEvents, clientMirrorInstanceId:clientMirror.instanceId });
   startMcpRevocationIndexSync(db, deliveryWork);
   startMcpIngressHandoffExpiry(db, deliveryWork);
