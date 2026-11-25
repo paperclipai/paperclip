@@ -3429,6 +3429,7 @@ export class PaperclipRunnerToolAuthority {
           sourceRunId: this.binding.runId,
           title: requiredString(input.title),
           summary: prompt,
+          ...(input.addresseeUserId === undefined ? {} : { addresseeUserId: input.addresseeUserId }),
           ...(input.resolverPolicy === undefined ? {} : { resolverPolicy: input.resolverPolicy }),
           continuationPolicy: requiredString(input.continuationPolicy),
           payload: {
@@ -3461,6 +3462,7 @@ export class PaperclipRunnerToolAuthority {
             interactionKind: interaction.kind,
             interactionStatus: interaction.status,
             continuationPolicy: interaction.continuationPolicy,
+            ...(interaction.addresseeUserId ? { addresseeUserId: interaction.addresseeUserId } : {}),
             source: "paperclip_runner_protocol",
           },
         });

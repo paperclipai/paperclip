@@ -296,6 +296,7 @@ describe("Capability exposure and authorization", () => {
         title: "Confirm plan",
         prompt: "Accept this plan?",
         targetRevisionId: revisionId!,
+        addresseeUserId: "reviewer-id",
         continuationPolicy: "wake_assignee",
       },
       idempotencyKey: "confirm-plan-1",
@@ -304,7 +305,7 @@ describe("Capability exposure and authorization", () => {
     expect(adapter.snapshot()).toMatchObject({
       tasks: [{ status: "in_review" }],
       documents: [{ key: "plan", revisions: [{ body: "# Semantic plan" }] }],
-      interactions: [{ kind: "confirmation", status: "pending" }],
+      interactions: [{ kind: "confirmation", status: "pending", addresseeUserId: "reviewer-id" }],
       artifacts: [{ filename: "report.json" }],
       workProducts: [{ type: "artifact" }],
     });

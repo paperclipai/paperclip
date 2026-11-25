@@ -99,6 +99,7 @@ export interface CapabilityFixtureInteraction {
   title: string;
   prompt: string;
   payload: CapabilityJsonValue;
+  addresseeUserId?: string;
   targetRevisionId: string | null;
   continuationPolicy: "none" | "wake_assignee" | "wake_assignee_on_accept";
   result: CapabilityJsonValue | null;
@@ -375,6 +376,7 @@ export type CapabilitySemanticCommand =
       title: string;
       prompt: string;
       payload?: CapabilityJsonValue;
+      addresseeUserId?: string;
       targetRevisionId?: string | null;
       continuationPolicy: CapabilityFixtureInteraction["continuationPolicy"];
     })

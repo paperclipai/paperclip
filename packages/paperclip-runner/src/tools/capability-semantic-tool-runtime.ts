@@ -1562,6 +1562,7 @@ function commandForOperation(
         title: requireString(input.title),
         prompt: requireString(input.prompt),
         payload: input.payload,
+        ...(input.addresseeUserId === undefined ? {} : { addresseeUserId: requireString(input.addresseeUserId) }),
         targetRevisionId: input.targetRevisionId === null || input.targetRevisionId === undefined
           ? input.targetRevisionId
           : requireString(input.targetRevisionId),

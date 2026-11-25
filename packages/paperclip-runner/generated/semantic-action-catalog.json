@@ -791,6 +791,12 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "addresseeUserId": {
+          "description": "Optional Paperclip user ID from list_people. Set it when a specific person must respond.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
         "continuationPolicy": {
           "enum": [
             "none",
