@@ -140,6 +140,24 @@ export async function runWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
+export function formatCargoCompilerDiagnostics(stdout) {
+  const rendered = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith("{")) continue;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.reason === "compiler-message" && typeof message.message?.rendered === "string") {
+      rendered.push(message.message.rendered);
+    }
+  }
+  return rendered.length > 0 ? rendered.join("") : stdout;
+}
+
 function splitOutput(chunks) {
   const stdout = Buffer.concat(chunks.filter((c) => c.stream === "stdout").map((c) => c.chunk)).toString("utf8");
   const stderr = Buffer.concat(chunks.filter((c) => c.stream === "stderr").map((c) => c.chunk)).toString("utf8");
@@ -162,6 +180,9 @@ async function executeRunnerCheck(plan) {
     for (const result of parsedCompile) {
       console.log(`[check:runner] --- ${result.label} (${(result.durationMs / 1000).toFixed(1)}s, exit=${result.code}) ---`);
       if (result.label !== "cargo:test-no-run" && result.stdout) process.stdout.write(result.stdout);
+      if (result.label === "cargo:test-no-run" && result.code !== 0 && result.stdout) {
+        process.stderr.write(formatCargoCompilerDiagnostics(result.stdout));
+      }
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) console.error(`[check:runner] ${result.label} spawn error: ${result.error.message}`);
     }

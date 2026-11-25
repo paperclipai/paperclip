@@ -14,7 +14,7 @@ function resolvePnpmInvocation(env = process.env) {
     }
     return { command: npmExecPath, argsPrefix: [] };
   }
-  return { command: process.platform === "win32" ? "pnpm.cmd" : "pnpm", argsPrefix: [] };
+  return { command: "pnpm", argsPrefix: [] };
 }
 
 function cmd(label, command, args, cwd = packageRoot) {

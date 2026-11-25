@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildRunnerCheckPlan,
+  formatCargoCompilerDiagnostics,
   orderTestBinariesLpt,
   parseCargoTestArtifacts,
   REQUIRED_PARITY_TESTS,
@@ -115,4 +116,13 @@ test("runWithConcurrency bounds parallelism and preserves result ordering", asyn
   });
   assert.equal(peak, 2);
   assert.deepEqual(results, [20, 40, 60, 80, 100]);
+});
+
+test("formatCargoCompilerDiagnostics extracts rendered compiler messages and falls back to raw stdout", () => {
+  const jsonLines = [
+    JSON.stringify({ reason: "compiler-artifact", target: { name: "x" } }),
+    JSON.stringify({ reason: "compiler-message", message: { rendered: "error[E0425]: cannot find value\n" } }),
+  ].join("\n");
+  assert.equal(formatCargoCompilerDiagnostics(jsonLines), "error[E0425]: cannot find value\n");
+  assert.equal(formatCargoCompilerDiagnostics("plain cargo failure\n"), "plain cargo failure\n");
 });
