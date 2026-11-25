@@ -12,6 +12,7 @@ import { agents, connectionGrantMembers, connectionGrantDelegations, connectionG
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { createAntigravityAccessRemoval } from "../../antigravity-access-removal.js";
 import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
@@ -25,11 +26,12 @@ type GrantDependencies = {
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
   vercelConnect: VercelConnectClient | null;
   currentCloudConnector: () => PaperclipCloudConnector | null;
-  secrets: Pick<ReturnType<typeof secretService>, "remove">;
+  secrets: Pick<ReturnType<typeof secretService>, "remove" | "removeUserSecretDefinition">;
 };
 
 export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets }: GrantDependencies) {
   const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
+  const antigravityAccess = createAntigravityAccessRemoval(db, { secrets });
   return {
     listConnectionGrants: async (idOrUid: string, companyId?: string) => {
       const connection = await getConnectionRow(idOrUid, companyId);
@@ -517,7 +519,7 @@ replaceConnectionGrantMembers: async (
         grantId: currentGrant.id,
         removingConnection: false,
         removeSecret: (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }),
-      });
+      }) ?? await antigravityAccess.prepare(connection, [currentGrant], actor, "grant_revoked");
       if (
         connection.credentialSource === "vercel_connect" &&
         connection.externalCredential

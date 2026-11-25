@@ -4,6 +4,9 @@ import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { createAntigravityAccessRemoval } from "../../antigravity-access-removal.js";
+import { publishActivity } from "../../activity-log.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { actorBinding, connectionActorUserId } from "../actor.js";
@@ -91,6 +94,7 @@ type RemovalDependencies = {
 
 export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
   const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
+  const antigravityAccess = createAntigravityAccessRemoval(db, { secrets });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -293,9 +297,10 @@ async function removeConnection(
       removeSecret: async (secretId, expectedVersion) => {
         if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
       },
-    });
-    if (grantsToRevoke.length > 0) {
-      await db
+    }) ?? await antigravityAccess.prepare(connection, grantRows, actor, "connection_removed");
+    const releasedWaitPublications: ActivityPublication[] = [];
+    await db.transaction(async (tx) => {
+      if (grantsToRevoke.length > 0) await tx
         .update(connectionGrants)
         .set({
           status: "revoked",
@@ -313,16 +318,16 @@ async function removeConnection(
             grantsToRevoke.map((row) => row.id),
           ),
         );
-    }
-    // Usage limits reported on a removed account no longer hold work. This
-    // runs before any provider call and covers grants an earlier attempt
-    // already revoked, so a failed release fails the removal and its retry
-    // releases them.
-    await releaseProviderLimitWaits(db, {
-      companyId: connection.companyId, reason: "ai_connection_revoked",
-      grantIds: grantRows.map((row) => row.id),
-      ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+      // Usage limits reported on a removed account no longer hold work. The
+      // release commits with the revocation, so waiting work never outlives it.
+      await releaseProviderLimitWaits(tx as unknown as Db, {
+        companyId: connection.companyId, reason: "ai_connection_revoked",
+        grantIds: grantRows.map((row) => row.id),
+        publications: releasedWaitPublications,
+        ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+      });
     });
+    releasedWaitPublications.forEach(publishActivity);
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
     if (
