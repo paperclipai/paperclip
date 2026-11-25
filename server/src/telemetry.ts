@@ -12,6 +12,10 @@ import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { serverVersion } from "./version.js";
 import { getCloudStackContext } from "./services/cloud-instance.js";
 import {
+  resetResolvedCloudTrialInferenceEnabledForTests,
+  setResolvedCloudTrialInferenceEnabled,
+} from "./services/cloud-posthog-cohort.js";
+import {
   CLOUD_TRIAL_INFERENCE_FLAG_KEY,
   cloudTrialInferenceCohort,
   isPostHogDirectDeliveryEnabled,
@@ -113,14 +117,6 @@ export function isPostHogDirectTelemetryActive(): boolean {
 }
 
 /**
- * Keeps direct PostHog event properties aligned with the resolved instance
- * experimental setting (including staging database overrides).
- */
-export function syncCloudTrialInferenceCohort(enabled: boolean): void {
-  directTransport?.setCloudTrialInferenceEnabled(enabled);
-}
-
-/**
  * Emits a Cloud-only direct PostHog event (never sent through the self-hosted
  * collector). Fire-and-forget; never throws to callers.
  */
@@ -176,6 +172,7 @@ export function trackCloudTrialExposure(input: {
       ? input.enabledOverride
       : transport.cloudTrialInferenceEnabled;
   if (typeof input.enabledOverride === "boolean") {
+    setResolvedCloudTrialInferenceEnabled(input.enabledOverride);
     transport.setCloudTrialInferenceEnabled(input.enabledOverride);
   }
   const cohort = cloudTrialInferenceCohort(enabled);
@@ -219,4 +216,5 @@ export function resetTelemetryForTests(): void {
   directTransport = null;
   initializationFailed = false;
   exposedTrialActors.clear();
+  resetResolvedCloudTrialInferenceEnabledForTests();
 }

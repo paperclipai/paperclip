@@ -205,9 +205,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       selectedEnvironmentForConfig?.driver ?? "local",
     );
 
+  const isCloudTrial = !aiBinding && isAgentUsingCloudTrialInference(agent.runtimeConfig);
+  const stripAiEnv = Boolean(aiBinding) || isCloudTrial;
   const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
     await time("configuration_secrets", () => resolveExecutionRunAdapterConfig({
-      managedAiCredentials: Boolean(aiBinding),
+      managedAiCredentials: stripAiEnv,
       managedGitHubCredentials: !useHostGitHub,
       companyId: agent.companyId,
       agentId: agent.id,
@@ -215,14 +217,14 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,
-      environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
+      environmentEnv: stripAiEnv ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
       environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
       projectId: taskProjectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       responsibleUserId,
-      executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-      projectEnv: aiBinding ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
-      routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+      executionRunConfig: stripAiEnv ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+      projectEnv: stripAiEnv ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
+      routineEnv: stripAiEnv ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
       secretsSvc,
       trustPreset,
     }));

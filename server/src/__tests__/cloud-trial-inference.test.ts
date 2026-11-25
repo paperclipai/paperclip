@@ -15,6 +15,10 @@ import {
 } from "../services/cloud-trial-inference.js";
 import { cloudInferenceInternalProxyRoutes } from "../routes/cloud-inference.js";
 import { resolveBrowserAnalyticsConfig } from "../services/cloud-posthog-browser.js";
+import {
+  resetResolvedCloudTrialInferenceEnabledForTests,
+  setResolvedCloudTrialInferenceEnabled,
+} from "../services/cloud-posthog-cohort.js";
 import { createPostHogDirectTransport } from "../services/posthog-direct/transport.js";
 
 function generateTestEd25519Pair() {
@@ -65,6 +69,7 @@ describe("cloud-trial-inference", () => {
     while (closers.length > 0) {
       await closers.pop()!();
     }
+    resetResolvedCloudTrialInferenceEnabledForTests();
     vi.restoreAllMocks();
   });
 
@@ -207,7 +212,7 @@ describe("cloud-trial-inference", () => {
       "proxy_token_not_found_on_instance",
     );
 
-    // 2. Disallowed model fails closed (403)
+    // 2. Disallowed model, missing model, fallback models array, and fallback route all fail closed (403)
     const badModel = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -215,8 +220,37 @@ describe("cloud-trial-inference", () => {
     });
     expect(badModel.status).toBe(403);
 
-    // 3. Allowed model succeeds and sliding idle TTL keeps long active runs working past 30 minutes
-    fakeNow += 20 * 60_000;
+    const missingModel = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ models: ["anthropic/claude-opus-4"], messages: [] }),
+    });
+    expect(missingModel.status).toBe(403);
+
+    const fallbackModels = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openai/gpt-6-luna",
+        models: ["openai/gpt-6-luna", "anthropic/claude-opus-4"],
+        messages: [],
+      }),
+    });
+    expect(fallbackModels.status).toBe(403);
+
+    const fallbackRoute = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openai/gpt-6-luna",
+        route: "fallback",
+        messages: [],
+      }),
+    });
+    expect(fallbackRoute.status).toBe(403);
+
+    // 3. Allowed model succeeds and active-run token survives multi-hour tool execution gaps until cleanup()
+    fakeNow += 2 * 60 * 60_000;
     const okRes = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -228,8 +262,8 @@ describe("cloud-trial-inference", () => {
     expect(seenAuthHeaders[0]).toBe("Bearer sk-or-v1-real-secret-key-never-sent-to-sandbox");
     expect(seenAttributionHeaders[0]).toBe("Paperclip");
 
-    // Advance another 20 minutes (40 min total since run launch) — still valid because previous request renewed it!
-    fakeNow += 20 * 60_000;
+    // Advance another 3 hours — still valid while the run remains active!
+    fakeNow += 3 * 60 * 60_000;
     const renewedRes = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -338,7 +372,7 @@ describe("cloud-trial-inference", () => {
     );
 
     expect(transport.cloudTrialInferenceEnabled).toBe(false);
-    transport.setCloudTrialInferenceEnabled(true);
+    setResolvedCloudTrialInferenceEnabled(true);
     expect(transport.cloudTrialInferenceEnabled).toBe(true);
     await transport.captureCloudEvent({ event: "cloud_trial.started", properties: { source: "test" } });
     expect(captured[0]?.properties?.cloud_trial_inference_enabled).toBe(true);

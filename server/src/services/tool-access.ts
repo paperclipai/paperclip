@@ -4939,6 +4939,7 @@ export function toolAccessService(
 
     listConnectionInstalls,
     putConnectionInstalls: connectionInstalls.putConnectionInstalls,
+    ensureAgentConnectionInstalls: connectionInstalls.ensureAgentConnectionInstalls,
 
     updateConnection: async (
       connectionId: string,

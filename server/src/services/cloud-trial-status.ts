@@ -167,7 +167,13 @@ export async function getCompanyCloudTrialStatus(
       pauseReason: agents.pauseReason,
     })
     .from(agents)
-    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+        ne(agents.status, "pending_approval"),
+      ),
+    );
 
   const trialAgentRows = companyAgents.filter((a) => isAgentUsingCloudTrialInference(a.runtimeConfig));
   const trialAgents = trialAgentRows.map((a) => ({

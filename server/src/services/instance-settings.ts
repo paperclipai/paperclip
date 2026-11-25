@@ -19,7 +19,7 @@ import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { syncCloudTrialInferenceCohort } from "../telemetry.js";
+import { setResolvedCloudTrialInferenceEnabled } from "./cloud-posthog-cohort.js";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
 
@@ -512,7 +512,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       enforcedManagedConfig,
     );
     if (!options.runtimeEnv) {
-      syncCloudTrialInferenceCohort(experimental.enableCloudTrialInference === true);
+      setResolvedCloudTrialInferenceEnabled(experimental.enableCloudTrialInference === true);
     }
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
     return managedConfig ? { ...experimental, managedKeys } : experimental;

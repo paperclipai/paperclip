@@ -15,7 +15,11 @@ import {
   type CloudTrialKeyStore,
 } from "./cloud-trial-key-store.js";
 
-const RUN_PROXY_TOKEN_IDLE_TTL_MS = 30 * 60_000;
+// Active-run proxy tokens stay valid for the entire duration of their run
+// (revoked deterministically in `cleanup()` on run exit or immediately on
+// budget exhaustion). A 24h ceiling only prevents unbounded memory leaks if a
+// caller drops a handle without invoking `cleanup()`.
+const RUN_PROXY_TOKEN_LEAK_CEILING_MS = 24 * 60 * 60_000;
 const PROXY_REQUEST_TIMEOUT_MS = 180_000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const RUN_TOKEN_PREFIX = "pctrial_";
@@ -26,7 +30,8 @@ interface RunProxyTokenRecord {
   agentId: string;
   runId: string;
   allowedModel: string;
-  expiresAtMs: number;
+  /** Safety ceiling only; refreshed on activity and revoked on run cleanup/exhaustion. */
+  safetyExpiresAtMs: number;
 }
 
 export interface PreparedCloudTrialRuntime {
@@ -61,23 +66,23 @@ export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
     activeRunTokens.clear();
   });
 
-  function pruneExpiredRunTokens() {
+  function pruneStaleRunTokens() {
     const current = now();
     for (const [token, record] of activeRunTokens) {
-      if (record.expiresAtMs <= current) {
+      if (record.safetyExpiresAtMs <= current) {
         activeRunTokens.delete(token);
       }
     }
   }
 
   function findAndTouchRunToken(presented: string): RunProxyTokenRecord | null {
-    pruneExpiredRunTokens();
+    pruneStaleRunTokens();
     const presentedBuf = Buffer.from(presented, "utf8");
     for (const [stored, record] of activeRunTokens) {
       const storedBuf = Buffer.from(stored, "utf8");
       if (storedBuf.length === presentedBuf.length && timingSafeEqual(storedBuf, presentedBuf)) {
-        // Renew sliding idle deadline while the active run continues making model calls.
-        record.expiresAtMs = now() + RUN_PROXY_TOKEN_IDLE_TTL_MS;
+        // Keep the active run's token alive across arbitrary-length tasks and tool calls.
+        record.safetyExpiresAtMs = now() + RUN_PROXY_TOKEN_LEAK_CEILING_MS;
         return record;
       }
     }
@@ -151,7 +156,7 @@ export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
       agentId: input.agentId,
       runId: input.runId,
       allowedModel,
-      expiresAtMs: now() + RUN_PROXY_TOKEN_IDLE_TTL_MS,
+      safetyExpiresAtMs: now() + RUN_PROXY_TOKEN_LEAK_CEILING_MS,
     });
 
     return {
@@ -254,24 +259,51 @@ export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
         forwardBody = Buffer.concat(chunks);
       }
 
-      if (forwardBody.length > 0 && (normalizedSubpath === "chat/completions" || normalizedSubpath === "responses")) {
+      if (normalizedSubpath === "chat/completions" || normalizedSubpath === "responses") {
+        if (forwardBody.length === 0) {
+          res.statusCode = 400;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: { code: "invalid_json", message: "Request body is required" } }));
+          return;
+        }
         try {
           const parsed = readJsonRecord(JSON.parse(forwardBody.toString("utf8")));
-          if (typeof parsed.model === "string" && parsed.model.trim()) {
-            const requested = stripOpenRouterPrefix(parsed.model);
-            if (requested !== tokenRecord.allowedModel) {
-              res.statusCode = 403;
-              res.setHeader("content-type", "application/json");
-              res.end(
-                JSON.stringify({
-                  error: {
-                    code: "model_not_allowed",
-                    message: `Trial inference is restricted to ${tokenRecord.allowedModel}`,
-                  },
-                }),
-              );
-              return;
+          const requestedModel =
+            typeof parsed.model === "string" && parsed.model.trim()
+              ? stripOpenRouterPrefix(parsed.model)
+              : "";
+          const disallowedFallbackRoute = parsed.route !== undefined;
+          let disallowedModelsList = false;
+          if (parsed.models !== undefined) {
+            if (
+              !Array.isArray(parsed.models) ||
+              parsed.models.length === 0 ||
+              parsed.models.some(
+                (entry) =>
+                  typeof entry !== "string" ||
+                  !entry.trim() ||
+                  stripOpenRouterPrefix(entry) !== tokenRecord.allowedModel,
+              )
+            ) {
+              disallowedModelsList = true;
             }
+          }
+          if (
+            requestedModel !== tokenRecord.allowedModel ||
+            disallowedFallbackRoute ||
+            disallowedModelsList
+          ) {
+            res.statusCode = 403;
+            res.setHeader("content-type", "application/json");
+            res.end(
+              JSON.stringify({
+                error: {
+                  code: "model_not_allowed",
+                  message: `Trial inference is restricted to ${tokenRecord.allowedModel}`,
+                },
+              }),
+            );
+            return;
           }
         } catch {
           res.statusCode = 400;

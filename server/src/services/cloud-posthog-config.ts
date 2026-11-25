@@ -1,4 +1,5 @@
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
+import { getResolvedCloudTrialInferenceEnabled } from "./cloud-posthog-cohort.js";
 
 /**
  * PostHog experiment / feature flag key for the Cloud starter-inference A/B test.
@@ -19,6 +20,10 @@ export function cloudTrialInferenceCohort(enabled: boolean): CloudTrialInference
  * malformed so analytics never throw on startup.
  */
 export function resolveCloudTrialInferenceEnabled(env: CloudInstanceEnv = process.env): boolean {
+  if (env === process.env) {
+    const resolved = getResolvedCloudTrialInferenceEnabled();
+    if (resolved !== null) return resolved;
+  }
   const raw = env.PAPERCLIP_MANAGED_CONFIG?.trim();
   if (!raw) return false;
   try {

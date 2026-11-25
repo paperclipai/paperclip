@@ -7,6 +7,7 @@ import {
   cloudTrialInferenceCohort,
   type CloudPostHogConfig,
 } from "../cloud-posthog-config.js";
+import { getResolvedCloudTrialInferenceEnabled } from "../cloud-posthog-cohort.js";
 import {
   buildCloudDirectEvent,
   buildPostHogDirectEvent,
@@ -98,12 +99,19 @@ export function createPostHogDirectTransport(
   const now = options.now ?? (() => new Date());
   let clientPromise: Promise<PostHogNodeClient> | null = null;
   let pendingAnnouncement: { startup: WorkspaceStartup; occurredAt: string } | null = null;
-  let resolvedCloudTrialInferenceEnabled = config.cloudTrialInferenceEnabled;
+  let explicitCloudTrialInferenceEnabled: boolean | null = null;
 
-  const currentConfig = (): CloudPostHogConfig =>
-    resolvedCloudTrialInferenceEnabled === config.cloudTrialInferenceEnabled
+  const effectiveCloudTrialInferenceEnabled = (): boolean =>
+    explicitCloudTrialInferenceEnabled ??
+    getResolvedCloudTrialInferenceEnabled() ??
+    config.cloudTrialInferenceEnabled;
+
+  const currentConfig = (): CloudPostHogConfig => {
+    const enabled = effectiveCloudTrialInferenceEnabled();
+    return enabled === config.cloudTrialInferenceEnabled
       ? config
-      : { ...config, cloudTrialInferenceEnabled: resolvedCloudTrialInferenceEnabled };
+      : { ...config, cloudTrialInferenceEnabled: enabled };
+  };
 
   const getClient = () => {
     clientPromise ??= factory(config).catch((error) => {
@@ -167,11 +175,11 @@ export function createPostHogDirectTransport(
 
   return {
     get cloudTrialInferenceEnabled() {
-      return resolvedCloudTrialInferenceEnabled;
+      return effectiveCloudTrialInferenceEnabled();
     },
 
     setCloudTrialInferenceEnabled(enabled: boolean) {
-      resolvedCloudTrialInferenceEnabled = enabled;
+      explicitCloudTrialInferenceEnabled = enabled;
     },
 
     hashesPrivateRefs: false,

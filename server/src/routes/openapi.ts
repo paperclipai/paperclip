@@ -1549,6 +1549,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
+  "GET /api/companies/{companyId}/cloud-inference/status",
+  "POST /api/companies/{companyId}/cloud-inference/migrate",
+  "POST /api/companies/{companyId}/cloud-inference/telemetry",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -2146,6 +2149,41 @@ registry.registerPath({
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/cloud-inference/status",
+  tags: ["cloud"],
+  summary: "Get Cloud starter inference status for a company",
+  responses: {
+    200: r.ok(),
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/migrate",
+  tags: ["cloud"],
+  summary: "Migrate Cloud starter trial agents onto a connected model provider",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/telemetry",
+  tags: ["cloud"],
+  summary: "Record Cloud starter inference onboarding exposure or prompt telemetry",
+  responses: {
+    204: { description: "Recorded" },
+    403: r.forbidden,
   },
 });
 

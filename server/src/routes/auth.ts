@@ -14,8 +14,8 @@ import { resolveBrowserTracingConfig, warnOnce } from "../browser-tracing-config
 import { logger } from "../middleware/logger.js";
 import { loadBoardBootstrap } from "../services/board-bootstrap.js";
 import { resolveBrowserAnalyticsConfig } from "../services/cloud-posthog-browser.js";
+import { setResolvedCloudTrialInferenceEnabled } from "../services/cloud-posthog-cohort.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { syncCloudTrialInferenceCohort } from "../telemetry.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -68,7 +68,7 @@ export function authRoutes(db: Db) {
     const cloudTrialInferenceEnabled =
       experimental !== null ? experimental.enableCloudTrialInference === true : undefined;
     if (typeof cloudTrialInferenceEnabled === "boolean") {
-      syncCloudTrialInferenceCohort(cloudTrialInferenceEnabled);
+      setResolvedCloudTrialInferenceEnabled(cloudTrialInferenceEnabled);
     }
     res.setHeader("Cache-Control", "private, no-store");
     const session = authSessionSchema.parse({

@@ -89,7 +89,13 @@ export async function migrateCloudTrialAgents(
   const companyAgents = await db
     .select()
     .from(agents)
-    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+        ne(agents.status, "pending_approval"),
+      ),
+    );
 
   const requestedIds = input.agentIds ? new Set(input.agentIds) : null;
   const targets = companyAgents.filter((agent) => {
@@ -108,7 +114,8 @@ export async function migrateCloudTrialAgents(
     }
   }
 
-  // 3. Check connection install access for every target agent before committing.
+  // 3. Check & add missing connection install access atomically under the
+  // connection write lock so concurrent access changes are never overwritten.
   if (targets.length > 0) {
     const toolAccess = toolAccessService(db);
     const existingInstalls = await toolAccess.listConnectionInstalls(input.connectionId);
@@ -144,19 +151,9 @@ export async function migrateCloudTrialAgents(
             { targetAgentIds: missingAgentIds },
           );
         }
-        const mergedInstalls = [
-          ...existingInstalls.map((install) => ({
-            targetType: install.targetType as "company" | "agent",
-            targetId: install.targetId,
-          })),
-          ...missingAgentIds.map((agentId) => ({
-            targetType: "agent" as const,
-            targetId: agentId,
-          })),
-        ];
-        await toolAccess.putConnectionInstalls(
+        await toolAccess.ensureAgentConnectionInstalls(
           input.connectionId,
-          { installs: mergedInstalls },
+          missingAgentIds,
           {
             actorType: "user",
             actorId: actorCtx.userId,
