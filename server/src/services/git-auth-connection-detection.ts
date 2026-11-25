@@ -14,12 +14,44 @@ interface CommandExecutionRecord {
   failed: boolean;
 }
 
+type ParsedGitHubCommand =
+  | { kind: "git"; subcommand: string | null }
+  | { kind: "gh"; authenticated: boolean };
+
 const GITHUB_HOST_URL_RE =
   /(?:^|[\s'"`(\[])(?:(?:https?|ssh|git):\/\/(?:[^/\s'"`@]+@)?|git@)github\.com(?::\d+)?(?:[/:]|$|[\s'"`)\]])/i;
 
-const GIT_OR_GH_COMMAND_RE = /(?:^|[\s/\\;|&`'"])(?:git|gh)(?:\s|$)/i;
-const REMOTE_GIT_OR_GH_COMMAND_RE =
-  /(?:^|[\s/\\;|&`'"])(?:git\s+(?:-[^\s]+\s+)*(?:clone|fetch|pull|push|ls-remote)\b|gh\s+(?!-h\b|--help\b|--version\b|version\b|help\b))/i;
+const GITHUB_REPO_RE =
+  /(?:(?:https?|ssh|git):\/\/(?:[^/\s'"`@]+@)?|git@)github\.com(?::\d+)?[/:]([a-z0-9._-]+\/[a-z0-9._-]+?)(?:\.git)?(?=$|[/\s'"`)\],;])/i;
+
+const GENERIC_SHELL_TOOL_NAMES = new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "shell",
+  "exec",
+  "terminal",
+  "command",
+  "run_command",
+  "execute_command",
+  "shell_command",
+  "process",
+]);
+
+const GIT_VALUE_GLOBAL_FLAGS = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--config-env",
+  "--exec-path",
+]);
+
+const GIT_REMOTE_READ_SUBCOMMANDS = new Set(["clone", "fetch", "pull", "ls-remote"]);
+
+const GH_LOCAL_SUBCOMMANDS = new Set(["help", "version", "completion"]);
 
 const GH_CLI_UNAUTHENTICATED_PATTERNS = [
   /\byou are not logged into any github hosts\b/i,
@@ -40,6 +72,9 @@ const GIT_GITHUB_AUTH_FAILURE_PATTERNS = [
 
 const GIT_REMOTE_AUTH_FAILURE_RE =
   /remote:\s*(?:repository not found|permission to [^\n]+ denied|invalid username or (?:password|token)|support for password authentication was removed|write access to repository not granted)/i;
+
+const NON_GITHUB_REMOTE_URL_RE =
+  /(?:(?:https?|ssh|git):\/\/(?:[^/\s'"`@]+@)?|git@)(?!github\.com(?::\d+)?(?:[/:]|$))[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?[/:]/i;
 
 const WORKSPACE_CLONE_AUTH_REASONS = new Set(["authentication_failed", "repository_unavailable"]);
 
@@ -62,9 +97,111 @@ function joinTextParts(parts: unknown[]): string {
     .join("\n");
 }
 
+function resolveToolCommand(body: Record<string, unknown>): string {
+  const explicitCommand = joinTextParts([body.command, body.subject]);
+  if (explicitCommand) return explicitCommand;
+  const name = asNonEmptyString(body.name);
+  if (!name) return "";
+  // Generic shell tool names (for example OpenCode's `name: "bash"`) do not
+  // carry the executed command text; treat them as omitted command metadata.
+  if (GENERIC_SHELL_TOOL_NAMES.has(name.toLowerCase())) return "";
+  return name;
+}
+
 export function isGitHubRemoteUrl(value: unknown): boolean {
   const text = asNonEmptyString(value);
   return text !== null && GITHUB_HOST_URL_RE.test(text);
+}
+
+function extractGitHubRepoSlug(text: string): string | null {
+  const match = text.match(GITHUB_REPO_RE);
+  return match?.[1] ? match[1].toLowerCase() : null;
+}
+
+function tokenizeSegment(segment: string): string[] {
+  const tokens: string[] = [];
+  const tokenRe = /'([^']*)'|"([^"]*)"|([^\s]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = tokenRe.exec(segment)) !== null) {
+    const token = match[1] ?? match[2] ?? match[3] ?? "";
+    if (token.length > 0) tokens.push(token);
+  }
+  return tokens;
+}
+
+function unwrapShellWrapper(command: string): string {
+  const trimmed = command.trim();
+  const wrapper = trimmed.match(/^(?:(?:\/[\w./-]+\/)?(?:bash|sh|zsh))\s+(?:-[a-zA-Z]*c)\s+(['"])([\s\S]*)\1$/);
+  return wrapper?.[2] ? wrapper[2] : trimmed;
+}
+
+function basename(executable: string): string {
+  const idx = Math.max(executable.lastIndexOf("/"), executable.lastIndexOf("\\"));
+  return (idx >= 0 ? executable.slice(idx + 1) : executable).toLowerCase();
+}
+
+function parseCommandSegment(segment: string): ParsedGitHubCommand | null {
+  const tokens = tokenizeSegment(segment);
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      i += 1;
+      continue;
+    }
+    const base = basename(token);
+    if (base === "env") {
+      i += 1;
+      while (i < tokens.length) {
+        const arg = tokens[i]!;
+        if (arg === "-u" || arg === "--unset") {
+          i += 2;
+        } else if (arg.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+      continue;
+    }
+    if (base === "git") {
+      i += 1;
+      while (i < tokens.length) {
+        const arg = tokens[i]!;
+        if (GIT_VALUE_GLOBAL_FLAGS.has(arg)) {
+          i += 2;
+          continue;
+        }
+        if (arg.startsWith("-")) {
+          i += 1;
+          continue;
+        }
+        return { kind: "git", subcommand: arg.toLowerCase() };
+      }
+      return { kind: "git", subcommand: null };
+    }
+    if (base === "gh") {
+      const rest = tokens.slice(i + 1);
+      const hasHelpOrVersionFlag = rest.some((arg) => arg === "-h" || arg === "--help" || arg === "--version");
+      const firstSubcommand = rest.find((arg) => !arg.startsWith("-"))?.toLowerCase() ?? null;
+      const isLocal = hasHelpOrVersionFlag || !firstSubcommand || GH_LOCAL_SUBCOMMANDS.has(firstSubcommand);
+      return { kind: "gh", authenticated: !isLocal };
+    }
+    return null;
+  }
+  return null;
+}
+
+function parseGitHubCommands(command: string): ParsedGitHubCommand[] {
+  if (!command.trim()) return [];
+  const unwrapped = unwrapShellWrapper(command);
+  const segments = unwrapped.split(/\s*(?:&&|\|\||;|\||\n)\s*/);
+  const parsed: ParsedGitHubCommand[] = [];
+  for (const segment of segments) {
+    const item = parseCommandSegment(segment);
+    if (item) parsed.push(item);
+  }
+  return parsed;
 }
 
 function extractCommandExecution(event: GitAuthCommandEvent): CommandExecutionRecord | null {
@@ -81,7 +218,7 @@ function extractCommandExecution(event: GitAuthCommandEvent): CommandExecutionRe
       ? exitCode !== 0
       : (status === "failed" || status === "error");
     const output = joinTextParts([body.output, body.stderr, body.error]);
-    const command = joinTextParts([body.command, body.name, body.subject]);
+    const command = resolveToolCommand(body);
     if (!output && !command) return null;
     return { command, output, failed };
   }
@@ -109,15 +246,9 @@ function extractCommandExecution(event: GitAuthCommandEvent): CommandExecutionRe
   return null;
 }
 
-function isGitOrGhCommand(command: string): boolean {
-  // Some generic shell wrappers omit the raw command string; allow output-only
-  // matching when command metadata is absent, but reject unrelated commands
-  // (for example `cat error.log` or `vitest run`) when a command name is present.
-  return command.length === 0 || GIT_OR_GH_COMMAND_RE.test(command);
-}
-
 function matchesUnconfiguredGitHubAuthFailure(execution: CommandExecutionRecord): boolean {
-  if (!execution.failed || !execution.output || !isGitOrGhCommand(execution.command)) {
+  if (!execution.failed || !execution.output) return false;
+  if (execution.command.length > 0 && parseGitHubCommands(execution.command).length === 0) {
     return false;
   }
   const { output } = execution;
@@ -133,26 +264,59 @@ function matchesUnconfiguredGitHubAuthFailure(execution: CommandExecutionRecord)
   return false;
 }
 
-function isRecoveredGitHubCommand(execution: CommandExecutionRecord): boolean {
-  return !execution.failed && execution.command.length > 0 && REMOTE_GIT_OR_GH_COMMAND_RE.test(execution.command);
+function didRecoverGitHubAuth(
+  execution: CommandExecutionRecord,
+  failedRepoSlug: string | null,
+): boolean {
+  if (execution.failed || execution.command.length === 0) return false;
+  const commands = parseGitHubCommands(execution.command);
+  if (commands.length === 0) return false;
+  const combined = `${execution.command}\n${execution.output}`;
+  if (NON_GITHUB_REMOTE_URL_RE.test(combined) && !isGitHubRemoteUrl(combined)) {
+    return false;
+  }
+  const succeededRepoSlug = extractGitHubRepoSlug(combined);
+  for (const cmd of commands) {
+    if (cmd.kind === "gh" && cmd.authenticated) {
+      if (!failedRepoSlug || !succeededRepoSlug || succeededRepoSlug === failedRepoSlug) {
+        return true;
+      }
+    }
+    if (cmd.kind === "git" && cmd.subcommand === "push") {
+      if (!failedRepoSlug || !succeededRepoSlug || succeededRepoSlug === failedRepoSlug) {
+        return true;
+      }
+    }
+    if (cmd.kind === "git" && cmd.subcommand && GIT_REMOTE_READ_SUBCOMMANDS.has(cmd.subcommand)) {
+      // A successful public clone/fetch of a different repository does not prove
+      // access to the private GitHub repository that previously failed.
+      if (failedRepoSlug && succeededRepoSlug === failedRepoSlug) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
  * Inspects command events in chronological order (oldest -> newest) and returns
  * true only when an unconfigured GitHub auth failure occurred and was not
- * followed by a successful remote git or authenticated gh command.
+ * followed by a matching successful authenticated GitHub command.
  */
 export function detectUnconfiguredGitHubAuthFailureInEvents(
   events: Iterable<GitAuthCommandEvent>,
 ): boolean {
   let detected = false;
+  let failedRepoSlug: string | null = null;
   for (const event of events) {
     const execution = extractCommandExecution(event);
     if (!execution) continue;
     if (matchesUnconfiguredGitHubAuthFailure(execution)) {
       detected = true;
-    } else if (detected && isRecoveredGitHubCommand(execution)) {
+      failedRepoSlug = extractGitHubRepoSlug(`${execution.command}\n${execution.output}`);
+    } else if (detected && didRecoverGitHubAuth(execution, failedRepoSlug)) {
       detected = false;
+      failedRepoSlug = null;
     }
   }
   return detected;

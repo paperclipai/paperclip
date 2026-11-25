@@ -160,6 +160,13 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
         output: "You are not logged into any GitHub hosts. To log in, run: gh auth login\n",
       }),
     ],
+    [
+      "OpenCode generic bash tool without command text",
+      toolExecutionEvent({
+        name: "bash",
+        output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      }),
+    ],
   ])("detects unambiguous GitHub auth failure: %s", (_label, event) => {
     expect(detectUnconfiguredGitHubAuthFailureInEvents([event])).toBe(true);
   });
@@ -227,7 +234,7 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
     expect(detectUnconfiguredGitHubAuthFailureInEvents([event])).toBe(false);
   });
 
-  it("clears detection when a later remote git/gh command succeeds, but not for local git status", () => {
+  it("clears detection only on matching authenticated recovery, not unrelated/local/other-repo commands", () => {
     const authFailure = toolExecutionEvent({
       name: "git clone https://github.com/acme/private-repo.git",
       output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
@@ -238,15 +245,51 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
       status: "completed",
       output: "On branch main\n",
     });
-    const recoveredClone = toolExecutionEvent({
+    const ghSubcommandHelp = toolExecutionEvent({
+      name: "gh pr create --help",
+      exitCode: 0,
+      status: "completed",
+      output: "Create a pull request on GitHub\n",
+    });
+    const echoCommand = toolExecutionEvent({
+      name: "echo gh auth status",
+      exitCode: 0,
+      status: "completed",
+      output: "gh auth status\n",
+    });
+    const gitlabLsRemote = toolExecutionEvent({
+      name: "git ls-remote https://gitlab.com/team/public.git",
+      exitCode: 0,
+      status: "completed",
+      output: "abc123\tHEAD\n",
+    });
+    const differentPublicRepoClone = toolExecutionEvent({
       name: "git clone https://github.com/acme/public-mirror.git",
       exitCode: 0,
       status: "completed",
       output: "Cloning into 'public-mirror'...\n",
     });
+    const recoveredSameRepoClone = toolExecutionEvent({
+      name: "git -C /workspace clone https://github.com/acme/private-repo.git",
+      exitCode: 0,
+      status: "completed",
+      output: "Cloning into 'private-repo'...\n",
+    });
+    const recoveredGitPush = toolExecutionEvent({
+      // paperclip:allow-git-push: synthetic command fixture testing recovery detection
+      name: "git -C /workspace push origin main",
+      exitCode: 0,
+      status: "completed",
+      output: "To https://github.com/acme/private-repo.git\n",
+    });
 
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, localGitStatus])).toBe(true);
-    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredClone])).toBe(false);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, ghSubcommandHelp])).toBe(true);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, echoCommand])).toBe(true);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, gitlabLsRemote])).toBe(true);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, differentPublicRepoClone])).toBe(true);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredSameRepoClone])).toBe(false);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredGitPush])).toBe(false);
   });
 });
 
