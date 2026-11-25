@@ -9,7 +9,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 // replay the action itself, so those adapters retain their recovery contract.
 export const CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-  "pi_local", "grok_local", "kimi_local", "hermes_local",
+  "pi_local", "grok_local", "kimi_local", "hermes_local", "hermes_gateway",
 ] as const;
 
 export function isConversationAdapter(adapterType: string): boolean {

@@ -1,6 +1,7 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import { workspaceProviderFailureMessage } from "../workspace-provider-failure.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -100,12 +101,16 @@ export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
 export function buildNoRunningExecutionNoticeSeed(input: {
   status: "todo" | "in_progress";
   attempts?: number;
+  failureReason?: string | null;
 }): StrandedRecoveryNoticeSeed {
   const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  const rawReason = input.failureReason?.trim() ?? "";
+  const resolvedReason = rawReason ? (workspaceProviderFailureMessage(rawReason) ?? rawReason) : null;
+  const detail = resolvedReason ? ` ${resolvedReason.replace(/[.!?]+$/, "")}.` : "";
   return {
     body: input.status === "todo"
-      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
-      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+      ? `Paperclip tried to start this task again, but it still could not start${tries}.${detail} Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}.${detail} `
         + "Press Retry to start it again from the saved work.",
     title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
     tone: "danger",
@@ -114,6 +119,7 @@ export function buildNoRunningExecutionNoticeSeed(input: {
 
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
+  failureReason?: string | null;
 }): StrandedRecoveryNoticeSeed {
   return buildNoRunningExecutionNoticeSeed(input);
 }

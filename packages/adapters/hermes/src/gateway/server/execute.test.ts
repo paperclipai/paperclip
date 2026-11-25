@@ -1139,5 +1139,98 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it.each([
+    ["HTTP 429: This request would exceed your account's rate limit. Please try again later.", "transient_upstream"],
+    ["HTTP 429: Rate limit exceeded: new-account-rpm/requests", "transient_upstream"],
+    ["API Error: 529 overloaded_error", "transient_upstream"],
+    ["HTTP 503 Service Unavailable", "transient_upstream"],
+  ])("classifies terminal provider failure %j as %s", (error, expectedFamily) => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-429",
+        status: "failed",
+        payload: { status: "failed", error, retry_not_before: "2099-01-01T00:05:00.000Z" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe(expectedFamily);
+    expect(result.retryNotBefore).toBe("2099-01-01T00:05:00.000Z");
+  });
+
+  it("classifies structured quota errors as provider_quota over rate_limit_error and 401", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-quota",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: {
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status_code: 401,
+            message: "You exceeded your current quota.",
+          },
+          retry_after: 120,
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.errorMessage).toBe("You exceeded your current quota.");
+    expect(typeof result.retryNotBefore).toBe("string");
+    expect(Number.isFinite(Date.parse(result.retryNotBefore!))).toBe(true);
+  });
+
+  it("classifies gateway shutdown interruptions as transient_upstream but keeps deliberate cancels non-transient", () => {
+    const shutdown = mapFinalResultForTest({
+      terminal: {
+        runId: "run-shutdown",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Gateway shutdown interrupted the run." },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(shutdown.errorCode).toBe("hermes_gateway_cancelled");
+    expect(shutdown.errorFamily).toBe("transient_upstream");
+
+    const deliberate = mapFinalResultForTest({
+      terminal: {
+        runId: "run-stop",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Stopped by operator." },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(deliberate.errorCode).toBe("hermes_gateway_cancelled");
+    expect(deliberate.errorFamily ?? null).toBeNull();
+  });
+
+  it.each([
+    { status: "failed", error: "HTTP 400: invalid request body" },
+    { status: "failed", error: "HTTP 403: API key limit denied" },
+    { status: "failed", error: { status_code: 403, message: "Forbidden" } },
+  ])("keeps non-transient terminal error %j unclassified", (payload) => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-perm", status: "failed", payload },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily ?? null).toBeNull();
   });
 });
