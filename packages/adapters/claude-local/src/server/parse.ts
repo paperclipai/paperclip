@@ -244,18 +244,19 @@ export function detectClaudeLoginRequired(input: {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
+  const resultParsed = parsed !== null && asString(parsed.type, "") === "result";
   const promptLines = [
     resultText,
     ...extractClaudeErrorMessages(parsed ?? {}),
-    ...(parsed === null ? [input.stdout] : []),
+    ...(resultParsed ? [] : [input.stdout]),
     input.stderr,
   ]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const parsedSucceeded = parsed !== null && !claudeResultIndicatesAuthFailure(parsed);
-  const loginPrompt = !parsedSucceeded && promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
+  const resultIsNotFailure = parsed !== null && resultParsed && !claudeResultIndicatesAuthFailure(parsed);
+  const loginPrompt = !resultIsNotFailure && promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
   // The token-failure markers match only against the parsed terminal fields of
   // a failed run. The raw stdout is untrusted, so a model that prints a token

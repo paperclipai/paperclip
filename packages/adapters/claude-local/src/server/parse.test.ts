@@ -40,6 +40,7 @@ describe("detectClaudeLoginRequired", () => {
     // bearer token" message. This is an auth failure, not a probe that could not
     // run, so the detector must classify it as login required.
     const parsed = {
+      type: "result",
       is_error: true,
       subtype: "success",
       api_error_status: 401,
@@ -61,6 +62,7 @@ describe("detectClaudeLoginRequired", () => {
     // surfaces login required instead of a retry.
     const input = {
       parsed: {
+        type: "result",
         is_error: true,
         result: "Failed to authenticate. API Error: 401 Invalid bearer token",
       },
@@ -75,6 +77,7 @@ describe("detectClaudeLoginRequired", () => {
     // The result event marks the run as a failure and reports an expired token.
     // This is a token failure, so the detector classifies it as login required.
     const parsed = {
+      type: "result",
       is_error: true,
       subtype: "success",
       result: "Failed to authenticate. Your OAuth access token is expired.",
@@ -89,6 +92,7 @@ describe("detectClaudeLoginRequired", () => {
     // result is a success, so the token-failure markers must not fire on the raw
     // stdout assistant event.
     const parsed = {
+      type: "result",
       is_error: false,
       subtype: "success",
       result: "hello",
@@ -107,6 +111,7 @@ describe("detectClaudeLoginRequired", () => {
     // The model's own answer repeats a token phrase, so the phrase lands in the
     // parsed result. The run is a success, so the failure gate keeps it healthy.
     const parsed = {
+      type: "result",
       is_error: false,
       subtype: "success",
       result: "Sure. An invalid bearer token means authentication_failed.",
@@ -122,6 +127,7 @@ describe("detectClaudeLoginRequired", () => {
     // transient and never classifies as login required.
     const input = {
       parsed: {
+        type: "result",
         is_error: true,
         subtype: "error_during_execution",
         result: "API Error: 503 service unavailable",
@@ -136,6 +142,7 @@ describe("detectClaudeLoginRequired", () => {
 
   it("does not classify a failed run whose tool output in stdout says Unauthorized", () => {
     const parsed = {
+      type: "result",
       is_error: true,
       subtype: "error_max_turns",
     };
@@ -151,6 +158,7 @@ describe("detectClaudeLoginRequired", () => {
 
   it("does not classify a successful result whose answer text mentions 401 Unauthorized", () => {
     const parsed = {
+      type: "result",
       is_error: false,
       subtype: "success",
       result: "The endpoint returns 401 Unauthorized when the token is missing.",
@@ -162,6 +170,7 @@ describe("detectClaudeLoginRequired", () => {
 
   it("still classifies a failed result that says Not logged in as login required", () => {
     const parsed = {
+      type: "result",
       is_error: true,
       subtype: "success",
       result: "Not logged in · Please run /login",
@@ -173,6 +182,7 @@ describe("detectClaudeLoginRequired", () => {
 
   it("classifies a login prompt on stderr as login required when a result was parsed", () => {
     const parsed = {
+      type: "result",
       is_error: true,
       subtype: "error_during_execution",
     };
@@ -181,6 +191,26 @@ describe("detectClaudeLoginRequired", () => {
         parsed,
         stdout: "",
         stderr: "Not logged in · Please run /login",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies a login prompt on stderr as login required when only an init event was parsed", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { type: "system", subtype: "init" },
+        stdout: '{"type":"system","subtype":"init"}',
+        stderr: "Not logged in · Please run /login",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies a login prompt in raw stdout as login required when only an init event was parsed", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { type: "system", subtype: "init" },
+        stdout: "Not logged in · Please run /login",
+        stderr: "",
       }).requiresLogin,
     ).toBe(true);
   });
@@ -224,6 +254,32 @@ describe("isClaudeModelNotFoundError", () => {
     expect(isClaudeModelNotFoundError({
       errorMessage: "API Error: 503 service unavailable",
     })).toBe(false);
+  });
+});
+
+describe("provider failures with Unauthorized in the transcript", () => {
+  const input = {
+    parsed: {
+      type: "result",
+      is_error: true,
+      subtype: "success",
+      result: "You've hit your session limit",
+    },
+    stdout: '{"type":"user","message":{"content":[{"type":"tool_result","content":"401 Unauthorized"}]}}',
+    stderr: "",
+  };
+
+  it("keeps a quota failure on the provider quota lane", () => {
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+  });
+
+  it("keeps a transient failure on the transient lane", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        ...input,
+        parsed: { ...input.parsed, result: "API Error: 429 Too Many Requests" },
+      }),
+    ).toBe(true);
   });
 });
 
