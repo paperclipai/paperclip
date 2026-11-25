@@ -409,7 +409,7 @@ export function parseIssueAssigneeAdapterOverrides(
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
   const parsedAdapterConfig = Object.fromEntries(
-    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => key !== "homeMode"),
+    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => !["homeMode", "billingType", "biller"].includes(key)),
   );
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;

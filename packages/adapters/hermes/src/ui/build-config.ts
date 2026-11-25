@@ -81,6 +81,13 @@ export function buildHermesConfig(
     ac.promptTemplate = v.promptTemplate;
   }
 
+  const billingType = v.adapterSchemaValues?.billingType;
+  if (typeof billingType === "string" && billingType.trim()) {
+    ac.billingType = billingType.trim();
+    const biller = v.adapterSchemaValues?.biller;
+    if (typeof biller === "string" && biller.trim()) ac.biller = biller.trim();
+  }
+
   // Heartbeat config is handled by Paperclip itself
 
   return ac;

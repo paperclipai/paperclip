@@ -225,6 +225,15 @@ Create issues in Paperclip and assign them to your Hermes agent. On each heartbe
 | `timeoutSec` | number | `300` | Execution timeout in seconds |
 | `graceSec` | number | `10` | Grace period before SIGKILL |
 
+### Billing
+
+Hermes does not report how its provider bills a run. Without these fields, a run with no reported cost is recorded as unpriced usage, and a hard-stop budget can hold it.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `billingType` | string | *(not reported)* | How the provider bills these runs: `subscription_included`, `subscription_overage`, `subscription`, `api`, `metered_api`, `credits` or `fixed`. Use `subscription_included` for a flat-fee model, such as an Ollama Cloud `:cloud` model. Other values are ignored. |
+| `biller` | string | *(none)* | Name of the party that bills these runs, such as `ollama`. Used only when `billingType` is set. |
+
 ### Tools
 
 | Field | Type | Default | Description |

@@ -1191,7 +1191,7 @@ describe("agent routes adapter validation", () => {
       .toMatchObject({ provider: "cursor_cloud", model: config.model, cursorCloud: { repos: [{ url: config.repoUrl, startingRef: "feature" }] } });
   });
 
-  it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode"])("refuses an agent granting itself the operator-owned setting %s", async key => {
+  it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode", "billingType", "biller"])("refuses an agent granting itself the operator-owned setting %s", async key => {
     const app = await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" });
     const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterConfig: { [key]: key === "homeMode" ? "preconfigured" : key === "dotBindingId" ? "another-binding" : true } }));
     expect(response.status, JSON.stringify(response.body)).toBe(403);
