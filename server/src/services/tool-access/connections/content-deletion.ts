@@ -26,7 +26,7 @@ import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
-import { forgetRunSessions } from "./run-session-reset.js";
+import { forgetRunSessions, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 import {
   initialContentDeletionProgress,
   nextPhase,
@@ -630,13 +630,15 @@ export function createConnectionContentDeletion(db: Db, deps: {
       .for("update");
     if (!row) return;
     const result = withoutResultText(row.resultJson);
-    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || result.changed) {
-      await tx
-        .update(heartbeatRuns)
-        .set({ stdoutExcerpt: null, stderrExcerpt: null, resultJson: result.value as Record<string, unknown> | null })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
-      run.changed = true;
-    }
+    if (row.stdoutExcerpt !== null || row.stderrExcerpt !== null || result.changed) run.changed = true;
+    await tx
+      .update(heartbeatRuns)
+      .set({
+        stdoutExcerpt: null,
+        stderrExcerpt: null,
+        resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}), [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString() },
+      })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
     if (await forgetRunSessions(tx, companyId, run.id, row)) run.changed = true;
   }
 

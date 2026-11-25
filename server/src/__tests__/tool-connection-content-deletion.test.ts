@@ -27,6 +27,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createConnectionContentDeletion, requestConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
 import { deleteGoogleContentWhenAccessEnds } from "../services/tool-access/connections/google-content-retention.js";
+import { forgetSessionsOfDeletedRun } from "../services/tool-access/connections/run-session-reset.js";
 import type { RunLogHandle, RunLogStore } from "../services/run-log-store.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -353,6 +354,17 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(finished.stored).toEqual({ toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 });
     expect(finished.deletion).toMatchObject({ id: deletion.id, status: "completed", reason: "access_revoked" });
     expect(await restarted.nextDeadline()).toBeNull();
+
+    await db.insert(agentTaskSessions).values({
+      companyId: seed.company.id, agentId: seed.agent.id, adapterType: "process", taskKey: "task-2",
+      sessionParamsJson: { sessionId: "harness-session-2" }, lastRunId: seed.liveRun.id,
+    });
+    await db.update(agentRuntimeState).set({ sessionId: "harness-session-2", lastRunId: seed.liveRun.id }).where(eq(agentRuntimeState.agentId, seed.agent.id));
+    expect(await forgetSessionsOfDeletedRun(db, { id: seed.liveRun.id, companyId: seed.company.id })).toBe(true);
+    expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, seed.agent.id))).toEqual([]);
+    const [restored] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, seed.agent.id));
+    expect(restored!.sessionId).toBeNull();
+    expect(await forgetSessionsOfDeletedRun(db, { id: seed.otherRun.id, companyId: seed.company.id })).toBe(false);
   });
 
   it("extends a pending deletion to everything saved before access ended, and keeps content saved after reconnecting", async () => {
