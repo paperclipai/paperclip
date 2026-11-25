@@ -9,6 +9,7 @@ import {
   type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import {
+  GOOGLE_WORKSPACE_REST_SHIPPED_SCHEMA_HASHES,
   GoogleWorkspaceAuthError,
   callGoogleWorkspaceRestTool,
   googleCalendarSeriesRefusal,
@@ -71,6 +72,11 @@ export function googleWorkspaceRestFallbackDefinition(toolName: string): GoogleW
     outputSchema: tool.outputSchema ? { ...tool.outputSchema } : null,
     annotations: { ...tool.annotations },
   } : null;
+}
+
+export function googleWorkspaceRestShippedSchemaHashes(toolName: string): readonly string[] {
+  const target = googleWorkspaceToolTarget(toolName);
+  return target ? GOOGLE_WORKSPACE_REST_SHIPPED_SCHEMA_HASHES[`${target.service}__${target.leaf}`] ?? [] : [];
 }
 
 function googleWorkspaceTransport(toolName: string): GoogleWorkspaceToolTransport | null {

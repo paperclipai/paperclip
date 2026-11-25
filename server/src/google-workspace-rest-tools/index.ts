@@ -20,3 +20,4 @@ export {
   type GoogleCalendarEventRead,
   type GoogleWorkspaceArgumentCheck,
 } from "./argument-guards.js";
+export { GOOGLE_WORKSPACE_REST_SHIPPED_SCHEMA_HASHES } from "./shipped-schema-hashes.js";

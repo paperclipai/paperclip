@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +11,7 @@ import {
   type GoogleWorkspaceService, type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import * as restDispatch from "../services/google-workspace-rest-dispatch.js";
+import { stableHash } from "../services/tool-catalog-hash.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { forgetMcpHttpSessions, MCP_MODERN_PROTOCOL_VERSION } from "../services/mcp-http.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -27,6 +29,7 @@ vi.mock("../services/google-workspace-rest-dispatch.js", async (importOriginal) 
     ...actual,
     callGoogleWorkspaceRest: vi.fn(actual.callGoogleWorkspaceRest),
     probeGoogleWorkspaceRest: vi.fn(actual.probeGoogleWorkspaceRest),
+    googleWorkspaceRestShippedSchemaHashes: vi.fn(actual.googleWorkspaceRestShippedSchemaHashes),
   };
 });
 
@@ -65,6 +68,8 @@ const READ_ONLY_PERMISSIONS = ["gmail.readonly", "drive.readonly", "documents.re
   "calendar.calendarlist.readonly", "calendar.events.freebusy", "calendar.events.readonly"];
 const allowlisted = (keep: (name: string) => boolean = () => true) => LAUNCH_SERVICES
   .flatMap((service) => googleWorkspaceServiceToolNames(service).map((name) => `${service}__${name}`)).filter(keep).sort();
+const SCHEMAS_22634: Record<string, Record<string, unknown>> = JSON.parse(
+  readFileSync(new URL("../google-workspace-rest-tools/fixtures/input-schemas-22634.json", import.meta.url), "utf8"));
 const names = (catalog: Array<{ toolName: string }>) => catalog.map((entry) => entry.toolName).sort();
 
 type Confirmation = "none" | "legacy" | "modern";
@@ -426,5 +431,93 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.google.calls()).toEqual(["gmailmcp.googleapis.com get_message"]);
     await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
       .rejects.toMatchObject({ reasonCode: "approval_required" });
+  });
+  describe("a connection saved on REST before the switch back", () => {
+    const savedRows = (connectionId: string) => db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connectionId));
+    const byName = async (connectionId: string) => new Map((await savedRows(connectionId)).map((row) => [row.toolName, row]));
+    const permissions = ["gmail.readonly", "gmail.compose", "documents.readonly"];
+
+    async function savedOnRest(options: { askFirst?: string[]; off?: string[] } = {}) {
+      const f = await connectWorkspace({ permissions, ...options });
+      expect((await byName(f.connectionId)).get("gmail__get_message")?.inputSchema).toEqual(SCHEMAS.get_message);
+      useTransport("paperclip_rest");
+      forgetMcpHttpSessions(f.connectionId);
+      const onRest = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(onRest.catalog.filter((entry) => entry.status === "quarantined")).toEqual([]);
+      expect((await byName(f.connectionId)).get("gmail__get_message")?.inputSchema).not.toEqual(SCHEMAS.get_message);
+      return f;
+    }
+
+    async function backOnGoogle(f: Awaited<ReturnType<typeof connectWorkspace>>) {
+      useTransport("google_mcp");
+      forgetMcpHttpSessions(f.connectionId);
+      return f.service.refreshCatalog(f.connectionId, f.actor);
+    }
+
+    it.each(["#22634", "#22706"])("adopts Google's definitions with no hold when the rows carry the %s REST definitions, keeping Off, Ask first and review", async (revision) => {
+      const f = await savedOnRest({ off: ["gmail__search_threads"], askFirst: ["gmail__create_draft"] });
+      const reviewedAt = new Date("2026-11-23T20:00:00Z");
+      for (const row of await savedRows(f.connectionId)) {
+        const old = revision === "#22634" ? SCHEMAS_22634[row.toolName] : undefined;
+        await db.update(toolCatalogEntries).set({
+          reviewedAt, reviewedByUserId: f.actor.actorId,
+          ...(old ? { inputSchema: old, schemaHash: stableHash(old) } : {}),
+        }).where(eq(toolCatalogEntries.id, row.id));
+      }
+
+      const refreshed = await backOnGoogle(f);
+      expect(refreshed.quarantinedCount).toBe(0);
+      expect(refreshed.catalog.filter((entry) => entry.status !== "active")).toEqual([]);
+      const saved = await byName(f.connectionId);
+      expect(saved.get("gmail__get_message")?.inputSchema).toEqual(SCHEMAS.get_message);
+      expect([...saved.values()].every((row) => row.reviewedAt?.getTime() === reviewedAt.getTime() && row.reviewedByUserId === f.actor.actorId)).toBe(true);
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__search_threads");
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
+        .rejects.toMatchObject({ reasonCode: "approval_required" });
+    });
+
+    it("holds for review a Google definition that Paperclip never shipped", async () => {
+      const f = await savedOnRest();
+      const unknown = await db.update(toolCatalogEntries).set({ schemaHash: "a-definition-paperclip-never-shipped" })
+        .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_thread"))).returning();
+      expect(unknown).toHaveLength(1);
+      const switched = await backOnGoogle(f);
+      expect(switched.catalog.filter((entry) => entry.status === "quarantined").map((entry) => entry.toolName)).toEqual(["gmail__get_thread"]);
+
+      const original = SCHEMAS.get_message;
+      SCHEMAS.get_message = { ...original, properties: { ...(original.properties as object), exportTo: { type: "string" } } };
+      try {
+        forgetMcpHttpSessions(f.connectionId);
+        const changed = await f.service.refreshCatalog(f.connectionId, f.actor);
+        expect(changed.quarantinedCount).toBe(1);
+        expect(changed.catalog.filter((entry) => entry.status === "quarantined").map((entry) => entry.toolName).sort())
+          .toEqual(["gmail__get_message", "gmail__get_thread"]);
+        expect((await byName(f.connectionId)).get("gmail__get_message")?.quarantineReason).toBe("pending_review");
+      } finally {
+        SCHEMAS.get_message = original;
+      }
+    });
+
+    it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {
+      const f = await savedOnRest();
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      try {
+        const held = await backOnGoogle(f);
+        expect(held.catalog.filter((entry) => entry.status === "active")).toEqual([]);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+      }
+
+      forgetMcpHttpSessions(f.connectionId);
+      const later = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(later.quarantinedCount).toBe(0);
+      expect(later.catalog.filter((entry) => entry.status === "active")).toEqual([]);
+      expect((await byName(f.connectionId)).get("gmail__get_message")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
+      expect(await f.listed()).toEqual([]);
+    });
   });
 });
