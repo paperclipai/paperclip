@@ -646,6 +646,17 @@ describe("company portability", () => {
     expect(companySkillSvc.listFull).not.toHaveBeenCalled();
   });
 
+  it("rejects newly restricted rows returned after the export probe", async () => {
+    const rows = await companySkillSvc.listFull("company-1");
+    companySkillSvc.listFull.mockClear();
+    companySkillSvc.hasRecipientRestrictions.mockResolvedValueOnce(false);
+    companySkillSvc.listFull.mockResolvedValueOnce([{ ...rows[0], recipientAgentId: "ba890097-36dd-47a1-8b92-c431145099fa" }]);
+    await expect(companyPortabilityService({} as any).exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false, skills: true },
+    })).rejects.toThrow("Recipient-restricted skills cannot be exported");
+    expect(companySkillSvc.readFile).not.toHaveBeenCalled();
+  });
+
   it("does not load or emit skills when agents are included but skills are disabled", async () => {
     const portability = companyPortabilityService({} as any);
 
