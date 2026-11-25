@@ -65,10 +65,16 @@ describe("connectionNameForCredentialPolicy", () => {
 });
 
 describe("isConnectionAvailableToAgents", () => {
+  const base = { status: "active", enabled: true, healthStatus: "ok", credentialPolicy: "shared", transport: "mcp_remote", lastError: null } as const;
   it("does not count a connection that must be signed in again", () => {
-    expect(isConnectionAvailableToAgents({ status: "active", enabled: true, healthStatus: "ok" })).toBe(true);
-    expect(isConnectionAvailableToAgents({ status: "active", enabled: true, healthStatus: "error" })).toBe(false);
-    expect(isConnectionAvailableToAgents({ status: "active", enabled: false, healthStatus: "ok" })).toBe(false);
-    expect(isConnectionAvailableToAgents({ status: "draft", enabled: true, healthStatus: "ok" })).toBe(false);
+    expect(isConnectionAvailableToAgents(base)).toBe(true);
+    expect(isConnectionAvailableToAgents({ ...base, healthStatus: "error" })).toBe(false);
+    expect(isConnectionAvailableToAgents({ ...base, credentialPolicy: "per_user", healthStatus: "error", lastError: "oauth_reauthorization_required" })).toBe(false);
+    expect(isConnectionAvailableToAgents({ ...base, enabled: false })).toBe(false);
+    expect(isConnectionAvailableToAgents({ ...base, status: "draft" })).toBe(false);
+  });
+
+  it("keeps counting a personal connection whose health check is stale", () => {
+    expect(isConnectionAvailableToAgents({ ...base, credentialPolicy: "per_user", healthStatus: "error" })).toBe(true);
   });
 });

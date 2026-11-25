@@ -478,12 +478,13 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     const link = "https://docs.google.com/document/d/board-notes/edit";
     const answer = {
       schema: "paperclip.run_result.v1",
-      reportedWorkDisposition: "completed",
+      reportedWorkDisposition: "done",
       summary: SECRET,
       evidence: [{ kind: "url", ref: link }],
       verification: [{ commandOrCheck: `Read ${link}`, status: "passed", detail: SECRET }],
-      completionClaim: { contractRevision: 1, objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "met", evidenceRefs: [link], explanation: SECRET }], remainingWork: [] },
+      completionClaim: { contractRevision: "rev-1", objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "met", evidenceRefs: [link], explanation: SECRET }], remainingWork: [] },
       artifacts: [{ kind: "document", ref: link, title: SECRET }],
+      continuation: { kind: "response_wake", summary: SECRET, idempotencyKey: "wake-1" },
     };
     const fingerprint = JSON.stringify({ terminalState: "completed", result: answer });
     const checkpoint = {
@@ -513,8 +514,9 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(run!.resultJson).toMatchObject({
       executionRecovery: { kind: "none" },
       nativeTerminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded" },
-      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "completed",
-        verification: [{ status: "passed" }], completionClaim: { objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "met" }] } },
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+        verification: [{ status: "passed" }], completionClaim: { contractRevision: "rev-1", objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "met" }] },
+        continuation: { kind: "response_wake", idempotencyKey: "wake-1" } },
     });
     expect(hasAcceptedSemanticResult(run!.resultJson)).toBe(true);
     const saved = run!.runnerProfileJson as typeof profile;
@@ -522,7 +524,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(run!.contextSnapshot).toEqual({ paperclipIssue: { description: task.description } });
     expect(saved.sessionCheckpoint).toMatchObject({
       driverKind: "codex_app_server", identity: { runId: seed.settledRun.id },
-      semanticResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "completed", summary: "", evidence: [{ kind: "url", ref: "" }], verification: [{ status: "passed", detail: "" }] },
+      semanticResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "", completionClaim: { contractRevision: "rev-1" }, evidence: [{ kind: "url", ref: "" }], verification: [{ status: "passed", detail: "" }] },
       governedWait: { sourceEvent: { type: "tool.execution.completed", payload: { output: "" } }, result: { schema: "paperclip.run_result.v1", summary: "" } },
       terminalTurns: [{ turnId: "turn-1" }],
     });
@@ -530,16 +532,23 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(saved.nativeControllerRecovery.snapshotSha256).toBe(nativeSha256(saved.sessionCheckpoint));
 
     const before = { resultJson: run!.resultJson, runnerProfileJson: run!.runnerProfileJson };
-    const partlyCleaned = { ...checkpoint, terminalTurns: saved.sessionCheckpoint.terminalTurns };
+    const { answerCopiesDeletedAt: _cleanedAt, ...legacyResult } = run!.resultJson as Record<string, unknown>;
+    const legacyAnswer = { ...(legacyResult.nativeResult as Record<string, unknown>), evidence: [{ kind: "url", ref: link }] };
+    const legacyCheckpoint = { ...checkpoint, terminalTurns: saved.sessionCheckpoint.terminalTurns, semanticResult: legacyAnswer,
+      governedWait: { ...checkpoint.governedWait, result: legacyAnswer } };
     await db.update(heartbeatRuns).set({
-      runnerProfileJson: { ...profile, sessionCheckpoint: partlyCleaned, nativeControllerRecovery: { ...profile.nativeControllerRecovery, snapshotSha256: nativeSha256(partlyCleaned) } },
+      resultJson: { ...legacyResult, nativeResult: legacyAnswer },
+      runnerProfileJson: { ...profile, sessionCheckpoint: legacyCheckpoint, nativeControllerRecovery: { ...profile.nativeControllerRecovery, snapshotSha256: nativeSha256(legacyCheckpoint) } },
     }).where(eq(heartbeatRuns.id, seed.settledRun.id));
     await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
     await drain(service);
     const [again] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
     expect(JSON.stringify(again!.resultJson)).not.toContain(SECRET);
     expect(JSON.stringify(again!.runnerProfileJson)).not.toContain(SECRET);
+    expect(JSON.stringify(again!.resultJson)).not.toContain("board-notes");
+    expect(JSON.stringify(again!.runnerProfileJson)).not.toContain("board-notes");
     expect(again!.runnerProfileJson).toEqual(before.runnerProfileJson);
+    expect(again!.resultJson).toMatchObject({ answerCopiesDeletedAt: expect.any(String) });
   });
 
   describe("Google Technical Information", () => {

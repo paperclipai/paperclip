@@ -27,7 +27,7 @@ import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 import { RESULT_TEXT_KEYS, withoutActionResults, withoutCheckpointAnswers, withoutResultText, withoutRunAnswers } from "./content-cleaning.js";
 import { forgetRunCopies, forgetRunInTrainingExamples, runCopiesRemainSql } from "./run-copies.js";
-import { forgetRunSessions, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
+import { forgetRunSessions, RUN_ANSWER_COPIES_DELETED_MARKER, RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 import {
   initialContentDeletionProgress,
   nextPhase,
@@ -187,17 +187,15 @@ export function runsWithStoredContentSql(scope: Scope): SQL {
   const inScope = scope.connectionId && scope.cutoff
     ? runsCallingConnectionSql({ ...scope, connectionId: scope.connectionId, cutoff: scope.cutoff })
     : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)}) and ${runUsedToolsSql(scope.companyId)}`;
-  const checkpointContentSql = sql.join([
-    `lax $.sessionCheckpoint.semanticResult.fingerprint ? (@.type() == "string" && !(@ like_regex "^sha256:[a-f0-9]{64}$"))`,
-    `lax $.sessionCheckpoint.terminalTurns[*].fingerprint ? (@.type() == "string" && !(@ like_regex "^sha256:[a-f0-9]{64}$"))`,
-    `lax $.sessionCheckpoint.** ? (@.schema == "paperclip.run_result.v1").summary ? (@.type() == "string" && @ != "")`,
-  ].map((path) => sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."runner_profile_json", '{}'::jsonb), '${path}')`)), sql` or `);
+  const answerCopiesRemainSql = sql`((jsonb_path_exists(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), 'lax $.** ? (@.schema == "paperclip.run_result.v1")')
+      or coalesce(${heartbeatRuns.runnerProfileJson} ? 'sessionCheckpoint', false))
+    and not coalesce(${heartbeatRuns.resultJson} ? ${RUN_ANSWER_COPIES_DELETED_MARKER}, false))`;
   return sql`${heartbeatRuns.companyId} = ${scope.companyId}
     and ${inScope}
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
-      or ${checkpointContentSql}
+      or ${answerCopiesRemainSql}
       or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, issueId: sql`${heartbeatRuns.issueId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
@@ -651,7 +649,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
         stdoutExcerpt: null,
         stderrExcerpt: null,
         error: null,
-        resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}), [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString() },
+        resultJson: { ...(result.value && typeof result.value === "object" ? result.value as Record<string, unknown> : {}),
+          [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString(), [RUN_ANSWER_COPIES_DELETED_MARKER]: new Date().toISOString() },
         ...(checkpoint.changed ? { runnerProfileJson: checkpoint.value } : {}),
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));

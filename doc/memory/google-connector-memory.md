@@ -515,8 +515,12 @@ the person chose to disconnect that identity.
   "Paused") and a reconnect keeps the chosen tools. The tool gateway does not
   offer a connection's tools while it has a `needs_reauthorization` grant and
   no active grant. A successful reconnect refreshes the catalog and sets
-  health back to `ok`. The removal message and dialog count only connections
-  that are on and do not need attention as "available to agents".
+  health back to `ok`. The removal message and dialog count a connection as
+  "available to agents" only when it is on, is not waiting for a new sign-in,
+  and its tools are offered (healthy, personal, or plugin).
+- A cleaned run's result gets `answerCopiesDeletedAt`. A run in scope that has
+  a run result or a session checkpoint but not this mark is cleaned again, so
+  runs cleaned by an older build are fixed by the next deletion.
 - Kept on purpose: the task description and prompt copies
   (`contextSnapshot.paperclipIssue.description`,
   `runnerProfileJson.nativeExecutionInput.task`), which are the user's text,

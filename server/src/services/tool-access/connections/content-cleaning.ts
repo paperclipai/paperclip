@@ -44,7 +44,7 @@ export function withoutResultText(value: Record<string, unknown> | null): { valu
   return { value: changed ? next : value, changed };
 }
 
-const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition", "reasonCode", "ownerClass"]);
+const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition", "reasonCode", "ownerClass", "contractRevision", "idempotencyKey", "handoffId"]);
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 const HASHED_FINGERPRINT = /^sha256:[a-f0-9]{64}$/;
 
