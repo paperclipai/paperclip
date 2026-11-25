@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { build, transform } from "esbuild";
 import { bundleRuntime } from "../../scripts/bundle-runtime.mjs";
@@ -74,7 +74,9 @@ describe("current image plugin runtime loader", () => {
 describe("pluginWorkerImportArgs", () => {
   it("passes an absolute loader path to a plugin worker in a form Node can import on every platform", () => {
     const { loader } = fixture();
-    const output = execFileSync(process.execPath, [...pluginWorkerImportArgs(loader), "-e", "process.stdout.write('loaded')"], { encoding: "utf8" });
+    const importArgs = pluginWorkerImportArgs(loader);
+    expect(importArgs).toEqual(["--import", pathToFileURL(loader).href]);
+    const output = execFileSync(process.execPath, [...importArgs, "-e", "process.stdout.write('loaded')"], { encoding: "utf8" });
     expect(output).toBe("loaded");
   });
 });
