@@ -78,6 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -108,6 +109,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -14112,6 +14114,40 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    const waitingRetry = issue.monitorNextCheckAt
+      ? null
+      : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
+    if (waitingRetry?.status === "scheduled_retry") {
+      // The banner also shows "Check now" for a scheduled retry, such as a
+      // usage wait. With no monitor, the check is that retry: it starts now
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      const retry = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id,
+        actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: retry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: retry.scheduledRetry?.runId ?? null,
+        details: { outcome: retry.outcome, message: retry.message, source: "monitor_check_now" },
+      });
+      if (retry.outcome === "no_scheduled_retry") {
+        throw conflict("Nothing is waiting to be checked on this task anymore. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "no_scheduled_check" });
+      }
+      if (retry.outcome === "gate_suppressed") {
+        throw conflict("The check could not start because the task changed. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "gate_suppressed" });
+      }
+      res.json({ ok: true, outcome: retry.outcome, message: retry.message });
+      return;
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -19335,7 +19371,8 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/comments",
-    validate(addIssueCommentSchema),
+    // A /swarm request without a request text gets the route's documented refusal, not a validation error.
+    (req, res, next) => validate(req.body?.nativeCommand === ANTIGRAVITY_SWARM_COMMAND ? addIssueSwarmCommentSchema : addIssueCommentSchema)(req, res, next),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
@@ -19345,6 +19382,25 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // Trusted /swarm: the composer sends it as a structured field; comment text is never read as a command.
+      const swarmRequested = req.body.nativeCommand === ANTIGRAVITY_SWARM_COMMAND;
+      if (swarmRequested) {
+        if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
+        // A resend of an already accepted request returns its original receipt below; availability
+        // applies only to new requests (the setting may have changed since the first send).
+        const [accepted] = req.body.clientRequestId ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorUserId, req.actor.userId), eq(issueComments.clientRequestId, req.body.clientRequestId),
+        )) : [];
+        const refusal = accepted ? null : issue.conversationAgentId
+          ? "Swarm works in task comments, not in chats."
+          : await antigravitySwarmCommentRefusal(db, issue)
+            ?? antigravitySwarmRequestRefusal(antigravitySwarmRequestFromComment(String(req.body.body ?? "")));
+        if (refusal) {
+          res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
+          return;
+        }
+      }
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
@@ -19822,6 +19878,12 @@ export function issueRoutes(
               },
               tx,
             );
+            // The swarm request commits with its comment or not at all.
+            if (swarmRequested && actor.actorType === "user") {
+              await recordAntigravitySwarmRequest(tx as unknown as Db, {
+                companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: insertedComment.id, userId: actor.actorId,
+              });
+            }
             const updated =
               actor.actorType === "user" && currentIssue.status !== "done"
                 ? await svc.update(
@@ -19927,9 +19989,15 @@ export function issueRoutes(
             dbOrTx,
           );
         const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
-        comment = needsFastResponse ? await db.transaction(async tx => {
+        comment = needsFastResponse || swarmRequested ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
-          if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+          // The swarm request commits with its comment or not at all.
+          if (swarmRequested && actor.actorType === "user") {
+            await recordAntigravitySwarmRequest(tx as unknown as Db, {
+              companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: saved.id, userId: actor.actorId,
+            });
+          }
+          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
             fastResponseEnqueued = true;
@@ -20066,6 +20134,7 @@ export function issueRoutes(
         comment,
         currentIssue.assigneeAgentId,
       );
+      const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,
@@ -20217,6 +20286,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment.reopen",
                 wakeReason: "issue_reopened_via_comment",
                 reopenedFrom: reopenFromStatus,
@@ -20254,6 +20324,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment",
                 wakeReason: "issue_commented",
                 ...(resumeRequested === true

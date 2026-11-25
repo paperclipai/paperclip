@@ -3131,7 +3131,7 @@ export function OAuthConnectStateScreen({
   return (
     <div className="max-w-5xl">
       <StepHeader
-        subtitle="Secure MCP sign-in"
+        subtitle={entry ? "Secure sign-in" : "Secure MCP sign-in"}
         step="key"
         activeIndex={steps.activeIndex}
         labels={steps.labels}

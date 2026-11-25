@@ -2000,9 +2000,6 @@ describe("PaperclipControlPlanePort conformance", () => {
       companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
     });
     expect(await repair()).toBe(false);
-    await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
-      .where(eq(heartbeatRuns.id, taskRunId));
-    expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
     const work = nativeResponsePresentationWork(db);
     const [entry] = await work.load({ companyId: identity.companyId, runId: taskRunId });

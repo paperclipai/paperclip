@@ -17,6 +17,49 @@ export function stripAntigravityTerminalHints(text: string): string {
   return text.replace(TERMINAL_HINT, "");
 }
 
+const HINT_PREFIX = "Run /swarm board (default shortcut ";
+const HINT_SUFFIX = ") to open the live board.";
+const HINT_SHORTCUT_MAX = 40;
+const HINT_MAX = 1 + HINT_PREFIX.length + HINT_SHORTCUT_MAX + HINT_SUFFIX.length;
+
+/** Whether `tail` (after one optional line break) is the start of a terminal hint that more text could complete. */
+function unfinishedHint(tail: string): boolean {
+  const body = tail.startsWith("\n") ? tail.slice(1) : tail;
+  if (body.length <= HINT_PREFIX.length) return HINT_PREFIX.startsWith(body);
+  if (!body.startsWith(HINT_PREFIX)) return false;
+  const rest = body.slice(HINT_PREFIX.length);
+  const close = rest.indexOf(")");
+  if (close < 0) return rest.length <= HINT_SHORTCUT_MAX && !rest.includes("\n");
+  // A complete hint is held too, until the next text shows whether its closing period follows.
+  return close <= HINT_SHORTCUT_MAX && HINT_SUFFIX.startsWith(rest.slice(close));
+}
+
+/**
+ * The CLI streams its terminal hint in pieces (live: `Run /swarm board (`, then
+ * `default shortcut alt+s) to open the live board`, then `.`), so stripping each
+ * chunk alone misses it and leaves a stray period. Text that could still become
+ * a hint is held back until the hint completes or is ruled out.
+ */
+export function createAntigravityTerminalHintFilter(): { push(text: string): string; flush(): string } {
+  let held = "";
+  return {
+    push(text) {
+      const value = held + text;
+      let start = -1;
+      for (let index = Math.max(0, value.length - HINT_MAX); index < value.length; index++) {
+        if ((value[index] === "\n" || value[index] === "R") && unfinishedHint(value.slice(index))) { start = index; break; }
+      }
+      held = start < 0 ? "" : value.slice(start);
+      return stripAntigravityTerminalHints(start < 0 ? value : value.slice(0, start));
+    },
+    flush() {
+      const value = stripAntigravityTerminalHints(held);
+      held = "";
+      return value;
+    },
+  };
+}
+
 function plain(text: string, workspace: string, limit = 120): string {
   let value = text.split(workspace).join("the task folder")
     .replace(/@[a-z0-9_-]+\s*/gi, "").replace(/\[(?:done|blocked|update)\]\s*/gi, "").replace(/\s+/g, " ").trim();
@@ -52,7 +95,8 @@ export function antigravitySwarmEvent(update: unknown, workspace: string): AcpRu
   if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
     const content = record(value.content);
     if (content.type !== "text" || typeof content.text !== "string") return null;
-    const text = kind === "agent_message_chunk" ? stripAntigravityTerminalHints(content.text) : content.text;
+    // Raw: the hint can span chunks, so the runtime's streaming filter strips it (createAntigravityTerminalHintFilter).
+    const text = content.text;
     if (!text) return null;
     return { type: "text_delta", text, stream: kind === "agent_thought_chunk" ? "thought" : "output", tag: kind };
   }

@@ -12,7 +12,7 @@ const output = path.resolve(process.argv[2] ?? mkdtempSync(path.join(tmpdir(), "
 mkdirSync(output, { recursive: true });
 assert.equal(existsSync(path.join(output, "pairs.jsonl")), false, "Use a fresh output directory");
 const baseline = "82c033ed127d07862e6765aa4b69a3cf339bde81";
-const integration = "server/src/__tests__/chat-channels.integration.test.ts";
+const integration = "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts";
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
 assert.equal(git("status", "--porcelain").trim(), "", "Commit fixture changes first; use an isolated checkout");
 const original = readFileSync(path.join(root, integration), "utf8");
@@ -30,7 +30,7 @@ const benchmark = String.raw`  it("measures equivalent completed accepted-respon
     const { appendFileSync } = await import("node:fs");
     const output = process.env.PAPERCLIP_PRESENTATION_BENCHMARK_OUTPUT;
     if (!output) throw new Error("Benchmark output directory is required");
-    const { nativeResponsePresentationWork: baselineWork } = await import("../services/native-runtime/native-response-presentation-work.baseline.js");
+    const { nativeResponsePresentationWork: baselineWork } = await import("../../services/native-runtime/native-response-presentation-work.baseline.js");
     const { createDatabaseResponseCapture, installDatabaseResponseCapture } = await import("@paperclipai/db/response-capture");
     const schema = await import("@paperclipai/db");
     appendFileSync(output + "/child-runtime.jsonl",

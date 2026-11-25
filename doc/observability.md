@@ -100,6 +100,12 @@ export OTEL_SERVICE_NAME="paperclip"
 export OTEL_SERVICE_VERSION="2026.5.0"
 ```
 
+When `PAPERCLIP_TRACING_INSTANCE_HOST=true`, server and browser traces include
+`paperclip.instance.host` from the hostname in the configured `PAPERCLIP_PUBLIC_URL`.
+Server spans read the current URL at span start. Browser sessions receive the
+hostname with their tracing configuration. Paths, query strings, ports, and
+credentials are excluded. The setting is off by default.
+
 ### `service.version` resolution order
 
 The `service.version` span attribute reports the commit the running server was

@@ -17,7 +17,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linkExcludedPlugins } from "./link-plugin-dev-sdk.mjs";
@@ -26,6 +26,46 @@ import { PROJECTS } from "./typecheck-test-projects.mjs";
 
 export const DEFAULT_CONCURRENCY = 3;
 export const PROVIDER_WORKSPACE = "scripts/typecheck-sandbox-providers";
+
+export function defaultConcurrency({ cpus = availableParallelism(), totalMemoryBytes = totalmem() } = {}) {
+  const memGiB = totalMemoryBytes / 1024 ** 3;
+  if (cpus <= 2 || memGiB < 12) return 1;
+  if (cpus <= 4) return 3;
+  if (memGiB < 24) return Math.min(4, cpus);
+  return Math.min(4, cpus);
+}
+
+// Measured CI durations (seconds, run 45440355579 / 45444347449) so concurrent
+// execution starts the heaviest programs first instead of leaving 26s tails at the end.
+export const PROGRAM_DURATION_WEIGHTS = {
+  "tests/tsconfig.playwright.json": 26.3,
+  "packages/paperclip-runner/tsconfig.test.json": 25.9,
+  "packages/db/tsconfig.test.json": 23.7,
+  "packages/paperclip-runner/tsconfig.browser.test.json": 9.6,
+  "packages/paperclip-runner/tsconfig.surfaces.test.json": 8.8,
+  "packages/plugins/sandbox-providers/daytona/tsconfig.test.json": 7.5,
+  "tests/runner-acceptance/tsconfig.json": 7.3,
+  "packages/plugins/plugin-workspace-diff/tsconfig.test.json": 7.2,
+  "packages/plugins/sdk/tsconfig.test.json": 6.8,
+  "packages/plugins/sandbox-providers/kubernetes/tsconfig.test.json": 6.6,
+  "packages/plugins/sandbox-providers/e2b/tsconfig.test.json": 5.7,
+  "packages/plugins/sandbox-providers/exe-dev/tsconfig.test.json": 5.6,
+  "packages/plugins/sandbox-providers/modal/tsconfig.test.json": 4.4,
+  "packages/plugins/sandbox-providers/createos/tsconfig.test.json": 4.2,
+  "packages/plugins/sandbox-providers/novita/tsconfig.test.json": 3.9,
+  "packages/plugins/sandbox-providers/cloudflare/tsconfig.test.json": 3.8,
+  "packages/plugins/sandbox-providers/boxd/tsconfig.test.json": 3.7,
+  "packages/plugins/examples/plugin-orchestration-smoke-example/tsconfig.test.json": 1.6,
+  "packages/kv-demo-mcp-server/tsconfig.test.json": 1.5,
+  "scripts/scale-ramp/tsconfig.json": 0.4,
+  "packages/plugins/sandbox-providers/cloudflare/bridge-template/tsconfig.test.json": 0.4,
+};
+
+export function orderProgramsLpt(programs = PROGRAMS) {
+  return [...programs].sort(
+    (left, right) => (PROGRAM_DURATION_WEIGHTS[right] ?? 5) - (PROGRAM_DURATION_WEIGHTS[left] ?? 5),
+  );
+}
 
 export const SANDBOX_PROVIDERS = [
   "packages/plugins/sandbox-providers/boxd",
@@ -124,7 +164,11 @@ export function selectTestPrograms(changedFiles, programs = PROGRAMS) {
       "scripts/typecheck-sandbox-providers/",
       "scripts/link-plugin-dev-sdk.mjs",
     ]);
-  const runnerChanged = hasPrefix(changedFiles, ["packages/paperclip-runner/", "packages/paperclip-eval-kernel/"]);
+  const runnerChanged = hasPrefix(changedFiles, [
+    "packages/paperclip-runner/",
+    "packages/paperclip-eval-kernel/",
+    "packages/adapter-utils/",
+  ]);
   const cloudflareChanged = hasPrefix(changedFiles, ["packages/plugins/sandbox-providers/cloudflare/"]);
 
   const selected = programs.filter((program) => {
@@ -307,11 +351,22 @@ function listTrackedFiles(root) {
   return result.stdout.split("\0").filter(Boolean);
 }
 
+function projectCoverageConfigs(root, projects = PROJECTS) {
+  const hasServerDeclarations = existsSync(
+    path.join(root, "server", "node_modules", ".cache", "paperclip-typecheck", "tsconfig.declarations.json"),
+  );
+  return projects.map((project) => {
+    const layered = `${project}/tsconfig.layers.json`;
+    return hasServerDeclarations && existsSync(path.join(root, layered)) ? layered : `${project}/tsconfig.json`;
+  });
+}
+
 /** Returns the test files in no program, or null if a program could not be listed. */
 export function checkCoverage({
   root,
   env = process.env,
   programs = PROGRAMS,
+  projects = PROJECTS,
   workspaceConfigs = listWorkspaceConfigs,
   trackedFiles = listTrackedFiles,
   listFiles = listProgramFiles,
@@ -320,7 +375,7 @@ export function checkCoverage({
   const checkedFiles = [];
   // `pnpm build` and `typecheck:build-gaps` check each workspace's tsconfig.json.
   // scripts/typecheck-test-projects.mjs checks these same files through tsconfig.layers.json.
-  const projectConfigs = PROJECTS.map((project) => `${project}/tsconfig.json`);
+  const projectConfigs = projectCoverageConfigs(root, projects);
   for (const config of [...workspaceConfigs(root), ...projectConfigs, ...programs]) {
     const listing = listFiles(config, { cwd: root, env });
     if (listing.status !== 0) {
@@ -340,9 +395,10 @@ export async function checkCoverageAsync({
   root,
   env = process.env,
   programs = PROGRAMS,
+  projects = PROJECTS,
   includeProviders = true,
   onlyFiles = null,
-  concurrency = Math.min(4, availableParallelism()),
+  concurrency = Math.max(1, Math.min(6, availableParallelism())),
   workspaceConfigs = listWorkspaceConfigs,
   trackedFiles = listTrackedFiles,
   listFilesAsync = listProgramFilesAsync,
@@ -367,7 +423,7 @@ export async function checkCoverageAsync({
 
   const providerSet = new Set(SANDBOX_PROVIDER_PROGRAMS);
   const coveragePrograms = includeProviders ? programs : programs.filter((program) => !providerSet.has(program));
-  const projectConfigs = PROJECTS.map((project) => `${project}/tsconfig.json`);
+  const projectConfigs = projectCoverageConfigs(root, projects);
   let configs = [...workspaceConfigs(root), ...projectConfigs, ...coveragePrograms];
 
   if (remaining) {
@@ -548,7 +604,7 @@ export async function typecheckTestProgramsAsync({
   const checkerArgs = Number.isInteger(checkers) && checkers >= 1 ? ["--checkers", String(checkers)] : [];
   let exitCode = 0;
   let aborted = false;
-  const queue = [...programs];
+  const queue = orderProgramsLpt(programs);
   const workerCount = Math.max(1, Math.min(concurrency, queue.length));
   async function worker() {
     while (!aborted) {
@@ -606,7 +662,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let noCoverage = false;
   let forceCoverage = false;
   let coverageOnly = false;
-  let concurrency = Math.max(1, Math.min(DEFAULT_CONCURRENCY, availableParallelism()));
+  let concurrency = defaultConcurrency();
   let checkers;
   const checkFiles = [];
   const programs = [];

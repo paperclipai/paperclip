@@ -21,18 +21,16 @@ export const ProductionPicker: Story = {
 };
 export const ProductionPickerReadOnly: Story = {
   render: () => <GoogleWorkspaceServicesDialog initial={{ gmail: "read", calendar: "read" }} onContinue={fn()} onCancel={fn()} />,
-  parameters: { docs: { description: { story: "The data-use disclosure follows the selection: only selected services are described, at their chosen access level." } } },
+  parameters: { docs: { description: { story: "The picker shows the service rows and the privacy policy link only. It has no data-use text for any selection." } } },
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body);
-    const disclosure = body.getByRole("region", { name: "How Paperclip uses your Google data" });
-    await expect(disclosure).toHaveTextContent("Gmail: agents can read and search your email.");
-    await expect(disclosure).not.toHaveTextContent(/Drive|drafts|sending|Paperclip does not send/);
-    await expect(disclosure).toHaveTextContent("the content is sent to the AI model provider configured for your workspace");
-    await expect(within(disclosure).getByRole("link", { name: /Limited Use/ })).toHaveAttribute("href", "https://paperclip.ing/privacy");
+    const dialog = body.getByRole("dialog");
+    await expect(dialog).not.toHaveTextContent(/What agents can do|How your data is used|agents can|AI model provider|train general AI models/);
+    await expect(within(dialog).getByRole("link", { name: /Limited Use/ })).toHaveAttribute("href", "https://paperclip.ing/privacy");
     await userEvent.click(body.getByRole("switch", { name: /^Gmail$/ }));
     await userEvent.click(body.getByRole("switch", { name: /^Calendar$/ }));
-    await expect(body.queryByRole("region", { name: "How Paperclip uses your Google data" })).not.toBeInTheDocument();
     await expect(body.getByRole("status")).toHaveTextContent("Select at least one service to continue.");
+    await expect(within(dialog).getByRole("link", { name: /Limited Use/ })).toBeVisible();
   },
 };
 export const ProductionPickerMobile: Story = {

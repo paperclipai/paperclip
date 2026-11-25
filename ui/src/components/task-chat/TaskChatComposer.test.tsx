@@ -10,7 +10,7 @@ import {
   instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 import { parsePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
-import { planSubmission } from "./composer-commands";
+import { parseSwarmCommand, planSubmission, swarmRunSettingsRefusal } from "./composer-commands";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -2001,6 +2001,91 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+  });
+
+  describe("/swarm command", () => {
+    it("matches only the user's leading /swarm token, through the shared rule", () => {
+      expect(parseSwarmCommand(" /swarm two helpers write a.txt and b.txt ")).toEqual({ request: "two helpers write a.txt and b.txt" });
+      expect(parseSwarmCommand("[/sw](</swarm write a.txt>)")).toEqual({ request: "write a.txt" });
+      expect(parseSwarmCommand("/swarm")).toEqual({ request: "" });
+      expect(parseSwarmCommand("Please /swarm this")).toBeNull();
+      expect(parseSwarmCommand("> /swarm from a pasted email")).toBeNull();
+      expect(parseSwarmCommand("```\n/swarm\n```")).toBeNull();
+      expect(parseSwarmCommand("/swarms")).toBeNull();
+      expect(parseSwarmCommand("/Swarm do it")).toBeNull();
+    });
+
+    it("sends the request as a structured swarm request, without the command text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/swarm two helpers write a.txt and b.txt");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("two helpers write a.txt and b.txt", undefined, undefined, undefined, expect.any(String), undefined, "swarm");
+    });
+
+    it("asks for a request instead of sending a bare /swarm", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("/swarm");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Write what the swarm should do after /swarm.");
+    });
+
+    it("refuses a /swarm request longer than a swarm accepts before sending it", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText(`/swarm ${"x".repeat(16_001)}`);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("This swarm request is too long. Keep what follows /swarm under 16,000 characters.");
+    });
+
+    it("resends a /swarm request with the same request id after a lost receipt and a reload", async () => {
+      let rejectSend!: (error: Error) => void;
+      const onAdd = vi.fn().mockReturnValueOnce(new Promise<void>((_, reject) => { rejectSend = reject; })).mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn(), draftKey: "swarm-retry" });
+      typeText("/swarm write a.txt");
+      await act(async () => sendButton().click());
+      const attemptId = onAdd.mock.calls[0][4];
+      await act(async () => rejectSend(new CommentSubmissionUnknownError()));
+      expect(loadDraftSubmission("swarm-retry")?.request).toMatchObject({ body: "write a.txt", nativeCommand: "swarm" });
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn(), draftKey: "swarm-retry" });
+      await flushAsync();
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+      await act(async () => resend.click());
+      expect(onAdd).toHaveBeenNthCalledWith(2, "write a.txt", undefined, undefined, undefined, attemptId, undefined, "swarm");
+    });
+
+    it("refuses /swarm in the new-task composer instead of creating an ordinary task", async () => {
+      const creation = { value: "/swarm write a.txt", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined), submitLabel: "Create",
+        onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn() };
+      render(<TaskChatComposer creation={creation} workMode="standard" onWorkModeChange={vi.fn()} />);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(creation.onSubmit).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Create the task first, then send /swarm in a comment on it.");
+    });
+
+    it("refuses /swarm with a different model or effort chosen for the message", async () => {
+      const creation = { value: "", onChange: vi.fn(), onSubmit: vi.fn(), submitLabel: "Create", onSelectFiles: vi.fn(),
+        runSettings: { model: "gemini-4-argon-medium", effort: null, fast: false }, onRunSettingsChange: vi.fn() };
+      expect(swarmRunSettingsRefusal(creation.runSettings)).toBe("Swarm uses the agent's configured model. Clear the model and effort choices for this message, then send /swarm.");
+      expect(swarmRunSettingsRefusal(null)).toBeNull();
+      expect(swarmRunSettingsRefusal({ model: null, effort: null, fast: false })).toBeNull();
+    });
+
+    it("leaves a /swarm inside the message as ordinary text", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
+      typeText("Please /swarm this");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("Please /swarm this", undefined, undefined, undefined, expect.any(String));
+    });
   });
 
   describe("/plan command", () => {

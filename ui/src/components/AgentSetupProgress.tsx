@@ -73,12 +73,21 @@ export function useAgentSetupProgress({
   const accountFailed = !accountOverride && account.failed;
   const handoffKey = ["agent-setup-progress-handoff", accountId, companyId ?? null, purpose, subjectId ?? null] as const;
   const storageKey = agentSetupHandoffStorageKey(accountId, companyId, purpose, subjectId);
+  // Set by renew and kept until a new checklist is created, so a retry of a failed create still
+  // creates rather than returning the checklist being replaced.
+  const replacing = useRef(false);
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
+      // Any other refetch (the app refreshes every query on screen when its live connection
+      // reconnects or the tab returns) keeps the checklist on screen. A finished one is no longer
+      // in storage, so falling through here would replace it with a blank checklist.
+      const current = queryClient.getQueryData<{ handoff: AgentSetupProgressHandoff; fromEarlierVisit: boolean }>(handoffKey);
+      if (current && !replacing.current) return current;
       // A handoff found in this tab's storage came from an earlier visit; a created one is new.
       const stored = storedAgentSetupHandoff(storageKey);
       const handoff = stored ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
+      replacing.current = false;
       storeAgentSetupHandoff(storageKey, handoff);
       return { handoff, fromEarlierVisit: Boolean(stored) };
     },
@@ -115,6 +124,7 @@ export function useAgentSetupProgress({
       return;
     }
     storeAgentSetupHandoff(storageKey, null);
+    replacing.current = true;
     void handoffQuery.refetch();
   };
 

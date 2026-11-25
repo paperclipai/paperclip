@@ -11,6 +11,7 @@ import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailur
 import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
+import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
 
@@ -295,7 +296,9 @@ async function receiveLine(line: string): Promise<void> {
         acpxSidecarErrorCode(normalized),
         "acpx_sidecar_command_failed",
       ),
-      message: safeMessage(normalized),
+      // Operator detail beside a typed provider cause (the Runner keeps it for diagnostics).
+      message: typeof normalizedRecord.diagnostic === "string" && normalizedRecord.diagnostic
+        ? safeText(normalizedRecord.diagnostic) : safeMessage(normalized),
       retryable: normalizedRecord.retryable === true,
       ...(request.command === "session.open" && initializedAgent
         ? { providerFailure: providerFailureFromError(error) ?? acpxProviderFailure(error, initializedAgent, "startup", process.env) ?? undefined } : {}),
@@ -343,7 +346,7 @@ async function dispatch(
       throw new Error("ACPX sidecar already owns a session or its cleanup");
     }
     if (!initializedModel) throw new Error("initialize the ACPX sidecar first");
-    const params = parseOpenParams(request.params);
+    const params = sidecarRequestContract(() => parseOpenParams(request.params));
     if (
       params.agent !== initializedAgent ||
       params.model !== initializedModel
@@ -1666,6 +1669,22 @@ function safeOutput(value: unknown): Record<string, unknown> {
 // Generated from the sidecar schema's closed session.open parameter set.
 const OPEN_PARAMS: ReadonlySet<string> = new Set(GENERATED_ACPX_SIDECAR_OPEN_PARAMS);
 
+/**
+ * A request the sidecar refuses by its own parameter contract (Runner and
+ * sidecar disagree) carries a closed code, so the Runner names the class.
+ * The messages are the sidecar's own text; typed refusals keep their code.
+ */
+function sidecarRequestContract<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof Error && typeof (error as Error & { code?: unknown }).code !== "string") {
+      Object.assign(error, { code: "ACPX_SIDECAR_REQUEST_INVALID", retryable: false });
+    }
+    throw error;
+  }
+}
+
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
@@ -1674,7 +1693,8 @@ function parseOpenParams(
   const candidateAdmission = value.candidateAdmission === undefined ? undefined
     : parseAcpxCandidateStartupAdmission(value.candidateAdmission, { agent: String(value.agent), model, normalizedSessionId: String(value.normalizedSessionId) });
   const agent = requireQualifiedAgent(value.agent, model, candidateAdmission);
-  if (value.mode !== undefined && agent !== "cursor") throw new Error("mode is supported only for Cursor");
+  // The adapter registry decides which agents take a provider mode, and which modes.
+  const mode = resolveAcpxProviderMode(agent, value.mode);
   const piThinkingLevel = resolvePiThinkingLevel(agent, value.piThinkingLevel);
   const claudeEffort = resolveClaudeEffort(agent, value.claudeEffort);
   const grokEffort = resolveGrokEffort(agent, value.grokEffort);
@@ -1699,7 +1719,7 @@ function parseOpenParams(
     agent,
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
-    ...(value.mode === undefined ? {} : { mode: parseProviderMode(value.mode) }),
+    ...(mode === undefined ? {} : { mode }),
     ...(piThinkingLevel ? { piThinkingLevel } : {}),
     ...(claudeEffort ? { claudeEffort } : {}),
     ...(grokEffort ? { grokEffort } : {}),

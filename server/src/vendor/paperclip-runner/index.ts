@@ -10,6 +10,8 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  GeneratedAntigravitySwarmChannel,
+  GeneratedAntigravitySwarmCredentialFacts,
   NativeCursorCloudConfig,
   AcpxCandidateAdmission,
   DotHarnessDriver,
@@ -101,7 +103,6 @@ export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const inspectDurablePrpCheckpointRunner = runner.inspectDurablePrpCheckpointRunner;
-export const isSettledReleasedRunnerCut = runner.isSettledReleasedRunnerCut;
 export const revertUnattachedRelaunchRotation = runner.revertUnattachedRelaunchRotation;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
@@ -236,6 +237,10 @@ export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
 export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
 export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
 export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;
+export const GENERATED_ANTIGRAVITY_SWARM_CHANNELS = runner.GENERATED_ANTIGRAVITY_SWARM_CHANNELS;
+export const GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD = runner.GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD;
+export const GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL = runner.GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL;
+export const readGeneratedAntigravitySwarmCredentialFacts = runner.readGeneratedAntigravitySwarmCredentialFacts;
 export const discoverAntigravityModels = runner.discoverAntigravityModels;
 export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;

@@ -68,6 +68,8 @@ export interface MonitorSurfaceCopy {
   automaticChecksPaused?: boolean;
   checkUnavailable?: boolean;
   executionWait?: boolean;
+  /** Waiting for AI account usage; a reply rechecks usage instead of starting work outright. */
+  usageWait?: boolean;
 }
 
 function capitalize(value: string): string {
@@ -157,9 +159,10 @@ export function buildMonitorSurfaceCopy(
     return {
       bannerTitle: "Pool exhausted",
       stripTitle: "Pool exhausted",
-      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits."],
+      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits or the agent uses a different account."],
       stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
       tone: "info",
+      usageWait: true,
     };
   }
 
@@ -374,6 +377,8 @@ export function IssueMonitorComposerStrip({
             ? "Review on GitHub, then check status to have the agent verify the result."
             : copy.workspaceWait || copy.executionWait
             ? "You can keep sending instructions while the agent waits."
+            : copy.usageWait
+            ? "Sending a reply checks usage again now. The agent starts as soon as usage is available."
             : "Sending a reply wakes the agent now — before the scheduled check."}
         </p>
       ) : null}

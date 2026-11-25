@@ -2042,7 +2042,8 @@ fn with_cleanup_error(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         ))
         .with_provider_failure(error.provider_failure())
-        .with_command_rejection(error.command_rejection()),
+        .with_command_rejection(error.command_rejection())
+        .with_sidecar_rejection(error.sidecar_rejection()),
     }
 }
 
@@ -2542,6 +2543,18 @@ mod mode_tests {
         );
         assert_eq!(
             session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        // A granted /swarm turn keeps the same grant and names its provider mode;
+        // the sidecar, not the Runner, decides which agent modes it accepts.
+        let mut swarm = cfg.clone();
+        swarm.mode = Some("swarm".to_owned());
+        swarm.validate().unwrap();
+        let open = session_open_params(&swarm, &[]);
+        assert_eq!(open["candidateAdmission"], json!(admission));
+        assert_eq!(open["mode"], json!("swarm"));
+        assert_eq!(
+            initialize_params(&swarm)["candidateAdmission"],
             json!(admission)
         );
         for (field, value) in [
