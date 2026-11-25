@@ -126,7 +126,7 @@ evidence that Google serves inference for that model on that credential.
 | Route | State | Needs |
 | --- | --- | --- |
 | API key (exact-model admission in patch `1.5.2-paperclip.2`) | All four Neon levels admitted prompt-free with exact receipts on macOS and Linux x64; no `AGY_ACP_DEFAULT_MODEL` needed. No Neon prompt has completed: the only key is free tier (Neon quota 0) | A paid Gemini key, then one accepted prompt per level |
-| Personal Google sign-in (subscription catalog) | Local macOS sign-in journey proven on 1.4.3 (October); not re-run on 1.5.2; never offered in a cloud sandbox | An entitled account and the attended sign-in journey on 1.5.2 |
+| Personal Google sign-in (subscription catalog) | Local macOS sign-in journey proven on 1.4.3 (October). On 2026-11-25 (local darwin-arm64, subscription sign-in): ordinary tasks completed on Gemini 4 Neon at all four levels and a `/swarm` completed on Neon (Low), each with requested = effective model (see the acceptance ledger). Never offered in a cloud sandbox | The same in a cloud sandbox |
 | Agent Platform (Vertex/ADC) | Advertised by the server, never exercised here | A Google Cloud project and service credentials |
 
 ## Workstreams
@@ -174,8 +174,8 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Model admission | Every model ID admitted by exact-model admission, prompt-free | Passed: all 28 IDs (14 Gemini 3, 14 Gemini 4 including Neon at four levels) get exact receipts under an API key on both platforms, without `AGY_ACP_DEFAULT_MODEL` |
 | Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. With completed prompts (2026-11-23, local, sign-in): native process kill recovered and the task finished. No live `session/load` call was observed in the logs |
 | Launch cost | Run start to native initialize | Sealed verified store: 1.46 s (macOS) / 1.74 s (Linux x64), from 3.45 / 3.65 s. Measured before the launcher regained its streamed executable hash (below); that hash measured ~60 ms for the 179 MB macOS server and is not yet re-measured for the ~722 MB Linux launcher |
-| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` accepted prompts over Google sign-in (local). The signed-in catalog listed only three Gemini 3.8 Flash levels, so the rest of the lineup is NOT RUN; the free API key still completes no prompt |
-| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0; the signed-in catalog does not list Neon) |
+| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` (2026-11-23) and Gemini 4 Neon at four levels (2026-11-25, below) accepted prompts over Google sign-in (local). The rest of the lineup and the lineup suites are NOT RUN; the free API key still completes no prompt |
+| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | Passed locally (darwin-arm64, Google subscription sign-in, commit 438ae60922, 2026-11-25): one ordinary task per level, each Done in one run with requested = effective model and no usage limit. Low 65.9 s; medium 50.7 s (30,978 in / 4,406 out tokens); high 53.8 s (31,176 / 4,711); xhigh 68.9 s (46,152 / 5,499). API-key route and cloud sandbox NOT RUN |
 | Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | Local darwin-arm64 passed on 1.5.2 (sign-in, 2026-11-23), including a follow-up on the same task. Daytona NOT RUN |
 | Scoped tools | Semantic and MCP round trip; wrong-company and stale authority denied | NOT RUN |
 | Questions and permissions | Native identity, one continuation, denial holds | Question passed locally (asked, answered, task finished). Permissions NOT RUN |
@@ -184,7 +184,7 @@ API-key route or Daytona remain NOT RUN, not failed and not passed.
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
-| Swarm (`/swarm`) | Native swarm starts from a task | Built on the Antigravity CLI route behind the off-by-default flag; fake-CLI tests pass. Live local proof pending (recipe below). The registry server 1.5.2 still has no swarm |
+| Swarm (`/swarm`) | Native swarm starts from a task | Passed locally on the Antigravity CLI route behind the off-by-default flag (darwin-arm64, 2026-11-25): Gemini 3.8 Flash (Low) and Gemini 4 Neon (Low). See "/swarm live proof" below for what is and is not proven. Linux and cloud sandbox NOT RUN. The registry server 1.5.2 still has no swarm |
 
 ### First live tasks (2026-11-23, local, Google sign-in)
 
@@ -383,8 +383,9 @@ this computer, and the experimental flag on. Then, on a task for that agent:
    containing B; a verifier checks both`: native swarm, both files in the task
    folder, task Done, activity log names the swarm.
 2. The same, then Stop mid-swarm: run cancelled, no `agy` process left.
-3. The same, then kill the `agy` process mid-swarm, then Retry: a fresh swarm
-   runs in the same folder; nothing posted twice.
+3. The same, then kill the `agy` process mid-swarm: Paperclip recovers on its
+   own with a fresh swarm in the same folder (at most three attempts per
+   request); nothing posted twice. Retry starts one when recovery has stopped.
 4. An ordinary follow-up comment after a swarm: runs normally (fresh session).
 5. Flag off, `/swarm ...`: the composer shows "Swarm is not turned on ..." and
    nothing is posted or run.
@@ -392,4 +393,20 @@ this computer, and the experimental flag on. Then, on a task for that agent:
 | Gate | Result |
 | --- | --- |
 | Unit and fake-CLI tests (driver, guard, paths, route, server, composer) | Passed |
-| Live steps 1-5 | NOT RUN (pending) |
+| 1. Swarm, Gemini 3.8 Flash (Low), Antigravity CLI 1.5.15, Google's default channel | Passed: a real swarm (two helpers and a verifier) Done in 49.5 s, files correct, nothing posted twice |
+| 1. Swarm, Gemini 4 Neon (Low) | Passed: Done in 115 s (92,378 in / 6,733 out tokens), requested = effective model |
+| 2. Stop with 7 helpers active (Flash) | Passed: every CLI and helper process gone in 0.7 s, no re-run. Gap: the stopped run recorded no usage (fixed in this pull request) |
+| 3. Kill the CLI process mid-swarm (Flash) | Passed: recovered automatically with a fresh swarm, Done. Gaps: no usage recorded for the killed run, and the failure text asked for Retry while recovery continued on its own (both fixed in this pull request) |
+| 4. Ordinary follow-up after a swarm | Passed: 41 s (Flash), 105 s (Neon). A completed swarm was not run again (checked 10 minutes later) |
+| Refusals with the flag on | Passed: an empty request, Plan mode and Ask mode answer 422 in plain words and post nothing; a quoted `/swarm` runs as ordinary text |
+| Thread text | Gaps found and fixed in this pull request: the CLI's terminal hint ("Run /swarm board …") and a stray "." reached the thread; replies linked task-folder files by absolute local `file://` path (also on ordinary Antigravity runs); the coordinator named Paperclip's swarm rules. The settings receipt now reaches the run record as a provider notice |
+| 5. Flag off | NOT RUN live (unit tests only) |
+
+Not proven live: Stop or kill on a Neon swarm; pressing Retry on a swarm
+(recovery never needed it); typing `/swarm` in the browser composer (the live
+runs used the comments API with the composer's structured request); the Linux
+and cloud sandbox routes; the paid qualification cells and lineup suites. The
+profile stays **pending** until an operator grants the flip.
+
+Facts above: local darwin-arm64 instance at commit 438ae60922, 2026-11-25,
+Google subscription sign-in.
