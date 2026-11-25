@@ -10086,11 +10086,44 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {
+    // An agent holding a board user's tasks:retry grant presses Retry as that
+    // person, so the person's gates apply, within a per-task daily cap.
+    let agentRetry: { companyId: string; agentId: string; runId: string } | null = null;
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.companyId) {
+      const { agentOwnsRun, agentTaskRetryActor } = await import("../services/agent-task-retry.js");
+      const grantor = await agentTaskRetryActor(db, { companyId: req.actor.companyId, agentId: req.actor.agentId,
+        runId: req.actor.runId });
+      if (grantor) {
+        // The agent's own limits apply first: scoped keys never use the grant,
+        // the run must be the agent's, and its trust boundary and company
+        // policy must let it change the task. The grant lifts only the
+        // assignee rule for this one action.
+        if (req.actor.keyScope) throw forbidden("Scoped credentials cannot use the Retry grant");
+        const runId = requireAgentRunId(req, res);
+        if (!runId) return;
+        if (!(await agentOwnsRun(db, { companyId: req.actor.companyId, agentId: req.actor.agentId, runId })))
+          throw forbidden("Run does not belong to this agent");
+        const own = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+        if (!own || !(await assertIssueReadAllowed(req, res, own))) return;
+        const ownWrite = await decideIssueAccess(req, own, "issue:mutate");
+        if (!ownWrite.allowed && issueWriteDenialCodeForDecision(ownWrite) === "issue_write_actor_class_excluded")
+          throw forbidden(ownWrite.explanation, authorizationDeniedDetails(ownWrite));
+        agentRetry = { companyId: req.actor.companyId, agentId: req.actor.agentId, runId };
+        req.actor = grantor;
+      }
+    }
     assertBoard(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (agentRetry && issue.companyId !== agentRetry.companyId) throw notFound("Issue not found");
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (agentRetry) {
+      if (issue.conversationAgentId) throw forbidden("Only the conversation owner can retry a chat run");
+      const { recordAgentTaskRetry } = await import("../services/agent-task-retry.js");
+      await recordAgentTaskRetry(db, { issueId: issue.id, ...agentRetry, grantedByUserId: req.actor.userId!,
+        idempotencyKey: req.body.idempotencyKey });
+    }
     if (issue.conversationAgentId) {
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can retry a chat run");
