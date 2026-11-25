@@ -58,6 +58,8 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
 import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
@@ -1211,8 +1213,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
         } as Record<string, unknown>)
         : null;
+      const postResultCleanup = proc.terminalResultCleanup;
+      const postResultStopReason = asString(parsed.stop_reason ?? parsed.stopReason, "").trim().toLowerCase();
+      const postResultCleanEndTurn = postResultStopReason === "" || postResultStopReason === "end_turn";
+      const postResultSigtermExit =
+        (proc.exitCode === 143 && proc.signal === null) || proc.signal === "SIGTERM";
+      const postResultSigkillExit =
+        (proc.exitCode === 137 && proc.signal === null) || proc.signal === "SIGKILL";
+      const postResultExitMatchesSignal = Boolean(
+        postResultCleanup &&
+        postResultCleanup.kind === "terminal_result_cleanup" &&
+        postResultCleanup.stopped === true &&
+        postResultCleanup.terminalResultSeen === true &&
+        ((postResultCleanup.signal === "SIGTERM" && postResultSigtermExit) ||
+          (postResultCleanup.signal === "SIGKILL" &&
+            postResultCleanup.forceKilled === true &&
+            (postResultSigkillExit || postResultSigtermExit))),
+      );
+      const isPostResultCleanupReap =
+        parsedSucceeded &&
+        postResultCleanEndTurn &&
+        postResultExitMatchesSignal &&
+        !proc.timedOut &&
+        !proc.errorCode &&
+        !loginMeta.requiresLogin &&
+        !claudeRefusal &&
+        !clearSessionForMaxTurns &&
+        !poisonedPreviousMessageId;
       const errorMessage = failed
         ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+        : isPostResultCleanupReap
+        ? asString(postResultCleanup?.reason, UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON)
         : null;
       const providerQuota =
         failed &&
@@ -1276,6 +1307,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "claude_transient_upstream"
         : claudeRefusal
         ? "claude_refusal"
+        : isPostResultCleanupReap
+        ? asString(postResultCleanup?.stopReason, UNMANAGED_BACKGROUND_TASK_STOP_REASON)
         : null;
       const errorFamily = providerQuota
         ? "provider_quota"
