@@ -254,6 +254,16 @@ const NEWLINE = String.fromCharCode(10);
  * Returns null when the prompt has no continuation block.
  */
 export function renderedContinuationMessageRevisions(prompt: string): Record<string, string> | null {
+  // A resumed session submits the compact JSON delta; it delivers every
+  // message it lists whole.
+  if (prompt.trimStart().startsWith("{")) {
+    try {
+      const events = JSON.parse(prompt) as { messages?: unknown };
+      return Array.isArray(events.messages) ? messageRevisions(events.messages) : null;
+    } catch {
+      return null;
+    }
+  }
   const start = prompt.indexOf(CONTINUATION_SECTION_HEADING);
   if (start < 0) return null;
   const lines = prompt.slice(start).split(NEWLINE);
@@ -264,15 +274,18 @@ export function renderedContinuationMessageRevisions(prompt: string): Record<str
   if (close < 0) return null;
   try {
     const context = JSON.parse(lines.slice(open + 1, close).join(NEWLINE)) as { messages?: unknown };
-    if (!Array.isArray(context.messages)) return null;
-    const revisions: Record<string, string> = {};
-    for (const message of context.messages as Array<Record<string, unknown>>) {
-      if (typeof message?.id !== "string" || typeof message.updatedAt !== "string") continue;
-      if (message.bodyTruncated === true || message.deleted === true) continue;
-      revisions[message.id] = message.updatedAt;
-    }
-    return revisions;
+    return Array.isArray(context.messages) ? messageRevisions(context.messages) : null;
   } catch {
     return null;
   }
+}
+
+function messageRevisions(messages: unknown[]): Record<string, string> {
+  const revisions: Record<string, string> = {};
+  for (const message of messages as Array<Record<string, unknown>>) {
+    if (typeof message?.id !== "string" || typeof message.updatedAt !== "string") continue;
+    if (message.bodyTruncated === true || message.deleted === true) continue;
+    revisions[message.id] = message.updatedAt;
+  }
+  return revisions;
 }

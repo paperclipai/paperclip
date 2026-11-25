@@ -174,5 +174,8 @@ describe("boundExecutionContinuationForPrompt", () => {
     const revisions = renderedContinuationMessageRevisions(prompt)!;
     expect(revisions).toEqual({ whole: "2026-11-24T00:00:00.000Z" });
     expect(renderedContinuationMessageRevisions("no continuation here")).toBeNull();
+    // A resumed session submits the compact JSON delta, whose messages arrive whole.
+    const compact = JSON.stringify({ messages: [message("delta", "New request"), { ...message("gone", ""), deleted: true }] });
+    expect(renderedContinuationMessageRevisions(compact)).toEqual({ delta: "2026-11-24T00:00:00.000Z" });
   });
 });

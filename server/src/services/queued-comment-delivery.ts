@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
@@ -61,6 +61,30 @@ export async function recordTaskHistoryRead(db: Db, input: {
   await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
     eventType: TASK_HISTORY_READ_EVENT, stream: "system", level: "info",
     payload: { comments: Object.fromEntries(input.comments.map(comment => [comment.id, comment.updatedAt.toISOString()])) } });
+}
+
+const FULL_CONTEXT_PROGRESS_EVENT = "task_context.full_read_progress";
+
+/** Saves how far a run has read its full context in order, so a restart can continue it. */
+export async function recordFullContextProgress(db: Db, input: {
+  companyId: string; agentId: string; runId: string; contextDigest: string; nextOffset: number;
+}): Promise<void> {
+  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: FULL_CONTEXT_PROGRESS_EVENT, stream: "system", level: "info",
+    payload: { contextDigest: input.contextDigest, nextOffset: input.nextOffset } });
+}
+
+/** The next unread offset a run reached for this context digest, or null. */
+export async function readFullContextProgress(db: Pick<Db, "select">, input: {
+  companyId: string; runId: string; contextDigest: string;
+}): Promise<number | null> {
+  const [row] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, input.companyId), eq(heartbeatRunEvents.runId, input.runId),
+      eq(heartbeatRunEvents.eventType, FULL_CONTEXT_PROGRESS_EVENT),
+      sql`${heartbeatRunEvents.payload}->>'contextDigest' = ${input.contextDigest}`))
+    .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const nextOffset = row?.payload?.nextOffset;
+  return typeof nextOffset === "number" && Number.isSafeInteger(nextOffset) ? nextOffset : null;
 }
 
 export async function taskHistoryReadsForRun(db: Pick<Db, "select">, input: { companyId: string; runId: string }): Promise<Array<{

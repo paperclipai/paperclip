@@ -699,18 +699,20 @@ describe("PaperclipRunnerToolAuthority", () => {
       const bounded = await authority.execute({ tool: "get_task_context", callId: "bounded-context", arguments: {} });
       expect(JSON.stringify(bounded)).not.toContain("executionContinuation");
       const first = await authority.execute({ tool: "get_task_context", callId: "full-continuation", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
-      // Skipping the first page reaches the end without having read the whole history.
+      // Jumping past the saved progress reaches the end without having read the whole history.
       const skipping = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
-      for (let offset: number | null = first.nextOffset; offset !== null;) {
+      for (let offset: number | null = first.nextOffset! + 1; offset !== null;) {
         const page = await skipping.execute({ tool: "get_task_context", callId: `skip-${offset}`,
           arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
         offset = page.nextOffset;
       }
       expect(await taskHistoryReadsForRun(db, { companyId, runId })).toEqual([]);
+      // A restarted controller continues from the progress the first page saved.
+      const restarted = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
       let text = first.jsonText;
       let offset = first.nextOffset;
       while (offset !== null) {
-        const page = await authority.execute({ tool: "get_task_context", callId: `full-continuation-${offset}`,
+        const page = await restarted.execute({ tool: "get_task_context", callId: `full-continuation-${offset}`,
           arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
         text += page.jsonText;
         offset = page.nextOffset;

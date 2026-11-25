@@ -144,7 +144,9 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
-import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
+import {
+  commentsArrivedDuringRun, readFullContextProgress, recordFullContextProgress, recordTaskHistoryRead, taskHistoryHandlingGuidance,
+} from "../queued-comment-delivery.js";
 import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -1905,8 +1907,18 @@ export class PaperclipRunnerToolAuthority {
     if (!("jsonText" in page) || typeof page.contextDigest !== "string") return page;
     const digest = page.contextDigest;
     const offset = Number(page.offset ?? 0);
-    const contiguous = offset === 0 || this.#fullContextCoverage.get(digest) === offset;
-    if (contiguous && page.nextOffset !== null) this.#fullContextCoverage.set(digest, page.nextOffset);
+    // A restarted controller continues from the progress the run saved.
+    const expected = this.#fullContextCoverage.get(digest) ?? (offset > 0
+      ? await readFullContextProgress(this.db, { companyId: this.binding.companyId, runId: this.binding.runId, contextDigest: digest })
+        .catch(() => null)
+      : null);
+    const contiguous = offset === 0 || expected === offset;
+    if (contiguous && page.nextOffset !== null) {
+      this.#fullContextCoverage.set(digest, page.nextOffset);
+      await recordFullContextProgress(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+        runId: this.binding.runId, contextDigest: digest, nextOffset: page.nextOffset }).catch(error =>
+        logger.warn({ err: error, runId: this.binding.runId }, "could not save full context read progress"));
+    }
     const messages = (taskContext.executionContinuation as { messages?: unknown } | undefined)?.messages;
     if (contiguous && page.nextOffset === null && Array.isArray(messages)) {
       this.#fullContextCoverage.delete(digest);
