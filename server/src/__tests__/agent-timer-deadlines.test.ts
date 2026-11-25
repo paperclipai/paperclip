@@ -176,12 +176,16 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
       .toEqual({ reason: "heartbeat.daily_run_limit", observed: 1, limit: 1 });
   });
 
-  it("still counts a cancelled run that started provider work toward the daily run cap", async () => {
+  it.each([
+    ["started provider work", "cancelled", { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } }],
+    ["has no recovery marker", "cancelled", { cancellation: { actorType: "user" } }],
+    ["has no result", "cancelled", null],
+    ["has no error code or result", null, null],
+  ])("still counts a cancelled run that %s toward the daily run cap", async (_case, errorCode, resultJson) => {
     const f = await fixture({ enabled: true, intervalSec: 600, maxDailyRuns: 1 });
     const { getHeartbeatDailyCapBlock } = createHeartbeatTimerPolicy(db);
     await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "cancelled",
-      startedAt: now, finishedAt: now, errorCode: "cancelled",
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } });
+      startedAt: now, finishedAt: now, errorCode, resultJson });
     expect(await getHeartbeatDailyCapBlock(f.agent, f.queue.parseHeartbeatPolicy(f.agent), { now }))
       .toEqual({ reason: "heartbeat.daily_run_limit", observed: 1, limit: 1 });
   });

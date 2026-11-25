@@ -121,9 +121,6 @@ type TimerAgent = typeof agents.$inferSelect;
 type TimerPolicy = ReturnType<typeof parseHeartbeatPolicy>;
 type DailyCap = { reason: string; observed: number; limit: number } | null;
 const timerKey = (companyId: string, agentId: string) => JSON.stringify([companyId, agentId]);
-// Cancels that end a run before any provider work. They must not use up
-// heartbeat.maxDailyRuns, or a provider limit wait can lock an agent out for
-// the rest of the UTC day.
 export const NO_PROVIDER_WORK_CANCEL_ERROR_CODES = [
   "provider_limit_wait",
   "continuation_task_ownership_changed",
@@ -137,7 +134,7 @@ function dailyRunConditions(scope: SQL, now: Date) {
     notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
     sql`not (${heartbeatRuns.status} = 'cancelled' and (
       coalesce(${heartbeatRuns.errorCode} in (${sql.join(NO_PROVIDER_WORK_CANCEL_ERROR_CODES.map(code => sql`${code}`), sql`, `)}), false)
-      or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'))`);
+      or coalesce(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false', false)))`);
 }
 function dailyCostConditions(scope: SQL, now: Date) {
   const { start, end } = currentUtcDayWindow(now);
