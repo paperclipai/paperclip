@@ -2747,7 +2747,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"} icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -3101,7 +3101,7 @@ function StreamlinedInbox({
       )}
 
       {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"}
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()

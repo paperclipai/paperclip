@@ -2197,7 +2197,7 @@ export function Secrets() {
 
   return (
     <TooltipProvider>
-    <div className="flex max-w-6xl flex-col gap-4">
+    <div className="empty-state-page flex max-w-6xl flex-col gap-4 has-[.empty-state]:max-w-none">
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -2241,7 +2241,7 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex flex-col gap-4"
+        className="flex flex-1 flex-col gap-4"
       >
         <PageTabBar
           items={[
@@ -2342,7 +2342,7 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div>
+          <div className="flex flex-1 flex-col">
             {secretsView.kind === "error" || userDefinitionsView.kind === "error" ? (
               <div className="py-4">
                 <QueryErrorState
@@ -2358,15 +2358,15 @@ export function Secrets() {
             ) : unifiedRows.length === 0 &&
               !secretsListLoading &&
               !(showFolderView && folderPath) ? (
-              <EmptyState
+              <EmptyState placement="upper"
                 icon={KeyRound}
                 title="No secrets yet"
-                message="Add an API key or token once, then choose which agents can use it."
+                message={"Add an API key or token once,\nthen choose which agents can use it."}
                 action="New secret"
                 onAction={openCreateSecret}
               />
             ) : (
-              <div className="@container min-w-0 overflow-x-hidden text-sm" data-testid="secrets-list-container">
+              <div className="@container min-w-0 overflow-x-hidden text-sm has-[.empty-state]:flex has-[.empty-state]:flex-1 has-[.empty-state]:flex-col" data-testid="secrets-list-container">
                 {showFolderView && folderPath ? (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                     {renderSecretsBreadcrumb()}
@@ -2387,7 +2387,7 @@ export function Secrets() {
                       ))}
                     </div>
                   ) : showFolderView && folderPath && activeSecretFilterCount === 0 ? (
-                    <EmptyState
+                    <EmptyState placement="upper"
                       icon={FolderOpen}
                       message="No secrets in this folder yet."
                       action="New secret here"
@@ -2400,7 +2400,7 @@ export function Secrets() {
                         : "Your team hasn't added a secret yet."}
                     </p>
                   ) : (
-                    <EmptyState
+                    <EmptyState placement="upper"
                       icon={Search}
                       message={searching ? "No secrets match your search." : "No secrets match your filters."}
                     />
@@ -2528,7 +2528,7 @@ export function Secrets() {
         </TabsContent>
         )}
         {!hideProposalsTab && (
-        <TabsContent value="proposals">
+        <TabsContent value="proposals" className="flex flex-col">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}

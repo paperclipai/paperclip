@@ -1,6 +1,6 @@
 {
-  "id": "6d216ee0-8a1e-45e1-a71a-38c1e51b0ec1",
-  "prevId": "e7daf0b9-3e4a-42d7-b72a-4d7d413d9686",
+  "id": "8ddb0345-f9e8-4dde-8156-391f71d858b1",
+  "prevId": "2f88a046-845e-47f5-ad81-b3b338c79fb5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3311,6 +3311,153 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.agent_setup_progress": {
+      "name": "agent_setup_progress",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'waiting'"
+        },
+        "items": {
+          "name": "items",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "update_count": {
+          "name": "update_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "agent_setup_progress_company_idx": {
+          "name": "agent_setup_progress_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_setup_progress_expires_idx": {
+          "name": "agent_setup_progress_expires_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_setup_progress_company_id_companies_id_fk": {
+          "name": "agent_setup_progress_company_id_companies_id_fk",
+          "tableFrom": "agent_setup_progress",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "agent_setup_progress_status_check": {
+          "name": "agent_setup_progress_status_check",
+          "value": "\"agent_setup_progress\".\"status\" in ('waiting', 'in_progress', 'done', 'failed')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.agent_session_goal_actions": {
@@ -10445,6 +10592,40 @@
           "isUnique": false,
           "where": "\"chat_actions\".\"kind\" = 'github_review_check'\n      and (\"chat_actions\".\"status\" = 'received' or (\"chat_actions\".\"status\" = 'failed' and \"chat_actions\".\"result\"->>'retryable' = 'true'))",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_actions_github_task_publications_idx": {
+          "name": "chat_actions_github_task_publications_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->'session'->>'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"kind\" = 'github_review_publication' and \"chat_actions\".\"status\" = 'processed'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -36558,6 +36739,62 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_attention_resumed_idx": {
+          "name": "heartbeat_runs_attention_resumed_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"issue_id\"::text, \"native_issue_id\"::text,\n        \"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('running', 'succeeded')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_attention_history_idx": {
+          "name": "heartbeat_runs_attention_history_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('failed', 'timed_out') or \"heartbeat_runs\".\"error_code\" = 'provider_limit_wait'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_ctx_issue_created_idx": {
           "name": "heartbeat_runs_company_ctx_issue_created_idx",
           "columns": [
@@ -59978,6 +60215,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "tool_call_events_connection_error_idx": {
+          "name": "tool_call_events_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_call_events\".\"error_message\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -60819,6 +61078,13 @@
           "notNull": true,
           "default": "'pending'"
         },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'requested'"
+        },
         "requested_by_actor_type": {
           "name": "requested_by_actor_type",
           "type": "text",
@@ -60855,6 +61121,12 @@
         "last_error": {
           "name": "last_error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "not_before": {
+          "name": "not_before",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -62413,6 +62685,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_invocations_connection_error_idx": {
+          "name": "tool_invocations_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_invocations\".\"error_message\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
