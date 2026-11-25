@@ -7,6 +7,7 @@ import { agents, agentWakeupRequests, companies, createDb, environmentLeases, ex
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { heartbeatService } from "./heartbeat.js";
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import { REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA } from "./remote-workspace-epoch-abandonment.js";
@@ -111,7 +112,7 @@ describe("Retry of a task whose saved work recovery settled", () => {
       status: "resolved", outcome: "blocked",
       nextAction: "Automatic recovery of saved work failed (last failure: source_unavailable). Retry to try again; the agent will not repeat its work.",
       evidence: { runId: preparedId,
-        systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: 2, phase: "verify_execution",
+        systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION, phase: "verify_execution",
           state: "exhausted", failure: { code: "source_unavailable", retryClass: "use_alternative_strategy", evidenceFingerprint: "a".repeat(64) },
           attempts: 1, intentId: null, revision: 1, attemptId: randomUUID(), deadlineAt: now + 600_000, retriesUsed: 0,
           sourceRunId: preparedId, generationId: randomUUID(), nextAttemptAt: null, firstFailureAt: now - 600_000,
@@ -197,7 +198,7 @@ describe("Retry of a task whose saved work recovery settled", () => {
       kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: sourceId,
       status: "resolved", outcome: "blocked", nextAction: "Saved work recovered.",
       evidence: { runId: sourceId,
-        systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: 2, phase: "reconcile_effects",
+        systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION, phase: "reconcile_effects",
           state: "complete", failure: null, attempts: 1, intentId: null, revision: 3, attemptId: randomUUID(), deadlineAt: null,
           retriesUsed: 0, sourceRunId: sourceId, generationId: randomUUID(), nextAttemptAt: null, firstFailureAt: null,
           freshAttemptRunId: null, providerCooldownAt: null, preservationOperationIds: [recovered.id] },
