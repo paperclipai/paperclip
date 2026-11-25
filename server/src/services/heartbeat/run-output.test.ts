@@ -515,7 +515,7 @@ describe("run output progress write failures", () => {
     const logEvents = vi.mocked(publishLiveEvent).mock.calls
       .map(([event]) => event)
       .filter(event => event.type === "heartbeat.run.log");
-    expect(logEvents.map(event => event.payload.seq)).toEqual([1, 2]);
+    expect(logEvents.map(event => event.payload?.seq)).toEqual([1, 2]);
     expect(output.outputProgressState.pending).toMatchObject({ seq: 2, stream: "stderr", bytes: 13 });
     expect(row.lastOutputSeq).toBe(0);
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }),
