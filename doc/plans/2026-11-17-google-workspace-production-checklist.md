@@ -124,8 +124,11 @@ Decisions and the details behind them are kept in the
 - [x] Content read from Google is deleted on its own when access ends:
       connection removed, identity revoked, access ended at Google (seen on
       refresh), owner left the company, instance removed (Nov 24, first PR).
-- [ ] Google Technical Information kept at most 30 days (second PR).
-- [ ] No Google data in training, evaluation or feedback exports (second PR).
+- [x] Google Technical Information kept at most 30 days (Nov 24, second PR).
+- [x] No Google data in training, evaluation or feedback exports (Nov 24,
+      second PR).
+- [ ] Owner decision: customer observability export of Google tool content
+      (options in the working memory).
 - [ ] Owner decision: content agents wrote from Google data (three options in
       the working memory).
 - [ ] Live check on the staging tester: disconnect, then the run transcripts

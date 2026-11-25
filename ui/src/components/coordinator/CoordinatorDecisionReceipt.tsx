@@ -5,9 +5,10 @@ import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
 
 /** A recorded decision links to its context; it is not a second approval form. */
-export function CoordinatorDecisionReceipt({ item, onOpen, userLabelMap }: {
+export function CoordinatorDecisionReceipt({ item, onOpen, userLabelMap, showTimestamp = false }: {
   item: DecisionHistoryItem;
   onOpen: (href: string) => void;
+  showTimestamp?: boolean;
   /** Names the person a different person answered for ("for @dotta"; PAP-749 plan §6). */
   userLabelMap?: ReadonlyMap<string, string> | null;
 }) {
@@ -19,6 +20,7 @@ export function CoordinatorDecisionReceipt({ item, onOpen, userLabelMap }: {
       <span className="block truncate text-sm text-muted-foreground">{decisionHistoryContext(item)}</span>
       {/* Who withdrew it is in the headline; the reason they gave is here (PAP-749 plan §3). */}
       {item.reason ? <span className="block text-sm text-muted-foreground" data-decision-history-reason>Reason: {item.reason}</span> : null}
+      {showTimestamp && <time className="block text-xs tabular-nums text-muted-foreground" dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time>}
     </span>
     <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
   </button>;
