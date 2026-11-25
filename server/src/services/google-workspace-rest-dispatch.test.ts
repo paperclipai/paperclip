@@ -175,14 +175,25 @@ describe("probeGoogleWorkspaceRest", () => {
 describe("googleWorkspaceMcpErrorDetails", () => {
   const failed = (text: string, structuredContent?: unknown) => ({ isError: true, content: [{ type: "text", text }], structuredContent });
 
-  it("derives a stable code from Google's structured error, its status name, or its HTTP status", () => {
-    expect(googleWorkspaceMcpErrorDetails(failed(JSON.stringify({ error: { code: 400, status: "FAILED_PRECONDITION", message: "x" } }))))
-      .toEqual({ toolCode: "google_failed_precondition" });
+  it("classifies Google's structured error, status name or HTTP status with the REST tools' own Google error rules", () => {
+    expect(googleWorkspaceMcpErrorDetails(failed(JSON.stringify({ error: { code: 403, status: "PERMISSION_DENIED", message: "x" } }))))
+      .toEqual({ toolCode: "google_permission_denied" });
     expect(googleWorkspaceMcpErrorDetails(failed("x", { error: { code: 403, message: "x" } }))).toEqual({ toolCode: "google_permission_denied" });
+    expect(googleWorkspaceMcpErrorDetails(failed(JSON.stringify({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }))))
+      .toEqual({ toolCode: "google_insufficient_scope" });
+    expect(googleWorkspaceMcpErrorDetails(failed(JSON.stringify({ error: { status: "FAILED_PRECONDITION", message: "x" } }))))
+      .toEqual({ toolCode: "google_invalid_argument" });
     expect(googleWorkspaceMcpErrorDetails(failed("Request failed: INVALID_ARGUMENT (bad time zone)"))).toEqual({ toolCode: "google_invalid_argument" });
     expect(googleWorkspaceMcpErrorDetails(failed("Google API returned HTTP 404"))).toEqual({ toolCode: "google_not_found" });
+    expect(googleWorkspaceMcpErrorDetails(failed("HTTP 401"))).toEqual({ toolCode: "google_unauthenticated" });
     expect(googleWorkspaceMcpErrorDetails(failed(JSON.stringify({ error: { code: 429, message: "slow down" } }))))
-      .toEqual({ toolCode: "google_resource_exhausted", retryable: true });
+      .toEqual({ toolCode: "google_rate_limited", retryable: true });
+  });
+
+  it("does not mark a Google server error retryable, because a write may already be applied", () => {
+    for (const text of ["HTTP 500", "HTTP 502", "DEADLINE_EXCEEDED", "UNAVAILABLE"]) {
+      expect(googleWorkspaceMcpErrorDetails(failed(text))).toEqual({ toolCode: "google_unavailable" });
+    }
   });
 
   it("never takes a code from Google's free text, and falls back to google_error", () => {

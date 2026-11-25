@@ -534,6 +534,11 @@ export function toolResultErrorDetails(result: Record<string, unknown>): { toolC
   return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
 }
 
+function failedCallEventError(error: unknown, reasonCode: string): { errorCode: string; errorMessage: string } {
+  const toolCode = error instanceof ToolGatewayHttpError && typeof error.details.toolCode === "string" ? error.details.toolCode : undefined;
+  return { errorCode: toolCode ?? reasonCode, errorMessage: error instanceof Error ? error.message : String(error) };
+}
+
 function connectedToolErrorDetails(execution: { errorDetails?: ConnectedToolErrorDetails } | null | undefined, result: Record<string, unknown>) {
   return execution?.errorDetails ?? toolResultErrorDetails(result);
 }
@@ -10331,6 +10336,7 @@ export function createToolGatewayService(
         toolName: args.tool.name,
         policyDecision: status === 504 ? "defer_runtime" : "deny",
         reasonCode,
+        ...failedCallEventError(err, reasonCode),
         argumentsSummary: args.argumentsSummary,
         metadata: {
           source: "test",
@@ -11268,6 +11274,7 @@ export function createToolGatewayService(
         toolName: tool.name,
         policyDecision: "deny",
         reasonCode,
+        ...failedCallEventError(error, reasonCode),
         argumentsSummary,
         metadata: { durationMs: Date.now() - startedAt, ...(error instanceof ToolContentValidationError ? { promptInjection: error.detectorMetadata, findings: error.findings } : {}) },
         tool,
@@ -14404,9 +14411,7 @@ export function createToolGatewayService(
           toolName: tool.name,
           policyDecision: isDeferred ? "defer_runtime" : "deny",
           reasonCode,
-          errorCode: normalizedError instanceof ToolGatewayHttpError && typeof normalizedError.details.toolCode === "string"
-            ? normalizedError.details.toolCode : reasonCode,
-          errorMessage: message,
+          ...failedCallEventError(normalizedError, reasonCode),
           argumentsSummary: effectiveArgumentsSummary,
           metadata: {
             ...(virtualToolName
@@ -14709,6 +14714,7 @@ export function createToolGatewayService(
           toolName: tool.name,
           policyDecision: status === 504 ? "defer_runtime" : "deny",
           reasonCode,
+          ...failedCallEventError(err, reasonCode),
           argumentsSummary: argumentValidation.summary,
           metadata:
             err instanceof ToolContentValidationError

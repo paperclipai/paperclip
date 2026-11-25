@@ -10,9 +10,11 @@ import {
 } from "@paperclipai/shared";
 import {
   GOOGLE_WORKSPACE_REST_SHIPPED_SCHEMA_HASHES,
+  GoogleToolError,
   GoogleWorkspaceAuthError,
   callGoogleWorkspaceRestTool,
   googleCalendarSeriesRefusal,
+  googleError,
   googleWorkspaceArgumentRefusal,
   isGoogleWorkspaceRestService,
   listGoogleWorkspaceRestTools,
@@ -121,26 +123,16 @@ export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceM
   });
 }
 
-const GOOGLE_STATUSES = ["INVALID_ARGUMENT", "FAILED_PRECONDITION", "OUT_OF_RANGE", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
-  "ABORTED", "ALREADY_EXISTS", "RESOURCE_EXHAUSTED", "CANCELLED", "DATA_LOSS", "UNKNOWN", "INTERNAL", "NOT_IMPLEMENTED", "UNAVAILABLE",
-  "DEADLINE_EXCEEDED"] as const;
-const GOOGLE_HTTP_STATUSES: Readonly<Record<number, (typeof GOOGLE_STATUSES)[number]>> = {
-  400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND", 409: "ABORTED", 412: "FAILED_PRECONDITION",
-  429: "RESOURCE_EXHAUSTED", 499: "CANCELLED", 500: "INTERNAL", 501: "NOT_IMPLEMENTED", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED",
+const GOOGLE_STATUS_HTTP: Readonly<Record<string, number>> = {
+  INVALID_ARGUMENT: 400, FAILED_PRECONDITION: 400, OUT_OF_RANGE: 400, UNAUTHENTICATED: 401, PERMISSION_DENIED: 403, NOT_FOUND: 404,
+  ABORTED: 409, ALREADY_EXISTS: 409, RESOURCE_EXHAUSTED: 429, CANCELLED: 499, DATA_LOSS: 500, UNKNOWN: 500, INTERNAL: 500,
+  NOT_IMPLEMENTED: 501, UNAVAILABLE: 503, DEADLINE_EXCEEDED: 504,
 };
-const GOOGLE_RETRYABLE_STATUSES = new Set(["RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED"]);
-const GOOGLE_STATUS_TEXT = new RegExp(`\\b(${GOOGLE_STATUSES.join("|")})\\b`);
+const GOOGLE_STATUS_TEXT = new RegExp(`\\b(${Object.keys(GOOGLE_STATUS_HTTP).join("|")})\\b`);
 const GOOGLE_HTTP_STATUS_TEXT = /\b(?:HTTP|status|code)\b["']?\s*[:=]?\s*([45]\d\d)\b/i;
 
-function googleStatusOf(value: unknown, depth = 0): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.status === "string" && (GOOGLE_STATUSES as readonly string[]).includes(record.status)) return record.status;
-  for (const key of ["code", "status"]) {
-    const http = record[key];
-    if (typeof http === "number" && GOOGLE_HTTP_STATUSES[http]) return GOOGLE_HTTP_STATUSES[http]!;
-  }
-  return googleStatusOf(record.error, depth + 1);
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseJson(text: string): unknown {
@@ -151,24 +143,37 @@ function parseJson(text: string): unknown {
   }
 }
 
-function googleStatusInText(text: string): string | null {
-  const parsed = googleStatusOf(parseJson(text));
-  if (parsed) return parsed;
+function httpStatusOf(error: Record<string, unknown>): number | null {
+  if (typeof error.code === "number" && error.code >= 400 && error.code < 600) return error.code;
+  return typeof error.status === "string" ? GOOGLE_STATUS_HTTP[error.status] ?? null : null;
+}
+
+function googleErrorOf(value: unknown): { status: number; body: string } | null {
+  if (!isObject(value)) return null;
+  const error = isObject(value.error) ? value.error : value;
+  const status = httpStatusOf(error);
+  return status === null ? null : { status, body: JSON.stringify({ error }) };
+}
+
+function googleErrorInText(text: string): { status: number; body: string } | null {
+  const structured = googleErrorOf(parseJson(text));
+  if (structured) return structured;
   const named = GOOGLE_STATUS_TEXT.exec(text)?.[1];
-  if (named) return named;
-  const http = Number(GOOGLE_HTTP_STATUS_TEXT.exec(text)?.[1]);
-  return GOOGLE_HTTP_STATUSES[http] ?? null;
+  const status = named ? GOOGLE_STATUS_HTTP[named] : Number(GOOGLE_HTTP_STATUS_TEXT.exec(text)?.[1]);
+  return status && status >= 400 && status < 600 ? { status, body: "" } : null;
 }
 
 export function googleWorkspaceMcpErrorDetails(result: unknown): { toolCode: string; retryable?: true } {
-  const record = (result && typeof result === "object" ? result : {}) as { content?: unknown; structuredContent?: unknown };
+  const record = isObject(result) ? result : {};
   const texts = Array.isArray(record.content)
-    ? record.content.flatMap((item) => item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
-      ? [(item as { text: string }).text] : [])
+    ? record.content.flatMap((item) => isObject(item) && typeof item.text === "string" ? [item.text] : [])
     : [];
-  const status = googleStatusOf(record.structuredContent) ?? texts.map(googleStatusInText).find(Boolean) ?? null;
-  if (!status) return { toolCode: "google_error" };
-  return { toolCode: `google_${status.toLowerCase()}`, ...(GOOGLE_RETRYABLE_STATUSES.has(status) ? { retryable: true as const } : {}) };
+  const found = googleErrorOf(record.structuredContent) ?? texts.map(googleErrorInText).find(Boolean) ?? null;
+  if (!found) return { toolCode: "google_error" };
+  const error = googleError({ status: found.status, headers: new Headers() }, found.body);
+  if (error instanceof GoogleWorkspaceAuthError) return { toolCode: `google_${error.reason}` };
+  if (!(error instanceof GoogleToolError)) return { toolCode: "google_error" };
+  return { toolCode: `google_${error.kind}`, ...(error.kind === "rate_limited" ? { retryable: true as const } : {}) };
 }
 
 export async function callGoogleWorkspaceRest(

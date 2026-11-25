@@ -427,6 +427,18 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(JSON.stringify(event!.metadata)).toContain("\"dispatched\":false");
     });
 
+    it("records Google's error code on the failed call event of an approved Ask first action", async () => {
+      const f = await connectWorkspace({ askFirst: ["calendar__respond_to_event"] });
+      const reply = { calendarId: "primary", eventId: "own1", responseStatus: "accepted" };
+      await expect(f.call("calendar__respond_to_event", reply)).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id));
+      await expect(f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action!.id, actor: { userId: f.actor.actorId } }))
+        .resolves.toMatchObject({ status: "failed" });
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com respond_to_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "google_permission_denied", errorMessage: GOOGLE_ORGANIZER_ERROR });
+    });
+
     it("sees a stable code from Google's structured error, never Google's own text, and the activity log records the code", async () => {
       const f = await connectWorkspace();
       const failure = await f.runnerCall("calendar__respond_to_event", { calendarId: "primary", eventId: "own1", responseStatus: "accepted" })
