@@ -93,3 +93,38 @@ describe("remote-sandbox warm default", () => {
   });
 });
 
+describe("per-turn-only harnesses on a warm environment", () => {
+  const antigravity = { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" };
+  const dot = { provider: "openai_dot", dotBindingId: "00000000-0000-4000-8000-000000000001", allowUnmeteredProvider: true };
+  const pluginWarm = { driver: "plugin" as const, config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {}, runnerLifecycleMode: "warm" } };
+  const sandboxWarm = { driver: "sandbox" as const, config: { provider: "daytona", runnerLifecycleMode: "warm" } };
+
+  it.each([["Google Antigravity", antigravity], ["Google Antigravity with the agent set to warm", { ...antigravity, lifecycleMode: "warm" }], ["Dot", dot]])(
+    "%s keeps a per-turn plugin task", (_name, adapterConfig) => {
+      expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", adapterConfig, undefined, "account:generation"))
+        .toMatchObject({ config: { runnerLifecycleMode: "per_turn" } });
+      expect(resolveRunnerEnvironmentForRun({ ...pluginWarm, config: { ...pluginWarm.config, runnerLifecycleMode: undefined } },
+        "paperclip_runner", adapterConfig, undefined, "account:generation")).toMatchObject({ config: { runnerLifecycleMode: "per_turn" } });
+      expect(pluginWarm.config.runnerLifecycleMode).toBe("warm");
+    });
+
+  it("keeps Google Antigravity on an ephemeral sandbox lease", () => {
+    const resolved = resolveRunnerEnvironmentForRun(sandboxWarm, "paperclip_runner", antigravity, undefined, "account:generation", { reusableLeaseSupported: true });
+    expect(resolved).toBe(sandboxWarm);
+    expect(resolved.config).not.toHaveProperty("reuseLease");
+    expect(resolveWarmRunnerIdleTimeoutMsForRun(sandboxWarm, "paperclip_runner", { ...antigravity, lifecycleMode: "warm" })).toBeUndefined();
+    expect(runnerLifecycleDefaultNeedsLeaseProbe({ driver: "sandbox", config: { provider: "daytona" } }, "paperclip_runner", antigravity)).toBe(false);
+  });
+
+  it("keeps the lifecycle an in-flight run was admitted with", () => {
+    expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", antigravity, "warm", "account:generation"))
+      .toMatchObject({ config: { runnerLifecycleMode: "warm" } });
+  });
+
+  it("still lets other harnesses use the environment's warm setting", () => {
+    expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", { provider: "codex" }, undefined, "account:generation"))
+      .toMatchObject({ config: { runnerLifecycleMode: "warm" } });
+    expect(resolveRunnerEnvironmentForRun(sandboxWarm, "paperclip_runner", { provider: "codex" }).config).toMatchObject({ reuseLease: true });
+  });
+});
+
