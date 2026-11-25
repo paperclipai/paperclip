@@ -128,9 +128,9 @@ export const ProviderCatalog: Story = {
     await expect(await canvas.findByRole("button", { name: "Add account Anthropic" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect Gmail" })).toBeVisible();
-    await userEvent.type(canvas.getByPlaceholderText("Search connectors…"), "Claude");
+    await userEvent.type(canvas.getByPlaceholderText("Search plugins…"), "Claude");
     await expect(canvas.queryByRole("button", { name: "Connect Gmail" })).not.toBeInTheDocument();
-    await userEvent.clear(canvas.getByPlaceholderText("Search connectors…"));
+    await userEvent.clear(canvas.getByPlaceholderText("Search plugins…"));
   },
 };
 export const ConnectFromExistingCatalog: Story = {

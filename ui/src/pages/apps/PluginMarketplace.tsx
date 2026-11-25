@@ -114,12 +114,21 @@ export function PluginTile({
 
 export const PLUGIN_GRID = "grid gap-3 sm:grid-cols-2 xl:grid-cols-3";
 
-export function PluginShelf({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+/** A titled block of plugin tiles. A category block also shows how many plugins it holds and links to all of them. */
+export function PluginShelf({ id, title, count, onSeeAll, children }: { id: string; title: string; count?: number; onSeeAll?: () => void; children: ReactNode }) {
   return (
     <section id={id} aria-labelledby={`${id}-title`} className="flex scroll-mt-6 flex-col gap-3">
-      <h2 id={`${id}-title`} className="text-base font-semibold text-foreground">
-        {title}
-      </h2>
+      <div className="flex min-h-8 items-center justify-between gap-4">
+        <h2 id={`${id}-title`} className="text-base font-semibold text-foreground">
+          {title}
+          {count === undefined ? null : <span className="font-normal text-muted-foreground tabular-nums"> ({count.toLocaleString()})</span>}
+        </h2>
+        {onSeeAll ? (
+          <Button type="button" variant="ghost" size="sm" className="-mr-3 h-8 text-muted-foreground" aria-label={`See all ${title}`} onClick={onSeeAll}>
+            See all
+          </Button>
+        ) : null}
+      </div>
       <div className={PLUGIN_GRID}>{children}</div>
     </section>
   );
@@ -147,8 +156,10 @@ export const pluginCategoryId = (categories: readonly string[] | undefined): Plu
 
 export const pluginCategorySectionId = (id: PluginCategoryId) => `plugins-category-${id}`;
 
-/** Jump list of the categories that have plugins on the page. */
-export function PluginCategories({ categories }: { categories: { id: PluginCategoryId; count: number }[] }) {
+export const isPluginCategoryId = (value: string | undefined): value is PluginCategoryId => Boolean(value) && value! in PLUGIN_CATEGORIES;
+
+/** List of the categories that have plugins; each opens that category's own page. */
+export function PluginCategories({ categories, onOpen }: { categories: PluginCategoryId[]; onOpen: (id: PluginCategoryId) => void }) {
   if (categories.length === 0) return null;
   return (
     <nav aria-labelledby="plugins-categories-title" className="flex flex-col gap-3">
@@ -156,18 +167,17 @@ export function PluginCategories({ categories }: { categories: { id: PluginCateg
         Categories
       </h2>
       <ul className="-mx-2 grid gap-x-6 sm:grid-cols-2 lg:grid-cols-4">
-        {categories.map(({ id, count }) => {
+        {categories.map((id) => {
           const { label, icon: Icon } = PLUGIN_CATEGORIES[id];
           return (
             <li key={id} className="min-w-0">
               <button
                 type="button"
                 className="flex h-10 w-full min-w-0 items-center gap-3 rounded-lg px-2 text-left text-sm text-foreground outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => document.getElementById(pluginCategorySectionId(id))?.scrollIntoView({ block: "start", behavior: "smooth" })}
+                onClick={() => onOpen(id)}
               >
                 <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="min-w-0 flex-1 truncate">{label}</span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{count}</span>
               </button>
             </li>
           );

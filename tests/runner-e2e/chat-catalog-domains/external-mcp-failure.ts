@@ -23,18 +23,8 @@ export async function enterGenericMcpThroughCatalog(
     await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   }
   await direct.first().click();
-  const card = page
-    .getByRole("listitem")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Connect your own tool",
-        exact: true,
-      }),
-    });
-  await card.getByRole("button", { name: "Connect", exact: true }).click();
-  await card
-    .getByRole("button", { name: "Connect your own MCP server" })
-    .click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
   await page.waitForURL((url) => url.pathname === `/${prefix}/apps/byo`);
 }
 export function gradeUnreachableMcp(value: unknown) {

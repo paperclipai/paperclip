@@ -18,7 +18,7 @@ import {
 } from "./chat-adapters-ui.shared";
 
 async function findConnectorBySearch(page: Page, query: string, slug: string) {
-  const search = page.getByRole("searchbox", { name: "Search connectors" });
+  const search = page.getByRole("searchbox", { name: "Search plugins" });
   await expect(search).toBeVisible();
   await search.fill(query);
   const connector = page.locator(`[role="listitem"][data-app-slug="${slug}"]`);

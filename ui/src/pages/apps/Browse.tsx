@@ -28,14 +28,13 @@ import {
   ArrowLeft,
   Check,
   ChevronRight,
-  ClipboardPaste,
   Clock3,
   ExternalLink,
   Link2,
   Loader2,
   MoreHorizontal,
   PauseCircle,
-  ServerCog,
+  Plus,
   Trash2,
 } from "lucide-react";
 import type { ComposioAppSnapshot, ToolApplication, ToolConnection } from "@paperclipai/shared";
@@ -52,8 +51,13 @@ import {
   nativeConnectorRequiresCustomerOAuthApp,
 } from "@paperclipai/shared";
 import { useNavigate, useParams } from "@/lib/router";
-import { PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, PLUGIN_GRID, PluginCategories, PluginShelf, PluginTile, pluginCategoryId, pluginCategorySectionId, type PluginTileState } from "./PluginMarketplace";
+import { PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, PLUGIN_GRID, PluginCategories, PluginShelf, PluginTile, isPluginCategoryId, pluginCategoryId, pluginCategorySectionId, type PluginCategoryId, type PluginTileState } from "./PluginMarketplace";
+import { aggregatorPluginCategory } from "./plugin-categories";
 import { PluginSkills } from "./PluginSkills";
+import { ONE_CLICK_PARAM, isOneClickOAuthApp, reserveOneClickPopup } from "@/features/connections/one-click-oauth";
+import { PluginPermissions } from "./PluginPermissions";
+import { PluginsHeader, type PluginsAddOption } from "./PluginsHeader";
+import { PluginConnector, PluginInformation, PluginPageHeader, pluginHost, pluginSignIn } from "./PluginPageSections";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { useConnectorAvailability } from "@/hooks/useConnectorAvailability";
@@ -150,6 +154,20 @@ type ConnectorRowModel = {
 export const CATALOG_PAGE_SIZE = 50;
 
 /** Hand-picked for the "New and noteworthy" shelf; the catalog has no added-on date to sort by. */
+const PLUGIN_ADD_OPTIONS: PluginsAddOption[] = [
+  { id: "mcp", title: "MCP server URL", description: "A custom or self-hosted MCP server.", href: "/apps/byo" },
+  { id: "config", title: "Paste a config", description: "Connect from an existing setup snippet.", href: "/apps/advanced/paste-config" },
+  { id: "assistant", title: "Assistant connection", description: "Use Paperclip from Codex, Claude or OpenCode.", href: "/apps/assistant-connection" },
+];
+
+/** How many plugins a category block shows on the browse page before "See all". */
+const CATEGORY_BLOCK_SIZE = 9;
+
+function rowCategory(row: ConnectorRowModel): PluginCategoryId {
+  if (row.entry) return pluginCategoryId(row.entry.categories);
+  return row.aggregatorApp ? aggregatorPluginCategory(row.aggregatorApp) : "other";
+}
+
 const NOTEWORTHY_PLUGIN_SLUGS = ["cloudflare", "mixpanel", "clickup", "pagerduty", "calendly", "telegram"];
 
 type ConnectionState = {
@@ -419,7 +437,8 @@ function accountActionHref(
  */
 export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection) ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
   const navigate = useNavigate();
-  const { pluginKey } = useParams<{ pluginKey?: string }>();
+  const { pluginKey, categoryId: categoryParam } = useParams<{ pluginKey?: string; categoryId?: string }>();
+  const categoryId = isPluginCategoryId(categoryParam) ? categoryParam : null;
   const preselectedChatAgentId =
     typeof window === "undefined"
       ? null
@@ -439,8 +458,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { status: connectivityStatus } = useConnectivity();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [source, setSource] = useState<CatalogSource>("paperclip");
-  const [expandedSearch, setExpandedSearch] = useState(false);
+  const [source, setSource] = useState<CatalogSource>("all");
   const [executorToConfigure, setExecutorToConfigure] = useState<ToolConnection | null>(null);
   const [arcadeToConfigure, setArcadeToConfigure] = useState<ToolConnection | null>(null);
   const catalogTop = useRef<HTMLDivElement>(null);
@@ -452,7 +470,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     useState<ConnectionRemovalTarget | null>(null);
 
 
-  useEffect(() => { setQuery(""); setPage(1); setSource("paperclip"); setExpandedSearch(false); setArcadeToConfigure(null); setAggregatorToConnect(null); setAggregatorToManage(null); setInitialAggregatorProvider(undefined); setConnectionToRemove(null); }, [selectedCompanyId]);
+  useEffect(() => { setQuery(""); setPage(1); setSource("all"); setArcadeToConfigure(null); setAggregatorToConnect(null); setAggregatorToManage(null); setInitialAggregatorProvider(undefined); setConnectionToRemove(null); }, [selectedCompanyId]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("source") === "installed") setSource("installed");
@@ -958,16 +976,19 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const openRow = pluginKey ? rows.find((row) => row.key === pluginKey || row.slug === pluginKey) ?? null : null;
   const openRowName = openRow?.name ?? null;
   useEffect(() => {
-    setBreadcrumbs(pluginKey ? [{ label: "Plugins", href: "/apps" }, { label: openRowName ?? "Plugin" }] : [{ label: "Plugins" }]);
+    setBreadcrumbs(pluginKey ? [{ label: "Plugins", href: "/apps" }, { label: openRowName ?? "Plugin" }]
+      : categoryId ? [{ label: "Plugins", href: "/apps" }, { label: PLUGIN_CATEGORIES[categoryId].label }]
+      : [{ label: "Plugins" }]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, pluginKey, openRowName]);
+  }, [setBreadcrumbs, pluginKey, openRowName, categoryId]);
+  useEffect(() => { setQuery(""); setPage(1); }, [categoryId]);
 
   const trimmed = query.trim().toLocaleLowerCase();
   const visibleRows = useMemo(() => {
     const scoped = rows.filter((row) => {
+      if (categoryId) return rowCategory(row) === categoryId;
       if (source === "all") return true;
       if (source === "installed") return isInstalled(row);
-      if (source === "paperclip") return !row.aggregatorApp || isInstalled(row);
       return isAppAggregator(source) && (
         row.slug === source && isInstalled(row)
         || row.upstreamApps?.some(snapshot => snapshot.provider === source && snapshot.accounts.length > 0)
@@ -977,14 +998,16 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     if (!trimmed) return scoped;
     const terms = normalizeConnectionQuery(trimmed).split(" ").filter(Boolean);
     return scoped.filter((row) => {
-      const text = normalizeConnectionQuery([row.name, row.slug, row.description,
-        ...(row.aggregatorApp?.aliases ?? []), ...row.connections.map((connection) => connection.name),
-        ...(row.networkConnections ?? []).map(connection => connection.name),
-        ...(row.upstreamApps ?? []).flatMap(app => app.accounts.map(account => account.alias)),
-        ...row.chatEndpoints.map((endpoint) => endpoint.assignedAgentName)].join(" "));
+      // Search reads titles only: the name, its slug and other names the same app goes by.
+      // The Installed list also shows account names, so those match there.
+      const text = normalizeConnectionQuery([row.name, row.slug, ...(row.aggregatorApp?.aliases ?? []),
+        ...(source === "installed" && !categoryId ? [...row.connections.map((connection) => connection.name),
+          ...(row.networkConnections ?? []).map(connection => connection.name),
+          ...(row.upstreamApps ?? []).flatMap(app => app.accounts.map(account => account.alias)),
+          ...row.chatEndpoints.map((endpoint) => endpoint.assignedAgentName)] : [])].join(" "));
       return terms.every((term) => text.includes(term));
     });
-  }, [rows, trimmed, source]);
+  }, [rows, trimmed, source, categoryId]);
   const installedRows = visibleRows.filter(isInstalled);
   const catalogRows = visibleRows.filter(row => !isInstalled(row));
   const pageCount = Math.max(1, Math.ceil(catalogRows.length / CATALOG_PAGE_SIZE));
@@ -1008,8 +1031,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     executor: aggregatorGateways.filter(connection => appConnectionSourceSlug(connection) === "executor"),
   }), [aggregatorGateways]);
   function changeQuery(value: string) {
-    if (source === "paperclip" && !query.trim() && value.trim()) { setSource("all"); setExpandedSearch(true); }
-    if (expandedSearch && !value.trim()) { setSource("paperclip"); setExpandedSearch(false); }
     setQuery(value); setPage(1);
   }
   function closeAggregatorSetup() {
@@ -1027,20 +1048,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     }
     setAggregatorToConnect(app);
   }
-  const showAssistantConnection = (source === "paperclip" || source === "all" ||
+  const showAssistantConnection = (
     (source === "installed" && (!assistantConnections.loaded || assistantConnections.rows.some(row => !row.revokedAt)))) &&
     (!trimmed || "assistant connection (mcp) paperclip codex claude opencode".includes(trimmed));
-  const showCustomConnector =
-    (source === "paperclip" || source === "all") && (!trimmed || "connect your own tool custom mcp server".includes(trimmed));
 
-  const marketplace = source === "paperclip" && !trimmed;
+  const marketplace = source === "all" && !trimmed && !categoryId;
   const fullRows = <T,>(items: T[], max: number) => items.slice(0, Math.min(max, items.length - (items.length % 3 === 0 || items.length < 3 ? 0 : items.length % 3)));
   const featuredRows = marketplace ? fullRows(visibleRows.filter((row) => row.entry?.featured), 9) : [];
   const noteworthyRows = marketplace ? fullRows(NOTEWORTHY_PLUGIN_SLUGS.flatMap((slug) => visibleRows.filter((row) => row.slug === slug && !row.entry?.featured)), 6) : [];
   const shelvedKeys = new Set([...featuredRows, ...noteworthyRows].map((row) => row.key));
   const categoryGroups = marketplace
-    ? PLUGIN_CATEGORY_ORDER.map((id) => ({ id, rows: visibleRows.filter((row) => !shelvedKeys.has(row.key) && pluginCategoryId(row.entry?.categories) === id) })).filter((group) => group.rows.length > 0)
+    ? PLUGIN_CATEGORY_ORDER.map((id) => {
+        const all = visibleRows.filter((row) => rowCategory(row) === id);
+        return { id, total: all.length, rows: all.filter((row) => !shelvedKeys.has(row.key)).slice(0, CATEGORY_BLOCK_SIZE) };
+      }).filter((group) => group.total > 0)
     : [];
+  const openCategory = (id: PluginCategoryId) => { navigate(`/apps/category/${id}`); catalogTop.current?.scrollIntoView?.({ block: "start" }); };
   const setupEnabledFor = (row: ConnectorRowModel) => connectorAvailability.enabled(row.entry ?? getConnectableAppDefinition(row.slug))
     && row.applications.every(application => connectorAvailability.enabled(getAppDefinitionForApplicationKey(application.applicationKey)));
   const renderConnectorCard = (row: ConnectorRowModel, variant: "list" | "page" = "list") => (
@@ -1069,8 +1092,28 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       searchQuery={trimmed}
     />
   );
-  const renderTile = (row: ConnectorRowModel) => {
+  const connectActionFor = (row: ConnectorRowModel) => {
+    if (row.networkConnections || !setupEnabledFor(row)) return null;
     const action = connectorAction(row, chatProviderVisible(row.slug, chatConnectorsEnabled, githubEnabled), preselectedChatAgentId);
+    return {
+      label: action.label,
+      title: action.title,
+      disabled: !action.href && !row.aggregatorApp,
+      oneClickHref: !isInstalled(row) && !row.aggregatorApp && action.href?.startsWith("/apps/connect?source=") && isOneClickOAuthApp(row.entry) ? action.href : null,
+      onSelect: () => {
+        if (row.aggregatorApp && isInstalled(row)) setAggregatorToManage({ app: row.aggregatorApp, connectionId: row.upstreamApps?.find(app => app.accounts.length > 0)?.connectionId });
+        else if (row.aggregatorApp) connectAggregator(row.aggregatorApp);
+        else if (action.href) navigate(row.slug === "agentmail" ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
+      },
+    };
+  };
+  // A one-click connector starts sign-in straight from its card: the window opens with this click and the connect flow takes it over.
+  const tileAction = (action: ReturnType<typeof connectActionFor>) => {
+    const href = action?.oneClickHref;
+    if (!action || !href) return action;
+    return { ...action, onSelect: () => navigate(reserveOneClickPopup() ? `${href}&${ONE_CLICK_PARAM}=1` : href) };
+  };
+  const renderTile = (row: ConnectorRowModel) => {
     const state = pluginTileState(row);
     return (
       <PluginTile
@@ -1084,16 +1127,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         state={state}
         statusLabel={state === "attention" ? "Needs attention" : "Connected"}
         onOpen={() => navigate(row.networkConnections ? "/apps/tailscale" : `/apps/plugin/${encodeURIComponent(row.key)}`)}
-        action={row.networkConnections || !setupEnabledFor(row) ? null : {
-          label: action.label,
-          title: action.title,
-          disabled: !action.href && !row.aggregatorApp,
-          onSelect: () => {
-            if (row.aggregatorApp && isInstalled(row)) setAggregatorToManage({ app: row.aggregatorApp, connectionId: row.upstreamApps?.find(app => app.accounts.length > 0)?.connectionId });
-            else if (row.aggregatorApp) connectAggregator(row.aggregatorApp);
-            else if (action.href) navigate(row.slug === "agentmail" ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
-          },
-        }}
+        action={tileAction(connectActionFor(row))}
       />
     );
   };
@@ -1116,12 +1150,24 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   // Only a real failure shows the notice; loaded connectors stay through a transient refetch failure.
   const loadFailure = catalogViews.find((view) => view.kind === "error");
   const loadFailed = loadFailure !== undefined;
-  const nothingMatches = visibleRows.length === 0 && !showCustomConnector && !showAssistantConnection;
+  const nothingMatches = visibleRows.length === 0 && !showAssistantConnection;
 
   return (
     <div ref={catalogTop} className="mx-auto w-full max-w-6xl space-y-8 pb-12">
-      {pluginKey ? null : <ConnectorsToolbar query={query} onQueryChange={changeQuery} source={source}
-        onSourceChange={value => { setSource(value); setExpandedSearch(false); setPage(1); }} />}
+      {pluginKey ? null : categoryId ? (
+        <div className="flex flex-col gap-2">
+          <Button type="button" variant="ghost" size="sm" className="-ml-3 h-8 self-start text-muted-foreground" onClick={() => navigate("/apps")}>
+            <ArrowLeft aria-hidden />
+            Plugins
+          </Button>
+          <p className="text-2xl leading-8 font-semibold tracking-tight text-foreground">
+            {PLUGIN_CATEGORIES[categoryId].label}
+            {loading ? null : <span className="font-normal text-muted-foreground tabular-nums"> ({visibleRows.length.toLocaleString()})</span>}
+          </p>
+        </div>
+      ) : <PluginsHeader options={PLUGIN_ADD_OPTIONS} onNavigate={navigate} />}
+      {pluginKey ? null : <ConnectorsToolbar query={query} onQueryChange={changeQuery} source={source} hideSources={Boolean(categoryId)}
+        onSourceChange={value => { setSource(value); setPage(1); }} />}
 
       {loadFailure ? (
         <QueryErrorState
@@ -1163,28 +1209,49 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                 <ArrowLeft aria-hidden />
                 Plugins
               </Button>
-              <div className="flex items-center gap-4">
-                <span className="grid size-16 shrink-0 place-items-center rounded-2xl bg-foreground/5">
-                  <AppLogo name={openRow.name} brandKey={openRow.brandKey} logoUrl={openRow.logoUrl} darkLogoUrl={openRow.darkLogoUrl} size={40} className="bg-transparent" />
-                </span>
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <p className="truncate text-2xl font-semibold tracking-tight text-foreground">{openRow.name}</p>
-                  <p className="text-sm text-muted-foreground">Connector · {PLUGIN_CATEGORIES[pluginCategoryId(openRow.entry?.categories)].label}</p>
-                </div>
-              </div>
-              <p className="max-w-prose text-base leading-6 text-pretty text-foreground">{openRow.description}</p>
+              <PluginPageHeader
+                name={openRow.name}
+                kind={`Connector · ${PLUGIN_CATEGORIES[pluginCategoryId(openRow.entry?.categories)].label}`}
+                description={openRow.description}
+                brandKey={openRow.brandKey}
+                logoUrl={openRow.logoUrl}
+                darkLogoUrl={openRow.darkLogoUrl}
+                state={pluginTileState(openRow)}
+                docsUrl={openRow.entry?.docsUrl}
+                connect={connectActionFor(openRow)}
+              />
             </div>
-            <div role="list" aria-label="Connector list">
-              {openRow.networkConnections ? <TailscaleConnectorCard onNavigate={navigate} /> : renderConnectorCard(openRow, "page")}
-            </div>
+            {openRow.networkConnections ? (
+              <div role="list" aria-label="Connector list"><TailscaleConnectorCard onNavigate={navigate} /></div>
+            ) : isInstalled(openRow) ? (
+              <section aria-labelledby="plugin-accounts-title" className="flex flex-col gap-2">
+                <h2 id="plugin-accounts-title" className="flex items-baseline gap-2 px-4 text-sm text-muted-foreground">
+                  Accounts <span className="tabular-nums">{openRow.connections.length + openRow.chatEndpoints.length || null}</span>
+                </h2>
+                <div role="list" aria-label="Connector list">{renderConnectorCard(openRow, "page")}</div>
+              </section>
+            ) : null}
+            {openRow.networkConnections ? null : <PluginConnector name={openRow.name} host={pluginHost(openRow.entry?.methods)} signIn={pluginSignIn(openRow.entry?.methods)} />}
             <PluginSkills companyId={selectedCompanyId} slug={openRow.slug} name={openRow.name} connectionIds={openRow.connections.map((connection) => connection.id)} onNavigate={navigate} />
+            <PluginPermissions
+              companyId={selectedCompanyId}
+              connections={openRow.connections}
+              accountName={(connection) => connectionDisplayNameForOwner(connection, openRow.name, connectionOwnerProfile(connection, userProfileById))}
+              onNavigate={navigate}
+            />
+            <PluginInformation
+              category={PLUGIN_CATEGORIES[pluginCategoryId(openRow.entry?.categories)].label}
+              signIn={pluginSignIn(openRow.entry?.methods)}
+              host={pluginHost(openRow.entry?.methods)}
+              docsUrl={openRow.entry?.docsUrl}
+            />
           </div>
         ) : pluginKey ? (
           <div className="flex flex-col items-start gap-3 rounded-2xl bg-muted/50 px-4 py-6 text-sm text-muted-foreground">
             <p>This plugin isn’t in the catalog anymore.</p>
             <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to Plugins</Button>
           </div>
-        ) : source === "installed" ? (
+        ) : source === "installed" && !categoryId ? (
           <div className={cn("space-y-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
             {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
             {paginatedRows.map((row) => (
@@ -1195,23 +1262,15 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           <div className={cn("flex flex-col gap-10", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
             {featuredRows.length > 0 ? <PluginShelf id="plugins-most-used" title="Most used">{featuredRows.map(renderTile)}</PluginShelf> : null}
             {noteworthyRows.length > 0 ? <PluginShelf id="plugins-noteworthy" title="New and noteworthy">{noteworthyRows.map(renderTile)}</PluginShelf> : null}
-            <PluginCategories categories={categoryGroups.map((group) => ({ id: group.id, count: group.rows.length }))} />
             {categoryGroups.map((group) => (
-              <PluginShelf key={group.id} id={pluginCategorySectionId(group.id)} title={PLUGIN_CATEGORIES[group.id].label}>{group.rows.map(renderTile)}</PluginShelf>
+              group.rows.length > 0 ? <PluginShelf key={group.id} id={pluginCategorySectionId(group.id)} title={PLUGIN_CATEGORIES[group.id].label} count={group.total}
+                onSeeAll={group.total > group.rows.length ? () => openCategory(group.id) : undefined}>{group.rows.map(renderTile)}</PluginShelf> : null
             ))}
-            {showAssistantConnection || showCustomConnector ? (
-              <section aria-labelledby="plugins-own-title" className="flex flex-col gap-3">
-                <h2 id="plugins-own-title" className="text-base font-semibold text-foreground">Bring your own</h2>
-                {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
-                {showCustomConnector ? <CustomConnectorCard onNavigate={navigate} /> : null}
-              </section>
-            ) : null}
+            <PluginCategories categories={categoryGroups.map((group) => group.id)} onOpen={openCategory} />
           </div>
         ) : (
           <div className={cn("flex flex-col gap-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
             <div className={PLUGIN_GRID}>{paginatedRows.map(renderTile)}</div>
-            {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
-            {showCustomConnector ? <CustomConnectorCard onNavigate={navigate} /> : null}
           </div>
         )
       )}
@@ -1384,6 +1443,11 @@ export function ConnectorCard({
   const collapsible = variant !== "page" && connectionCount > 1;
   const expanded = !collapsible || (expandedOverride?.defaultExpanded === defaultExpanded
     ? expandedOverride.open : defaultExpanded || attentionCount > 0);
+  const onPrimaryAction = () => {
+    if (row.aggregatorApp && isInstalled(row)) onManageAggregator?.(row.aggregatorApp, row.upstreamApps?.find(app => app.accounts.length > 0)?.connectionId);
+    else if (row.aggregatorApp) onConnectAggregator?.(row.aggregatorApp);
+    else if (action.href) onNavigate(row.slug === "agentmail" ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
+  };
   return (
     <div
       role="listitem"
@@ -1393,10 +1457,10 @@ export function ConnectorCard({
           ? "true"
           : "false"
       }
-      className="overflow-hidden rounded-xl border border-border"
+      className={variant === "page" ? "overflow-hidden rounded-2xl bg-muted/50" : "overflow-hidden rounded-xl border border-border"}
     >
-      <div className="flex flex-wrap items-center gap-3 px-4 py-4">
-        {variant === "page" ? <p className="min-w-0 flex-1 text-sm font-medium text-foreground">{connectionCount > 0 ? "Accounts" : "Not connected yet"}</p> : <><AppLogo
+      {variant === "page" ? null : <div className="flex flex-wrap items-center gap-3 px-4 py-4">
+        <AppLogo
           name={row.name}
           brandKey={row.brandKey}
           logoUrl={row.logoUrl}
@@ -1421,24 +1485,19 @@ export function ConnectorCard({
           <p className="mt-0.5 text-xs text-muted-foreground">
             {row.aggregatorApp && row.upstreamApps?.some(app => app.accounts.length > 0) ? `Accounts managed in ${[...new Set(row.upstreamApps?.map(app => AGGREGATOR_NAMES[app.provider ?? "composio"]))].join(" and ")}.` : row.description}
           </p>
-        </div></>}
+        </div>
         {setupEnabled && <Button
           type="button"
           size="sm"
           variant="outline"
           disabled={!action.href && !row.aggregatorApp}
           title={action.title}
-          onClick={() => {
-            if (row.aggregatorApp && isInstalled(row)) onManageAggregator?.(row.aggregatorApp, row.upstreamApps?.find(app => app.accounts.length > 0)?.connectionId);
-            else if (row.aggregatorApp) onConnectAggregator?.(row.aggregatorApp);
-            else if (action.href) onNavigate(row.slug === "agentmail"
-              ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
-          }}
+          onClick={onPrimaryAction}
           aria-label={`${action.label} ${row.name}`}
         >
           {action.label}
         </Button>}
-      </div>
+      </div>}
 
       <Collapsible open={expanded} onOpenChange={open => setExpandedOverride({ open, defaultExpanded })}>
         {collapsible ? (
@@ -1448,9 +1507,9 @@ export function ConnectorCard({
             {attentionCount > 0 ? <span className="text-destructive">· {attentionCount} {attentionCount === 1 ? "needs" : "need"} attention</span> : null}
           </CollapsibleTrigger>
         ) : null}
-        <CollapsibleContent>
+        <CollapsibleContent className={variant === "page" ? "divide-y divide-border" : undefined}>
           {row.connections.length > 0 ? (
-            <div className="divide-y divide-border border-t border-border">
+            <div className={cn("divide-y divide-border", variant !== "page" && "border-t border-border")}>
               {row.connections.map((connection) => (
                 <ConnectionAccountRow
                   details={renderAccountDetails?.(connection)}
@@ -1492,7 +1551,7 @@ export function ConnectorCard({
               ))}
             </div>
           ) : null}
-          {listedUpstreamAccounts.length > 0 ? <div className="divide-y divide-border border-t border-border">
+          {listedUpstreamAccounts.length > 0 ? <div className={cn("divide-y divide-border", variant !== "page" && "border-t border-border")}>
             {listedUpstreamAccounts.map(({ connection, account, name, snapshot }) => {
               const state = upstreamAccountState(connection, snapshot, account);
               const provider = snapshot.provider ?? (isAppAggregator(connection.config?.sourceTemplateKey) ? connection.config?.sourceTemplateKey : "composio");
@@ -1512,7 +1571,7 @@ export function ConnectorCard({
             })}
           </div> : null}
           {row.chatEndpoints.length > 0 ? (
-            <div className="divide-y divide-border border-t border-border">
+            <div className={cn("divide-y divide-border", variant !== "page" && "border-t border-border")}>
               {row.chatEndpoints.map((endpoint) => (
                 <div
                   key={endpoint.id}
@@ -1589,6 +1648,14 @@ export function ConnectorCard({
                   </div>
                 </div>
               ))}
+            </div>
+          ) : null}
+          {variant === "page" && setupEnabled ? (
+            <div className="flex h-12 items-center px-2">
+              <Button type="button" variant="ghost" size="sm" disabled={!action.href && !row.aggregatorApp} title={action.title} aria-label={`${action.label} ${row.name}`} onClick={onPrimaryAction}>
+                <Plus aria-hidden />
+                {action.label}
+              </Button>
             </div>
           ) : null}
         </CollapsibleContent>
@@ -1770,98 +1837,5 @@ function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
       <PauseCircle className="h-4 w-4" aria-hidden="true" />
       <span className="sr-only">{state.label}</span>
     </span>
-  );
-}
-
-function CustomConnectorCard({
-  onNavigate,
-}: {
-  onNavigate: (href: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div
-      role="listitem"
-      data-app-slug="custom-mcp"
-      className="overflow-hidden rounded-xl border border-border"
-    >
-      <div className="flex flex-wrap items-center gap-3 px-4 py-4">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <Link2 className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            Connect your own tool
-          </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Add a custom MCP server or paste an existing configuration.
-          </p>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          aria-expanded={expanded}
-          aria-controls="custom-connector-options"
-          onClick={() => setExpanded((open) => !open)}
-        >
-          {expanded ? "Close" : "Connect"}
-        </Button>
-      </div>
-
-      {expanded ? (
-        <div
-          id="custom-connector-options"
-          className="grid gap-2 border-t border-border px-4 py-3 sm:grid-cols-2"
-        >
-          <CustomConnectorOption
-            icon={ServerCog}
-            title="Connect your own MCP server"
-            description="Enter the URL for a custom or self-hosted MCP server."
-            onClick={() => onNavigate("/apps/byo")}
-          />
-          <CustomConnectorOption
-            icon={ClipboardPaste}
-            title="Paste a config"
-            description="Paste an existing setup snippet and connect it."
-            onClick={() => onNavigate("/apps/advanced/paste-config")}
-          />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function CustomConnectorOption({
-  icon: Icon,
-  title,
-  description,
-  onClick,
-}: {
-  icon: typeof ServerCog;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="flex items-center gap-3 rounded-lg border border-border px-3 py-3 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
-      onClick={onClick}
-    >
-      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground">
-        <Icon className="h-4 w-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm font-semibold text-foreground">
-          {title}
-        </span>
-        <span className="block text-xs text-muted-foreground">
-          {description}
-        </span>
-      </span>
-      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </button>
   );
 }

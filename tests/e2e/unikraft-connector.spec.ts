@@ -6,7 +6,7 @@ test("Unikraft uses the ordinary access and credential wizard", async ({ page, r
   const company = await response.json();
   await page.goto(`/${company.issuePrefix}/apps`);
   await expect(page.getByRole("heading", { name: "Plugins", exact: true })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search connectors" }).fill("Unikraft");
+  await page.getByRole("searchbox", { name: "Search plugins" }).fill("Unikraft");
   const card = page.getByRole("list", { name: "Connector list" }).getByRole("listitem").filter({ hasText: "Unikraft" });
   await expect(card).toHaveCount(1);
   // App marks are decorative (empty alt), so they have no accessible img role.
