@@ -122,9 +122,11 @@ import {
   chatConversations,
   chatEndpoints,
   companies,
+  environments,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings as instanceSettingsTable,
   issueComments,
   issueRecoveryActions,
   issueRelations,
@@ -190,6 +192,10 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
+import { isExecutionForcedToKubernetes } from "../execution-allowlist.js";
+import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
+import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON, allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { releaseProviderLimitWaits } from "./provider-limit-wait.js";
@@ -3343,9 +3349,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
     }
-    const isolatedWorkspacesEnabled = issueId
-      ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
-      : false;
+    const experimentalSettings = issueId
+      ? await instanceSettings.getExperimental()
+      : null;
+    const isolatedWorkspacesEnabled =
+      experimentalSettings?.enableIsolatedWorkspaces === true;
     let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
     const resolveQueuedResponsibleUserId = async (issueContext: IssueAttributionSnapshot | null) => {
       if (operatorResponsibleUserId) return operatorResponsibleUserId;
@@ -4513,6 +4521,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const issueSettings = parseIssueExecutionWorkspaceSettings(
               issue.executionWorkspaceSettings,
             );
+            const agentConfig = parseObject(agent.adapterConfig);
             const resolvedMode = resolveExecutionWorkspaceMode({
               projectPolicy: null,
               issueSettings,
@@ -4520,7 +4529,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             });
             const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig(
               {
-                agentConfig: parseObject(agent.adapterConfig),
+                agentConfig,
                 projectPolicy: null,
                 issueSettings,
                 mode: resolvedMode,
@@ -4531,9 +4540,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               resolvedMode,
               workspaceManagedConfig,
             );
-            const existingExecutionWorkspaceStatus = issue.executionWorkspaceId
+            const existingExecutionWorkspace = issue.executionWorkspaceId
               ? await tx
-                  .select({ status: executionWorkspaces.status })
+                  .select({
+                    status: executionWorkspaces.status,
+                    sourceIssueId: executionWorkspaces.sourceIssueId,
+                    projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+                    mode: executionWorkspaces.mode,
+                    strategyType: executionWorkspaces.strategyType,
+                    repoUrl: executionWorkspaces.repoUrl,
+                    branchName: executionWorkspaces.branchName,
+                    cleanupReason: executionWorkspaces.cleanupReason,
+                    metadata: executionWorkspaces.metadata,
+                  })
                   .from(executionWorkspaces)
                   .where(
                     and(
@@ -4541,8 +4560,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       eq(executionWorkspaces.companyId, issue.companyId),
                     ),
                   )
-                  .then((rows) => rows[0]?.status ?? null)
+                  .then((rows) => rows[0] ?? null)
               : null;
+            const existingExecutionWorkspaceStatus =
+              existingExecutionWorkspace?.status ?? null;
             const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
               issueExecutionWorkspaceId: issue.executionWorkspaceId,
               issueExecutionWorkspacePreference:
@@ -4551,6 +4572,142 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             });
             const hasResolvablePriorSessionWorkspace =
               await resolveHasResolvablePriorSessionWorkspace();
+            let effectivePreflightStrategy: string | null = resolvedStrategy;
+            if (
+              resolvedMode === "isolated_workspace" &&
+              resolvedStrategy === "git_worktree" &&
+              !(issue.projectId ?? projectId) &&
+              !issue.projectWorkspaceId &&
+              !reuseRequest.existingExecutionWorkspaceAvailable &&
+              !hasResolvablePriorSessionWorkspace
+            ) {
+              const settingsRow = await tx
+                .select({
+                  defaultEnvironmentId:
+                    instanceSettingsTable.defaultEnvironmentId,
+                  general: instanceSettingsTable.general,
+                })
+                .from(instanceSettingsTable)
+                .where(eq(instanceSettingsTable.singletonKey, "default"))
+                .then((rows) => rows[0] ?? null);
+              const issuePolicyRow = await tx
+                .select({ executionPolicy: issues.executionPolicy })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.id, issue.id),
+                    eq(issues.companyId, issue.companyId),
+                  ),
+                )
+                .then((rows) => rows[0] ?? null);
+              const trustPreset = resolveCoreTrustPreset({
+                companyId: agent.companyId,
+                agent: {
+                  companyId: agent.companyId,
+                  permissions: agent.permissions,
+                },
+                issue: {
+                  companyId: issue.companyId,
+                  executionPolicy: issuePolicyRow?.executionPolicy ?? null,
+                },
+                run: {
+                  companyId: agent.companyId,
+                  executionPolicy: enrichedContextSnapshot.executionPolicy,
+                },
+              });
+              const lowTrustIssueEnvironmentId =
+                trustPreset.kind === "low_trust_review"
+                  ? (parseIssueExecutionWorkspaceSettings(
+                      issue.executionWorkspaceSettings,
+                      { includeEnvironmentId: true },
+                    )?.environmentId ?? null)
+                  : null;
+              const executionMode = parseObject(
+                settingsRow?.general,
+              ).executionMode;
+              let environmentDriver: string | null = null;
+              if (
+                isExecutionForcedToKubernetes({
+                  executionMode:
+                    executionMode === "kubernetes" ? "kubernetes" : "any",
+                })
+              ) {
+                environmentDriver = "sandbox";
+              } else {
+                const selectedEnvironmentId =
+                  lowTrustIssueEnvironmentId ??
+                  agent.defaultEnvironmentId ??
+                  settingsRow?.defaultEnvironmentId ??
+                  null;
+                if (selectedEnvironmentId) {
+                  environmentDriver = await tx
+                    .select({ driver: environments.driver })
+                    .from(environments)
+                    .where(eq(environments.id, selectedEnvironmentId))
+                    .then((rows) => rows[0]?.driver ?? null);
+                }
+                if (
+                  experimentalSettings?.enableManagedSandboxOnly === true &&
+                  (environmentDriver === null || environmentDriver === "local")
+                ) {
+                  environmentDriver = "sandbox";
+                }
+              }
+              const candidateOwnArchivedTaskDirectory = Boolean(
+                issue.executionWorkspaceId &&
+                  existingExecutionWorkspace &&
+                  existingExecutionWorkspace.sourceIssueId === issue.id &&
+                  !existingExecutionWorkspace.projectWorkspaceId &&
+                  existingExecutionWorkspace.mode === "isolated_workspace" &&
+                  existingExecutionWorkspace.strategyType ===
+                    "project_primary" &&
+                  !existingExecutionWorkspace.repoUrl &&
+                  !existingExecutionWorkspace.branchName &&
+                  (existingExecutionWorkspace.status === "archived" ||
+                    existingExecutionWorkspace.status === "cleanup_failed") &&
+                  (readTaskDirectoryRetention(existingExecutionWorkspace) !==
+                    null ||
+                    existingExecutionWorkspace.cleanupReason?.startsWith(
+                      "issue_terminal",
+                    ) === true),
+              );
+              const reopenableOwnArchivedTaskDirectory =
+                candidateOwnArchivedTaskDirectory &&
+                !(await tx
+                  .select({ id: issues.id })
+                  .from(issues)
+                  .where(
+                    and(
+                      eq(issues.companyId, issue.companyId),
+                      eq(
+                        issues.executionWorkspaceId,
+                        issue.executionWorkspaceId!,
+                      ),
+                      ne(issues.id, issue.id),
+                    ),
+                  )
+                  .limit(1)
+                  .then((rows) => rows.length > 0));
+              if (
+                shouldUseIsolatedTaskDirectory({
+                  trustPreset: trustPreset.kind,
+                  environmentDriver,
+                  mode: resolvedMode,
+                  hasProjectWorkspace: false,
+                  projectWorkspaceId: issue.projectWorkspaceId,
+                  hasSelectedExecutionWorkspace:
+                    (Boolean(issue.executionWorkspaceId) ||
+                      reuseRequest.requestedShouldReuseExisting) &&
+                    !reopenableOwnArchivedTaskDirectory,
+                  workspaceStrategies: [
+                    agentConfig.workspaceStrategy,
+                    issueSettings?.workspaceStrategy,
+                  ],
+                })
+              ) {
+                effectivePreflightStrategy = "project_primary";
+              }
+            }
 
             if (
               isUnrunnableWorktreeCombo({
@@ -4562,7 +4719,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                     issue.executionWorkspacePreference,
                 },
                 resolvedMode,
-                resolvedStrategy,
+                resolvedStrategy: effectivePreflightStrategy,
                 reusableExecutionWorkspaceAvailable:
                   reuseRequest.existingExecutionWorkspaceAvailable,
                 hasResolvablePriorSessionWorkspace,
