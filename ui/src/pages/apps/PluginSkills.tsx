@@ -5,6 +5,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { mcpSkillsApi } from "@/api/mcpSkills";
 import { Button } from "@/components/ui/button";
 import { describeError } from "@/api/errors";
+import { QueryErrorState } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 
 /** Skills Paperclip applies on its own while an agent is assigned the connector (server/src/services/connector-runtime.ts). */
@@ -80,14 +81,26 @@ export function PluginSkills({
   const catalog = (catalogQuery.data ?? []).filter((skill) => catalogIds.includes(skill.id));
   const installedKeys = new Set((installedQuery.data ?? []).map((skill) => skill.key));
   const count = (builtIn ? 1 : 0) + published.length + catalog.length;
-  if (count === 0) return null;
+  // A failed read is not an empty result: say so and offer a retry, and never
+  // show a skill as addable while its installed state is unknown.
+  const failed = [publishedQuery, catalogQuery, installedQuery].filter((query) => query.isError);
+  if (count === 0 && failed.length === 0) return null;
+  const installedKnown = installedQuery.isSuccess;
 
   return (
     <section aria-labelledby="plugin-skills-title" className="flex flex-col gap-2">
       <h2 id="plugin-skills-title" className="flex items-baseline gap-2 px-4 text-sm text-muted-foreground">
-        Skills <span className="tabular-nums">{count}</span>
+        Skills {count > 0 ? <span className="tabular-nums">{count}</span> : null}
       </h2>
-      <ul aria-label={`Skills that come with ${name}`} className="divide-y divide-border rounded-2xl bg-muted/50">
+      {failed.length > 0 ? (
+        <QueryErrorState
+          error={failed[0].error}
+          action={`load the skills that come with ${name}`}
+          onRetry={() => failed.forEach((query) => void query.refetch())}
+          retrying={failed.some((query) => query.isFetching)}
+        />
+      ) : null}
+      {count > 0 ? <ul aria-label={`Skills that come with ${name}`} className="divide-y divide-border rounded-2xl bg-muted/50">
         {builtIn ? (
           <SkillRow name={builtIn.name} detail={builtIn.description}>
             <span className="shrink-0 text-xs text-muted-foreground">Added for agents assigned {name}</span>
@@ -112,7 +125,7 @@ export function PluginSkills({
           const pending = install.isPending && install.variables === skill.id;
           return (
             <SkillRow key={skill.id} name={skill.name} detail={skill.description}>
-              {installed ? (
+              {!installedKnown ? null : installed ? (
                 <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={() => onNavigate("/skills")}>
                   <Check aria-hidden />
                   Added · choose agents
@@ -126,7 +139,7 @@ export function PluginSkills({
             </SkillRow>
           );
         })}
-      </ul>
+      </ul> : null}
       {install.error ? (
         <p role="alert" className="px-4 text-sm text-destructive">
           {describeError(install.error).body}

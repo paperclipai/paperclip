@@ -133,7 +133,7 @@ import {
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
 
-type ConnectorRowModel = {
+export type ConnectorRowModel = {
   key: string;
   slug: string;
   name: string;
@@ -346,9 +346,17 @@ function isInstalled(row: ConnectorRowModel) {
   return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0)) || Boolean(row.networkConnections?.some(connection => connection.status === "connected"));
 }
 
-function pluginTileState(row: ConnectorRowModel): PluginTileState {
+export function pluginTileState(row: ConnectorRowModel, connectionById?: ReadonlyMap<string, ToolConnection>): PluginTileState {
   if (!isInstalled(row)) return "available";
-  const needsAttention = row.connections.some((connection) => ["attention", "draft"].includes(connectionState(connection).kind))
+  const needsAction = (state: ConnectionState) => state.kind === "attention" || state.kind === "draft";
+  // Accounts an aggregator holds for this app count too: one that needs sign-in, has gone stale
+  // or sits behind an unhealthy gateway must not read as connected.
+  const upstreamNeedsAttention = row.upstreamCatalogApp ? (row.upstreamApps ?? []).some((snapshot) => {
+    const gateway = connectionById?.get(snapshot.connectionId);
+    return gateway ? snapshot.accounts.some((account) => needsAction(upstreamAccountState(gateway, snapshot, account))) : false;
+  }) : false;
+  const needsAttention = upstreamNeedsAttention
+    || row.connections.some((connection) => needsAction(connectionState(connection)))
     || row.chatEndpoints.some((endpoint) => ["attention", "revoked"].includes(endpoint.status) || chatEndpointNeedsSetup(endpoint));
   return needsAttention ? "attention" : "connected";
 }
@@ -1114,7 +1122,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     return { ...action, onSelect: () => navigate(reserveOneClickPopup() ? `${href}&${ONE_CLICK_PARAM}=1` : href) };
   };
   const renderTile = (row: ConnectorRowModel) => {
-    const state = pluginTileState(row);
+    const state = pluginTileState(row, connectionById);
     return (
       <PluginTile
         key={row.key}
@@ -1216,7 +1224,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                 brandKey={openRow.brandKey}
                 logoUrl={openRow.logoUrl}
                 darkLogoUrl={openRow.darkLogoUrl}
-                state={pluginTileState(openRow)}
+                state={pluginTileState(openRow, connectionById)}
                 docsUrl={openRow.entry?.docsUrl}
                 connect={connectActionFor(openRow)}
               />

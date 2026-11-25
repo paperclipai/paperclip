@@ -26,7 +26,7 @@ const POLICY_ORDER: ActionPolicy[] = ["allowed", "ask", "off"];
 const POLICY_LABEL: Record<ActionPolicy, string> = { allowed: "Allowed", ask: "Ask first", off: "Off" };
 const TONE: Record<ActionPolicy | "custom", string> = {
   allowed: "text-foreground",
-  ask: "text-amber-600 dark:text-amber-400",
+  ask: "text-(--status-task-icon-todo)",
   off: "text-muted-foreground",
   custom: "text-foreground",
 };

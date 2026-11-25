@@ -49,7 +49,7 @@ function StatusMark({ state, name }: { state: Exclude<PluginTileState, "availabl
       role="img"
       aria-label={attention ? `${name} needs attention` : `${name} connected`}
       title={attention ? "Needs attention" : "Connected"}
-      className={cn("grid size-7 shrink-0 place-items-center rounded-lg", attention ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400")}
+      className={cn("grid size-7 shrink-0 place-items-center rounded-lg", attention ? "bg-(--status-task-todo)/15 text-(--status-task-icon-todo)" : "bg-(--status-task-done)/15 text-(--status-task-icon-done)")}
     >
       <Icon className="size-4" aria-hidden />
     </span>

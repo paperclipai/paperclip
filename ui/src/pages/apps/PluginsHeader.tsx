@@ -19,7 +19,7 @@ function ReviewButton() {
     <Button asChild variant="ghost" className="h-9 shrink-0 gap-2 px-3 text-muted-foreground">
       <Link to="/apps/review" aria-label={count > 0 ? `${count} to review, open Review` : "Open Review"}>
         {count > 0 ? (
-          <span className="inline-flex h-6 items-center rounded-md bg-amber-500/15 px-2 text-xs font-normal text-amber-600 tabular-nums dark:text-amber-400">
+          <span className="inline-flex h-6 items-center rounded-md bg-(--status-task-todo)/15 px-2 text-xs font-normal text-(--status-task-icon-todo) tabular-nums">
             {count} to review
           </span>
         ) : (
