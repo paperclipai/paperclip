@@ -17,40 +17,57 @@ SYSTEMS = {
 
 
 def latest(history, schema):
-    if history.get("schema") != schema:
+    if not isinstance(history, dict) or history.get("schema") != schema:
         raise ValueError("Unsupported history schema")
     campaign_id = history.get("latestCampaignId")
     if not campaign_id:
         raise ValueError("History has no latest campaign")
-    candidates = [c for c in history["campaigns"] if
-                  c["campaignId"] == campaign_id or
-                  c.get("reportRevision", {}).get("sourceCampaignId") == campaign_id]
+    campaigns = history.get("campaigns")
+    if not isinstance(campaigns, list):
+        raise ValueError("History has no campaigns list")
+    candidates = [c for c in campaigns if isinstance(c, dict) and (
+                  c.get("campaignId") == campaign_id or
+                  c.get("reportRevision", {}).get("sourceCampaignId") == campaign_id)]
     if not candidates:
         raise ValueError("Latest campaign is absent from history")
     # Report refreshes replace presentation, never the measurement date.
-    return max(candidates, key=lambda c: c.get("reportRevision", {}).get("renderedAt", c["generatedAt"]))
+    return max(candidates, key=lambda c: c.get("reportRevision", {}).get("renderedAt", c.get("generatedAt", "")))
 
 
 def public_report(url, prefix):
+    if not isinstance(url, str):
+        raise ValueError("Unexpected public report URL")
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.netloc != urlsplit(ORIGIN).netloc
             or not parsed.path.startswith(f"/{prefix}/campaigns/")
+            or "/../" in parsed.path or parsed.path.endswith("/..")
             or parsed.query or parsed.fragment):
         raise ValueError("Unexpected public report URL")
     return html.escape(url, quote=True)
 
 
 def display_date(value):
-    date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, str):
+        raise ValueError("History date must be a string")
+    cleaned = value.strip()
+    if cleaned.endswith("Z") or cleaned.endswith("z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    date = datetime.fromisoformat(cleaned)
     if date.tzinfo is None:
         raise ValueError("History date must include a timezone")
     return date.astimezone(timezone.utc).strftime("%d %b %Y · %H:%M UTC")
 
 
 def summarize(history, kind):
+    if kind not in SYSTEMS:
+        raise ValueError(f"Unknown system kind: {kind}")
     prefix, schema = SYSTEMS[kind]
     campaign = latest(history, schema)
-    totals = campaign["totals"] if kind == "runner" else campaign
+    if not isinstance(campaign, dict):
+        raise ValueError("Campaign must be a dictionary")
+    totals = campaign.get("totals") if kind == "runner" else campaign
+    if not isinstance(totals, dict) or "passed" not in totals or "selected" not in totals:
+        raise ValueError("Invalid campaign counts")
     passed, selected = totals["passed"], totals["selected"]
     if any(type(n) is not int for n in (passed, selected)) or not 0 <= passed <= selected:
         raise ValueError("Invalid campaign counts")
@@ -78,17 +95,17 @@ def main():
     values = {}
     for kind, (prefix, _) in SYSTEMS.items():
         if args.history_dir:
-            history = json.loads((args.history_dir / f"{prefix}-history.json").read_text())
+            history = json.loads((args.history_dir / f"{prefix}-history.json").read_text(encoding="utf-8"))
         else:
             with urlopen(f"{ORIGIN}/{prefix}/history.json", timeout=30) as response:
                 history = json.load(response)
         values.update({f"{kind}_{k}": v for k, v in summarize(history, kind).items()})
     values["refreshed"] = display_date(datetime.now(timezone.utc).isoformat())
     values["guide_url"] = "https://github.com/paperclipai/paperclip/blob/" + quote(args.docs_ref, safe="/") + "/doc/evals.md"
-    template = Template(Path(__file__).with_name("template.html").read_text())
+    template = Template(Path(__file__).with_name("template.html").read_text(encoding="utf-8"))
     rendered = template.substitute(values)
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / "index.html").write_text(rendered)
+    (args.output / "index.html").write_text(rendered, encoding="utf-8")
     print(args.output / "index.html")
 
 
