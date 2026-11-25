@@ -16,6 +16,7 @@
  * half-deleted leases.
  */
 
+import { describeThrownValue } from "@paperclipai/plugin-sdk";
 import type { KubeClients } from "./kube-client.js";
 import { deleteJob, findPodForJob, getJobStatus } from "./job-orchestrator.js";
 import {
@@ -79,7 +80,7 @@ export async function checkLeaseResumable(
       }
       return {
         resumable: false,
-        reason: err instanceof Error ? err.message : String(err),
+        reason: describeThrownValue(err),
       };
     }
 
