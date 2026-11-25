@@ -655,6 +655,55 @@ suite("heartbeat physical workspace source trust", () => {
     expect(lowTrustCalls[0][0].context.paperclipWorkspace.strategy).toBe("project_primary");
     const [lowTrustIssue] = await db.select().from(issues).where(eq(issues.id, lowTrustSandboxIssueId));
     expect(lowTrustIssue.status).not.toBe("blocked");
+
+    const otherTaskId = randomUUID();
+    const archivedWorkspaceId = randomUUID();
+    const archivedBindingIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherTaskId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Other task with archived directory",
+      status: "done",
+      responsibleUserId: "responsible-user",
+      issueNumber: 5,
+      identifier: `GR-5`,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: archivedWorkspaceId,
+      companyId,
+      sourceIssueId: otherTaskId,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      providerType: "local_fs",
+      name: "Archived other-task directory",
+      status: "archived",
+      cwd: path.join(root, companyId, "archived-other-task"),
+    });
+    await db.insert(issues).values({
+      id: archivedBindingIssueId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId: null,
+      executionWorkspaceId: archivedWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      title: "Projectless task bound to another task's archived workspace",
+      status: "todo",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 6,
+      identifier: `GR-6`,
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    const archivedBlockedRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId: archivedBindingIssueId },
+    });
+    expect(archivedBlockedRun).toBeNull();
+    const [archivedBlockedIssue] = await db.select().from(issues).where(eq(issues.id, archivedBindingIssueId));
+    expect(archivedBlockedIssue.status).toBe("blocked");
   }, 30_000);
 
 });

@@ -4539,12 +4539,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               resolvedMode,
               workspaceManagedConfig,
             );
-            const existingExecutionWorkspace = issue.executionWorkspaceId
+            const existingExecutionWorkspaceStatus = issue.executionWorkspaceId
               ? await tx
-                  .select({
-                    status: executionWorkspaces.status,
-                    strategyType: executionWorkspaces.strategyType,
-                  })
+                  .select({ status: executionWorkspaces.status })
                   .from(executionWorkspaces)
                   .where(
                     and(
@@ -4552,10 +4549,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       eq(executionWorkspaces.companyId, issue.companyId),
                     ),
                   )
-                  .then((rows) => rows[0] ?? null)
+                  .then((rows) => rows[0]?.status ?? null)
               : null;
-            const existingExecutionWorkspaceStatus =
-              existingExecutionWorkspace?.status ?? null;
             const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
               issueExecutionWorkspaceId: issue.executionWorkspaceId,
               issueExecutionWorkspacePreference:
@@ -4564,12 +4559,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             });
             const hasResolvablePriorSessionWorkspace =
               await resolveHasResolvablePriorSessionWorkspace();
-            const reopenableArchivedTaskDirectory = Boolean(
-              issue.executionWorkspaceId &&
-                existingExecutionWorkspace?.strategyType === "project_primary" &&
-                (existingExecutionWorkspace.status === "archived" ||
-                  existingExecutionWorkspace.status === "cleanup_failed"),
-            );
             let effectivePreflightStrategy: string | null = resolvedStrategy;
             if (
               resolvedMode === "isolated_workspace" &&
@@ -4659,9 +4648,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   hasProjectWorkspace: false,
                   projectWorkspaceId: issue.projectWorkspaceId,
                   hasSelectedExecutionWorkspace:
-                    (Boolean(issue.executionWorkspaceId) ||
-                      reuseRequest.requestedShouldReuseExisting) &&
-                    !reopenableArchivedTaskDirectory,
+                    Boolean(issue.executionWorkspaceId) ||
+                    reuseRequest.requestedShouldReuseExisting,
                   workspaceStrategies: [
                     agentConfig.workspaceStrategy,
                     issueSettings?.workspaceStrategy,
