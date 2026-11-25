@@ -29,7 +29,7 @@ export const hashMcpSecret = (value: string) => createHash("sha256").update(valu
 const secret = (prefix: string) => prefix + randomBytes(32).toString("base64url");
 
 export class McpOAuthError extends Error {
-  constructor(readonly code: string, message: string, readonly status = 400) { super(message); }
+  constructor(readonly code: string, message: string, readonly status = 400, readonly reason?: string) { super(message); }
 }
 export class PublicMcpDisabledError extends McpOAuthError {
   constructor() { super("temporarily_unavailable", "This agent connection is disabled. Enable its provider in Settings > Experimental.", 503); }
@@ -91,7 +91,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   if (museAgentConnection && config.resource !== config.origin + MUSE_RESOURCE_PATH) throw new McpOAuthError("invalid_target", "Muse has one fixed agent resource.");
   const scopesSupported = museAgentConnection ? MUSE_OAUTH_SCOPES : dotAgentConnection ? DOT_RUNNER_MCP_SCOPES : PUBLIC_MCP_SCOPES;
   const requiredScope = agentConnection ? "paperclip:agent" : "paperclip:read";
-  const defaultScope = museAgentConnection ? MUSE_OAUTH_SCOPES.join(" ") : requiredScope;
+  // Agent connections are paired once and must renew past the 15-minute access
+  // token, so an omitted scope means agent access with a refresh token.
+  const defaultScope = museAgentConnection ? MUSE_OAUTH_SCOPES.join(" ") : dotAgentConnection ? DOT_RUNNER_MCP_SCOPES.join(" ") : requiredScope;
   const issuer = museAgentConnection ? config.origin + MUSE_OAUTH_PATH : dotAgentConnection ? config.origin + DOT_RUNNER_MCP_PATH + "/oauth" : config.origin;
   function withResource(input: unknown) {
     return museAgentConnection && input && typeof input === "object" && !Array.isArray(input) && !("resource" in input)
@@ -434,7 +436,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     async deviceAuthorize(input: unknown, source = "unknown", context?:McpDeviceMintContext) {
       if (museAgentConnection) throw new McpOAuthError("unsupported_grant_type", "Muse requires public-client PKCE authorization.");
       await assertEnabled();
-      const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default(requiredScope), company_id: z.uuid().optional() }).safeParse(input);
+      const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default(defaultScope), company_id: z.uuid().optional() }).safeParse(input);
       if (!p.success) throw new McpOAuthError("invalid_request", "Supply a registered client and the exact Paperclip resource.");
       const scopes = [...new Set(p.data.scope.split(/\s+/).filter(Boolean))];
       if (!scopes.includes(requiredScope) || scopes.some(s => !(scopesSupported as readonly string[]).includes(s))) throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
@@ -616,7 +618,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     },
     async describeDotPairing(id: string, pairingCode: string): Promise<McpDotPairingPreview> {
       return db.transaction(async tx => {
-        const { binding, agent } = await dotPairingContext(tx as unknown as Db, id, pairingCode);
+        const { request, binding, agent } = await dotPairingContext(tx as unknown as Db, id, pairingCode);
         const access = await boardAuthService(tx as unknown as Db).resolveBoardAccess(binding.operatorId);
         const membership = access.memberships.find(m => m.companyId === binding.companyId && m.status === "active");
         const [company] = await tx.select().from(companies).where(eq(companies.id, binding.companyId));
@@ -624,7 +626,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         return { providerKind: binding.providerKind, authorizingPerson: access.user.name,
           company: { id: company.id, name: company.name }, agent: { id: agent.id, name: agent.name },
           permissions: binding.providerKind === "grok_bot" ? "Work as this agent: find and create permitted tasks, claim admitted work sessions, report progress, ask questions, save documents and deliverables, and submit completion for normal review. Execution requires a current task-bound session. No board account or other-company access. Grok plugins are account-wide; linking this Bot does not isolate credentials from other Bots on your Grok account. Grok retains its own connected apps. Usage and spending are not reported." : "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Reading assigned task attachment contents sends those contents to OpenAI and requires the agent’s separate attachment setting. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
-          accessDuration: "Ongoing until revoked. This connection does not expire from inactivity.",
+          accessDuration: request.scopes.includes("offline_access")
+            ? "Ongoing until revoked. This connection does not expire from inactivity."
+            : `${accessLifetime / minute} minutes. This client did not ask for ongoing access, so Paperclip cannot renew it. Reconnect it from the Dot setup prompt.`,
           pairingExpiresAt: binding.pairingExpiresAt!.toISOString() };
       });
     },
