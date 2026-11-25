@@ -175,6 +175,56 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/disallowed/i);
   });
 
+  it("ends a line comment at a carriage return, as PostgreSQL does", () => {
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT id INTO plugin_test.copied_issues FROM public.issues", "plugin_test", ["issues"])
+    ).toThrow(/mutation or DDL/i);
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "SELECT id -- note\r INTO plugin_test.copied_issues FROM public.issues",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow();
+  });
+
+  it("treats block comments as nested, as PostgreSQL does", () => {
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "SELECT id FROM plugin_test.rows /* a /* b */ ' */; DELETE FROM public.issues",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/exactly one statement/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.t (id int) /* a /* b */ ' */ GRANT SELECT ON plugin_test.t TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* outer /* inner's note */ still a comment */ CREATE TABLE plugin_test.t (id int)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects an unterminated string or comment", () => {
+    expect(() => validatePluginRuntimeQuery("SELECT 'abc FROM plugin_test.rows", "plugin_test", [])).toThrow(/unterminated/i);
+    expect(() => validatePluginRuntimeQuery("SELECT id FROM plugin_test.rows /* a /* b */", "plugin_test", [])).toThrow(/unterminated/i);
+    expect(() => validatePluginRuntimeQuery("SELECT \"id FROM plugin_test.rows", "plugin_test", [])).toThrow(/unterminated/i);
+  });
+
+  it("reads backslash escapes only in E strings", () => {
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT E'it\\'s' AS v FROM plugin_test.rows", "plugin_test", [])
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT 'a\\' AS v FROM plugin_test.rows", "plugin_test", [])
+    ).not.toThrow();
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
