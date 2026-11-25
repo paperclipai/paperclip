@@ -1,6 +1,7 @@
 import type { ExternalObject, IssueWorkProduct } from "@paperclipai/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
+import { ArtifactRow, subjectFromWorkProduct } from "./artifacts/v1";
 import { IssueRelatedWorkPanel } from "./IssueRelatedWorkPanel";
 import { RichWorkProductCard } from "./task-chat/RichWorkProductCard";
 
@@ -17,6 +18,7 @@ function renderDisplays(state: "open" | "merged", data: Record<string, unknown>)
     id: "pr-42", providerKey: "github", objectType: "pull_request", statusKey: state, data,
   } as ExternalObject;
   return [
+    renderToStaticMarkup(<ArtifactRow subject={subjectFromWorkProduct(product)} href={url} />),
     renderToStaticMarkup(<RichWorkProductCard workProduct={product} href={url} />),
     renderToStaticMarkup(<IssueRelatedWorkPanel externalObjects={[{
       group: { object, mentions: [], sourceLabels: [], mentionCount: 0 },
@@ -27,9 +29,9 @@ function renderDisplays(state: "open" | "merged", data: Record<string, unknown>)
   ];
 }
 
-it("shows the same head and merge state on both pull request surfaces", () => {
+it("shows the same head and merge state on the artifact row, rich card, and related work panel", () => {
   for (const html of renderDisplays("open", { headSha: "e7fce6d123456789", mergeableState: "dirty" })) {
-    expect(html).toContain("head e7fce6d");
+    expect(html).toMatch(/class="font-mono">e7fce6d<\//);
     expect(html).toContain("Has conflicts");
   }
 });
@@ -40,7 +42,7 @@ it("omits invalid metadata and hides merge state on closed work", () => {
     expect(html).not.toContain("unknown");
   }
   for (const html of renderDisplays("merged", { headSha: "e7fce6d123456789", mergeableState: "dirty" })) {
-    expect(html).not.toContain("head e7fce6d");
+    expect(html).not.toContain("e7fce6d");
     expect(html).not.toContain("Has conflicts");
   }
 });

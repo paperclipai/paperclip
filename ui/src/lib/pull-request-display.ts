@@ -1,3 +1,5 @@
+import type { IssueWorkProduct } from "@paperclipai/shared";
+
 const mergeLabels = new Map<unknown, string>([
   ["clean", "Mergeable"],
   ["blocked", "Merge blocked"],
@@ -7,14 +9,24 @@ const mergeLabels = new Map<unknown, string>([
   ["has_hooks", "Mergeable with hooks"],
 ]);
 
-export function pullRequestDisplayParts(metadata: Record<string, unknown> | null, open: boolean): string[] {
-  if (!open || !metadata) return [];
-  const parts: string[] = [];
-  const headSha = metadata.headSha;
-  if (typeof headSha === "string" && /^[a-f0-9]{7,64}$/i.test(headSha)) {
-    parts.push(`head ${headSha.slice(0, 7)}`);
-  }
-  const mergeLabel = mergeLabels.get(metadata.mergeableState);
-  if (mergeLabel) parts.push(mergeLabel);
-  return parts;
+export interface PullRequestDetails {
+  headSha: string | null;
+  mergeLabel: string | null;
+}
+
+export function readPullRequestDetails(
+  metadata: Record<string, unknown> | null,
+  open: boolean,
+): PullRequestDetails | null {
+  if (!open || !metadata) return null;
+  const head = metadata.headSha;
+  const headSha = typeof head === "string" && /^[a-f0-9]{7,64}$/i.test(head) ? head.slice(0, 7) : null;
+  const mergeLabel = mergeLabels.get(metadata.mergeableState) ?? null;
+  return headSha || mergeLabel ? { headSha, mergeLabel } : null;
+}
+
+export function workProductPullRequestDetails(workProduct: IssueWorkProduct): PullRequestDetails | null {
+  const state = workProduct.metadata?.state;
+  const status = typeof state === "string" && state.trim() ? state.trim() : workProduct.status;
+  return readPullRequestDetails(workProduct.metadata, status === "open" || status === "active" || status === "draft");
 }

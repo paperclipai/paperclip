@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { PullRequestDetailsLine } from "@/components/PullRequestDetailsLine";
 import panelDoc from "./assets/panel-doc.svg";
 import panelDocCorner from "./assets/panel-doc-corner.svg";
 import panelGlyphAudio from "./assets/panel-glyph-audio.svg";
@@ -145,6 +146,7 @@ export function ArtifactRow({ subject, to, href, external = false, onClick, expa
             </span>
           ))}
         </span>
+        <PullRequestDetailsLine details={subject.pullRequestDetails} />
       </span>
     </>
   );

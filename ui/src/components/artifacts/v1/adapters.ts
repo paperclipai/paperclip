@@ -2,6 +2,7 @@ import type { IssueAttachment, IssueDocument, IssueDocumentSummary, IssueWorkPro
 import type { AttachmentRef } from "@/components/task-chat/task-chat-attachments";
 import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
 import { artifactUrl } from "@/lib/artifact-card-data";
+import { workProductPullRequestDetails } from "@/lib/pull-request-display";
 import { documentDisplayTitle, workProductHref } from "@/lib/issue-artifacts";
 import { attachmentDownloadPath, attachmentOpenPath } from "@/lib/issue-attachments";
 import { extOf, kindFor, type ArtifactSubject } from "./kinds";
@@ -84,7 +85,12 @@ export function subjectFromWorkProduct(workProduct: IssueWorkProduct): ArtifactS
       updatedAt,
     };
   }
-  return { kind: "link", title: workProduct.title, updatedAt };
+  return {
+    kind: "link",
+    title: workProduct.title,
+    updatedAt,
+    pullRequestDetails: workProduct.type === "pull_request" ? workProductPullRequestDetails(workProduct) : null,
+  };
 }
 
 /** A document named in the thread (a summary: no body), as a row. */
