@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { antigravitySwarmQuotaScope } from "./antigravity-swarm.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
@@ -59,6 +60,7 @@ import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
+import { runContentDeleted } from "./tool-access/connections/run-session-reset.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
@@ -1973,6 +1975,23 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
+    // A task that names its own environment may run there as a low-trust
+    // review; only workspace preparation decides that, so dispatch checks then.
+    sshAuthentication: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const [task] = issueId ? await db.select({ settings: issues.executionWorkspaceSettings }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))) : [];
+      if (parseIssueExecutionWorkspaceSettings(task?.settings, { includeEnvironmentId: true })?.environmentId) return "undecided";
+      return resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId, lowTrustIssueEnvironmentId: null,
+        environmentsSvc, instanceSettings,
+      });
+    },
+    // A recorded, unfulfilled /swarm draws on the Antigravity CLI's own quota.
+    providerQuotaScope: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      return issueId ? antigravitySwarmQuotaScope(db, { companyId: run.companyId, issueId, runId: run.id, agent, context: run.contextSnapshot }) : null;
+    },
   });
 
   async function executeRunAttempt(
@@ -2268,6 +2287,7 @@ export function heartbeatService(
         return;
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
+      if (runtime.sessionId && await runContentDeleted(db, agent.companyId, runtime.lastRunId)) runtime.sessionId = null;
       const context = parseObject(run.contextSnapshot);
       // Workspace recovery can restart the failed run's sandbox to save its
       // files while this replay prepares. Wait for that stop to settle; the
@@ -2754,12 +2774,19 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const taskEnvironmentId = parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null;
       const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
         agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
-          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review" ? taskEnvironmentId : null,
         environmentsSvc, instanceSettings,
       });
+      // A task that names its own environment left the usage-limit check
+      // undecided before workspace preparation. Its account is known now.
+      if (taskEnvironmentId && !routerHasPersistedInput && await deferRunForProviderLimit(run, agent, {
+        resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
+        conversation: isConversation(conversationIdentity),
+        sshAuthentication,
+      })) return;
       if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
         config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
       }

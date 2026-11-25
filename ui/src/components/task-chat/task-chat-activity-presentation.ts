@@ -29,7 +29,10 @@ import type {
 import {
   humanizeToolName,
   isGenericToolName,
-  mcpToolIdentity,
+  retriedLabel,
+  sentenceRowLabel,
+  SUBJECT_FAMILIES,
+  subjectRowLabel,
   toolActivityPresentation,
   type ToolIcon,
 } from "./tool-taxonomy";
@@ -123,25 +126,51 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         target,
         progress,
       });
-      const boundedActivity = meaningfulToolDetail(item.summary)
-        ?? meaningfulToolDetail(progress)
-        ?? meaningfulToolDetail(target);
-      const activityIsIdentity = Boolean(
-        boundedActivity && name && humanizeToolName(boundedActivity) === humanizeToolName(name),
-      );
-      const technicalName = name ? mcpToolIdentity(name)?.name ?? name : tool.displayName;
-      const source = tool.sourceLabel
-        ? `${tool.sourceLabel} · ${technicalName}`
-        : name && !isGenericToolName(name) && humanizeToolName(name) !== tool.runningLabel.replace(/^Running /, "")
-          ? name
-          : undefined;
+      const subject = meaningfulToolDetail(providerDetail(item, "Subject"));
+      // The tool's own name repeated as its activity says nothing new.
+      const describes = (value: string | undefined) =>
+        value && !(name && humanizeToolName(value) === humanizeToolName(name)) ? value : undefined;
+      const boundedActivity = describes(subject)
+        ?? describes(meaningfulToolDetail(item.summary))
+        ?? describes(meaningfulToolDetail(progress))
+        ?? describes(meaningfulToolDetail(target));
+      // People read what a tool did, never its technical name; another
+      // server's tools still say where they came from.
+      const source = tool.sourceLabel && tool.sourceLabel !== "Paperclip" ? tool.sourceLabel : undefined;
+      // With a concrete subject the row reads like a settled one: "Read u1.txt",
+      // "$ npm test" (TaskChatRunnerActivityGroup's tool rows).
+      // Settled rows classify by the name alone (TaskChatRunnerActivityGroup).
+      const settled = toolActivityPresentation({ name, target });
+      if (settled.sentenceSubject && subject && boundedActivity === subject) {
+        return {
+          icon: settled.icon,
+          runningLabel: sentenceRowLabel(settled.runningLabel),
+          completedLabel: sentenceRowLabel(settled.completedLabel),
+          failedLabel: sentenceRowLabel(settled.failedLabel),
+          interruptedLabel: sentenceRowLabel(settled.interruptedLabel),
+          detail: [subject, source].filter(Boolean).join(" · "),
+        };
+      }
+      const concrete = Boolean(boundedActivity && (boundedActivity === subject || boundedActivity === meaningfulToolDetail(target)))
+        && SUBJECT_FAMILIES.has(settled.family);
+      if (concrete) {
+        const terminal = settled.family === "terminal";
+        return {
+          icon: settled.icon,
+          runningLabel: subjectRowLabel(settled.runningLabel, false),
+          completedLabel: subjectRowLabel(settled.completedLabel, terminal),
+          failedLabel: subjectRowLabel(settled.failedLabel, false),
+          interruptedLabel: subjectRowLabel(settled.interruptedLabel, false),
+          detail: [terminal ? `$ ${boundedActivity}` : boundedActivity, source].filter(Boolean).join(" · "),
+        };
+      }
       return {
         icon: tool.icon,
         runningLabel: tool.runningLabel,
         completedLabel: tool.completedLabel,
         failedLabel: tool.failedLabel,
         interruptedLabel: tool.interruptedLabel,
-        detail: [activityIsIdentity ? undefined : boundedActivity, source].filter(Boolean).join(" · ") || undefined,
+        detail: [boundedActivity, source].filter(Boolean).join(" · ") || undefined,
       };
     }
     case "plan_proposal":
@@ -266,7 +295,10 @@ export function protocolActivityLabel(item: TaskChatProtocolItem, presentation: 
   if (item.surface !== "provider_activity") {
     return protocolActivityIsRunning(item) ? presentation.runningLabel : presentation.completedLabel;
   }
-  if (item.status === "failed") return presentation.failedLabel ?? `${presentation.completedLabel} · failed`;
+  if (item.status === "failed") {
+    const failed = presentation.failedLabel ?? `${presentation.completedLabel} · failed`;
+    return item.retried ? retriedLabel(failed) : failed;
+  }
   if (item.status === "interrupted") return presentation.interruptedLabel ?? `${presentation.completedLabel} · interrupted`;
   return item.status === "running" ? presentation.runningLabel : presentation.completedLabel;
 }

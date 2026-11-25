@@ -23,7 +23,8 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { antigravityRouteChangeRefusal, antigravitySwarmLaunchEnvironment, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
+import { antigravityLocalLinkEvents } from "./antigravity-local-links.js";
+import { antigravityRouteChangeRefusal, antigravitySwarmBinding, antigravitySwarmLaunchEnvironment, type AntigravitySwarmChannel, antigravitySwarmTools, antigravitySwarmRouteRefusal, antigravitySwarmStateDirectory, isAntigravitySwarmRoute, verifyAntigravitySwarmInstallation } from "./antigravity-swarm-route.js";
 
 import type {
   AcpRuntimeOptions,
@@ -207,6 +208,10 @@ export interface AcpxRuntimePortOpenOptions {
   profile: QualifiedAcpxProfile;
   cwd: string;
   stateDirectory: string;
+  /** The Antigravity CLI's private `--gemini-dir` for this run (swarm route only). */
+  antigravityStateDirectory?: string;
+  /** Swarm route only: the Google channel and the connection account's digest (antigravitySwarmBinding). */
+  antigravitySwarm?: { channel: AntigravitySwarmChannel; accountDigest: string | null };
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
   readOnly?: boolean;
@@ -353,6 +358,7 @@ export class AcpxRuntimeHost {
   readonly #claudeSkillNames: readonly string[];
   readonly #assertAgentFilesHeld: (() => void) | undefined;
   readonly #candidateAdmission: AcpxCandidateStartupAdmission | undefined;
+  readonly #shapeTurnEvents: ((events: AsyncIterable<AcpRuntimeEvent>) => AsyncIterable<AcpRuntimeEvent>) | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
   #activeTurnInterruption: AcpxRuntimeTurn["cancel"] | null = null;
   #closingStarted = false;
@@ -370,6 +376,8 @@ export class AcpxRuntimeHost {
     claudeSkillNames: readonly string[];
     assertAgentFilesHeld?: () => void;
     candidateAdmission?: AcpxCandidateStartupAdmission;
+    /** Provider-owned projection of a turn's events before they leave the host. */
+    shapeTurnEvents?: (events: AsyncIterable<AcpRuntimeEvent>) => AsyncIterable<AcpRuntimeEvent>;
   }) {
     this.#runtime = input.runtime;
     this.#binding = input.binding;
@@ -381,6 +389,7 @@ export class AcpxRuntimeHost {
     this.#claudeSkillNames = [...input.claudeSkillNames];
     this.#assertAgentFilesHeld = input.assertAgentFilesHeld;
     this.#candidateAdmission = input.candidateAdmission ? structuredClone(input.candidateAdmission) : undefined;
+    this.#shapeTurnEvents = input.shapeTurnEvents;
   }
 
   static async open(
@@ -454,6 +463,7 @@ export class AcpxRuntimeHost {
       const refusal = antigravitySwarmRouteRefusal({ environment: options.environment ?? {} });
       if (refusal) throw refusal;
     }
+    const swarmBinding = swarmRoute ? antigravitySwarmBinding(options.environment ?? {}) : null;
     let swarmStateDirectory: string | null = null;
     const installation = await runAbortableAdmissionStage(
       options.signal,
@@ -465,7 +475,7 @@ export class AcpxRuntimeHost {
             ? verifyAntigravitySwarmInstallation(() => {
               if (swarmStateDirectory === null) throw new Error("Antigravity CLI state directory is not prepared");
               return swarmStateDirectory;
-            })
+            }, { channel: swarmBinding!.channel })
             : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
@@ -692,8 +702,11 @@ export class AcpxRuntimeHost {
             signal: options.signal,
             acquire: () => startRunnerToolBridge({
               ...options.semanticTools!,
+              ...(swarmRoute && options.semanticTools!.tools ? { tools: antigravitySwarmTools(options.semanticTools!.tools) } : {}),
               preserveToolNames: options.assignedMcpTransport === "prp",
               preloadClaudeTaskTools: options.agent === "claude",
+              // The Antigravity CLI checks tool schemas with RE2 and refuses its whole toolbox otherwise.
+              ...(swarmRoute ? { schemaPatternDialect: "re2" as const } : {}),
             }),
             resource: "tool_bridge",
             releaseLate: (lateToolBridge) => lateToolBridge.close(),
@@ -722,6 +735,8 @@ export class AcpxRuntimeHost {
             profile,
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,
+            ...(swarmStateDirectory === null ? {} : { antigravityStateDirectory: swarmStateDirectory }),
+            ...(swarmBinding === null ? {} : { antigravitySwarm: swarmBinding }),
             providerSessionKey: binding.profileSessionKey,
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,
@@ -825,6 +840,9 @@ export class AcpxRuntimeHost {
         toolBridge,
         assertAgentFilesHeld: agentFiles?.assertHeld,
         candidateAdmission: options.candidateAdmission,
+        // Both Antigravity routes (registry server and swarm CLI) link the files they wrote by local path.
+        ...(options.agent === "antigravity"
+          ? { shapeTurnEvents: (events: AsyncIterable<AcpRuntimeEvent>) => antigravityLocalLinkEvents(events, [options.workingDirectory, binding.workspacePath]) } : {}),
         claudeSkillNames: options.agent === "claude"
           ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
           : [],
@@ -976,7 +994,7 @@ export class AcpxRuntimeHost {
     const text = claudeNativeSkillPrompt(
       boundedTurnText(input.text), this.#claudeSkillNames,
     );
-    const turn = this.#runtime.startTurn({
+    const raw = this.#runtime.startTurn({
       text,
       requestId,
       ...(input.signal ? { signal: input.signal } : {}),
@@ -988,6 +1006,11 @@ export class AcpxRuntimeHost {
       ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
       ...(input.dispatchJournal ? { dispatchJournal: input.dispatchJournal } : {}),
     });
+    const turn: AcpxRuntimeTurn = this.#shapeTurnEvents ? {
+      requestId: raw.requestId, promptStarted: raw.promptStarted, result: raw.result,
+      events: this.#shapeTurnEvents(raw.events),
+      cancel: input => raw.cancel(input), closeStream: input => raw.closeStream(input),
+    } : raw;
     this.#activeTurn = turn;
     const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);
     this.#activeTurnInterruption = managed.cancel;

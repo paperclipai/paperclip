@@ -829,6 +829,7 @@ impl AcpxSidecarTransport {
                     let tool_call_retired = command == GeneratedAcpxSidecarCommand::ToolResolve
                         && error.code == "ACPX_TOOL_CALL_STALE";
                     let classification = response_error_classification(&error);
+                    let sidecar_rejection = sidecar_rejection_detail(command.as_str(), &error);
                     return Ok(Some(CommandOutcome::Rejected { tool_call_retired, error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
@@ -840,7 +841,8 @@ impl AcpxSidecarTransport {
                     .with_command_rejection(Some(CommandRejection {
                         command: command.as_str(),
                         classification,
-                    })), resume_required }));
+                    }))
+                    .with_sidecar_rejection(Some(sidecar_rejection)), resume_required }));
                 }
             }
         }
@@ -1289,6 +1291,50 @@ fn typed_provider_classification(error: &ResponseError) -> Option<&'static str> 
 pub(crate) const ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE: &str =
     "antigravity_saved_state_incompatible";
 
+const SIDECAR_REJECTION_MESSAGE_CHARS: usize = 512;
+
+/// The sidecar's own code and its (sidecar-redacted) message, for operators
+/// reading the failed command. The rejection text itself stays closed; a
+/// provider cause travels only in `providerFailure`, so its message is never
+/// copied here. A sidecar message that differs from that cause is operator
+/// detail (for example the models a provider offered) and is kept.
+fn sidecar_rejection_detail(command: &str, error: &ResponseError) -> Value {
+    let code = if !error.code.is_empty()
+        && error.code.len() <= 96
+        && error
+            .code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        error.code.as_str()
+    } else {
+        "invalid_code"
+    };
+    let mut detail = json!({ "command": command, "code": code });
+    let cause_message =
+        validated_provider_failure(error.provider_failure.clone()).and_then(|cause| {
+            cause
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    if cause_message.as_deref() != Some(error.message.as_str()) {
+        let message: String = crate::durable::redact_sensitive_text_values(&error.message)
+            .chars()
+            .filter(|character| {
+                !character.is_control()
+                    && !matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
+            .take(SIDECAR_REJECTION_MESSAGE_CHARS)
+            .collect();
+        let message = message.trim();
+        if !message.is_empty() {
+            detail["message"] = json!(message);
+        }
+    }
+    detail
+}
+
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
         "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
@@ -1359,6 +1405,15 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX_MODEL_SELECTION_UNAVAILABLE" => return "model_selection_unavailable",
         "ACPX_EFFECTIVE_MODEL_MISMATCH" => return "effective_model_mismatch",
         "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE" => return ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE,
+        // A typed /swarm refusal: the request cannot run as sent, so it waits for the user.
+        "ANTIGRAVITY_SWARM_UNAVAILABLE" => return "antigravity_swarm_unavailable",
+        "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED" => return "antigravity_swarm_sign_in_required",
+        "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH" => return "antigravity_swarm_receipt_mismatch",
+        "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE" => return "antigravity_swarm_workspace_escape",
+        "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT" => return "antigravity_swarm_helpers_timeout",
+        "ACPX_CANDIDATE_ADMISSION_INVALID" => return "candidate_admission_invalid",
+        // Runner and sidecar disagree on the request contract (a version skew or a missing field).
+        "ACPX_SIDECAR_REQUEST_INVALID" => return "sidecar_request_invalid",
         _ => {}
     }
     match error.message.as_str() {

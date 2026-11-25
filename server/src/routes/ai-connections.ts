@@ -2,7 +2,7 @@ import { connectionManagementGuard, connectionRequestActor, connectionRequestCon
 import { connectionManagementService } from "../services/connection-management.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
-import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
+import { supportsHostedGoogleAiLogin, supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { z } from "zod";
 import { Router, type Request } from "express";
@@ -20,7 +20,8 @@ import {
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
-  browserCodeSchema,
+  localAiLoginCodeSchema,
+  submitLocalAiLoginCodeSchema,
   isAiConnectionCompatible,
   type AiConnectionLoginIntent,
   type AiProvider,
@@ -32,6 +33,8 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
+import { logger } from "../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../services/heartbeat/provider-limit-wait.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
@@ -147,8 +150,11 @@ export async function canInstallSharedAiConnectionForNewAgent(
 
 
 export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] & { pluginWorkerManager?: PluginWorkerManager } = {}) {
-  function assertLocalLoginAvailable() {
-    if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+  const localLoginAvailable = () => supportsLocalAiLogin(options);
+  const hostedGoogleLoginAvailable = () => supportsHostedGoogleAiLogin(options);
+  function assertLocalLoginAvailable(provider?: AiConnectionLoginIntent["provider"]) {
+    if (provider === "google" ? (hostedGoogleLoginAvailable() || localLoginAvailable()) : localLoginAvailable()) return;
+    throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
   }
   const router = Router();
   const managementGuard = connectionManagementGuard(db, "ai");
@@ -187,7 +193,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   router.post("/companies/:companyId/ai-connections/local/attempts", managementGuard("connections:configure", "POST /companies/:companyId/ai-connections/local/attempts", { personal: true }), validate(localAiLoginStartSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const { restart, ...intent } = localAiLoginStartSchema.parse(req.body);
-    assertLocalLoginAvailable();
+    assertLocalLoginAvailable(intent.provider);
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
     res.setHeader("Cache-Control", "no-store");
     const attempt = await localLogin.start(companyId, userId, intent, restart, connectionRequestContext(req));
@@ -196,7 +202,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   router.post("/companies/:companyId/ai-connections/local/check", managementGuard("connections:configure", "POST /companies/:companyId/ai-connections/local/check", { personal: true }), validate(localAiConnectionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const { localSessionId, ...intent } = localAiConnectionSchema.parse(req.body);
-    assertLocalLoginAvailable();
+    assertLocalLoginAvailable(intent.provider);
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
     res.setHeader("Cache-Control", "no-store");
     res.json(await localLogin.check(companyId, userId, intent, localSessionId));
@@ -208,14 +214,19 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     await localLogin.cancel(req.params.companyId as string, responsibleUserForAiRequest(req)!, id, connectionRequestContext(req));
     res.json({ ok: true });
   });
-  router.post("/companies/:companyId/ai-connections/local/attempts/:sessionId/code", validate(z.object({ browserCode: browserCodeSchema })), async (req, res) => {
+  router.post("/companies/:companyId/ai-connections/local/attempts/:sessionId/code", validate(submitLocalAiLoginCodeSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertLocalLoginAvailable();
+    res.setHeader("Cache-Control", "no-store");
     assertBoard(req);
     assertCompanyAccess(req, companyId);
+    if (!localLoginAvailable() && !hostedGoogleLoginAvailable()) {
+      throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+    }
     const id = z.string().uuid().parse(req.params.sessionId);
-    await localLogin.submitCode(companyId, getActorInfo(req).actorId, id, browserCodeSchema.parse(req.body.browserCode));
-    res.setHeader("Cache-Control", "no-store");
+    await localLogin.submitCode(companyId, getActorInfo(req).actorId, id, localAiLoginCodeSchema.parse(req.body.browserCode), {
+      allowLocalProviders: localLoginAvailable(),
+      allowHostedGoogle: hostedGoogleLoginAvailable(),
+    });
     res.json({ ok: true });
   });
   router.get("/companies/:companyId/ai-connections", managementGuard("connections:read", "GET /companies/:companyId/ai-connections", { personal: true }), async (req, res) => {
@@ -360,8 +371,9 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const { localSessionId, ...input } = localAiConnectionSchema.parse(req.body);
-      assertLocalLoginAvailable();
+      assertLocalLoginAvailable(input.provider);
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
+      res.setHeader("Cache-Control", "no-store");
       if (!localSessionId) throw unprocessable(input.provider === "xai"
         ? "Start local sign-in for this connection before connecting."
         : "Start browser sign-in for this connection before connecting.");
@@ -383,7 +395,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         throw forbidden("Viewers cannot change defaults");
       if (!z.string().uuid().safeParse(req.body.grantId).success)
         throw unprocessable("Choose a personal connection");
-      await service.setDefault(companyId, userId, req.body.grantId);
+      const { previousGrantId } = await service.setDefault(companyId, userId, req.body.grantId);
       await logActivity(db, {
         companyId,
         ...connectionRequestActor(req),
@@ -391,6 +403,14 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         entityType: "connection_grant",
         entityId: req.body.grantId,
       });
+      if (previousGrantId && previousGrantId !== req.body.grantId) {
+        // Work held for a limit on the previous default rechecks against the
+        // new one. A failed release leaves the saved recheck, never the default.
+        await releaseProviderLimitWaits(db, {
+          companyId, reason: "ai_connection_changed", grantIds: [previousGrantId],
+          actor: { actorType: "user", actorId: userId },
+        }).catch((err: unknown) => logger.warn({ err, companyId }, "failed to release usage waits after a default change"));
+      }
       res.json({ ok: true });
     },
   );

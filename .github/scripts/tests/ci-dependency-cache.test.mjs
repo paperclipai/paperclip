@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { cachePlan } from "../../../scripts/ci-dependency-cache.mjs";
+import { findWorkspacePostinstallScripts, replayWorkspacePostinstalls } from "../../../scripts/replay-workspace-postinstall.mjs";
 
 const entries = {
   "package.json": '{"scripts":{"postinstall":"node scripts/link-plugin-dev-sdk.mjs"}}',
@@ -97,8 +100,52 @@ test('known Copilot hooks permit caching, track their helpers, and still run on 
   const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
   const replay = action.split('    - name: Replay workspace install hooks after restore')[1].split('    - name:')[0];
   assert.match(replay, /if: steps\.installed\.outputs\.cache-hit == 'true'/);
+  assert.match(replay, /node scripts\/replay-workspace-postinstall\.mjs/);
   assert.match(replay, /pnpm -r --if-present run postinstall\s+pnpm run postinstall/);
   assert.ok(action.indexOf('Replay workspace install hooks') < action.indexOf('Validate workspace links'));
+});
+
+test('replay-workspace-postinstall discovers repo hooks, runs workspace hooks before root, and fails closed', async () => {
+  const discovered = findWorkspacePostinstallScripts();
+  assert.deepEqual(
+    discovered.workspaceHooks.map((hook) => hook.relDir),
+    ['packages/paperclip-runner', 'server'],
+  );
+  assert.equal(discovered.rootHook?.relDir, '.');
+
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'replay-postinstall-'));
+  try {
+    const orderFile = path.join(tmp, 'order.log');
+    mkdirSync(path.join(tmp, 'packages/alpha'), { recursive: true });
+    mkdirSync(path.join(tmp, 'server'), { recursive: true });
+    writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+      name: 'root',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'root\\n')\"" },
+    }));
+    writeFileSync(path.join(tmp, 'packages/alpha/package.json'), JSON.stringify({
+      name: '@test/alpha',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'alpha\\n')\"" },
+    }));
+    writeFileSync(path.join(tmp, 'server/package.json'), JSON.stringify({
+      name: '@test/server',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'server\\n')\"" },
+    }));
+
+    const result = await replayWorkspacePostinstalls(tmp, { ...process.env, ORDER_FILE: orderFile });
+    assert.deepEqual(result, { workspaceCount: 2, ranRoot: true });
+    const lines = readFileSync(orderFile, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3);
+    assert.equal(lines[2], 'root', 'root postinstall must run after workspace postinstall hooks');
+    assert.deepEqual(lines.slice(0, 2).sort(), ['alpha', 'server']);
+
+    writeFileSync(path.join(tmp, 'server/package.json'), JSON.stringify({
+      name: '@test/server',
+      scripts: { postinstall: 'node -e "process.exit(3)"' },
+    }));
+    await assert.rejects(() => replayWorkspacePostinstalls(tmp, { ...process.env, ORDER_FILE: orderFile }), /postinstall in server exited with 3/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('cache restores are exact and only a frozen canonical master push can publish entries', () => {

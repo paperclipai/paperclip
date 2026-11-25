@@ -521,9 +521,13 @@ test("release verify workflow covers the same split test surface as stable PR ve
   const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, "packages/paperclip-runner/package.json"), "utf8")).scripts;
   const runnerChecks = [...verifyWorkflow.matchAll(/^            checks: (.+)$/gm)]
     .flatMap(([, checks]) => checks.split(" "));
-  assert.deepEqual(runnerChecks, runnerScripts["check:all"].split(" && ")
+  assert.deepEqual(runnerChecks, runnerScripts["check:all-without-vitest"].split(" && ")
     .map((command) => command.replace(/^pnpm run /, "")));
+  const runnerVitestLanes = [...verifyWorkflow.matchAll(/^            vitest_lane: (.+)$/gm)]
+    .map(([, lane]) => lane);
+  assert.deepEqual(runnerVitestLanes, ["1/4", "2/4", "3/4", "4/4"]);
   assert.match(verifyWorkflow, /pnpm --filter @paperclipai\/paperclip-runner "\$check"/);
+  assert.match(verifyWorkflow, /pnpm --filter @paperclipai\/paperclip-runner test:typescript:vitest "--package-lane=\$RUNNER_VITEST_LANE"/);
   assert.match(verifyWorkflow, /runner_workflow_evals:/);
   assert.match(verifyWorkflow, /runner_chaos_evals:/);
   assert.match(

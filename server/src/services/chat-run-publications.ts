@@ -4,19 +4,7 @@ import { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
 export { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
 import type { ChatRunMilestoneScope } from "./chat-run-milestone-notifications.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
-import {
-  and,
-  asc,
-  eq,
-  gt,
-  gte,
-  inArray,
-  isNull,
-  ne,
-  notExists,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, ne, notExists, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -115,6 +103,43 @@ export async function resolveChatRunPresentationAuthorizationReason(
     return "internal_agent_write";
   }
   return CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+}
+
+/** The latest response the agent published on GitHub for the task after
+ * `since`, in a conversation of the same pull request or issue. A processed
+ * publication's updated time is when GitHub accepted it. */
+export async function githubLatestTaskResponseUrl(
+  db: Db,
+  input: { companyId: string; endpointId: string; issueId: string; since: Date; baseThreadId: string },
+): Promise<string | null> {
+  // An assessment published only as inline findings has no summary URL; its
+  // finding receipts on the saved review hold the published comment URLs.
+  const url = sql<string | null>`coalesce(${chatActions.result}->>'summaryUrl', ${chatActions.result}->>'url',
+    (select receipt.value->>'url' from ${chatGitHubReviews} review, jsonb_each(review.publication_receipts) receipt
+      where review.company_id = ${chatActions.companyId} and review.endpoint_id = ${chatActions.endpointId}
+        and review.issue_id = ${input.issueId}::uuid
+        and review.id = (case when coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')
+            ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          then coalesce(${chatActions.payload}->>'reviewId', ${chatActions.result}->>'reviewId')::uuid end)
+        and receipt.value->>'url' like 'https://github.com/%'
+      order by receipt.key limit 1))`;
+  const [latest] = await db.select({ url }).from(chatActions).innerJoin(chatConversations, and(
+    eq(chatConversations.id, chatActions.conversationId), eq(chatConversations.companyId, chatActions.companyId),
+    eq(chatConversations.endpointId, chatActions.endpointId),
+    sql`(${chatConversations.externalThreadId} = ${input.baseThreadId}
+      or ${chatConversations.externalThreadId} like ${input.baseThreadId.replace(/[\\%_]/g, "\\$&") + ":rc:%"})`,
+  )).where(and(
+    eq(chatActions.companyId, input.companyId),
+    eq(chatActions.endpointId, input.endpointId),
+    eq(chatActions.kind, "github_review_publication"),
+    eq(chatActions.status, "processed"),
+    sql`${chatActions.payload}->'session'->>'companyId' = ${input.companyId}`,
+    sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
+    sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
+    sql`${url} like 'https://github.com/%'`,
+    sql`${chatActions.updatedAt} > ${input.since.toISOString()}::timestamptz`,
+  )).orderBy(desc(chatActions.updatedAt)).limit(1);
+  return latest?.url ?? null;
 }
 
 /** A missing receipt is not proof that a provider write never arrived. */

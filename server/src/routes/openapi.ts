@@ -1506,6 +1506,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "GET /api/companies/{companyId}/attention/run-history",
   "GET /api/companies/{companyId}/attention/summary",
   "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
@@ -6640,8 +6641,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
-      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
-        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all", "waiting"]).optional()
+        .describe("Audience slice (PAP-749). `waiting` lists snoozed requests and automatic retries visible to the caller. `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6654,6 +6655,8 @@ registry.registerPath({
 });
 
 const attentionSummaryResponseSchema = z.object({
+  waitingCount: z.number().int().nonnegative().optional(),
+  nextSnoozeAt: z.string().datetime().optional(),
   companyId: z.string().uuid(),
   generatedAt: z.string().datetime(),
   totalCount: z.number().int().nonnegative(),
@@ -6746,6 +6749,29 @@ registry.registerPath({
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/attention/run-history",
+  tags: ["inbox"],
+  summary: "List recent failures in inbox run history",
+  description: "Requires a board user. Returns up to 100 recent failed runs on tasks visible to the caller, newest first. For the next page, pass the last row’s recordedAt and runId as at and id together. Limited to 60 requests per minute per board user and company.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ at: z.string().datetime().optional(), id: z.string().uuid().optional() }).strict(),
+  },
+  responses: {
+    200: r.ok(z.array(z.object({
+      runId: z.string().uuid(), agentId: z.string().uuid(), agentName: z.string(),
+      taskId: z.string().uuid(), taskTitle: z.string(), identifier: z.string().nullable(),
+      recordedAt: z.string().datetime(), reason: z.string(), outcome: z.string(),
+    }))),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    429: r.tooManyRequests,
+  },
+});
 
 registry.registerPath({
   method: "get",

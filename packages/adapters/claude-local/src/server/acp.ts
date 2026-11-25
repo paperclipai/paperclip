@@ -41,6 +41,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { resolveManagedApiKeyBilling } from "./acp-billing.js";
 import {
   materializeRemoteClaudeConfig,
   overrideRemoteClaudeLocalPermissionMode,
@@ -178,7 +179,9 @@ export function buildClaudeAcpConfig(
 export function resolveClaudeAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
-): { provider: string; biller: string; billingType: AdapterBillingType } {
+): { provider: string; biller: string; billingType: AdapterBillingType; preferRequestedModel?: true } {
+  const connection = resolveManagedApiKeyBilling(ctx.config);
+  if (connection) return connection;
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,

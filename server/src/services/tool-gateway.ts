@@ -33,8 +33,10 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
-import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
+import {
+  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpErrorDetails, googleWorkspaceMcpPreflightRefusal, googleWorkspaceRestAuditEndpoint,
+} from "./google-workspace-rest-dispatch.js";
+import { currentConnectionToolDefinition } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -532,6 +534,15 @@ export function toolResultErrorDetails(result: Record<string, unknown>): { toolC
   return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
 }
 
+function failedCallEventError(error: unknown, reasonCode: string): { errorCode: string; errorMessage: string } {
+  const toolCode = error instanceof ToolGatewayHttpError && typeof error.details.toolCode === "string" ? error.details.toolCode : undefined;
+  return { errorCode: toolCode ?? reasonCode, errorMessage: error instanceof Error ? error.message : String(error) };
+}
+
+function connectedToolErrorDetails(execution: { errorDetails?: ConnectedToolErrorDetails } | null | undefined, result: Record<string, unknown>) {
+  return execution?.errorDetails ?? toolResultErrorDetails(result);
+}
+
 export class ToolGatewayHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -628,8 +639,11 @@ type HeaderPolicySummary = {
   collisionRules: Array<{ header: string; source: string; action: string }>;
 };
 
+type ConnectedToolErrorDetails = { toolCode?: string; retryable?: true; paperclipRefusal?: string };
+
 type RemoteHttpExecutionResult = {
   result: unknown;
+  errorDetails?: ConnectedToolErrorDetails;
   failureInstructions?: string;
   headerSummary?: HeaderPolicySummary;
   execution?: RemoteHttpExecutionAudit;
@@ -641,10 +655,10 @@ type RemoteHttpExecutionAudit = {
     protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH" | "Google Workspace REST";
     httpMethod: "POST";
     endpoint: string;
-    mcpMethod: "tools/call";
+    mcpMethod?: "tools/call";
     requestId: string;
     upstreamToolName: string;
-    dispatched: true;
+    dispatched: boolean;
   };
   response?: {
     httpStatus: number;
@@ -2075,7 +2089,7 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
-        const currentDefinition = paperclipDefinedTool(connection, catalogEntry.toolName);
+        const currentDefinition = currentConnectionToolDefinition(connection, catalogEntry.toolName);
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
           currentDefinition?.inputSchema ?? catalogEntry.inputSchema ?? {},
@@ -2824,6 +2838,8 @@ export function createToolGatewayService(
     detectorMetadata?: PromptInjectionDetectorMetadata;
     metadata?: Record<string, unknown> | null;
     tool?: ToolGatewayDescriptor | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
     await retryTransientLockContention(() => db.insert(toolCallEvents).values({
@@ -2854,6 +2870,8 @@ export function createToolGatewayService(
       resultHash: input.resultSummary?.sha256 ?? null,
       resultSummary: input.resultSummary ?? null,
       resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
       metadata:
         Object.keys(metadata).length > 0 ||
         input.metadata || input.detectorMetadata ||
@@ -7518,7 +7536,7 @@ export function createToolGatewayService(
         sourceTemplateKey?.startsWith("google-") === true) &&
       /caller does not have permission/i.test(providerContent);
     const content = googleWorkspacePermissionDenied
-      ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
+      ? "Google rejected this call. Google's Workspace MCP servers accept only an OAuth client marked \"Use this client for an AI-powered agent\" in the Google Cloud console, from a project with the service's MCP API enabled. Ask the admin who set up the Google connection to check both, then reconnect and try again."
       : providerContent;
     const normalized = {
       content,
@@ -8253,6 +8271,26 @@ export function createToolGatewayService(
     }, { owner });
   }
 
+  async function callConnectionToolForCheck(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    connectionId: string,
+    toolName: string,
+    parameters: Record<string, unknown>,
+    ms: number,
+    invocationId: string,
+    callerHeaders: ExecuteGatewayToolInput["callerHeaders"],
+    signals: { run?: AbortSignal; caller?: AbortSignal },
+  ): Promise<unknown | null> {
+    const [entry] = await db.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries).where(and(
+      eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, connectionId),
+      eq(toolCatalogEntries.toolName, toolName), eq(toolCatalogEntries.status, "active"),
+    )).limit(1);
+    if (!entry) return null;
+    return (await executeRemoteHttpTool(session, { ...tool, catalogEntryId: entry.id }, parameters, ms, invocationId, callerHeaders, false,
+      { run: signals.run, caller: signals.caller })).result;
+  }
+
   async function executeRemoteHttpTool(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
@@ -8347,6 +8385,7 @@ export function createToolGatewayService(
       },
     };
     const controller = new AbortController();
+    const deadlineAt = Date.now() + ms;
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     const progressReporter = toolCallProgressReporterFor(session, tool, invocationId);
@@ -8417,8 +8456,23 @@ export function createToolGatewayService(
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
+      if (workspaceTarget?.transport === "google_mcp") {
+        const refusal = await googleWorkspaceMcpPreflightRefusal({
+          toolName: entry.toolName, arguments: parameters, inputSchema: entry.inputSchema,
+          callTool: (toolName, args) => callConnectionToolForCheck(session, tool, connection.id, toolName, args,
+            Math.max(1, deadlineAt - Date.now()), invocationId, callerHeaders, { run: taskSignals.run, caller: taskSignals.caller }),
+        });
+        if (refusal) {
+          execution.request.dispatched = false;
+          return {
+            result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal.message }] }, "mcp_http", false, sourceTemplateKey),
+            errorDetails: { toolCode: refusal.code, paperclipRefusal: refusal.message }, headerSummary, execution,
+          };
+        }
+      }
       if (workspaceTarget?.transport === "paperclip_rest") {
         execution.request.protocol = "Google Workspace REST";
+        delete execution.request.mcpMethod;
         execution.request.endpoint = googleWorkspaceRestAuditEndpoint(workspaceTarget.service);
         await assertWorkspaceGrantCurrent();
         const signal = taskSignals.run ? AbortSignal.any([controller.signal, taskSignals.run]) : controller.signal;
@@ -9065,7 +9119,8 @@ export function createToolGatewayService(
           "ok",
           "Remote MCP server responded to tools/call.",
         );
-        return { result, failureInstructions, headerSummary, execution };
+        const errorDetails = workspaceTarget?.transport === "google_mcp" && result.data.isError ? googleWorkspaceMcpErrorDetails(callResult, { readOnly: tool.risk === "read" }) : undefined;
+        return { result, ...(errorDetails ? { errorDetails } : {}), failureInstructions, headerSummary, execution };
       }
     } catch (error) {
       // The app never got the answers this call carried: the next identical call sends them.
@@ -10257,7 +10312,7 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
           providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-          { execution: connectedMcpExecution.execution, ...toolResultErrorDetails(providerResult) });
+          { execution: connectedMcpExecution.execution, ...connectedToolErrorDetails(connectedMcpExecution, providerResult) });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -10281,6 +10336,7 @@ export function createToolGatewayService(
         toolName: args.tool.name,
         policyDecision: status === 504 ? "defer_runtime" : "deny",
         reasonCode,
+        ...failedCallEventError(err, reasonCode),
         argumentsSummary: args.argumentsSummary,
         metadata: {
           source: "test",
@@ -11144,7 +11200,7 @@ export function createToolGatewayService(
           resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(resultRecord, connectedMcpExecution?.failureInstructions),
           resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
-          toolResultErrorDetails(resultRecord),
+          connectedToolErrorDetails(connectedMcpExecution, resultRecord),
         );
       const now = new Date();
       await db
@@ -11218,6 +11274,7 @@ export function createToolGatewayService(
         toolName: tool.name,
         policyDecision: "deny",
         reasonCode,
+        ...failedCallEventError(error, reasonCode),
         argumentsSummary,
         metadata: { durationMs: Date.now() - startedAt, ...(error instanceof ToolContentValidationError ? { promptInjection: error.detectorMetadata, findings: error.findings } : {}) },
         tool,
@@ -14160,7 +14217,7 @@ export function createToolGatewayService(
             validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             toolResultErrorMessage(validatedMcpResult, connectedMcpExecution?.failureInstructions),
             validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-            { execution: connectedMcpExecution?.execution, ...toolResultErrorDetails(validatedMcpResult) },
+            { execution: connectedMcpExecution?.execution, ...connectedToolErrorDetails(connectedMcpExecution, validatedMcpResult) },
           );
         }
         await db
@@ -14354,6 +14411,7 @@ export function createToolGatewayService(
           toolName: tool.name,
           policyDecision: isDeferred ? "defer_runtime" : "deny",
           reasonCode,
+          ...failedCallEventError(normalizedError, reasonCode),
           argumentsSummary: effectiveArgumentsSummary,
           metadata: {
             ...(virtualToolName
@@ -14656,6 +14714,7 @@ export function createToolGatewayService(
           toolName: tool.name,
           policyDecision: status === 504 ? "defer_runtime" : "deny",
           reasonCode,
+          ...failedCallEventError(err, reasonCode),
           argumentsSummary: argumentValidation.summary,
           metadata:
             err instanceof ToolContentValidationError

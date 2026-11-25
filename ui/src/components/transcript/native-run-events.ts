@@ -3,6 +3,7 @@ import type { TranscriptEntry } from "@/adapters";
 
 type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
+import { createBridgeCallPairing } from "./bridge-call-pairing";
 import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
 import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
 
@@ -921,6 +922,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       fileChangesByExecutionId.set(executionId, payload.fileChanges);
     }
   }
+  // A bridge call under its own id joins the provider's row for the same call.
+  const bridgeCalls = createBridgeCallPairing();
+  for (const event of orderedEvents) {
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    if (!payload) continue;
+    if (event.eventType.startsWith("tool.execution.")) bridgeCalls.execution(event.eventType, payload);
+    else if (event.eventType === "item.started") {
+      const tool = nativeToolItemDetails(payload);
+      if (tool?.kind === "tooluse" && tool.id) bridgeCalls.bridgeCall(tool.id, tool.details.name);
+    }
+  }
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -937,7 +949,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (!itemId) continue;
     const toolItem = nativeToolItemDetails(payload);
     if (toolItem) {
-      const toolId = toolItem.id ?? itemId;
+      const toolId = (toolItem.id && bridgeCalls.pairedExecution(toolItem.id)) ?? toolItem.id ?? itemId;
       const previous = nativeToolItemsById.get(toolId);
       nativeToolItemsById.set(toolId, {
         name: toolItem.details.name ?? previous?.name ?? null,
@@ -1109,6 +1121,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (nativeToolEvent) {
       const toolId = nativeToolEvent.id ?? itemId;
       if (!toolId) continue;
+      // Shown on the provider's own row for the same call.
+      if (bridgeCalls.pairedExecution(toolId)) continue;
       const nativeToolItem = nativeToolItemsById.get(toolId)
         ?? nativeToolEvent.details;
       const presentation = toolPresentation({}, nativeToolItem);
