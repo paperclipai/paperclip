@@ -40,6 +40,15 @@ import type { Issue } from "@paperclipai/shared";
 
 const pageSize = 200;
 
+type TaskLayout = "list" | "board";
+
+function loadTaskLayout(key: string | null): TaskLayout {
+  try {
+    if (key && localStorage.getItem(key) === "board") return "board";
+  } catch {}
+  return "list";
+}
+
 /** Coordinator's existing IA and attention feed, rendered with the production
  * components reviewed in Design proposals / Pages / Tasks. */
 export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = {}) {
@@ -52,7 +61,22 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const location = useLocation();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [layout, setLayout] = useState<"list" | "board">("list");
+  const layoutKey = companyId && userId
+    ? JSON.stringify(["paperclip:coordinator-task-layout:v1", companyId, userId])
+    : null;
+  const [layoutPreference, setLayoutPreference] = useState(() => ({
+    key: layoutKey,
+    layout: loadTaskLayout(layoutKey),
+  }));
+  const layout = layoutPreference.key === layoutKey
+    ? layoutPreference.layout
+    : loadTaskLayout(layoutKey);
+  const setLayout = (nextLayout: TaskLayout) => {
+    setLayoutPreference({ key: layoutKey, layout: nextLayout });
+    try {
+      if (layoutKey) localStorage.setItem(layoutKey, nextLayout);
+    } catch {}
+  };
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
   const urlLabels = JSON.stringify(params.getAll("label").filter(Boolean));
