@@ -1,28 +1,49 @@
 #!/usr/bin/env node
 // Decides whether `.github/workflows/docker.yml` should export its BuildKit
-// registry cache (`cache-to: ...,mode=max`) for this build.
+// registry cache (`cache-to: ...,mode=max`) for this build, and computes the
+// content-addressed cache key stamped onto published `master` images.
 //
 // `mode=max` exports every intermediate stage, including the per-commit `build`
 // stage (~4 GB), which adds ~2.5-3 minutes *after* the production image has
-// already been pushed. On a normal master commit that only touches application
-// source (server, ui, packages, docs, tests), every cross-commit cacheable
-// layer (`base`, `tailscale-client`, `runner-lockfile`, `deps`, and the weekly
-// CLI-tools + entrypoint layers in `production`) is already warm in
-// `:buildcache-<arch>` and the per-commit `build` layers are never reused by
-// future commits.
+// already been pushed.
 //
-// Policy is strictly fail-open: whenever anything is uncertain (non-master
-// push, inline Runner build, refreshed lockfile, missing remote cache, no
-// published master ancestor in the lookback window, git diff error, or ISO
-// week rollover for `CLI_TOOLS_CACHE_EPOCH`), we export `mode=max`.
+// Ownership and freshness invariants:
+// 1. Only `refs/heads/master` writes `:buildcache-<arch>`. Tag builds
+//    (`refs/tags/*`) still read `cache-from: ...:buildcache-<arch>` for speed
+//    but never overwrite it, preventing older release branches from clobbering
+//    `master`'s shared cache.
+// 2. Every `Build and push by digest` on `refs/heads/master` (with a clean
+//    lockfile) stamps `io.github.paperclipai.buildcache.key=<sha256>` on the
+//    published per-arch image config, where `<sha256>` hashes
+//    `CLI_TOOLS_CACHE_EPOCH` plus the exact bytes of every cross-commit
+//    cacheable Dockerfile input.
+// 3. A `push` to `refs/heads/master` skips `cache-to` ONLY when:
+//    - the Runner image is published (not inline),
+//    - `pnpm-lock.yaml` was not mutated in the checkout,
+//    - `:buildcache-<arch>` currently exists in the registry,
+//    - the most recent published `master` ancestor (in the last 10 commits)
+//      carries a matching `io.github.paperclipai.buildcache.key` for this
+//      platform (automatically failing open if that ancestor was promoted from
+//      the merge queue without writing cache, or if any input or ISO week
+//      changed), AND
+//    - no commit in `baseSha..HEAD` touched a cacheable input (protecting
+//      against an unpublished failed-and-reverted intermediate commit that may
+//      have overwritten `:buildcache-<arch>`).
+//
+// Any uncertainty fails open to exporting `mode=max` on `refs/heads/master`.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_LOOKBACK_COMMITS = 10;
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+const HEX_64_RE = /^[0-9a-f]{64}$/;
 const ISO_WEEK_EPOCH_RE = /^\d{4}-W\d{2}$/;
+
+export const BUILDCACHE_KEY_LABEL = "io.github.paperclipai.buildcache.key";
 
 /**
  * Exact repository-relative paths read by Dockerfile stages whose layers are
@@ -60,21 +81,53 @@ export function isCacheableInputPath(filePath) {
 }
 
 /**
- * Formats an ISO-8601 timestamp into the UTC ISO week string (`YYYY-Www`)
- * matching `date -u +%G-W%V` used by `CLI_TOOLS_CACHE_EPOCH`.
+ * Computes a deterministic 64-char SHA-256 fingerprint for `CLI_TOOLS_CACHE_EPOCH`
+ * and every cross-commit cacheable input file.
+ *
+ * @param {{ toolsEpoch: string, files: Array<{ path: string, content: Buffer | string }> }} input
+ * @returns {string | null}
  */
-export function isoWeekEpoch(isoDateString) {
-  if (typeof isoDateString !== "string" || isoDateString.trim() === "") return null;
-  const ms = Date.parse(isoDateString);
-  if (!Number.isFinite(ms)) return null;
-  const date = new Date(ms);
-  const utc = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const dayNum = utc.getUTCDay() || 7;
-  utc.setUTCDate(utc.getUTCDate() + 4 - dayNum);
-  const isoYear = utc.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
-  const weekNo = Math.ceil(((utc - yearStart) / 86_400_000 + 1) / 7);
-  return `${isoYear}-W${String(weekNo).padStart(2, "0")}`;
+export function computeBuildcacheKey({ toolsEpoch, files }) {
+  if (typeof toolsEpoch !== "string" || !ISO_WEEK_EPOCH_RE.test(toolsEpoch)) return null;
+  if (!Array.isArray(files) || files.length === 0) return null;
+
+  const sorted = [...files]
+    .map((entry) => ({
+      path: String(entry.path).replaceAll("\\", "/").replace(/^\.\//, ""),
+      content: entry.content,
+    }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  const hash = createHash("sha256");
+  hash.update("paperclip-buildcache-key-v1\n");
+  hash.update(`toolsEpoch=${toolsEpoch}\n`);
+  for (const entry of sorted) {
+    const fileDigest = createHash("sha256").update(entry.content).digest("hex");
+    hash.update(`${entry.path}\0${fileDigest}\n`);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Extracts `io.github.paperclipai.buildcache.key` from the JSON output of
+ * `docker buildx imagetools inspect <ref> --format '{{json .Image}}'`.
+ */
+export function extractBuildcacheKeyFromInspectJson(rawJson, platform) {
+  if (typeof rawJson !== "string" || rawJson.trim() === "") return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const entry = (platform && parsed[platform] && typeof parsed[platform] === "object")
+    ? parsed[platform]
+    : parsed;
+  const labels = entry?.config?.Labels ?? entry?.Config?.Labels;
+  const key = labels?.[BUILDCACHE_KEY_LABEL];
+  return typeof key === "string" && HEX_64_RE.test(key) ? key : null;
 }
 
 /**
@@ -87,12 +140,12 @@ export function isoWeekEpoch(isoDateString) {
  *   runnerImageMode?: string,
  *   lockfileRefreshed?: boolean,
  *   remoteCacheExists?: boolean,
+ *   currentKey?: string | null,
  *   baseSha?: string | null,
- *   changedFiles?: string[] | null,
- *   baseCommitIsoDate?: string | null,
- *   toolsEpoch?: string | null,
+ *   lastExportedKey?: string | null,
+ *   interveningChangedFiles?: string[] | null,
  * }} input
- * @returns {{ shouldExport: boolean, cacheTo: string, reason: string }}
+ * @returns {{ shouldExport: boolean, cacheTo: string, cacheLabel: string, reason: string }}
  */
 export function decideDockerCacheExport({
   eventName,
@@ -101,28 +154,51 @@ export function decideDockerCacheExport({
   runnerImageMode,
   lockfileRefreshed = false,
   remoteCacheExists = false,
+  currentKey = null,
   baseSha = null,
-  changedFiles = null,
-  baseCommitIsoDate = null,
-  toolsEpoch = null,
+  lastExportedKey = null,
+  interveningChangedFiles = null,
 }) {
   if (typeof cacheRef !== "string" || cacheRef.trim() === "") {
     throw new Error("cacheRef is required");
   }
   const normalizedCacheRef = cacheRef.trim();
+  const validCurrentKey = typeof currentKey === "string" && HEX_64_RE.test(currentKey) ? currentKey : null;
+
+  // Release tags and non-master refs read the shared master cache via
+  // cache-from but must never overwrite it (concurrent older release builds
+  // would otherwise evict master's dependency/tool layers).
+  if (ref !== "refs/heads/master") {
+    return {
+      shouldExport: false,
+      cacheTo: "",
+      cacheLabel: "",
+      reason: "non-master-ref-read-only",
+    };
+  }
+
+  const labelForMaster = (!lockfileRefreshed && validCurrentKey)
+    ? `${BUILDCACHE_KEY_LABEL}=${validCurrentKey}`
+    : "";
+
   const exportCache = (reason) => ({
     shouldExport: true,
     cacheTo: `type=registry,ref=${normalizedCacheRef},mode=max`,
+    cacheLabel: labelForMaster,
     reason,
   });
   const skipCache = (reason) => ({
     shouldExport: false,
     cacheTo: "",
+    cacheLabel: labelForMaster,
     reason,
   });
 
-  if (eventName !== "push" || ref !== "refs/heads/master") {
-    return exportCache("non-master-push");
+  if (eventName === "workflow_dispatch") {
+    return exportCache("manual-master-refresh");
+  }
+  if (eventName !== "push") {
+    return exportCache("non-push-master-event");
   }
   if (runnerImageMode !== "published") {
     return exportCache("runner-image-not-published");
@@ -130,29 +206,30 @@ export function decideDockerCacheExport({
   if (lockfileRefreshed) {
     return exportCache("lockfile-refreshed");
   }
+  if (!validCurrentKey) {
+    return exportCache("cache-key-unavailable");
+  }
   if (remoteCacheExists !== true) {
     return exportCache("remote-cache-missing");
   }
   if (typeof baseSha !== "string" || !FULL_SHA_RE.test(baseSha)) {
     return exportCache("no-published-ancestor");
   }
-  if (!Array.isArray(changedFiles)) {
-    return exportCache("diff-unavailable");
+  if (typeof lastExportedKey !== "string" || !HEX_64_RE.test(lastExportedKey)) {
+    return exportCache("ancestor-missing-cache-key");
   }
-  if (typeof toolsEpoch !== "string" || !ISO_WEEK_EPOCH_RE.test(toolsEpoch)) {
-    return exportCache("tools-epoch-unknown");
+  if (lastExportedKey !== validCurrentKey) {
+    return exportCache("cache-key-changed");
   }
-  const baseEpoch = isoWeekEpoch(baseCommitIsoDate);
-  if (!baseEpoch || baseEpoch !== toolsEpoch) {
-    return exportCache("tools-epoch-rollover");
+  if (!Array.isArray(interveningChangedFiles)) {
+    return exportCache("intervening-history-unavailable");
   }
-
-  const changedCacheable = changedFiles.filter(isCacheableInputPath);
-  if (changedCacheable.length > 0) {
-    return exportCache(`cacheable-inputs-changed:${changedCacheable.slice(0, 3).join(",")}`);
+  const interveningCacheable = interveningChangedFiles.filter(isCacheableInputPath);
+  if (interveningCacheable.length > 0) {
+    return exportCache(`intervening-cacheable-edit:${interveningCacheable.slice(0, 3).join(",")}`);
   }
 
-  return skipCache("cacheable-inputs-unchanged");
+  return skipCache("cache-key-unchanged");
 }
 
 function runCommand(command, args, timeoutMs = 20_000) {
@@ -169,18 +246,38 @@ function isLockfileDirty() {
   return result.stdout.trim().length > 0;
 }
 
+function computeWorkspaceBuildcacheKey(repoRoot, toolsEpoch) {
+  if (!ISO_WEEK_EPOCH_RE.test(toolsEpoch)) return null;
+  const listed = runCommand("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], 15_000);
+  if (listed.status !== 0) return null;
+  const matchedPaths = listed.stdout
+    .split("\0")
+    .filter((filePath) => filePath.length > 0 && isCacheableInputPath(filePath));
+  if (matchedPaths.length === 0) return null;
+
+  const files = [];
+  for (const relPath of matchedPaths) {
+    try {
+      files.push({ path: relPath, content: readFileSync(path.join(repoRoot, relPath)) });
+    } catch {
+      return null;
+    }
+  }
+  return computeBuildcacheKey({ toolsEpoch, files });
+}
+
 function checkRemoteCacheExists(cacheRef) {
   const result = runCommand("docker", ["buildx", "imagetools", "inspect", cacheRef], 30_000);
   return result.status === 0;
 }
 
-function findRecentPublishedMasterAncestor(imageName, lookbackCommits) {
+function findRecentPublishedMasterAncestor(imageName, platform, lookbackCommits) {
   const revList = runCommand(
     "git",
     ["rev-list", "--first-parent", "-n", String(lookbackCommits + 1), "HEAD"],
     10_000,
   );
-  if (revList.status !== 0) return null;
+  if (revList.status !== 0) return { baseSha: null, lastExportedKey: null };
   const commits = revList.stdout
     .split("\n")
     .map((line) => line.trim())
@@ -188,26 +285,30 @@ function findRecentPublishedMasterAncestor(imageName, lookbackCommits) {
     .slice(1); // skip HEAD itself
 
   for (const sha of commits) {
-    const inspect = runCommand("docker", ["manifest", "inspect", `${imageName}:sha-${sha}`], 15_000);
-    if (inspect.status === 0) return sha;
+    const inspect = runCommand(
+      "docker",
+      ["buildx", "imagetools", "inspect", `${imageName}:sha-${sha}`, "--format", "{{json .Image}}"],
+      20_000,
+    );
+    if (inspect.status === 0) {
+      return {
+        baseSha: sha,
+        lastExportedKey: extractBuildcacheKeyFromInspectJson(inspect.stdout, platform),
+      };
+    }
   }
-  return null;
+  return { baseSha: null, lastExportedKey: null };
 }
 
-function listChangedFilesSince(baseSha) {
-  const diff = runCommand("git", ["diff", "--name-only", baseSha, "HEAD"], 15_000);
-  if (diff.status !== 0) return null;
-  return diff.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function getCommitIsoDate(sha) {
-  const show = runCommand("git", ["show", "-s", "--format=%cI", sha], 10_000);
-  if (show.status !== 0) return null;
-  const value = show.stdout.trim();
-  return value.length > 0 ? value : null;
+function listInterveningChangedFiles(baseSha) {
+  const log = runCommand("git", ["log", "--format=", "--name-only", `${baseSha}..HEAD`], 15_000);
+  if (log.status !== 0) return null;
+  return [...new Set(
+    log.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  )];
 }
 
 function writeGitHubOutputs(outputPath, values) {
@@ -224,6 +325,7 @@ function main() {
   const ref = process.env.REF ?? process.env.GITHUB_REF ?? "";
   const imageName = (process.env.IMAGE_NAME ?? "").trim();
   const cacheRef = (process.env.CACHE_REF ?? "").trim();
+  const platform = (process.env.PLATFORM ?? "").trim();
   const runnerImageMode = (process.env.RUNNER_IMAGE_MODE ?? "").trim();
   const toolsEpoch = (process.env.TOOLS_EPOCH ?? "").trim();
   const parsedLookback = Number.parseInt(process.env.MAX_ANCESTOR_LOOKBACK ?? "", 10);
@@ -231,26 +333,29 @@ function main() {
     ? parsedLookback
     : DEFAULT_LOOKBACK_COMMITS;
 
-  const lockfileRefreshed = isLockfileDirty();
+  const isMaster = ref === "refs/heads/master";
+  const lockfileRefreshed = isMaster ? isLockfileDirty() : false;
+  const currentKey = isMaster ? computeWorkspaceBuildcacheKey(process.cwd(), toolsEpoch) : null;
+
   let remoteCacheExists = false;
   let baseSha = null;
-  let changedFiles = null;
-  let baseCommitIsoDate = null;
+  let lastExportedKey = null;
+  let interveningChangedFiles = null;
 
   const canSkipCandidate =
-    eventName === "push"
-    && ref === "refs/heads/master"
+    isMaster
+    && eventName === "push"
     && runnerImageMode === "published"
     && !lockfileRefreshed
+    && currentKey !== null
     && imageName.length > 0;
 
   if (canSkipCandidate) {
     remoteCacheExists = checkRemoteCacheExists(cacheRef);
     if (remoteCacheExists) {
-      baseSha = findRecentPublishedMasterAncestor(imageName, lookbackCommits);
-      if (baseSha) {
-        changedFiles = listChangedFilesSince(baseSha);
-        baseCommitIsoDate = getCommitIsoDate(baseSha);
+      ({ baseSha, lastExportedKey } = findRecentPublishedMasterAncestor(imageName, platform, lookbackCommits));
+      if (baseSha && lastExportedKey === currentKey) {
+        interveningChangedFiles = listInterveningChangedFiles(baseSha);
       }
     }
   }
@@ -262,19 +367,20 @@ function main() {
     runnerImageMode,
     lockfileRefreshed,
     remoteCacheExists,
+    currentKey,
     baseSha,
-    changedFiles,
-    baseCommitIsoDate,
-    toolsEpoch,
+    lastExportedKey,
+    interveningChangedFiles,
   });
 
   const action = decision.shouldExport ? "export" : "skip";
   console.log(
-    `Docker BuildKit cache export policy: ${action} (reason=${decision.reason}, base=${baseSha ? baseSha.slice(0, 12) : "none"})`,
+    `Docker BuildKit cache export policy: ${action} (reason=${decision.reason}, base=${baseSha ? baseSha.slice(0, 12) : "none"}, key=${currentKey ? currentKey.slice(0, 12) : "none"})`,
   );
 
   writeGitHubOutputs(process.env.GITHUB_OUTPUT, {
     cache_to: decision.cacheTo,
+    cache_label: decision.cacheLabel,
     should_export: String(decision.shouldExport),
     reason: decision.reason,
   });
