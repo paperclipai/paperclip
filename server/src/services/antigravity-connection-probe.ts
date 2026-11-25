@@ -12,6 +12,7 @@ import { antigravityConnectionRefusal } from "./native-runtime/antigravity-conne
 import { antigravityReleasePending } from "./native-runtime/antigravity-release.js";
 import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal } from "./native-runtime/remote-provider-pack.js";
 import { resolvePaperclipRunnerBinary } from "./native-runtime/native-codex-runner.js";
+import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
 
 const TRANSPORT_KEYS = ["PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
 
@@ -54,11 +55,14 @@ const REMOTE_PACK_ROOTS = ["/opt/paperclip-runner/provider-pack", '"$HOME/.local
  * preparation admits it, without reading credentials there or sending a prompt.
  * The run itself verifies the closure tree before launch.
  */
-export async function probeAntigravityExecutionTarget(target: Extract<AdapterExecutionTarget, { kind: "remote" }>): Promise<AdapterEnvironmentTestResult> {
+export async function probeAntigravityExecutionTarget(
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>,
+  options: { apiKey?: boolean } = {},
+): Promise<AdapterEnvironmentTestResult> {
   const unavailable = () => failed("antigravity_remote_runtime_missing",
     "This cloud environment does not have the current Google Antigravity runtime. Use the current Paperclip runner image for this environment.");
   if (target.transport === "sandbox" && target.runnerTask) {
-    return failed("antigravity_remote_runtime_missing", "Google Antigravity is unavailable in this hosting environment.");
+    return failed("antigravity_remote_runtime_missing", "Plugin Runner-task targets must be probed through the plugin Runner task API.");
   }
   const expectedPath = "provider-assets/antigravity/linux-x64";
   const command = [
@@ -100,21 +104,32 @@ export async function probeAntigravityExecutionTarget(target: Extract<AdapterExe
   }
   return { adapterType: "paperclip_runner", status: "warn", testedAt: new Date().toISOString(),
     checks: [{ code: "antigravity_remote_runtime_ready", level: "warn",
-      message: "This cloud environment has the verified Google Antigravity runtime. Google checks the API key and the selected model when the agent first runs. No prompt was sent." }] };
+      message: options.apiKey === false
+        ? "This cloud environment has the verified Google Antigravity runtime. Google checks the selected Google sign-in and model when the agent first runs. No prompt was sent."
+        : "This cloud environment has the verified Google Antigravity runtime. Google checks the API key and the selected model when the agent first runs. No prompt was sent." }] };
 }
 
 /** The ordinary Test uses the selected connection and no model turn. */
 export async function testAntigravityConnection(context: AdapterEnvironmentTestContext, model: string): Promise<AdapterEnvironmentTestResult> {
   const configured = context.config.env;
   const configuredKey = asRecord(configured)?.GEMINI_API_KEY;
+  const apiKey = typeof configuredKey === "string" && configuredKey.trim().length > 0;
   const pending = antigravityReleasePending();
   const target = context.executionTarget;
   const remote = target?.kind === "remote";
-  const refusal = antigravityConnectionRefusal({ apiKey: typeof configuredKey === "string" && configuredKey.trim().length > 0,
-    remote, releasePending: pending,
-    remoteCandidateAdmitted: remote && pending && antigravityRemoteCandidateAdmitted({ companyId: context.companyId, model }) });
+  const pluginRunnerTask = remote && target.transport === "sandbox" && Boolean(target.runnerTask);
+  const refusal = antigravityConnectionRefusal({ apiKey, remote, releasePending: pending,
+    remoteCandidateAdmitted: remote && !pluginRunnerTask && pending && antigravityRemoteCandidateAdmitted({ companyId: context.companyId, model }) });
   if (refusal) return failed(refusal.code, refusal.message);
-  if (target?.kind === "remote") return probeAntigravityExecutionTarget(target);
+  if (pluginRunnerTask) {
+    const managedConnection = asRecord(context.config.managedAiConnection);
+    const identity = typeof managedConnection?.identity === "string" ? managedConnection.identity : undefined;
+    const accountIdentity = typeof managedConnection?.sessionIdentity === "string" ? managedConnection.sessionIdentity : identity;
+    return probePluginRunnerEnvironment(context, identity
+      ? { identity, accountIdentity: accountIdentity ?? identity, home: context.managedAiCredentialHome }
+      : undefined);
+  }
+  if (target?.kind === "remote") return probeAntigravityExecutionTarget(target, { apiKey });
   // Only the pending candidate needs the operator's grant; a released profile carries none.
   const admission = pending ? resolveAntigravityCandidateAdmission({ companyId: context.companyId, model,
     target: { platform: process.platform, architecture: process.arch } }) : undefined;

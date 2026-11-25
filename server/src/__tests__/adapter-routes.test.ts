@@ -185,6 +185,18 @@ describe("adapter routes", () => {
     expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
   });
 
+  it("exposes paperclip_runner on a plugin Runner-task environment without any pending candidate grant", async () => {
+    // A plugin Runner-task environment offers no pending candidate grant (the plugin
+    // launch contract carries none), while still exposing paperclip_runner so released
+    // ACPX profiles like Copilot and released Antigravity are offered without a grant.
+    const pluginResponse = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "plugin", runnerTasks: true }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=plugin-tasks");
+    expect(pluginResponse.status).toBe(200);
+    const pluginRunner = pluginResponse.body.find((adapter: any) => adapter.type === "paperclip_runner");
+    expect(pluginRunner).toMatchObject({ type: "paperclip_runner", loaded: true, disabled: false });
+    expect(pluginRunner.supportedRunners.length).toBeGreaterThan(0);
+    expect(pluginRunner.candidateHarnesses).toBeUndefined();
+  });
   it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
     mockCandidateForRunnerTarget.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
     const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });

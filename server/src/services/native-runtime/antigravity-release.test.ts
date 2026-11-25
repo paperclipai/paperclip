@@ -72,24 +72,26 @@ describe("Antigravity executor admission", () => {
   const admissible = (execution: NativeExecutionInput, changes: Partial<Parameters<typeof assertAntigravityExecutionAdmissible>[0]> = {}) =>
     () => assertAntigravityExecutionAdmissible({ execution, useRunnerd: true, remoteTarget: false, ...changes });
 
-  it("takes the general qualified path without a candidate grant", () => {
+  it("takes the general qualified path without a candidate grant, including pluginTask and remote targets", () => {
     expect(antigravityReleasePending()).toBe(false);
     expect(QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion).toBe(2);
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
     const execution = antigravityExecution();
     expect(admissible(execution)).not.toThrow();
+    expect(admissible(execution, { remoteTarget: true, pluginTask: true })).not.toThrow();
     expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).not.toThrow();
     const preconfigured = { ...execution, homeMode: "preconfigured" } as NativeExecutionInput;
     expect(admissible(preconfigured)).not.toThrow();
   });
 
-  it("refuses ungranted execution when releasePending is forced true", () => {
+  it("refuses ungranted and pluginTask execution when releasePending is forced true", () => {
     release.pending = true;
     expect(antigravityReleasePending()).toBe(true);
     const execution = antigravityExecution();
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
     expect(admissible(execution)).toThrow(/paperclip_runner_antigravity_candidate_ineligible/);
     expect(admissible(execution, { remoteTarget: true })).toThrow(/candidate_ineligible/);
+    expect(admissible(execution, { remoteTarget: true, pluginTask: true })).toThrow(/candidate_ineligible/);
     const warm = { ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1 } } } as NativeExecutionInput;
     expect(admissible(warm)).toThrow(/candidate_ineligible/);
   });
