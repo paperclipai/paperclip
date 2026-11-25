@@ -525,8 +525,8 @@ jobs:
           cache-to: ${{ steps.cache-policy.outputs.cache_to }}
           labels: |
             ${{ steps.meta.outputs.labels }}
-            ${{ needs.runner_image.outputs.labels }}
             ${{ steps.cache-policy.outputs.cache_label }}
+            ${{ needs.runner_image.outputs.labels }}
 
       # Exactly one of the two paths produced this leg's digest.
       - name: Select image digest
