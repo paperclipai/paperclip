@@ -582,7 +582,18 @@ describe("durable Dot Runner integration", () => {
       expect(unpairedCheck).toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
       expect(sweepWake).not.toHaveBeenCalled();
 
-      // Case 5: legacy pre-fix adapter_failed runs still classify as configuration_incomplete
+      // Case 5: missing Grok Bot binding stays on the Grok error path without Dot pairing wording
+      await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId, "grok_bot"))
+        .rejects.toMatchObject({ message: expect.stringContaining("External provider is disabled"), reason: undefined });
+      await instanceSettingsService(db).updateExperimental({ enableGrokBot: true, enableNativeRunner: true });
+      try {
+        await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId, "grok_bot"))
+          .rejects.toMatchObject({ message: expect.stringContaining("Grok Bot"), reason: undefined });
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableGrokBot: false, enableNativeRunner: false });
+      }
+
+      // Case 6: legacy pre-fix adapter_failed runs still classify as configuration_incomplete
       expect(classifyAdapterFailureForRecovery({
         errorCode: "adapter_failed",
         error: "Dot must be paired with a verified event subscription and a completed event test.",

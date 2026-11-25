@@ -206,10 +206,17 @@ function createBroker(db: Db) {
         throw error;
       }
     },
-    async snapshot(companyId: string, agentId: string, bindingId: string): Promise<DotBindingSnapshot> {
+    async snapshot(companyId: string, agentId: string, bindingId: string, providerKind: "openai_dot" | "grok_bot" = "openai_dot"): Promise<DotBindingSnapshot> {
       const state = await this.bindingForAgent(companyId, agentId);
       if (!state) {
-        if (!await enabled("openai_dot")) throw failUnavailable("dot_disabled", "External provider is disabled for new work.");
+        if (!await enabled(providerKind)) {
+          throw providerKind === "openai_dot"
+            ? failUnavailable("dot_disabled", "External provider is disabled for new work.")
+            : fail("External provider is disabled for new work.");
+        }
+        if (providerKind === "grok_bot") {
+          throw fail("Grok Bot requires a verified routine round trip and no unresolved recovery hold.");
+        }
         throw failUnavailable("dot_pairing_required", "Dot must be paired with a verified event subscription and a completed event test.");
       }
       if (!await enabled(state.providerKind)) {
