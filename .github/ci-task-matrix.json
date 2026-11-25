@@ -147,37 +147,16 @@
     },
     {
       "group": "general-chat",
-      "group_label": "chat (1/5)",
+      "group_label": "chat (1/2)",
       "shard_index": 0,
-      "shard_count": 5,
+      "shard_count": 2,
       "task": "ci:chat"
     },
     {
       "group": "general-chat",
-      "group_label": "chat (2/5)",
+      "group_label": "chat (2/2)",
       "shard_index": 1,
-      "shard_count": 5,
-      "task": "ci:chat"
-    },
-    {
-      "group": "general-chat",
-      "group_label": "chat (3/5)",
-      "shard_index": 2,
-      "shard_count": 5,
-      "task": "ci:chat"
-    },
-    {
-      "group": "general-chat",
-      "group_label": "chat (4/5)",
-      "shard_index": 3,
-      "shard_count": 5,
-      "task": "ci:chat"
-    },
-    {
-      "group": "general-chat",
-      "group_label": "chat (5/5)",
-      "shard_index": 4,
-      "shard_count": 5,
+      "shard_count": 2,
       "task": "ci:chat"
     },
     {
@@ -337,7 +316,8 @@
   ],
   "canary_dry_run": [
     {
-      "task": "ci:canary"
+      "task": "ci:canary",
+      "forceOnGlobalInputs": false
     }
   ],
   "e2e_shards": [

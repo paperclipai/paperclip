@@ -13,6 +13,7 @@ import { agentRouteRef } from "@/lib/utils";
 import { TaskDetailSurface } from "./IssueDetail";
 import { isUuidLike, type Issue } from "@paperclipai/shared";
 import { afterVisibleConversationPaint } from "@/lib/onboarding-chat";
+import { captureOnboardingStepFailed } from "@/lib/analytics/onboarding-analytics";
 import { Button } from "@/components/ui/button";
 
 export function AgentChat() {
@@ -73,7 +74,10 @@ export function AgentChat() {
       void agentChatsApi.greet(selectedCompanyId, agent.id).then(() => {
         if (!cancelled) void client.invalidateQueries({ queryKey: queryKeys.issues.detail(chat.data!.id) });
       }).catch(error => {
-        if (!cancelled) setGreetingError(error instanceof Error ? error.message : "The welcome could not start.");
+        if (!cancelled) {
+          captureOnboardingStepFailed({ step: "launch", reason: "greeting_failed" });
+          setGreetingError(error instanceof Error ? error.message : "The welcome could not start.");
+        }
       });
     });
     return () => { cancelled = true; cancelPaint(); };

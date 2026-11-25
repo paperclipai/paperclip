@@ -12,10 +12,14 @@ import { agents, connectionGrantMembers, connectionGrantDelegations, connectionG
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { createConnectionCredentialValidation } from "./credential-validation.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
+import { publishActivity } from "../../activity-log.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 type GrantDependencies = {
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
@@ -538,6 +542,7 @@ replaceConnectionGrantMembers: async (
           }
         }
       }
+      const releasedWaitPublications: ActivityPublication[] = [];
       const grant = await db.transaction(async (tx) => {
         await notifyGitHubCredentialChange(tx, connection);
         const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
@@ -577,6 +582,7 @@ replaceConnectionGrantMembers: async (
           )
           .returning();
         if (!updated) throw notFound("Connection grant not found");
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "access_revoked", contentDeletionActor(actor));
         if (removedDelegations.length > 0) {
           await tx.insert(toolAccessAuditEvents).values(
             removedDelegations.map((delegation) => ({
@@ -595,6 +601,13 @@ replaceConnectionGrantMembers: async (
             })),
           );
         }
+        // Usage limits reported on this account no longer hold work. The release
+        // commits with the revocation, so waiting work never outlives it.
+        if (updated) await releaseProviderLimitWaits(tx as unknown as Db, {
+          companyId: connection.companyId, reason: "ai_connection_revoked", grantIds: [grantId],
+          publications: releasedWaitPublications,
+          ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+        });
         return updated;
       });
       if (!grant) throw notFound("Connection grant not found");
@@ -609,6 +622,7 @@ replaceConnectionGrantMembers: async (
         reasonCode: "grant_revoked",
         details: { grantId: grant.id, kind: grant.kind, providerRevocation },
       });
+      releasedWaitPublications.forEach(publishActivity);
       return { ...toConnectionGrant(grant), ...(providerAccess ? { providerAccess } : {}) };
     }
   };

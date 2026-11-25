@@ -29,6 +29,7 @@ import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
 import { buildAntigravityJourneySuite } from "./antigravity-journey-cases.js";
+import { buildAntigravitySwarmSuite } from "./antigravity-swarm-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
@@ -2134,6 +2135,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
   buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
   buildAntigravityJourneySuite(runnerEnvironments),
+  buildAntigravitySwarmSuite(runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -2218,8 +2220,8 @@ export function buildRunnerMatrix(
                   ]),
                 ],
                 requiredCredentials: [
-                  ...(["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) ? [] : [profile.credential]),
-                  ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) && selectedEnvironment.credential ? [selectedEnvironment.credential] : []),
+                  ...(["provider_connection", "github_review_journey", "antigravity_agent_journey", "antigravity_swarm_journey"].includes(task.flow) ? [] : [profile.credential]),
+                  ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey", "antigravity_swarm_journey"].includes(task.flow) && selectedEnvironment.credential ? [selectedEnvironment.credential] : []),
                   ...(task.requiredCredentials ?? []),
                 ],
               };
