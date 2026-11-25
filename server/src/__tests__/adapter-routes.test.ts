@@ -206,8 +206,16 @@ describe("adapter routes", () => {
     expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "arm64" })).toBeUndefined();
     expect(await candidates({ driver: "sandbox" })).toBeUndefined();
     expect(await candidates({ driver: "unavailable" })).toBeUndefined();
-    // A plugin Runner-task environment cannot launch Antigravity yet.
-    expect(await candidates({ driver: "plugin", runnerTasks: true })).toBeUndefined();
+    // A plugin Runner-task environment offers no pending candidate grant (the plugin
+    // launch contract carries none), while still exposing paperclip_runner so released
+    // ACPX profiles like Copilot and released Antigravity are offered without a grant.
+    const pluginResponse = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "plugin", runnerTasks: true }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=plugin-tasks");
+    expect(pluginResponse.status).toBe(200);
+    const pluginRunner = pluginResponse.body.find((adapter: any) => adapter.type === "paperclip_runner");
+    expect(pluginRunner).toMatchObject({ type: "paperclip_runner", loaded: true, disabled: false });
+    expect(pluginRunner.supportedRunners.length).toBeGreaterThan(0);
+    expect(pluginRunner.candidateHarnesses).toBeUndefined();
 
     // A grant for this host does not open a cloud environment.
     mockCandidateAdmission.mockImplementation(grant("darwin", "arm64"));

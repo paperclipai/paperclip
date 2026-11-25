@@ -116,7 +116,7 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
-import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
+import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
 import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
@@ -8048,6 +8048,9 @@ export function resolveNativeHarnessPersistenceProfile(
                 ...(execution.provider.agent === "grok"
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
+                  : execution.provider.agent === "antigravity"
+                  ? ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp", "logs"].map((entry) =>
+                    `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/antigravity-home/antigravity-acp/${entry}`)
                   : execution.provider.agent === "codex"
                   ? CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES.map(
                       (entry) =>
@@ -11053,6 +11056,7 @@ async function executePaperclipNativeSessionAttempt(
   assertAntigravityExecutionAdmissible({
     execution: input.execution, useRunnerd: input.useRunnerd, backend: input.backend,
     restartRecovery: input.restartRecovery, remoteTarget: input.runnerExecutionTarget?.kind === "remote",
+    pluginTask: input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox" && Boolean(input.runnerExecutionTarget.runnerTask),
   });
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "kimi"
     && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
@@ -16989,6 +16993,16 @@ async function createRunnerdBackendWithinSessionClaim(
     const resumeFrom = !retainedOwner && !adopting && !input.relaunchReleased && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
+    if (provider.kind === "acpx" && provider.agent === "antigravity") {
+      const refusal = antigravityConnectionRefusal({
+        apiKey: Boolean(input.runnerEnvironment?.GEMINI_API_KEY?.trim()),
+        remote: true,
+        lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+        releasePending: antigravityReleasePending(),
+        remoteCandidateAdmitted: false,
+      });
+      if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
+    }
     const credentials = await preparePluginRunnerCredentials({
       provider: provider.kind === "acpx" ? provider.agent : provider.kind,
       identity: input.managedAiCredentialIdentity, accountIdentity: input.managedAiAccountIdentity,
@@ -19294,10 +19308,19 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     if (antigravityCredential?.home && antigravityCredential.credential && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
-      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "acpx", "acpx",
-        acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution)), "antigravity-home");
+      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/antigravity-home`;
+      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
+      const runtimeStore = remoteRunnerFilesystemRoot && remoteCommandRunner
+        ? createNativeCredentialStore({
+            provider: "antigravity",
+            localHome: join(runtimeHome, "antigravity-acp"),
+            remoteHome: posix.join(remoteRunnerFilesystemRoot, relativeHome, "antigravity-acp"),
+            runner: remoteCommandRunner,
+          })
+        : undefined;
       return bindAntigravityCredentialTurn(session, {
         managedHome: antigravityCredential.home, credential: antigravityCredential.credential, runtimeHome,
+        ...(runtimeStore ? { runtimeStore } : {}),
       });
     }
     const destinationHome = credentialProvider === "grok" ? grokCredential?.home : input.managedAiCredentialHome;
