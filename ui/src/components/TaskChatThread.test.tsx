@@ -1480,6 +1480,29 @@ describe("TaskChatThread draft pass-through", () => {
     expect(container.textContent).toContain("Keep this image context");
   });
 
+  it("shows a run's prepared text file once, as its file card, without the generated receipt", async () => {
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const attachmentId = "00000000-0000-4000-8000-000000000011";
+    const at = new Date("2026-11-25T05:51:50Z");
+    const workProducts = [{
+      id: "file-1", type: "artifact", provider: "paperclip", title: "u1.txt", status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "swarm-run", createdAt: at, updatedAt: at,
+      metadata: { attachmentId, originalFilename: "u1.txt", contentType: "text/plain", byteSize: 3, contentPath: `/api/attachments/${attachmentId}/content`, openPath: `/api/attachments/${attachmentId}/content`, downloadPath: `/api/attachments/${attachmentId}/content?download=1` },
+    }] as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = [{ id: attachmentId, issueCommentId: "receipt-1", originatingRunId: "swarm-run", createdByAgentId: "agent",
+      originalFilename: "u1.txt", contentType: "text/plain", contentPath: `/api/attachments/${attachmentId}/content`, createdAt: at, updatedAt: at, byteSize: 3,
+    }] as unknown as NonNullable<Props["attachments"]>;
+    const receipt = {
+      id: "receipt-1", body: "Prepared u1.txt for this response.", companyId: "company", issueId: "issue", authorType: "agent" as const,
+      authorAgentId: "agent", authorUserId: null, createdByRunId: "swarm-run", createdAt: new Date(at.getTime() + 100), updatedAt: at, presentation: null,
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol", attachmentPreparation: { attachmentId } },
+    };
+    render(<TaskChatThread comments={[receipt]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Prepared u1.txt for this response.");
+    expect(container.textContent).toContain("u1.txt");
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [

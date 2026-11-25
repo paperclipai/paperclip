@@ -4,7 +4,7 @@ import {
   presentationDecisionCommentId,
   semanticProgressCommentIds,
 } from "@/lib/run-answer-visibility";
-import { imagePreparationReceiptIds } from "./task-chat/image-resources";
+import { preparationReceiptIds } from "./task-chat/image-resources";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -899,7 +899,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // prefers the accepted semantic result so runs such as DOT-20 recover their
   // real upstream response without a data migration.
   const imageReceipts = useMemo(
-    () => imagePreparationReceiptIds(comments, attachments, workProducts),
+    () => preparationReceiptIds(comments, attachments, workProducts),
     [comments, attachments, workProducts],
   );
   const projectedComments = useMemo(
