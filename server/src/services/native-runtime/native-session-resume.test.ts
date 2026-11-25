@@ -368,6 +368,69 @@ describe("a session saved by the previous Claude or Codex ACPX runtime", () => {
   });
 });
 
+describe("a Google Antigravity session saved by the pending candidate", () => {
+  // The candidate's saved provider binds its pending profile. After the flip,
+  // the next run carries the task into a fresh provider session in the same
+  // workspace (the automatic replacement), never a Retry of the old session.
+  const antigravityExecution = (runId: string) => buildNativeExecutionInput({
+    companyId, runId,
+    issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn", agentId,
+    workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId, provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low",
+    acpxPermissionMode: "approve-all", completionContract: execution(runId).completionContract,
+    runtimeContext: nativeRuntimeContextFixture(),
+  });
+
+  it("starts the next run on the qualified release in a fresh provider session in the same workspace", () => {
+    const saved = antigravityExecution(previousRunId);
+    const source = { ...previousRun(), runnerProfileJson: { ...previousRun().runnerProfileJson, nativeExecutionInput: saved } };
+    // The flip bumps the profile version (the snapshot carries no qualification status).
+    const released = (runId: string) => {
+      const built = antigravityExecution(runId);
+      (built.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion += 1;
+      return built;
+    };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: antigravityExecution(currentRunId) })).not.toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: released(currentRunId) })).toBeNull();
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => {
+        const built = released(currentRunId);
+        built.session.normalizedSessionId = sessionId;
+        built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+        return built;
+      } });
+    expect(result.checkpoint).toBeNull();
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.workspace).toEqual(released(currentRunId).workspace);
+  });
+});
+
+describe("a Google Antigravity swarm and the task's ordinary session", () => {
+  // A swarm runs on the Antigravity CLI in a fresh session every time; the
+  // ordinary route cannot reopen the CLI's conversation, nor the CLI the
+  // ordinary one. Neither direction resumes: the next run starts fresh in the same workspace.
+  const antigravity = (runId: string, swarmRequest?: string) => buildNativeExecutionInput({
+    companyId, runId,
+    issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn", agentId,
+    workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId, provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low",
+    acpxPermissionMode: "approve-all", completionContract: execution(runId).completionContract,
+    runtimeContext: nativeRuntimeContextFixture(),
+    ...(swarmRequest === undefined ? {} : { antigravitySwarmRequest: swarmRequest }),
+  });
+  const savedBy = (saved: ReturnType<typeof antigravity>) =>
+    ({ ...previousRun(), runnerProfileJson: { ...previousRun().runnerProfileJson, nativeExecutionInput: saved } });
+
+  it("starts a swarm in a fresh session after an ordinary run, and an ordinary run fresh after a swarm", () => {
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId)), currentExecution: antigravity(currentRunId) })).not.toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId)), currentExecution: antigravity(currentRunId, "write a.txt") })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId, "write a.txt")), currentExecution: antigravity(currentRunId) })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId, "write a.txt")), currentExecution: antigravity(currentRunId, "write b.txt") })).toBeNull();
+  });
+});
+
 describe("a source whose provider state was not saved after its result was accepted", () => {
   const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
     reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };

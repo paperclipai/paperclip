@@ -240,12 +240,11 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ ownerUserId: OWNER, status: "active" });
 
-    // A named owner still wins, and a run that works for no person must name one.
+    // A caller-supplied owner cannot change the verified dashboard.
     const other = await request(forOwner).get(`/api/companies/${company.id}/responsibilities?ownerUserId=other-user`);
-    expect(other.body.ownerUserId).toBe("other-user");
+    expect(other.status).toBe(404);
     const unbound = await request(createApp(db, agentActor(company.id, agent.id))).get(`/api/companies/${company.id}/responsibilities`);
-    expect(unbound.status).toBe(422);
-    expect(unbound.body.error).toContain("this run works for no person");
+    expect(unbound.status).toBe(403);
   });
 
   it("refuses a half-filled bar, and derives status from the metric", async () => {
@@ -367,68 +366,22 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect(halfAgain.status).toBe(422);
   });
 
-  it("lets agents only propose, and confirming activates a proposed area in the same step", async () => {
+  it("keeps proposals inside the directing person's dashboard and activates their area on confirmation", async () => {
     await enable();
     const company = await seedCompany();
     const guide = await seedAgent(company.id);
-    const agentApp = createApp(db, agentActor(company.id, guide.id));
-    const boardApp = createApp(db, localBoardActor());
-
-    const area = await request(agentApp).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Fundraising", status: "active" });
-    expect(area.status).toBe(201);
-    expect(area.body).toMatchObject({ status: "proposed", source: "onboarding", proposedByAgentId: guide.id });
-
-    expect((await request(agentApp).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Pipeline", ...METRIC })).status).toBe(422);
-    expect((await request(agentApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "Pipeline", ...METRIC, ownerUserId: "stranger" })).status).toBe(404);
-    // An agent always proposes the whole bar: a title alone, or the sentence alone, is refused.
-    expect((await request(agentApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "Pipeline", ownerUserId: OWNER })).status).toBe(400);
-    expect((await request(agentApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "Pipeline", ownerUserId: OWNER, standard: METRIC.standard })).status).toBe(400);
-    expect((await request(agentApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "Pipeline", ownerUserId: OWNER, standard: METRIC.standard, metricName: METRIC.metricName })).status).toBe(400);
-
-    const proposed = await request(agentApp).post(`/api/companies/${company.id}/responsibilities`).send({
-      title: "Pipeline",
-      ...METRIC,
-      ownerUserId: OWNER,
-      areaId: area.body.id,
-      status: "active",
-      evidence: "Three pipeline reviews on the calendar every week",
-    });
-    expect(proposed.status).toBe(201);
-    expect(proposed.body).toMatchObject({ status: "proposed", source: "onboarding", proposedByAgentId: guide.id, confirmedAt: null, areaId: area.body.id });
-
-    const listed = await request(agentApp).get(`/api/companies/${company.id}/responsibilities?ownerUserId=${OWNER}`);
-    expect(listed.body.proposed.map((row: { id: string }) => row.id)).toEqual([proposed.body.id]);
-    // A proposed area a returned responsibility references is included.
-    expect(listed.body.areas.map((row: { id: string; status: string }) => [row.id, row.status])).toEqual([[area.body.id, "proposed"]]);
-
-    expect((await request(agentApp).patch(`/api/responsibilities/${proposed.body.id}`).send({ status: "active" })).status).toBe(403);
-    const edited = await request(agentApp).patch(`/api/responsibilities/${proposed.body.id}`).send({ title: "Deal pipeline" });
-    expect(edited.status).toBe(200);
-
-    const confirmed = await request(boardApp).patch(`/api/responsibilities/${proposed.body.id}`).send({ status: "active" });
-    expect(confirmed.status).toBe(200);
-    expect(confirmed.body.confirmedAt).not.toBeNull();
-    const [areaRow] = await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.id, area.body.id));
-    expect(areaRow?.status).toBe("active");
-    const logged = await actions(company.id);
-    expect(logged).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: "responsibility_area.created", entityId: area.body.id }),
-      expect.objectContaining({ action: "responsibility_area.activated", entityId: area.body.id }),
-    ]));
-
-    // Once confirmed, the agent can no longer edit it (beyond the metric) and cannot delete it.
-    expect((await request(agentApp).patch(`/api/responsibilities/${proposed.body.id}`).send({ title: "x" })).status).toBe(403);
-    expect((await request(agentApp).delete(`/api/responsibilities/${proposed.body.id}`)).status).toBe(403);
-
-    const dismissible = await request(agentApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "Portfolio", ...METRIC, ownerUserId: OWNER });
-    const dismissed = await request(agentApp).patch(`/api/responsibilities/${dismissible.body.id}`).send({ status: "dismissed" });
-    expect(dismissed.status).toBe(200);
-    expect(dismissed.body.status).toBe("dismissed");
+    const agent = await actingAgent(company.id, guide.id);
+    const unbound = createApp(db, agentActor(company.id, guide.id));
+    const board = createApp(db, localBoardActor());
+    const path = `/api/companies/${company.id}/responsibilities`;
+    const areas = `/api/companies/${company.id}/responsibility-areas`;
+    await request(unbound).post(areas).send({ title: "Fundraising" }).expect(403);
+    await request(unbound).post(path).send({ title: "Pipeline", ...METRIC, ownerUserId: OWNER }).expect(403);
+    const area = (await request(agent).post(areas).send({ title: "Fundraising", status: "proposed" }).expect(201)).body;
+    const item = (await request(agent).post(path).send({ title: "Pipeline", ...METRIC, areaId: area.id, status: "proposed" }).expect(201)).body;
+    expect((await request(board).get(path)).body.proposed.map((r: Created) => r.id)).toEqual([item.id]);
+    await request(board).patch(`/api/responsibilities/${item.id}`).send({ status: "active" }).expect(200);
+    expect((await request(board).get(areas)).body[0]).toMatchObject({ id: area.id, status: "active" });
   });
 
   it("lets only the running or assigned agent report the metric on an active responsibility", async () => {
@@ -474,16 +427,16 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect((await actions(company.id)).some((entry) => entry.action === "responsibility.updated")).toBe(false);
   });
 
-  it("keeps board users to their own responsibilities unless they administer the company", async () => {
+  it("keeps board users to their own responsibilities including company administrators", async () => {
     await enable();
     const company = await seedCompany();
     const ownerApp = createApp(db, localBoardActor());
     const area = await createResponsibility(ownerApp, company.id);
     const operatorApp = createApp(db, sessionBoardActor(company.id, "other-user"));
-    expect((await request(operatorApp).get(`/api/responsibilities/${area.id}`)).status).toBe(200);
-    expect((await request(operatorApp).patch(`/api/responsibilities/${area.id}`).send({ title: "Mine now" })).status).toBe(403);
+    expect((await request(operatorApp).get(`/api/responsibilities/${area.id}`)).status).toBe(404);
+    expect((await request(operatorApp).patch(`/api/responsibilities/${area.id}`).send({ title: "Mine now" })).status).toBe(404);
     expect((await request(operatorApp).post(`/api/companies/${company.id}/responsibilities`)
-      .send({ title: "For someone else", ...METRIC, ownerUserId: OWNER })).status).toBe(403);
+      .send({ title: "For someone else", ...METRIC, ownerUserId: OWNER })).status).toBe(404);
     const own = await createResponsibility(operatorApp, company.id, { title: "Ops" });
     expect(own.ownerUserId).toBe("other-user");
   });
@@ -519,7 +472,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect((await request(boardApp).patch(`/api/responsibilities/${area.id}`).send({ areaId: otherArea.body.id })).status).toBe(404);
     expect((await request(boardApp).post(`/api/companies/${company.id}/responsibilities`)
       .send({ title: "x", ...METRIC, runByAgentId: otherAgent.id })).status).toBe(404);
-    expect((await request(boardApp).patch(`/api/responsibility-areas/${otherArea.body.id}`).send({ title: "Mine" })).status).toBe(200);
+    expect((await request(boardApp).patch(`/api/responsibility-areas/${otherArea.body.id}`).send({ title: "Mine" })).status).toBe(404);
     expect((await request(createApp(db, sessionBoardActor(company.id, OWNER, "owner")))
       .patch(`/api/responsibility-areas/${otherArea.body.id}`).send({ title: "Mine" })).status).toBe(404);
     expect(await db.select().from(responsibilityLinks).where(eq(responsibilityLinks.companyId, company.id))).toHaveLength(0);
@@ -622,8 +575,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
     const guide = await seedAgent(company.id);
     const agentLookup = await request(createApp(db, agentActor(company.id, guide.id)))
       .get(`/api/companies/${company.id}/responsibility-links/lookup?issueId=${task.id}`);
-    expect(agentLookup.status).toBe(200);
-    expect(agentLookup.body.responsibilities).toHaveLength(2);
+    expect(agentLookup.status).toBe(403);
   });
 
   it("manages areas: idempotent create, board-only edits, delete keeps responsibilities", async () => {
@@ -641,17 +593,17 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect(same.status).toBe(200);
     expect(same.body.id).toBe(created.body.id);
     const agentSame = await request(agentApp).post(areasPath).send({ title: "FUNDRAISING" });
-    expect(agentSame.status).toBe(200);
-    expect(agentSame.body).toMatchObject({ id: created.body.id, status: "active" });
-    const customers = await request(agentApp).post(areasPath).send({ title: "Customers" });
+    expect(agentSame.status).toBe(403);
+    const customers = await request(boardApp).post(areasPath).send({ title: "Customers", status: "proposed" });
     expect(customers.body.status).toBe("proposed");
 
     expect((await request(agentApp).patch(`/api/responsibility-areas/${created.body.id}`).send({ title: "x" })).status).toBe(403);
     expect((await request(agentApp).delete(`/api/responsibility-areas/${created.body.id}`)).status).toBe(403);
     expect((await request(createApp(db, sessionBoardActor(company.id, "viewer", "viewer"))).post(areasPath).send({ title: "Viewers" })).status).toBe(403);
-    // Any board user with write access manages areas: they have no owner.
+    // The owner alone can activate the area.
     const operatorApp = createApp(db, sessionBoardActor(company.id, "other-user"));
-    expect((await request(operatorApp).patch(`/api/responsibility-areas/${customers.body.id}`).send({ status: "active", sortOrder: 2 })).status).toBe(200);
+    expect((await request(operatorApp).patch(`/api/responsibility-areas/${customers.body.id}`).send({ status: "active", sortOrder: 2 })).status).toBe(404);
+    await request(boardApp).patch(`/api/responsibility-areas/${customers.body.id}`).send({ status: "active", sortOrder: 2 }).expect(200);
 
     const clash = await request(boardApp).patch(`/api/responsibility-areas/${customers.body.id}`).send({ title: "fundraising" });
     expect(clash.status).toBe(409);
@@ -1049,7 +1001,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(unfiled.body.unfiled).toHaveLength(1);
     });
 
-    it("may not change what the person could not, and stays propose-only without a person", async () => {
+    it("may not change what the person could not, and needs a directing person for proposals", async () => {
       await enable();
       const company = await seedCompany();
       const agent = await seedAgent(company.id);
@@ -1058,21 +1010,15 @@ describeEmbeddedPostgres("responsibility routes", () => {
 
       // An operator may not manage the owner's responsibilities, so neither may an agent acting for one.
       const forOperator = await actingAgent(company.id, agent.id, "other-user", "operator");
-      expect((await request(forOperator).patch(`/api/responsibilities/${mine.id}`).send({ title: "x" })).status).toBe(403);
-      expect((await request(forOperator).post(`/api/responsibilities/${mine.id}/file`).send({ items: [{ kind: "routine", id: randomUUID() }], moveFrom: "all" })).status).toBe(403);
+      expect((await request(forOperator).patch(`/api/responsibilities/${mine.id}`).send({ title: "x" })).status).toBe(404);
+      expect((await request(forOperator).post(`/api/responsibilities/${mine.id}/file`).send({ items: [{ kind: "routine", id: randomUUID() }], moveFrom: "all" })).status).toBe(404);
 
       const alone = createApp(db, agentActor(company.id, agent.id));
       expect((await request(alone).patch(`/api/responsibility-areas/${randomUUID()}`).send({ title: "x" })).status).toBe(404);
       const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People" });
       expect((await request(alone).patch(`/api/responsibility-areas/${area.body.id}`).send({ title: "x" })).status).toBe(403);
       const proposal = await request(alone).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Ops", ownerUserId: OWNER, ...METRIC });
-      expect(proposal.body.status).toBe("proposed");
-      // Filing under its proposal works as with /links (what create_responsibility's fileItems does); moving does not.
-      const routine = await db.insert(routines).values({ companyId: company.id, title: "Weekly ops" }).returning().then((r) => r[0]!);
-      const filed = await request(alone).post(`/api/responsibilities/${proposal.body.id}/file`).send({ items: [{ kind: "routine", id: routine.id }] });
-      expect(filed.status).toBe(200);
-      expect(filed.headers["x-paperclip-dashboard-version"]).toBeUndefined();
-      expect((await request(alone).post(`/api/responsibilities/${proposal.body.id}/file`).send({ items: [{ kind: "routine", id: routine.id }], moveFrom: mine.id })).status).toBe(403);
+      expect(proposal.status).toBe(403);
     });
 
     it("does not borrow the authority of a person someone else named, or of the company default", async () => {
@@ -1097,7 +1043,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
         expect((await request(app).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Ops" })).status).toBe(400);
       }
       const proposal = await request(noTask).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Ops", ...METRIC });
-      expect(proposal.body).toMatchObject({ ownerUserId: OWNER, status: "proposed" });
+      expect(proposal.status).toBe(403);
       const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, mine.id));
       expect(row?.status).toBe("active");
     });
@@ -1248,30 +1194,12 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(areaRow?.description).toBe("Who we hire");
     });
 
-    it("reports no Undo for a shared area's new description, and Undo of a delete brings the description back", async () => {
+    it("restores the private area description after a confirmed deletion", async () => {
       await enable();
       const company = await seedCompany();
       const agent = await seedAgent(company.id);
       const app = await actingAgent(company.id, agent.id);
       const board = createApp(db, localBoardActor());
-      const shared = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People", description: "Who we hire" });
-      await createResponsibility(board, company.id, { title: "Hiring", areaId: shared.body.id });
-      // The other person's responsibility there is only proposed; the area is still shared.
-      const other = await createResponsibility(board, company.id, { title: "Onboarding", areaId: shared.body.id, ownerUserId: "other-user" });
-      await db.update(responsibilities).set({ status: "proposed" }).where(eq(responsibilities.id, other.id));
-      const before = await latestVersion(company.id);
-      const described = await request(app).patch(`/api/responsibility-areas/${shared.body.id}`).send({ description: "Hiring and onboarding" });
-      expect(described.status).toBe(200);
-      expect(described.headers["x-paperclip-dashboard-version"]).toBeUndefined();
-      // No version is saved, so no Dashboard offers an Undo that would leave the description as it is.
-      expect((await latestVersion(company.id))?.id).toBe(before?.id);
-      // Nor for a shared area's status change Undo cannot reverse, such as confirming a proposed area.
-      await db.update(responsibilityAreas).set({ status: "proposed" }).where(eq(responsibilityAreas.id, shared.body.id));
-      const confirmed = await request(app).patch(`/api/responsibility-areas/${shared.body.id}`).send({ status: "active" });
-      expect(confirmed.status).toBe(200);
-      expect(confirmed.headers["x-paperclip-dashboard-version"]).toBeUndefined();
-      expect((await latestVersion(company.id))?.id).toBe(before?.id);
-
       const mine = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money", description: "Cash and runway" });
       await createResponsibility(board, company.id, { title: "Runway", areaId: mine.body.id });
       const [card] = await db.insert(issueThreadInteractions).values({
@@ -1352,7 +1280,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
       // An agent acting for an operator may not change the owner's active responsibility: no area is left behind.
       const refused = await request(await actingAgent(company.id, agent.id, "other-user", "operator"))
         .patch(`/api/responsibilities/${created.body.id}`).send({ areaTitle: "Elsewhere" });
-      expect(refused.status).toBe(403);
+      expect(refused.status).toBe(404);
       expect(await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.title, "Elsewhere"))).toHaveLength(0);
       expect((await request(await actingAgent(company.id, agent.id)).patch(`/api/responsibilities/${created.body.id}`)
         .send({ areaTitle: "People", areaId: people!.id })).status).toBe(422);
@@ -1374,14 +1302,14 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(deleted.status).toBe(200);
     });
 
-    it("saves a version for everyone whose responsibilities an area delete moves", async () => {
+    it("saves the moved responsibilities in the owner’s history", async () => {
       await enable();
       const company = await seedCompany();
       const agent = await seedAgent(company.id);
       const board = createApp(db, localBoardActor());
       const from = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money" });
       const to = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Finance" });
-      await createResponsibility(board, company.id, { title: "Runway", areaId: from.body.id, ownerUserId: "other-user" });
+      await createResponsibility(board, company.id, { title: "Runway", areaId: from.body.id });
       const chat = await db.insert(issues).values({ companyId: company.id, title: "Chat", status: "in_progress", priority: "medium" }).returning().then((r) => r[0]!);
       const [card] = await db.insert(issueThreadInteractions).values({
         companyId: company.id, issueId: chat.id, kind: "request_confirmation", status: "accepted", createdByAgentId: agent.id,
@@ -1391,7 +1319,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
       const removed = await request(await actingAgent(company.id, agent.id))
         .delete(`/api/responsibility-areas/${from.body.id}?confirmationId=${card!.id}&moveResponsibilitiesTo=${to.body.id}`);
       expect(removed.status).toBe(200);
-      expect(await latestVersion(company.id, "other-user")).toMatchObject({ cause: "change_set", actorAgentId: agent.id });
+      expect(await latestVersion(company.id, "other-user")).toBeNull();
       // The response names the acting person's version, not the other owner's.
       expect(removed.headers["x-paperclip-dashboard-owner"]).toBe(OWNER);
       expect(removed.headers["x-paperclip-dashboard-version"]).toBe((await latestVersion(company.id))?.id);

@@ -191,6 +191,7 @@ export interface ToolConnection {
   healthStatus: ToolConnectionHealthStatus;
   /** Managed GitHub grant state; transient health failures do not require sign-in. */
   requiresReauthorization?: boolean;
+  firstSignInPending?: boolean;
   healthMessage?: string | null;
   healthCheckedAt: Date | null;
   lastHealthAt?: Date | string | null;
@@ -445,7 +446,7 @@ export type ManagedGoogleRevocationOutcome =
 
 export interface ManagedGoogleAccessRemoval {
   provider: "google";
-  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "not_ended";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "retrying" | "not_ended";
   outcomes: ManagedGoogleRevocationOutcome[];
 }
 
@@ -478,9 +479,18 @@ export interface ToolConnectionContentDeletionCounts {
 
 export type ToolConnectionContentDeletionStatus = "pending" | "completed";
 
+export type ToolConnectionContentDeletionReason =
+  | "requested"
+  | "connection_removed"
+  | "access_revoked"
+  | "provider_access_ended"
+  | "member_removed"
+  | "instance_removed";
+
 export interface ToolConnectionContentDeletion {
   id: string;
   status: ToolConnectionContentDeletionStatus;
+  reason: ToolConnectionContentDeletionReason;
   requestedAt: string;
   completedAt: string | null;
   retrying: boolean;
@@ -862,6 +872,10 @@ export interface ToolProfileWithDetails extends ToolProfile {
   bindings: ToolProfileBinding[];
   summary: ToolProfileSummary;
 }
+
+export type ToolProfileListItem = Pick<ToolProfileWithDetails, "id" | "name" | "status" | "updatedAt" | "summary"> & {
+  newToolsPendingCount: number;
+};
 
 export type ToolProfileNewToolReviewDecision = "allow" | "keep_blocked";
 
@@ -1278,6 +1292,8 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+  /** Plain-language reason shown with the client fields, when Paperclip has one. */
+  manualClientReason?: string | null;
 }
 
 /** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
@@ -1729,6 +1745,7 @@ export interface ToolAccessDecisionInput {
     clientSubjectId?: string | null;
     clientName?: string | null;
     externalClient?: boolean | null;
+    sessionOpenedByUserId?: string | null;
   } | null;
   request: {
     applicationId?: string | null;

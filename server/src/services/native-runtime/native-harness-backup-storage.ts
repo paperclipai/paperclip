@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
-import { Transform } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
@@ -14,6 +14,7 @@ import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, t
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
 import { storageOutageWaitFor, waitOutStorageOutages } from "../../storage/storage-unavailable.js";
+import { observeStorageProgress } from "../../storage/request-stats.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
@@ -201,8 +202,13 @@ type PersistNativeHarnessBackupInput = {
   providerArtifacts?: NativeProviderArtifactSource;
 };
 
-export function persistNativeHarnessBackup(input: PersistNativeHarnessBackupInput): Promise<void> {
-  return waitOutStorageOutages(() => storageOutageWaitFor("saving the provider session", () => persistNativeHarnessBackupOnce(input)));
+export function persistNativeHarnessBackup(input: PersistNativeHarnessBackupInput & {
+  transferIdleTimeoutMs?: number; persistMaxMs?: number;
+}): Promise<void> {
+  return withTransferProgressDeadline({ storage: input.storage, signal: input.signal, idleTimeoutMs: input.transferIdleTimeoutMs,
+    maxMs: input.persistMaxMs ?? NATIVE_HARNESS_PERSIST_MAX_MS, deadlineCode: NATIVE_HARNESS_PERSIST_DEADLINE_EXCEEDED },
+  (storage, signal) => waitOutStorageOutages(() => storageOutageWaitFor("saving the provider session",
+    () => persistNativeHarnessBackupOnce({ ...input, storage, signal }))));
 }
 
 async function persistNativeHarnessBackupOnce(input: PersistNativeHarnessBackupInput): Promise<void> {
@@ -298,39 +304,57 @@ async function persistNativeHarnessBackupOnce(input: PersistNativeHarnessBackupI
 
 /** How long a durable read may go without progress. */
 export const NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS = 300_000;
+/** How long a durable write may go without progress. */
+export const NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS = 300_000;
 /** Outer bound for one whole restore or verification, including local steps. */
 export const NATIVE_HARNESS_RESTORE_MAX_MS = 30 * 60_000;
+/** Outer bound for one whole backup, including capture, encryption and read-back. */
+export const NATIVE_HARNESS_PERSIST_MAX_MS = 30 * 60_000;
 export const NATIVE_HARNESS_DOWNLOAD_STALLED = "native_harness_storage_download_stalled";
+export const NATIVE_HARNESS_UPLOAD_STALLED = "native_harness_storage_upload_stalled";
 export const NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED = "native_harness_storage_restore_deadline_exceeded";
+export const NATIVE_HARNESS_PERSIST_DEADLINE_EXCEEDED = "native_harness_storage_persist_deadline_exceeded";
 
-/**
- * Bound each durable read by inactivity, not by a short total time. A large or
- * slow backup keeps restoring while bytes flow through the read; a read that
- * makes no progress for the idle window aborts the whole restore with a named
- * error. A generous outer bound keeps a hung local step diagnosable. Caller
- * cancellation (Stop) keeps its own reason.
- */
 async function withDownloadProgressDeadline<T>(
   input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number; restoreMaxMs?: number },
   run: (storage: StorageService, signal: AbortSignal | undefined) => Promise<T>,
 ): Promise<T> {
-  const idleMs = input.downloadIdleTimeoutMs;
+  return withTransferProgressDeadline({ storage: input.storage, signal: input.signal, idleTimeoutMs: input.downloadIdleTimeoutMs,
+    maxMs: input.restoreMaxMs ?? Math.max(input.downloadIdleTimeoutMs ?? 0, NATIVE_HARNESS_RESTORE_MAX_MS),
+    deadlineCode: NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED }, run);
+}
+
+/**
+ * Bound each durable read and write by inactivity, not by a short total time.
+ * A large or slow backup keeps moving while the store makes progress; a
+ * transfer that makes none for the idle window aborts the whole operation with
+ * a named error. A generous outer bound keeps a hung local step diagnosable.
+ * Caller cancellation (Stop) keeps its own reason.
+ */
+async function withTransferProgressDeadline<T>(
+  input: { storage: StorageService; signal?: AbortSignal; idleTimeoutMs?: number; maxMs: number; deadlineCode: string },
+  run: (storage: StorageService, signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const idleMs = input.idleTimeoutMs;
   if (idleMs === undefined) return run(input.storage, input.signal);
   if (!Number.isSafeInteger(idleMs) || idleMs <= 0) throw new Error("native_harness_storage_idle_timeout_invalid");
   const stall = new AbortController();
-  const outer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED)),
-    input.restoreMaxMs ?? Math.max(idleMs, NATIVE_HARNESS_RESTORE_MAX_MS));
+  const outer = setTimeout(() => stall.abort(new Error(input.deadlineCode)), input.maxMs);
   outer.unref?.();
   const signal = input.signal ? AbortSignal.any([input.signal, stall.signal]) : stall.signal;
   const base = input.storage;
-  const getObject: StorageService["getObject"] = async (companyId, objectKey, options) => {
+  const idleTimer = (code: string) => {
     let timer: NodeJS.Timeout | undefined;
     const disarm = () => { if (timer) clearTimeout(timer); timer = undefined; };
     const arm = () => {
       disarm();
-      timer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_DOWNLOAD_STALLED)), idleMs);
+      timer = setTimeout(() => stall.abort(new Error(code)), idleMs);
       timer.unref?.();
     };
+    return { arm, disarm };
+  };
+  const getObject: StorageService["getObject"] = async (companyId, objectKey, options) => {
+    const { arm, disarm } = idleTimer(NATIVE_HARNESS_DOWNLOAD_STALLED);
     arm();
     let object: Awaited<ReturnType<StorageService["getObject"]>>;
     try {
@@ -348,10 +372,30 @@ async function withDownloadProgressDeadline<T>(
     pipeline(object.stream, observed, { signal }).catch(() => disarm());
     return { ...object, stream: observed };
   };
+  const putFile: StorageService["putFile"] = async request => {
+    const { arm, disarm } = idleTimer(NATIVE_HARNESS_UPLOAD_STALLED);
+    const withSignal = { signal: request.signal ? AbortSignal.any([request.signal, signal]) : signal };
+    arm();
+    try {
+      // A provider that sends the file source itself (S3) never reads the
+      // stream; each request the store answers, part it takes or resend it
+      // waits for renews the window instead. After the last of them the window
+      // stays armed until the store answers, so a write that never completes
+      // is named too.
+      return await observeStorageProgress(arm, async () => {
+        if (!(request.body instanceof Readable)) return base.putFile({ ...request, ...withSignal });
+        // A provider that reads the stream renews the window with each chunk it takes.
+        const observed = new Transform({ transform(bytes, _encoding, callback) { arm(); callback(null, bytes); } });
+        pipeline(request.body, observed, { signal }).catch(() => undefined);
+        return base.putFile({ ...request, body: observed, ...withSignal } as typeof request);
+      });
+    } finally { disarm(); }
+  };
   // Forward every other member to the real service so its own state stays intact.
   const storage = new Proxy(base, {
     get(target, property) {
       if (property === "getObject") return getObject;
+      if (property === "putFile") return putFile;
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },

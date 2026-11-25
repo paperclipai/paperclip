@@ -7,10 +7,13 @@ const slowFiles = [
   "runnerd-codex-transport-deadlines.test.ts",
   "opencode-server-driver.test.ts",
   "acpx-controller-recovery.test.ts",
+  "runnerd-acpx-provider-turn.test.ts",
   "runnerd-codex-transport-warm-attachment.test.ts",
   "runnerd-opencode-streaming-tools.test.ts",
   "live-session.test.ts",
   "runnerd-codex-transport-adoption.test.ts",
+  "runnerd-codex-transport-remote-retention.test.ts",
+  "runnerd-codex-transport-close-proof.test.ts",
 ];
 
 const priority = (file) => {

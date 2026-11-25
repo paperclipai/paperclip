@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
+import { seedReturningAnnouncementVisit } from "./helpers/announcement-visit";
 
 /**
  * N-17: a new user's first task view must stay usable while the in-app
@@ -54,6 +55,7 @@ async function box(locator: Locator, name: string): Promise<Box> {
 }
 
 async function serveConnectorsAnnouncement(page: Page, announcement: object = CONNECTORS_ANNOUNCEMENT) {
+  await seedReturningAnnouncementVisit(page);
   await page.route("**/api/announcements/current", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(announcement) }),
   );

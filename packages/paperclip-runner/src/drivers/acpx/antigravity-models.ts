@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
+import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxCommandLease } from "./installation-integrity.js";
 
@@ -108,7 +109,7 @@ export async function discoverAntigravityModels(home: string, options: { signal?
           if (phase > 2 || message.jsonrpc !== "2.0" || message.id !== phase || "method" in message || "error" in message || !Object.hasOwn(message, "result")) { fail(); return; }
           if (phase === 1) {
             const initialized = record(message.result), info = record(initialized.agentInfo), capabilities = record(record(record(initialized.agentCapabilities)._meta).antigravity);
-            if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== "1.4.3"
+            if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION
               || capabilities.paperclipAdmission !== 1 || capabilities.paperclipModels !== 1
               || !Array.isArray(initialized.authMethods) || !initialized.authMethods.some(value => record(value).id === "oauth-personal")) { fail(); return; }
             phase = 2; send(2);

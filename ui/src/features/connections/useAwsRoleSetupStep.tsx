@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ToolConnection } from "@paperclipai/shared";
+import { useCompany } from "@/context/CompanyContext";
 import { AwsRoleSetup, awsSetupErrorMessage } from "./AwsRoleSetup";
 
 /**
@@ -17,6 +18,7 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnectConnectionId,
   /** The connection the flow was opened to resume, if any. */
   resumeConnection: Pick<ToolConnection, "id" | "status" | "config"> | null;
 }) {
+  const { selectedCompanyId } = useCompany();
   const [stage, setStage] = useState<{ connectionId: string; error: string | null } | null>(null);
   // The draft this setup saved (kept across Back, so Connect updates it) and whether the next connect is the test.
   const draft = useRef<{ id: string | null; testing: boolean; roleArn: string | null }>({ id: null, testing: false, roleArn: null });
@@ -89,6 +91,7 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnectConnectionId,
       return (
         <AwsRoleSetup
           connectionId={stage.connectionId}
+          companyId={selectedCompanyId}
           accessLevel={accessLevel}
           error={stage.error}
           testing={testing}

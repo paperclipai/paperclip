@@ -199,6 +199,15 @@ The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
 
+During standing-instruction resolution, the gateway's [OpenTelemetry trace](observability.md)
+separates the catalog transaction and its two reads from availability checks
+and tool descriptor construction. The transaction span carries the number of
+catalog entries and connections returned. With or without an OTLP endpoint,
+native run preparation also buffers phase timings of 50 ms or longer, subject
+to the existing per-run limits. At dispatch, the native executor queues these
+timings for the [instance run log](run-log-events.md). The catalog counts are
+trace attributes only.
+
 On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
 preparation to the normal Runner launch. After the selected account completes
 its provider hello probe or live API-key check, that specific deferred check is
@@ -390,6 +399,22 @@ receipt from a different path does not clear the preparation failure notice.
 Only a user's operator Stop gets this acknowledgement and clears an obsolete
 automatic-recovery marker. A system cancellation keeps its existing recovery
 delivery metadata, so saved comments and continuation intents still reach admission.
+
+The control plane can also cancel a run that is still waiting and was never
+claimed. An example is a scheduled retry that is cancelled when its task moves to
+backlog. This run has no actions with an unknown outcome. If the run has
+`errorCode = cancelled`, an expected system `control_plane` cancellation, and none
+of the retained execution evidence that the dispatch-gate cancellations also check
+(start time, stage, process, controller, session, lease, finalization or execution
+events), it does not create a reconciliation hold. A retry also continues its
+chain. Terminalization records a reconciliation hold on a predecessor whose
+outcome is unknown, and the scheduler does not retry such a run. So the retry is
+exempt only when its predecessor still exists and has no such hold that is
+effective or was superseded. A retry whose predecessor row was deleted keeps the
+hold. Workspace-wait retries keep their own proof. A hold that an earlier
+release recorded for such a run no longer blocks execution, so the next wake or
+Retry starts normally. The failure-retry count of the chain does not change this,
+because the cancelled run did not make an attempt.
 
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
@@ -697,3 +722,16 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Setup-token cleanup retries
+
+The setup-token cleanup worker removes reapable login records. A record with no
+provider lease is removed without a call to the lease provider. A failed cleanup
+keeps the record and logs the error class and code of the failure and its
+causes, never the error message. Consecutive failed sweeps back off from 30
+seconds to 30 minutes through the shared delivery scheduler, and a successful
+sweep resets the delay. The configured cleanup interval stays the minimum delay.
+The backoff applies to the whole setup-token cleanup worker, so new cleanup can
+wait behind a failing provider. The failure count resets on restart; the
+retained database rows rebuild the cleanup obligation. No timer remains once the
+durable schedule has no pending cleanup or future expiry.

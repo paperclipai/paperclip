@@ -225,6 +225,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         }
+        // `--open-rejection <file>`: while the file holds `<scope> <code>`,
+        // reject `session.open` with that sidecar error code. Scope `any`
+        // rejects every open; `recovering` only an open that reloads a saved
+        // conversation (one that names its expected identity).
+        if command == "session.open" {
+            let rejection = args
+                .windows(2)
+                .find(|pair| pair[0] == "--open-rejection")
+                .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
+                .unwrap_or_default();
+            if let Some((scope, code)) = rejection.trim().split_once(' ') {
+                if scope == "any"
+                    || (scope == "recovering" && !request["params"]["expectedIdentity"].is_null())
+                {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                            "error":{"code":code,"message":"The saved conversation cannot be reloaded.","retryable":false}}),
+                    )?;
+                    continue;
+                }
+            }
+        }
         if command == "turn.cancel"
             && provider_turn_tokens()
                 .iter()
@@ -830,7 +853,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "remote-error" => {
                 let mut error = json!({
                     "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
-                    "message": "violet-circuit-4821",
+                    "message": request["params"]["errorMessage"].as_str().unwrap_or("violet-circuit-4821"),
                     "retryable": false,
                 });
                 if let Some(cause) = request["params"].get("providerFailure") {

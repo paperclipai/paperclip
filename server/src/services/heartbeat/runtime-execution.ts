@@ -726,6 +726,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
+              ...(managedAiRuntime && "accountEmail" in managedAiRuntime && typeof managedAiRuntime.accountEmail === "string"
+                ? { managedAiAccountEmail: managedAiRuntime.accountEmail } : {}),
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               outputSecrets: [...identityRedactor.secretSources, ...observabilitySecretValues(observability)],
@@ -1315,20 +1317,22 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }
         return { dispatched: true, adapterResult: acceptedResult };
       }
-      try {
-        await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
-          db,
-          runId: run.id,
-          workspaceFinalizeStatus: "failed",
-        }));
-        await dispatchPendingNativeStatusWakeups({
-          companyId: run.companyId,
-        });
-      } catch (finalizeErr) {
-        logger.warn(
-          { err: finalizeErr, runId: run.id },
-          "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
-        );
+      if (proposedResult) {
+        try {
+          await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+            db,
+            runId: run.id,
+            workspaceFinalizeStatus: "failed",
+          }));
+          await dispatchPendingNativeStatusWakeups({
+            companyId: run.companyId,
+          });
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: run.id },
+            "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
+          );
+        }
       }
     }
     throw adapterErr;

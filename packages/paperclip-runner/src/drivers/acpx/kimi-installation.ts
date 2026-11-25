@@ -57,6 +57,7 @@ export async function verifyKimiInstallation(profile: AcpxReleaseProfile): Promi
     executable: "node/bin/node",
     entrypoint,
     fixedArguments: ["acp"],
+    storeFamily: "kimi",
   });
   return Object.freeze({
     commandDigest: profile.commandDigest,

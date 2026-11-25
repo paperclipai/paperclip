@@ -149,8 +149,9 @@ approvals resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
 100-row snapshot with parent/run context; sidebar badges use the count endpoint.
-The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
-barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
+The [inbox helpers](../../ui/src/lib/inbox.test.ts) and [coordinator inbox E2E](../../tests/e2e/coordinator-inbox-views.spec.ts)
+cover inbox projection and view transitions ;
+[badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.
 
 ### `decisions`
@@ -165,10 +166,8 @@ company/private-task isolation, and private v1 targets.
 [Attention service regressions](../../server/src/__tests__/attention-service.test.ts)
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
-Idle chats without structured requests remain absent. The
-[Inbox component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
-checks that a chat-sourced canonical question reaches its original resolver and context.
-Idle chats without structured requests remain absent.
+Idle chats without structured requests remain absent. (verify Inbox card routing manually alongside the server
+tests above.)
 [Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
 cover the view partition, the For you badge with per-view counts, the personal
 `view=archived` list and its tab count, and the claim service and route
@@ -195,17 +194,11 @@ route tests cover the active-member 422 and board-only writes.
 [Obligation tests](../../server/src/__tests__/attention-obligations.test.ts)
 cover the approval/review, budget-stop/override-approval and blocked-task/failed-run joins, the separate human
 review gate, placement with the blocked task's person, one count per obligation,
-evidence that hides and restores with its lead, and the split after an answer. The
-[Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
-checks that a chat-sourced canonical question reaches its original resolver and context,
-and the view switch, banner, Why me?, For @name and Claim, and Everyone for a board member only (with the withdraw confirmation for another person's card); the
-[classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
-plus the Archived view with Restore, Change time and Decision history on both pages.
+evidence that hides and restores with its lead, and the split after an answer. (UI view switching, Archived/Restore,
+and reduced-motion card behavior are demonstrated in the Storybook stories below
+and should be verified manually.)
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
 show For you, Unassigned, Company, Archived, Everyone, a different person's cards, one card for each obligation and the escalation owners (including the budget owner's hard stop in another person's Company view).
-It also checks simultaneous resize/light and delayed movement to Recent Decisions.
-[Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
-cover reduced-motion settlement and returning to a resolved card without replay.
 The [decision-motion stories](../../ui/storybook/stories/design-proposals/coordinator-decision-motion.stories.tsx)
 exercise real Inbox/resolver components with isolated approval, question, and failed-save responses.
 [Projection helpers](../../ui/src/lib/coordinator-attention.test.ts) cover distinct
@@ -216,7 +209,7 @@ task context on receipt click. Turning the setting off restores the classic surf
 
 ### `search`
 
-Automated: [search page](../../ui/src/pages/Search.test.tsx) and [company search service](../../server/src/__tests__/company-search-service.test.ts) cover UI and server search separately.
+Automated: [company search service](../../server/src/__tests__/company-search-service.test.ts) covers server search contracts (verify search page UI manually).
 
 Manual: Search a unique task title and content phrase, open the result, and compare the actual record. Test filters, no results, and a second company. Verify stale results do not expose inaccessible data.
 
@@ -254,8 +247,8 @@ after switching company/account to verify suppression and isolation.
 - A feature-map recipe and mocked UI tests do not prove live multiplayer behavior.
 
 - Combined Inbox/Tasks requires both `enableCombinedInboxTasks` and
-  `enableStreamlinedUi`. [Standalone Inbox tests](../../ui/src/pages/Inbox.test.tsx)
-  render archive/read controls and toolbars; this is not live multi-user evidence.
+  `enableStreamlinedUi`. [Coordinator inbox E2E](../../tests/e2e/coordinator-inbox-views.spec.ts)
+  exercises combined and standalone inbox views; live multi-user evidence remains separate.
 
 - Personal archival is not task cancellation or completion.
 - Legacy Inbox routes can redirect to the combined task view; record which host actually rendered.
@@ -270,7 +263,7 @@ Capability ID: `inbox-search/views`.
 Scope: ui
 Storybook: Mine/Recent/Unread/Blocked and broader task views; combined versus standalone host; loading/empty/error/filter states.
 Production: Use persisted personal participation/read data; verify scoped counts and list navigation/reload; automatic read cleanup must not create Mine membership.
-Sources: Source: [Inbox.tsx](../../ui/src/pages/Inbox.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx). Tests: [Inbox.test.tsx](../../ui/src/pages/Inbox.test.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx), [issues-service.test.ts](../../server/src/__tests__/issues-service.test.ts)
+Sources: Source: [Inbox.tsx](../../ui/src/pages/Inbox.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx). Tests: [inbox.test.ts](../../ui/src/lib/inbox.test.ts), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx), [issues-service.test.ts](../../server/src/__tests__/issues-service.test.ts), [coordinator-inbox-views.spec.ts](../../tests/e2e/coordinator-inbox-views.spec.ts)
 
 #### `toasts`
 
