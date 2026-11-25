@@ -13903,6 +13903,8 @@ async function executePaperclipNativeSessionAttempt(
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
             ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
+            ...(providerLimit ? { providerLimitAutomatic: providerLimit.plan.automatic,
+              providerLimitEstimated: providerLimit.plan.estimated === true } : {}),
             ...(providerLimit && startupProviderLimit ? { providerLimitStartup: {
               failure: outputRedactor.redact(startupProviderLimit.failure),
               observedAt: startupProviderLimit.observedAt.toISOString(),

@@ -35,6 +35,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tracingInstanceHost } from "./tracing-instance-host.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 
 export { checkExactPeerVersions } from "./peer-version-check.js";
@@ -498,6 +499,9 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[paperclip] OpenTelemetry service.version=${serviceVersion}`);
 
+    const exporter = (protocol === "grpc"
+      ? new OTLPTraceExporter({ url: endpoint })
+      : new OTLPTraceExporter()) as never;
     const sdk = new NodeSDK({
       // This integration exports traces only. NodeSDK otherwise creates
       // default OTLP metric/log exporters even when none were configured.
@@ -507,19 +511,20 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
         [ATTR_SERVICE_VERSION]: serviceVersion,
       }),
-      // For the HTTP protocols OTEL_EXPORTER_OTLP_ENDPOINT is a *base* URL
-      // and the exporter appends /v1/traces only when it reads the env var
-      // itself — an explicit `url` is used verbatim and would silently POST
-      // to the wrong path. Pass `url` only for gRPC, which has no path.
-      // `importExporter` types `OTLPTraceExporter` as `=> unknown` so the
-      // module graph stays free of the optional OTLP/SDK packages. Without
-      // that type, `traceExporter` needs `SpanExporter`, and an import of
-      // `SpanExporter` breaks the compile when the optional packages are
-      // absent. Cast to `never` instead: `never` is assignable to
-      // `SpanExporter` and needs no import.
-      traceExporter: (protocol === "grpc"
-        ? new OTLPTraceExporter({ url: endpoint })
-        : new OTLPTraceExporter()) as never,
+      ...(process.env.PAPERCLIP_TRACING_INSTANCE_HOST === "true" ? {
+        spanProcessors: [
+          {
+            onStart(span: { setAttribute(name: string, value: string): unknown }) {
+              const host = tracingInstanceHost(process.env);
+              if (host) span.setAttribute("paperclip.instance.host", host);
+            },
+            onEnd() {},
+            async forceFlush() {},
+            async shutdown() {},
+          },
+          new sdkNode.tracing.BatchSpanProcessor(exporter),
+        ],
+      } : { traceExporter: exporter }),
       instrumentations: [
         getNodeAutoInstrumentations({
           // Too chatty for this workload.

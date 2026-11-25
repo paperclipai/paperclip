@@ -207,6 +207,7 @@ export type CurrentUserProfile = z.infer<typeof currentUserProfileSchema>;
  * needs no key); it is never a configuration key.
  */
 export const browserTracingConfigSchema = z.object({
+  instanceHost: z.string().min(1).optional(),
   tracesUrl: z.string().url(),
   ingestKey: z.string().min(1).nullable(),
   serviceName: z.string().min(1),
