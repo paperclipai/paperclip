@@ -150,6 +150,11 @@ export const pipelineFiles = [
   "scripts/macos-runner-runtime.mjs",
   "scripts/macos-runner-runtime-cache.mjs",
   "scripts/runner-image-resolve.mjs",
+  "scripts/runner-image-publish.mjs",
+  "scripts/runner-image-identity.mjs",
+  "scripts/runner-image-layout.mjs",
+  "scripts/runner-image-oci.mjs",
+  "scripts/standard-image-contract.mjs",
   "scripts/merge-group-image.mjs",
   "scripts/assert-orphan-reaping.sh",
 ];

@@ -119,8 +119,19 @@ test("promotion proves commit, tree, architecture, Runner inputs digest and arch
 
 test("a push that changes the merge-group pipeline is built from source, not promoted", () => {
   assert.doesNotThrow(() => assertPipelineUnchanged([]));
-  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts", "scripts/standard-image-contract.mjs"]));
-  for (const file of [".github/workflows/docker-merge-group.yml", ".github/workflows/docker.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"]) {
+  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts"]));
+  for (const file of [
+    ".github/workflows/docker-merge-group.yml",
+    ".github/workflows/docker.yml",
+    "scripts/runner-image-resolve.mjs",
+    "scripts/runner-image-publish.mjs",
+    "scripts/runner-image-identity.mjs",
+    "scripts/runner-image-layout.mjs",
+    "scripts/runner-image-oci.mjs",
+    "scripts/standard-image-contract.mjs",
+    "scripts/merge-group-image.mjs",
+    "scripts/assert-orphan-reaping.sh",
+  ]) {
     assert.throws(() => assertPipelineUnchanged(["server/src/index.ts", file]), /changes the merge-group image pipeline/, file);
   }
 });

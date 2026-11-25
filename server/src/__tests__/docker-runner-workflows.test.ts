@@ -230,6 +230,81 @@ describe("the Runner image an application image build copies in docker.yml", () 
   });
 });
 
+describe("the merge-queue build's Runner image in docker-merge-group.yml", () => {
+  const workflow = read("docker-merge-group.yml");
+  const jobs = jobsOf(workflow);
+  const resolver = jobs.runner_image;
+  const buildJob = jobs.build;
+  const buildInputs = (resolved: Record<string, string>) =>
+    listInputs(named(buildJob, "Build image archive"), "needs.runner_image.outputs", resolved);
+  const inlineBuild = {
+    buildArgs: [
+      "PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}",
+      "PAPERCLIP_BUILD_COMMIT=${{ github.sha }}",
+      "PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=${{ needs.macos_runner_runtime.outputs.inputs_digest }}",
+      "CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}",
+    ],
+    buildContexts: [],
+    labels: ["${{ steps.meta.outputs.labels }}"],
+  };
+
+  it("gates resolution to canonical master merge groups when RUNNER_IMAGE_CONSUME_ENABLED is true and stays read-only", () => {
+    expect(condition(resolver, 4)).toBe(
+      `vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && ${canonical} && github.event.merge_group.base_ref == 'refs/heads/master'`,
+    );
+    expect(permissions(resolver)).toEqual(["contents: read", "actions: read", "attestations: read"]);
+    expect(resolver).toContain("\n    continue-on-error: true\n");
+    expect(resolver).toContain("persist-credentials: false");
+    expect(resolver).not.toMatch(registryWrite);
+    expectPinnedAndExpressionFree(resolver);
+    // Non-blocking lookup in the merge queue: never passes --wait.
+    expect(named(resolver, "Find the published Runner image of these inputs")).not.toContain("--wait");
+  });
+
+  it("hands build only attested published outputs and falls back cleanly on inline or failed attestation", () => {
+    const declared = /\n {4}outputs:\n((?: {6}.+\n)+)/.exec(resolver)![1].trimEnd().split("\n").map((line) => line.trim());
+    expect(declared).toEqual([
+      "mode: ${{ steps.verify.outputs.mode || 'inline' }}",
+      "inputs_digest: ${{ steps.verify.outputs.inputs_digest }}",
+      "build_contexts: ${{ steps.verify.outputs.build_contexts }}",
+      "labels: ${{ steps.verify.outputs.labels }}",
+      "build_args: ${{ steps.verify.outputs.build_args }}",
+    ]);
+
+    const verify = named(resolver, VERIFY);
+    expect(condition(verify, 8)).toBe("steps.resolve.outputs.mode == 'published'");
+    const env = { IMAGE, INPUTS_DIGEST: INPUTS, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
+    const gh = (status: number) => ({ gh: `printf '%s\\n' "$*" >> "$CALLS"\nexit ${status}` });
+
+    const verified = runStep(verify, env, gh(0));
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(outputs(verified.output)).toEqual(published);
+    expect(verified.stdout).not.toContain("::warning");
+
+    for (const status of [1, 4]) {
+      const refused = runStep(verify, env, gh(status));
+      expect(refused.status, refused.stderr).toBe(1);
+      expect(refused.output).toBe("");
+      expect(refused.stdout).toContain("::warning title=Runner image not verified::");
+    }
+
+    expect(buildInputs({})).toEqual(inlineBuild);
+    expect(buildInputs({ mode: "inline" })).toEqual(inlineBuild);
+    expect(buildInputs(published)).toEqual({
+      buildArgs: [...inlineBuild.buildArgs, BUILD_ARGS],
+      buildContexts: [`runner-artifacts=docker-image://${IMAGE}`],
+      labels: [...inlineBuild.labels, ...LABELS.split("\n")],
+    });
+  });
+
+  it("records the attested Runner inputs digest for master promotion verification", () => {
+    expect(condition(named(buildJob, "Refresh lockfile for Docker build context"), 8)).toBe("needs.runner_image.outputs.mode != 'published'");
+    const record = named(buildJob, "Record the verified image");
+    expect(record).toContain("RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}");
+    expect(record).toContain('--runner-inputs-digest "$RUNNER_INPUTS_DIGEST"');
+  });
+});
+
 describe("the pull-request check of the application image's Runner path", () => {
   const workflow = read("docker-app-check.yml");
   const jobs = jobsOf(workflow);
