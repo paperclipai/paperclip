@@ -26,7 +26,7 @@ import { getStorageService } from "../../../storage/index.js";
 import type { StorageService } from "../../../storage/types.js";
 import { createStoredObjectDeletion } from "./stored-object-deletion.js";
 import { RESULT_TEXT_KEYS, withoutActionResults, withoutResultText } from "./content-cleaning.js";
-import { forgetRunCopies, forgetRunInTrainingExamples } from "./run-copies.js";
+import { forgetRunCopies, forgetRunInTrainingExamples, runCopiesRemainSql } from "./run-copies.js";
 import { forgetRunSessions } from "./run-session-reset.js";
 import {
   initialContentDeletionProgress,
@@ -192,6 +192,7 @@ export function runsWithStoredContentSql(scope: Scope): SQL {
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
+      or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
 }

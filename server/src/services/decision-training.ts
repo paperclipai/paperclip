@@ -180,6 +180,29 @@ function withoutToolActionContent(value: Record<string, unknown>): Record<string
   return record;
 }
 
+export async function withoutGoogleWorkspaceContent(
+  db: Db,
+  example: Pick<typeof decisionTrainingExamples.$inferSelect, "companyId" | "sourceKind" | "sourceId" | "snapshot">,
+) {
+  const snapshot = example.snapshot as unknown as { runs?: Array<Record<string, unknown>>; decision?: Record<string, unknown> };
+  const runs = Array.isArray(snapshot.runs) ? snapshot.runs : [];
+  const googleRuns = await runsThatUsedGoogleWorkspace(db, example.companyId,
+    runs.flatMap((run) => typeof run.id === "string" && !run.googleWorkspaceContentOmitted && !run.contentDeleted ? [run.id] : []));
+  const googleCard = example.sourceKind === "interaction"
+    && await interactionCarriesGoogleWorkspaceAction(db, example.companyId, example.sourceId);
+  if (googleRuns.size === 0 && !googleCard) return example.snapshot;
+  return {
+    ...snapshot,
+    runs: runs.map((run) => typeof run.id === "string" && googleRuns.has(run.id)
+      ? { id: run.id, agentId: run.agentId ?? null, status: run.status ?? null, startedAt: run.startedAt ?? null,
+        finishedAt: run.finishedAt ?? null, googleWorkspaceContentOmitted: true }
+      : run),
+    ...(googleCard && snapshot.decision
+      ? { decision: { ...snapshot.decision, payload: withoutToolActionContent((snapshot.decision.payload ?? {}) as Record<string, unknown>) } }
+      : {}),
+  } as unknown as typeof example.snapshot;
+}
+
 export async function captureDecisionSnapshot(
   db: Db,
   input: CaptureInput,

@@ -530,7 +530,7 @@ User data obtained from Google:
 | Task document `continuation-summary` and its revisions (system copy of the run summary and run error) | No | No | Yes: revisions the cleaned run wrote are emptied, and the document body if that revision is the latest. Later revisions can keep paths or a next action carried over from it |
 | Handoff copy of the last run summary in the next run's context | No | No | Yes: removed from later settled runs of the same task |
 | `native_run_results.result_json`, `heartbeat_runs.error` | No | No | Yes: result text and run error cleared |
-| Decision training examples (manual snapshots of runs and cards; JSONL export) | No | No | Yes: a new snapshot stores only id, status and times for runs that called Google, and drops the Google action from the card; a cleaned run is replaced the same way in existing snapshots |
+| Decision training examples (manual snapshots of runs and cards; JSONL export) | No | No | Yes: a new snapshot stores only id, status and times for runs that called Google or received an approved Google result, and drops the Google action from the card; the JSONL export applies the same rule to examples saved earlier; a cleaned run is replaced the same way in stored snapshots |
 | Feedback exports (local payload; bundle sent to Paperclip Labs when sharing is on) | No | No | Yes: a shared trace whose run, or any run of its harness session, called Google carries only run id, status and times; no events, log or harness files |
 | Customer observability export (OTLP or Braintrust, tool content on by default) | Outside Paperclip | Outside Paperclip | Not changed. Owner question below |
 | Raw provider traces | Expire in 24 hours | Expire in 24 hours | |
@@ -552,10 +552,12 @@ Google Technical Information (derived, not user data):
 
 The sweep (`google-technical-information.ts`, worker
 `google-technical-information-work.ts`) follows the sleep-aware rule: its next
-deadline is the oldest item plus 30 days, and never later than 30 days from
-now while a Google connection exists. Any item created later is due later than
-that, so no deadline is missed. With no Google connection it schedules
-nothing. Removing a connection, ending access and a catalog refresh wake it
+deadline is the oldest item plus 30 days. While a Google connection that is
+not removed exists, it is never later than the start of today (UTC) plus 30
+days, a value that stays the same all day. Any item created later is due later
+than that, so no deadline is missed without hooking every gateway path that
+writes an error. With no live Google connection and nothing left to clear it
+schedules nothing. Removing a connection, ending access and a catalog refresh wake it
 through a transaction-aware notification. The idle deadline proof includes the
 same deadline, so a sleeping instance wakes for it. Two partial indexes
 (`tool_invocations` and `tool_call_events` on `connection_id, created_at`

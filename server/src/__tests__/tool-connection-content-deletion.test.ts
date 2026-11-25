@@ -440,6 +440,15 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       { id: seed.settledRun.id, agentId: null, status: "succeeded", startedAt: null, finishedAt: null, contentDeleted: true },
       { id: laterRun!.id, status: "succeeded" },
     ]);
+
+    await db.update(heartbeatRuns).set({ error: SECRET }).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    await db.update(documentRevisions).set({ body: SECRET }).where(eq(documentRevisions.id, revision!.id));
+    await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
+    await drain(service);
+    const [again] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
+    expect(again!.error).toBeNull();
+    const [revisionAgain] = await db.select().from(documentRevisions).where(eq(documentRevisions.id, revision!.id));
+    expect(revisionAgain!.body).toBe("");
   });
 
   describe("Google Technical Information", () => {

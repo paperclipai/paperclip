@@ -13,6 +13,7 @@ import { GOOGLE_WORKSPACE_APP_SLUGS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES } from 
 import type { IdleDeadlineSnapshot } from "../../idle-deadline-types.js";
 
 export const GOOGLE_TECHNICAL_INFORMATION_TTL_MS = 30 * 24 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
 const BATCH_SIZE = 500;
 
 type Reader = Pick<Db, "select">;
@@ -49,7 +50,10 @@ function toTime(value: unknown): number | null {
 
 export async function nextGoogleTechnicalInformationDeadline(db: Reader, now = Date.now()): Promise<number | null> {
   const ttl = GOOGLE_TECHNICAL_INFORMATION_TTL_MS;
-  const [google] = await db.select({ found: sql<number>`count(*)::int` }).from(toolConnections)
+  const [google] = await db.select({
+    found: sql<number>`count(*)::int`,
+    active: sql<number>`count(*) filter (where ${toolConnections.status} <> 'archived')::int`,
+  }).from(toolConnections)
     .where(sql`${toolConnections.id} in ${googleConnectionIds()}`);
   if (!google?.found) return null;
   const [invocationError] = await db.select({ at: sql<string | null>`min(${toolInvocations.createdAt})` }).from(toolInvocations)
@@ -73,7 +77,8 @@ export async function nextGoogleTechnicalInformationDeadline(db: Reader, now = D
   const candidates = [invocationError?.at, eventError?.at, health?.at, catalog?.at]
     .map(toTime)
     .flatMap((at) => at === null ? [] : [at + ttl]);
-  return Math.min(now + ttl, ...candidates);
+  if (google.active > 0) candidates.push(Math.floor(now / DAY_MS) * DAY_MS + ttl);
+  return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
 export async function readIdleGoogleTechnicalInformationSchedule(db: Reader, now: number): Promise<IdleDeadlineSnapshot> {
@@ -83,6 +88,10 @@ export async function readIdleGoogleTechnicalInformationSchedule(db: Reader, now
 
 export function createGoogleTechnicalInformationRetention(db: Db) {
   async function clearInvocationErrors(cutoff: string) {
+    return db.transaction(async (rawTx) => clearInvocationErrorsIn(rawTx as unknown as Db, cutoff));
+  }
+
+  async function clearInvocationErrorsIn(db: Db, cutoff: string) {
     const cleared = await db.update(toolInvocations).set({ errorMessage: null })
       .where(sql`${toolInvocations.id} in (select i.id from tool_invocations i
         where i.connection_id in ${googleConnectionIds()} and i.error_message is not null and i.created_at <= ${cutoff}::timestamptz

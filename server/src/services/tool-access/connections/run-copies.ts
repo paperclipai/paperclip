@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, sql, type SQL } from "drizzle-orm";
 import {
   decisionTrainingExamples,
   documentRevisions,
@@ -9,7 +9,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
-import { withoutResultText } from "./content-cleaning.js";
+import { RESULT_TEXT_KEYS, withoutResultText } from "./content-cleaning.js";
 import { settledRunSql } from "./content-deletion.js";
 
 export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run: { id: string; changed: boolean }) {
@@ -82,3 +82,17 @@ export async function forgetRunCopies(tx: Db, companyId: string, run: { id: stri
   if (handoffs.length > 0) run.changed = true;
 }
 
+
+export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; error: SQL }): SQL {
+  const nativeText = sql.join(RESULT_TEXT_KEYS.map((key) =>
+    sql.raw(`jsonb_path_exists(n.result_json, 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
+  const entry = sql`jsonb_build_array(jsonb_build_object('id', ${run.id}::text))`;
+  return sql`(${run.error} is not null
+    or exists (select 1 from native_run_results n where n.company_id = ${run.companyId} and n.run_id = ${run.id} and (${nativeText}))
+    or exists (select 1 from document_revisions r join issue_documents d on d.document_id = r.document_id
+      where r.company_id = ${run.companyId} and r.created_by_run_id = ${run.id} and r.body <> ''
+        and d.key = ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY})
+    or exists (select 1 from decision_training_examples e where e.company_id = ${run.companyId}
+      and jsonb_typeof(e.snapshot->'runs') = 'array' and e.snapshot->'runs' @> ${entry}
+      and not e.snapshot->'runs' @> jsonb_build_array(jsonb_build_object('id', ${run.id}::text, 'contentDeleted', true))))`;
+}

@@ -59,7 +59,13 @@ async function googleRunIds(db: Pick<Db, "select">, companyId: string, runs: SQL
   const events = await db.select({ runId: toolCallEvents.runId }).from(toolCallEvents)
     .where(and(eq(toolCallEvents.companyId, companyId), sql`${toolCallEvents.runId} in ${runs}`,
       sql`${toolCallEvents.connectionId} in ${googleConnectionIdsSql()}`));
-  return new Set([...calls, ...events].flatMap((row) => row.runId ? [row.runId] : []));
+  const googleRequestIds = sql`array(select tar.id::text from tool_action_requests tar
+    join tool_invocations ti on ti.id = tar.invocation_id
+    where tar.company_id = ${companyId} and ti.connection_id in ${googleConnectionIdsSql()})`;
+  const delivered = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} in ${runs}`,
+      sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'toolActionRequestIds' ?| ${googleRequestIds}, false)`));
+  return new Set([...calls, ...events, ...delivered].flatMap((row) => row.runId ? [row.runId] : []));
 }
 
 export async function runsThatUsedGoogleWorkspace(db: Pick<Db, "select">, companyId: string, runIds: string[]): Promise<Set<string>> {
