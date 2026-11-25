@@ -183,6 +183,9 @@ describe("native question/resume path qualification", () => {
   it.each([
     "Welcome to the club meetup this afternoon; reference: AMBERnonce.",
     "Welcome to the afternoon meetup. Use AMBERnonce",
+    "Welcome to the afternoon meetup. Reference: _AMBERnonce_.",
+    "Welcome to the afternoon meetup. Reference: __AMBERnonce__.",
+    "Welcome to the afternoon meetup. Reference: **AMBERnonce**.",
   ])("accepts the complete supplied reference without the answer's instruction wording: %s", body => {
     const r = recording();
     r[2].documents[0].body = body;
@@ -195,6 +198,8 @@ describe("native question/resume path qualification", () => {
     "Welcome to the afternoon meetup, AMBERnonce_extra.",
     "Welcome to the afternoon meetup, AMBERnonce-extra.",
     "Welcome to the afternoon meetup, old-AMBERnonce.",
+    "Welcome to the afternoon meetup, old_AMBERnonce.",
+    "Welcome to the afternoon meetup, _AMBERnonce_extra_.",
   ])("rejects a shortened supplied reference in the saved document: %s", body => {
     const r = recording();
     r[2].documents[0].body = body;
