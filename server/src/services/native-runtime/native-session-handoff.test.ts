@@ -1,5 +1,30 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { MODEL_HIDDEN_RUN_ID_KEYS, withoutModelHiddenRunIds } from "@paperclipai/adapter-utils/model-facing-history";
 import { renderNativeSessionHandoff } from "./native-session-handoff.js";
+
+const modelFacingHistorySources = [
+  "../../../../packages/shared/src/types/execution-continuation.ts",
+  "../execution-continuation.ts",
+  "../source-trust.ts",
+  "./child-review-outcomes.ts",
+  "./native-session-handoff.ts",
+];
+
+describe("model-facing history run ids", () => {
+  it("decides every run-id field in the sources that feed model-facing history", () => {
+    const names = new Set(modelFacingHistorySources.flatMap((source) =>
+      readFileSync(new URL(source, import.meta.url), "utf8").match(/\b(?:runId|[a-z][A-Za-z]*RunId)\b/g) ?? []));
+    expect([...names].filter((name) => !MODEL_HIDDEN_RUN_ID_KEYS.has(name)).sort()).toEqual([]);
+  });
+
+  it("hides the reviewer run of a child review outcome", () => {
+    const outcome = { id: "interaction-1", kind: "request_confirmation", status: "accepted",
+      result: { sourceRunId: "run-a", reviewerRunId: "run-b", decision: "approved", resolvedAt: null } };
+    expect(withoutModelHiddenRunIds(outcome)).toEqual({ id: "interaction-1", kind: "request_confirmation", status: "accepted",
+      result: { decision: "approved", resolvedAt: null } });
+  });
+});
 
 const swarmRunId = "5a1d0c2e-7f3b-4c41-9b0a-0d3c8e9f1a21";
 const reply = "Both requested files have been created in the task folder and verified.";

@@ -409,7 +409,9 @@ export function buildPaperclipTaskMarkdown(input: {
       "",
       ...(renderWakeCommentBodies
         ? ["Latest wake comment:", fenceTaskText(effectiveWakeComments[0]!.body)]
-        : [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)}, shown in the wake payload.`]),
+        : effectiveWakeComments[0]!.body
+          ? [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)}, shown in the wake payload.`]
+          : [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)} has attachments only; see the attachment directive.`]),
     );
     appendWakeAttachments(effectiveWakeComments[0]!);
   } else if (effectiveWakeComments.length > 1) {

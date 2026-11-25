@@ -1,10 +1,20 @@
 export const MODEL_HIDDEN_RUN_ID_KEYS: ReadonlySet<string> = new Set([
   "runId",
-  "createdByRunId",
-  "sourceRunId",
   "baseRunId",
+  "createdByRunId",
+  "executionRunId",
+  "failedRunId",
   "interruptedRunId",
+  "previousContextRunId",
+  "previousRunId",
+  "producerRunId",
+  "requestedSourceRunId",
+  "requeueSourceRunId",
+  "resolvedByRunId",
+  "resumeSourceRunId",
   "retryOfRunId",
+  "reviewerRunId",
+  "sourceRunId",
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

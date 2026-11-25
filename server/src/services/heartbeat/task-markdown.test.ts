@@ -275,6 +275,8 @@ describe("heartbeat task markdown rendering", () => {
       }],
     });
 
+    expect(markdown).toContain('Latest wake comment: "comment-file" has attachments only; see the attachment directive.');
+    expect(markdown).not.toContain("shown in the wake payload");
     expect(markdown).toContain('Attachments on wake comment "comment-file":');
     expect(markdown).toContain('"filename":"evidence.txt"');
     expect(markdown).toContain("Attachment directive:");
