@@ -11,9 +11,8 @@ required GitHub checks, read
 
 ## Set up a bot
 
-Enable **GitHub review bots** in instance **Experimental** settings, then open
-the GitHub Code Review Bot connector. This default-off setting is independent of
-**Chat connectors**. Hiding either feature does not pause existing provider delivery.
+Open **Connectors** and select the **GitHub Code Review Bot** connector. GitHub
+Review Bots are generally available with no experimental flag required.
 
 1. Choose the bot agent. Prefer a
    [low-trust review agent](https://docs.paperclip.ing/administration/trust-and-low-trust-review/)
