@@ -19,7 +19,9 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 ## Not granted by default
 
-These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
+These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, `tasks:retry`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
+
+`tasks:retry` lets one agent press a task's Retry (`POST /api/issues/{id}/retry`) for the board user who granted it. Only a grant saved by a board user without a scope counts. The agent's own key scope, trust boundary and company policy still apply. The Retry runs with that person's authority and gates, so the agent can press it only where the person could. Chat tasks stay with their conversation owner. Each agent can request at most 3 Retries per task in a rolling day, and each request is logged as `issue.retry_requested_by_agent` with the agent and the granting user.
 
 The new direct grants do not grant company administration, user permission management, blanket tool administration, or cross-company access. The responsible user's permissions, route checks, and the normal approval gates still apply.
 
