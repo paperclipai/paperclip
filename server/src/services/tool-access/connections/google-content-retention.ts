@@ -103,3 +103,15 @@ export async function interactionCarriesGoogleWorkspaceAction(db: Pick<Db, "sele
     .limit(1);
   return Boolean(row);
 }
+
+export async function interactionsCarryingGoogleWorkspaceAction(db: Pick<Db, "select">, companyId: string, interactionIds: string[]): Promise<Set<string>> {
+  if (interactionIds.length === 0) return new Set();
+  const rows = await db.select({ interactionId: toolActionRequests.interactionId }).from(toolActionRequests)
+    .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
+    .where(and(
+      eq(toolActionRequests.companyId, companyId),
+      inArray(toolActionRequests.interactionId, interactionIds),
+      sql`${toolInvocations.connectionId} in ${googleConnectionIdsSql()}`,
+    ));
+  return new Set(rows.flatMap((row) => row.interactionId ? [row.interactionId] : []));
+}

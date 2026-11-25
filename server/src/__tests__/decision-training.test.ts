@@ -294,7 +294,7 @@ describeEmbeddedPostgres("decision training", () => {
       snapshot: { ...captured.snapshot, runs: [{ id: googleRun!.id, resultJson: { summary: secret } }, { id: otherRun!.id, status: "succeeded" }],
         decision: { ...captured.snapshot.decision, payload: { payload: { toolAction: { previewMarkdown: secret } } } } } as never,
     };
-    const exported = await withoutGoogleWorkspaceContent(db, savedBeforeThisChange);
+    const [exported] = await withoutGoogleWorkspaceContent(db, seeded.companyId, [savedBeforeThisChange]);
     expect(JSON.stringify(exported)).not.toContain(secret);
     expect((exported as unknown as { runs: unknown[] }).runs[1]).toEqual({ id: otherRun!.id, status: "succeeded" });
   });

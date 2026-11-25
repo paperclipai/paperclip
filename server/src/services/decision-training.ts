@@ -30,7 +30,7 @@ import type {
 } from "@paperclipai/shared";
 import { DECISION_TRAINING_RETENTION_POLICY } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
-import { interactionCarriesGoogleWorkspaceAction, runsThatUsedGoogleWorkspace } from "./tool-access/connections/google-content-retention.js";
+import { interactionCarriesGoogleWorkspaceAction, interactionsCarryingGoogleWorkspaceAction, runsThatUsedGoogleWorkspace } from "./tool-access/connections/google-content-retention.js";
 
 type CaptureInput = {
   companyId: string;
@@ -187,27 +187,38 @@ function withoutToolActionContent(value: Record<string, unknown>): Record<string
   return record;
 }
 
-export async function withoutGoogleWorkspaceContent(
-  db: Db,
-  example: Pick<typeof decisionTrainingExamples.$inferSelect, "companyId" | "sourceKind" | "sourceId" | "snapshot">,
-) {
+type ExportableExample = Pick<typeof decisionTrainingExamples.$inferSelect, "companyId" | "sourceKind" | "sourceId" | "snapshot">;
+
+function snapshotRuns(example: ExportableExample) {
+  const runs = (example.snapshot as unknown as { runs?: unknown }).runs;
+  return Array.isArray(runs) ? runs as Array<Record<string, unknown>> : [];
+}
+
+function omitGoogleWorkspaceContent(example: ExportableExample, googleRuns: Set<string>, googleCard: boolean) {
   const snapshot = example.snapshot as unknown as { runs?: Array<Record<string, unknown>>; decision?: Record<string, unknown> };
-  const runs = Array.isArray(snapshot.runs) ? snapshot.runs : [];
-  const googleRuns = await runsThatUsedGoogleWorkspace(db, example.companyId,
-    runs.flatMap((run) => typeof run.id === "string" && !run.googleWorkspaceContentOmitted && !run.contentDeleted ? [run.id] : []));
-  const googleCard = example.sourceKind === "interaction"
-    && await interactionCarriesGoogleWorkspaceAction(db, example.companyId, example.sourceId);
-  if (googleRuns.size === 0 && !googleCard) return example.snapshot;
+  const runs = snapshotRuns(example);
+  const hasGoogleRun = runs.some((run) => typeof run.id === "string" && googleRuns.has(run.id));
+  if (!hasGoogleRun && !googleCard) return example.snapshot;
   return {
     ...snapshot,
     runs: runs.map((run) => typeof run.id === "string" && googleRuns.has(run.id)
       ? { id: run.id, agentId: run.agentId ?? null, status: run.status ?? null, startedAt: run.startedAt ?? null,
         finishedAt: run.finishedAt ?? null, googleWorkspaceContentOmitted: true }
-      : googleRuns.size > 0 ? withoutHandoff(run) : run),
+      : hasGoogleRun ? withoutHandoff(run) : run),
     ...(googleCard && snapshot.decision
       ? { decision: { ...snapshot.decision, payload: withoutToolActionContent((snapshot.decision.payload ?? {}) as Record<string, unknown>) } }
       : {}),
   } as unknown as typeof example.snapshot;
+}
+
+export async function withoutGoogleWorkspaceContent(db: Db, companyId: string, examples: ExportableExample[]) {
+  const runIds = [...new Set(examples.flatMap((example) => snapshotRuns(example).flatMap((run) =>
+    typeof run.id === "string" && !run.googleWorkspaceContentOmitted && !run.contentDeleted ? [run.id] : [])))];
+  const googleRuns = await runsThatUsedGoogleWorkspace(db, companyId, runIds);
+  const googleCards = await interactionsCarryingGoogleWorkspaceAction(db, companyId,
+    examples.flatMap((example) => example.sourceKind === "interaction" ? [example.sourceId] : []));
+  return examples.map((example) =>
+    omitGoogleWorkspaceContent(example, googleRuns, example.sourceKind === "interaction" && googleCards.has(example.sourceId)));
 }
 
 export async function captureDecisionSnapshot(

@@ -192,7 +192,7 @@ export function runsWithStoredContentSql(scope: Scope): SQL {
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
-      or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, error: sql`${heartbeatRuns.error}` })}
+      or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, issueId: sql`${heartbeatRuns.issueId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
 }

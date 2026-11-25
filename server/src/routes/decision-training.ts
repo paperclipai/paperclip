@@ -151,15 +151,14 @@ export function decisionTrainingRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     const rows = await svc.list(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) });
-    const lines: string[] = [];
-    for (const { example } of rows) {
-      lines.push(JSON.stringify({
+    const states = await withoutGoogleWorkspaceContent(db, companyId, rows.map(({ example }) => example));
+    const body = rows
+      .map(({ example }, index) => JSON.stringify({
         retentionPolicy: example.retentionPolicy,
-        state: await withoutGoogleWorkspaceContent(db, example),
+        state: states[index],
         label: { outcome: example.decisionOutcome, notes: example.notes },
-      }));
-    }
-    const body = lines.join("\n");
+      }))
+      .join("\n");
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,

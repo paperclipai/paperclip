@@ -81,7 +81,7 @@ export async function forgetRunCopies(tx: Db, companyId: string, run: { id: stri
 }
 
 
-export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; error: SQL }): SQL {
+export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; issueId: SQL; error: SQL }): SQL {
   const nativeText = sql.join(RESULT_TEXT_KEYS.map((key) =>
     sql.raw(`jsonb_path_exists(n.result_json, 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
   const entry = sql`jsonb_build_array(jsonb_build_object('id', ${run.id}::text))`;
@@ -90,7 +90,7 @@ export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; error: SQL })
     or exists (select 1 from document_revisions r join issue_documents d on d.document_id = r.document_id
       where r.company_id = ${run.companyId} and r.created_by_run_id = ${run.id} and r.body <> ''
         and d.key = ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY})
-    or exists (select 1 from decision_training_examples e where e.company_id = ${run.companyId}
+    or exists (select 1 from decision_training_examples e where e.issue_id = ${run.issueId} and e.company_id = ${run.companyId}
       and jsonb_typeof(e.snapshot->'runs') = 'array' and e.snapshot->'runs' @> ${entry}
       and not e.snapshot->'runs' @> jsonb_build_array(jsonb_build_object('id', ${run.id}::text, 'contentDeleted', true))))`;
 }
