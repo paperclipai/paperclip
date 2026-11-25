@@ -352,6 +352,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const inlineSafe = mediaType !== SVG_CONTENT_TYPE
       && isInlineAttachmentContentType(mediaType);
+    res.attachment(asset.originalFilename || "asset");
+    if (inlineSafe) {
+      res.setHeader("Content-Disposition", String(res.getHeader("Content-Disposition")).replace(/^attachment;/, "inline;"));
+    }
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
     if (range) {
@@ -363,12 +367,6 @@ export function assetRoutes(db: Db, storage: StorageService) {
     if (!inlineSafe) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
     }
-    const filename = asset.originalFilename ?? "asset";
-    const disposition = inlineSafe
-      ? "inline"
-      : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
-
     object.stream.on("error", (err) => {
       next(err);
     });
