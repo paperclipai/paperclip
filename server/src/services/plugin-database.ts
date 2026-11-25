@@ -112,12 +112,45 @@ function splitSqlStatements(input: string): string[] {
   return statements;
 }
 
+// Scan left to right, like splitSqlStatements, so a quote inside a comment
+// does not open a string and a comment marker inside a string is kept.
 function stripSqlForKeywordScan(input: string): string {
-  return input
-    .replace(/'([^']|'')*'/g, "''")
-    .replace(/"([^"]|"")*"/g, "\"\"")
-    .replace(/--.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
+  let output = "";
+  let i = 0;
+  while (i < input.length) {
+    const char = input[i]!;
+    const next = input[i + 1];
+    if (char === "-" && next === "-") {
+      const end = input.indexOf("\n", i + 2);
+      i = end === -1 ? input.length : end;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const end = input.indexOf("*/", i + 2);
+      i = end === -1 ? input.length : end + 2;
+      output += " ";
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      let j = i + 1;
+      while (j < input.length) {
+        if (input[j] === char) {
+          if (input[j + 1] === char) {
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        j += 1;
+      }
+      output += char + char;
+      i = j + 1;
+      continue;
+    }
+    output += char;
+    i += 1;
+  }
+  return output;
 }
 
 function normaliseSql(input: string): string {

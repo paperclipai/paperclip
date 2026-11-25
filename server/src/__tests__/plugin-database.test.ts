@@ -129,6 +129,52 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/namespace/i);
   });
 
+  it("ignores an apostrophe inside a SQL comment", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "-- this table holds the owner's audit trail\n" +
+          "CREATE TABLE plugin_test.audit (id uuid PRIMARY KEY, op text NOT NULL CHECK (op IN ('a','b')))",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* the owner's audit trail */ CREATE TABLE plugin_test.audit (op text CHECK (op IN ('a','b')))",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("keeps comment markers inside string literals as string content", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '-- not a comment')",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '--') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '/*') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+  });
+
+  it("does not let a quote inside a comment hide a disallowed clause", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* owner's note */ CREATE TABLE plugin_test.notes (body text DEFAULT 'x') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
