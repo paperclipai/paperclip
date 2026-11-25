@@ -118,6 +118,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     })
       .then(() => {
         progressRetryNotBefore = null;
+        progressFailureStreak = false;
         lastOutputFlushAt = pendingOutputProgress.at;
         if (outputProgressState.pending === pendingOutputProgress)
           outputProgressState.pending = null;
@@ -214,10 +215,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           stream,
           bytes: persistedLogBytes,
         };
-        await flushOutputProgress().then(
-          () => {
-            progressFailureStreak = false;
-          },
+        await flushOutputProgress().catch(
           (error: unknown) => {
             if (!progressFailureStreak) {
               progressFailureStreak = true;

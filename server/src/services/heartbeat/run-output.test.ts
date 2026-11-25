@@ -16,6 +16,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
 import { clearAllHeartbeatRunRuntimeStatuses, getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { createStorageWaitNotice, STORAGE_WAIT_PHASE } from "./storage-wait-notice.js";
+import { logger } from "../../middleware/logger.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -486,6 +487,8 @@ describe("run output progress write failures", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-25T00:00:00Z"));
     onTestFinished(() => { vi.useRealTimers(); });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    onTestFinished(() => { warn.mockRestore(); });
     const db = {
       ...base,
       async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> {
@@ -530,6 +533,7 @@ describe("run output progress write failures", () => {
     vi.setSystemTime(new Date(Date.now() + ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS));
     await expect(handlers.onLog("stdout", "third\n")).resolves.toBeUndefined();
     expect(progressAttempts).toBe(2);
+    expect(warn.mock.calls.filter(([, message]) => message === "Failed to record run output progress; will retry")).toHaveLength(1);
 
     databaseDown = false;
     await output.flushOutputProgress({ force: true });
