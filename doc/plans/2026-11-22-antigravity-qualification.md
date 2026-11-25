@@ -155,8 +155,17 @@ Order: 1 and 2 in parallel; then 3, 4 and 5; then 6.
 
 ## Acceptance ledger
 
-Profile state: **pending**. The qualification flip has not happened and must
-not happen until every row marked NOT RUN below has passed live.
+Profile state: **qualified** (profile revision `2`, flipped on 2026-11-25).
+
+**Owner waiver (2026-11-25):** The owner waived the `runner-e2e-paid` live
+paid-key qualification gate as a blocker for flipping the profile from
+`pending` to `qualified` so Antigravity can ship to `paperclip.staging` and be
+tested there. All paid-key / Daytona / unattended rows below remain honestly
+marked **NOT RUN** (deferred to staging and post-waiver paid verification; no
+evidence is fabricated). `ACPX_CAPABILITY_PROFILES.antigravity.recovery`
+remains `"unverified"` because no live `session/load` call has been observed.
+Profile revision `2` refuses candidate-era v1 saved state permanently as
+`provider_state_incompatible`.
 
 **First prompts completed on 1.5.2 on 2026-11-23, local darwin-arm64 only,
 Google sign-in route, model `gemini-3.8-flash-low`** (see "First live tasks"
@@ -221,14 +230,18 @@ automatic retries, with no user action. This exposed three product issues:
 No live `session/load` call was observed in the logs, so the profile still
 must not claim `recovery: "session-load"`.
 
-### Must pass live before the qualification flip
+### Deferred live verification (waived as flip blocker on 2026-11-25)
+
+These items were waived by the owner on 2026-11-25 as blockers for the
+`pending` -> `qualified` flip so Antigravity can be tested on
+`paperclip.staging`, and remain NOT RUN until observed live:
 
 1. All 24 `antigravity-qualification` cells, local (darwin-arm64) and Daytona
    (linux-x64).
 2. The 14-cell API-key lineup, each with an accepted prompt.
 3. The Gemini 4 lineup, including Neon at every level, on a paid key.
 4. A live `session/load` observed before the profile claims
-   `recovery: "session-load"`.
+   `recovery: "session-load"` (profile keeps `recovery: "unverified"`).
 5. The attended Google sign-in journey on 1.5.2 (local only).
 6. Daytona image pull and startup time, measured.
 
@@ -255,15 +268,12 @@ must not claim `recovery: "session-load"`.
 4. Not supported: Google sign-in in a cloud sandbox, warm sessions,
    the Orchestrator model, `/swarm`, darwin-x64.
 
-While the profile is pending, a cloud (Daytona) run needs an operator grant
-for the company and exact model that names linux-x64 and the patched linux-x64
-closure, with an API-key connection, per-turn. The runner E2E harness stages
-that grant for Daytona cells; a local cell's grant names the host instead.
-With that grant, the agent picker offers Google Antigravity for a Core sandbox
-or SSH environment that is linux-x64 with a supported glibc (or the managed
-cloud image), and for this host only a grant that names this host. It offers
-nothing for a plugin Runner-task environment (the warm Agent Computer in
-Paperclip Cloud): that path cannot launch Antigravity yet (see Open decisions).
+After the 2026-11-25 qualification flip (profile revision `2`), no operator
+candidate grant is needed: ordinary runs and Core's `linux-x64` remote provider
+pack admit Antigravity directly under `providers.antigravity`, and candidate
+grants are rejected. A plugin Runner-task environment (the warm Agent Computer
+in Paperclip Cloud) still requires the Cloud rollout items (SDK credential,
+plugin/Launcher harness wiring, and ROM pin).
 
 ### Launch integrity follow-up (2026-11-22)
 
@@ -423,8 +433,9 @@ this computer, and the experimental flag on. Then, on a task for that agent:
 Not proven live: Stop or kill on a Neon swarm; pressing Retry on a swarm
 (recovery never needed it); typing `/swarm` in the browser composer (the live
 runs used the comments API with the composer's structured request); the Linux
-and cloud sandbox routes; the paid qualification cells and lineup suites. The
-profile stays **pending** until an operator grants the flip.
+and cloud sandbox routes; the paid qualification cells and lineup suites.
+(The owner waived `runner-e2e-paid` on 2026-11-25 to flip the profile to
+**qualified** for staging testing; these paid cells remain NOT RUN.)
 
 Facts above: local darwin-arm64 instance at commit 438ae60922, 2026-11-25,
 Google subscription sign-in.

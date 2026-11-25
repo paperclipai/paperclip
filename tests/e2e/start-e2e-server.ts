@@ -1,9 +1,11 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   applyPendingMigrations,
   closeRegisteredClients,
@@ -63,9 +65,48 @@ const DISPOSABLE_PG_CONF = [
   "autovacuum = off",
   "checkpoint_timeout = 1h",
   "max_wal_size = 1GB",
+  "maintenance_work_mem = 128MB",
+  "work_mem = 32MB",
   "log_min_messages = warning",
   "",
 ].join("\n");
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const UI_BUILD_ARGS = [
+  "ui/node_modules/vite/bin/vite.js",
+  "build",
+  "ui",
+  "--outDir",
+  "../server/ui-dist",
+  "--emptyOutDir",
+  "--minify",
+  "false",
+];
+
+function startParallelUiBuild(): { child: ChildProcess; done: Promise<void> } | null {
+  if (process.env.PAPERCLIP_E2E_BUILD_UI !== "1") return null;
+  const child = spawn(process.execPath, UI_BUILD_ARGS, {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+    env: process.env,
+  });
+  const done = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `E2E UI build failed (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`})`,
+        ),
+      );
+    });
+  });
+  done.catch(() => {});
+  return { child, done };
+}
 
 const MAX_START_ATTEMPTS = 5;
 
@@ -266,6 +307,15 @@ process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
 let db: DisposableDatabase | undefined;
 let shutdownServer: ((signal?: "SIGINT" | "SIGTERM") => Promise<void>) | undefined;
 let shuttingDown = false;
+let uiBuild: { child: ChildProcess; done: Promise<void> } | null = null;
+
+function stopUiBuild() {
+  if (!uiBuild || uiBuild.child.exitCode !== null || uiBuild.child.signalCode !== null) return;
+  try {
+    uiBuild.child.kill("SIGTERM");
+  } catch {
+  }
+}
 
 function hasWarmEmbeddedPostgresTemplate(): boolean {
   if (process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE === "0") return false;
@@ -304,6 +354,7 @@ if (usesExternalPostgres) {
   const shutdownExternal = async (signal: "SIGINT" | "SIGTERM") => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopUiBuild();
     try {
       await shutdownServer?.(signal);
     } finally {
@@ -318,6 +369,7 @@ if (usesExternalPostgres) {
     stop: async (signal) => {
       if (shuttingDown) return;
       shuttingDown = true;
+      stopUiBuild();
       await shutdownServer?.(signal === "SIGINT" ? "SIGINT" : "SIGTERM");
       if (db) await closeRegisteredClients(db.connectionString).catch(() => {});
     },
@@ -328,28 +380,43 @@ if (usesExternalPostgres) {
   });
 }
 
+let dbPromise: Promise<DisposableDatabase> | undefined;
+
 try {
+  uiBuild = startParallelUiBuild();
+  const uiReady = uiBuild?.done ?? Promise.resolve();
   let startedDb: DisposableDatabase;
   let serverModule: typeof import("../../server/src/index.js");
 
   if (usesExternalPostgres) {
-    startedDb = await startEmbeddedPostgresTestDatabase("paperclip-e2e-pg-");
-    serverModule = await import("../../server/src/index.js");
+    dbPromise = startEmbeddedPostgresTestDatabase("paperclip-e2e-pg-");
+    [startedDb, serverModule] = await Promise.all([
+      dbPromise,
+      import("../../server/src/index.js"),
+      uiReady,
+    ]).then(([pg, mod]) => [pg, mod] as const);
   } else if (useWarmTemplate) {
-    startedDb = await startEmbeddedPostgresTestDatabase("paperclip-e2e-pg-");
-    await tuneDisposableCluster(startedDb.connectionString);
-    serverModule = await import("../../server/src/index.js");
+    dbPromise = (async () => {
+      const pg = await startEmbeddedPostgresTestDatabase("paperclip-e2e-pg-");
+      await tuneDisposableCluster(pg.connectionString);
+      return pg;
+    })();
+    [startedDb, serverModule] = await Promise.all([
+      dbPromise,
+      import("../../server/src/index.js"),
+      uiReady,
+    ]).then(([pg, mod]) => [pg, mod] as const);
   } else {
     // Load `embedded-postgres` and spawn `initdb` BEFORE calling
     // `import("../../server/src/index.js")` so synchronous `createRequire`
-    // never races `tsx`'s ESM loader AND `initdb` runs in a separate OS
-    // process while `tsx` transpiles the server graph.
     const embeddedPostgresCtor = await loadEmbeddedPostgresCtor();
     const fastPg = await startFastDisposablePostgres(embeddedPostgresCtor);
+    dbPromise = fastPg.ready;
     [startedDb, serverModule] = await Promise.all([
-      fastPg.ready,
+      dbPromise,
       import("../../server/src/index.js"),
-    ]);
+      uiReady,
+    ]).then(([pg, mod]) => [pg, mod] as const);
   }
   db = startedDb;
 
@@ -397,6 +464,8 @@ try {
   const started = await serverModule.startServer();
   shutdownServer = started.shutdown;
 } catch (error) {
-  await db?.cleanup();
+  stopUiBuild();
+  const cleanupDb = db ?? (await dbPromise?.catch(() => undefined));
+  await cleanupDb?.cleanup();
   throw error;
 }

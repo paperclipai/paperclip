@@ -16,10 +16,10 @@ import {
   type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
-import { readProcessStartedAt } from "../hot-restart.js";
-import { loadNativeRunnerCheckpoint, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { readProcessStartedAt } from "../../services/hot-restart.js";
+import { loadNativeRunnerCheckpoint, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "../../services/native-runtime/native-runner-checkpoint.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../../services/native-runtime/native-runner-recovery-contract.js";
+import { claimNativeRestartRecoveries } from "../../services/native-runtime/native-restart-recovery.js";
 import {
   nativeRestartFixture,
   describeEmbeddedPostgres,
@@ -28,18 +28,19 @@ import {
   processAlive,
   waitForCondition,
   stopOwnedProcessGroup,
-} from "../../__tests__/helpers/native-restart.js";
+} from "./native-restart.js";
 
-describeEmbeddedPostgres("native runner restart recovery: diskless", () => {
-  const environment = nativeRestartFixture();
-  const { seedRun, transportOptions } = environment;
-  let runtimeRoot: typeof environment.current.runtimeRoot;
-  let companyId: typeof environment.current.companyId;
-  let agentId: typeof environment.current.agentId;
-  let successor: typeof environment.current.successor;
-  beforeAll(() => { ({ runtimeRoot, companyId, agentId, successor } = environment.current); });
+export function registerNativeRunnerRestartDisklessSuite(preparedTask: boolean): void {
+  describeEmbeddedPostgres(`native runner restart recovery: diskless (prepared task: ${preparedTask})`, () => {
+    const environment = nativeRestartFixture();
+    const { seedRun, transportOptions } = environment;
+    let runtimeRoot: typeof environment.current.runtimeRoot;
+    let companyId: typeof environment.current.companyId;
+    let agentId: typeof environment.current.agentId;
+    let successor: typeof environment.current.successor;
+    beforeAll(() => { ({ runtimeRoot, companyId, agentId, successor } = environment.current); });
 
-  realProcessIt.each([false, true])("adopts the same runner from Postgres after losing the controller filesystem (prepared task: %s)", async preparedTask => {
+    realProcessIt.each([preparedTask])("adopts the same runner from Postgres after losing the controller filesystem (prepared task: %s)", async preparedTask => {
     const fixture = await seedRun(`EMPTY-CONTROLLER-DISK-${preparedTask}`);
     const controllerRoot = resolve(runtimeRoot, `${fixture.runId}-controller`);
     const sandboxRoot = resolve(runtimeRoot, `${fixture.runId}-sandbox`);
@@ -170,4 +171,5 @@ describeEmbeddedPostgres("native runner restart recovery: diskless", () => {
     }
   }, 345_000);
 
-});
+  });
+}

@@ -55,8 +55,7 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   // says warm: no release admitted a warm turn for it, so none can be live.
   if (requiresPerTurnNativeSession(profile)) return { mode: "per_turn", idleTimeoutMs: null };
   return input.persistedPolicy ??
-    (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(input.backend)
-      || input.managedAiSelected && !supportsManagedWarm
+    (input.managedAiSelected && !supportsManagedWarm
       ? { mode: "per_turn", idleTimeoutMs: null }
       : input.environmentPolicy ?? agentPolicy);
 }

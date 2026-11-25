@@ -9,13 +9,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.22.0",
     "agent": "antigravity",
-    "agentProfileVersion": 1,
+    "agentProfileVersion": 2,
     "agentServerPackage": "native:antigravity-acp",
     "agentServerVersion": "1.5.2",
     "agentRuntimePackage": "native:antigravity-localharness",
     "agentRuntimeVersion": "1.5.2",
     "commandDigest": "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
-    "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   },
   "grok": {

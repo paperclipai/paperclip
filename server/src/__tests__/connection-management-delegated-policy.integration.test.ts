@@ -54,189 +54,6 @@ describe("connection management delegated policy and profile access", () => {
   });
   const fixture = () => harness.fixture();
 
-  it.each(["none", "other-agent", "other-agent-no-access", "other-agent-allow-policy", "other-agent-explicit-grant", "other-agent-caller-ask", "other-agent-new-rate", "other-agent-new-shared-rate", "other-agent-new-rate-target-block", "other-agent-caller-rate", "other-agent-shared-rate", "other-agent-credential", "other-agent-credential-none", "other-agent-caller-revoked", "private-status", "agent", "user", "cancelled", "project-block", "rate-limit", "agent-rate-approval", "authorized-policy-edit"] as const)("keeps delegated test policy and approval continuation bounded (%s)", async revocation => {
-    const f = await fixture();
-    let targetAgentId = f.agentId;
-    if (revocation.startsWith("other-agent")) {
-      const cookie = await server.humanSession(f.userId);
-      const created = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/agents`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Test target", role: "engineer", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, permissions: {}, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } } }) });
-      const target = await created.json();
-      expect(created.status, JSON.stringify(target)).toBe(201);
-      targetAgentId = target.id;
-      await lifecycle.process(targetAgentId);
-      await vi.waitFor(async () => expect((await agentService(server.db).getById(targetAgentId))?.status).toBe("idle"));
-    }
-    const allowed = revocation === "none" || revocation === "other-agent" || revocation === "other-agent-caller-ask" || ["other-agent-new-rate", "other-agent-new-shared-rate"].includes(revocation);
-    let calls = 0;
-    const remote = createServer(async (req, res) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const request = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-      let result: unknown;
-      if (request.method === "initialize") result = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "Fixture", version: "1" } };
-      else if (request.method === "tools/call") { calls++; result = { content: [{ type: "text", text: "Fixture result" }] }; }
-      else { res.writeHead(req.method === "DELETE" ? 204 : request.method === "notifications/initialized" ? 202 : 405); res.end(); return; }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
-    });
-    await new Promise<void>(resolve => remote.listen(0, "127.0.0.1", resolve));
-    const address = remote.address();
-    if (!address || typeof address === "string") throw new Error("Fixture did not listen");
-    const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
-    const freezeRateClock = revocation.startsWith("other-agent-new-") || ["other-agent-caller-rate", "other-agent-shared-rate", "rate-limit", "agent-rate-approval"].includes(revocation);
-    if (freezeRateClock) vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const created = await f.request("POST", `/companies/${f.companyId}/tools/connections`, { name: "Governed test", transport: "mcp_remote", authKind: "none", transportConfig: { url: mcpUrl } });
-      await server.db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, created.body.id));
-      const [entry] = await server.db.insert(toolCatalogEntries).values({ companyId: f.companyId, applicationId: created.body.applicationId, connectionId: created.body.id,
-        entryKind: "tool", name: "Fixture probe", toolName: "fixture_probe", inputSchema: { type: "object", properties: {} }, riskLevel: "read", isReadOnly: true, status: "active", versionHash: "fixture-v1" }).returning();
-      expect(await f.request("POST", `/companies/${f.companyId}/tools/apps/${created.body.id}/finish`, { enabledCatalogEntryIds: [entry.id], access: { agentIds: revocation.startsWith("other-agent") && !["other-agent-no-access", "other-agent-allow-policy", "other-agent-explicit-grant"].includes(revocation) ? [f.agentId, targetAgentId] : [targetAgentId] } })).toMatchObject({ status: 200 });
-      const path = `/tool-connections/${created.body.id}/test-calls`;
-      const body = { agentId: targetAgentId, runContext: { heartbeatRunId: randomUUID(), issueId: randomUUID(), projectId: randomUUID() }, toolName: "fixture_probe", parameters: {} };
-      if (revocation === "other-agent-no-access") {
-        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Caller cannot use this tool", policyType: "block", selectors: { connectionId: created.body.id, agentId: f.agentId }, priority: 0 });
-        for (const token of [f.key.token, f.jwt]) expect(await f.request("POST", path, body, token)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "deny_policy_block" } } });
-        expect(calls).toBe(0);
-        return;
-      }
-      if (revocation === "other-agent-allow-policy" || revocation === "other-agent-explicit-grant") {
-        if (revocation === "other-agent-allow-policy") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Caller authorized by policy", policyType: "allow", selectors: { connectionId: created.body.id, agentId: f.agentId }, priority: 0 });
-        else await server.db.update(principalPermissionGrants).set({ scope: { connectionId: created.body.id } }).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:use")));
-        const result = await f.request("POST", path, body, f.jwt);
-        expect(result, JSON.stringify(result)).toMatchObject({ status: 200, body: { decision: "allowed", result: { content: "Fixture result" } } });
-        expect(calls).toBe(1);
-        return;
-      }
-      if (revocation === "other-agent-credential" || revocation === "other-agent-credential-none") {
-        await server.db.update(toolConnections).set({ authKind: revocation === "other-agent-credential-none" ? "none" : "api_key", credentialPolicy: "per_agent" }).where(eq(toolConnections.id, created.body.id));
-        await server.db.insert(connectionGrants).values([f.agentId, targetAgentId].map(subjectAgentId => ({ companyId: f.companyId, connectionId: created.body.id, kind: "agent" as const, subjectAgentId, status: "active" as const })));
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 403, body: { reasonCode: "test_credential_identity_mismatch" } });
-        expect(calls).toBe(0);
-        return;
-      }
-      if (revocation === "other-agent-caller-rate" || revocation === "other-agent-shared-rate") {
-        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Caller rate", policyType: "rate_limit", selectors: { connectionId: created.body.id, ...(revocation === "other-agent-caller-rate" ? { agentId: f.agentId } : {}) }, config: { limit: 1, windowSeconds: 60, keyBy: revocation === "other-agent-caller-rate" ? ["agent", "tool"] : ["company", "tool"] } });
-        const admitted = await f.request("POST", path, body, f.jwt);
-        expect(admitted, JSON.stringify(admitted)).toMatchObject({ status: 200, body: { decision: "allowed", result: { content: "Fixture result" } } });
-        expect(calls).toBe(1);
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "rate_limited" } } });
-        expect(calls).toBe(1);
-        return;
-      }
-      for (const selectors of [{ connectionId: created.body.id, projectId: f.projectId }, { connectionId: created.body.id, issueId: f.issueId }]) {
-        const [block] = await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Scoped test block", policyType: "block", selectors, priority: 1 }).returning();
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 200, body: { decision: "off" } });
-        expect(calls).toBe(0);
-        await server.db.delete(toolPolicies).where(eq(toolPolicies.id, block.id));
-      }
-      if (revocation === "rate-limit") {
-        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "One test per minute", policyType: "rate_limit", selectors: { connectionId: created.body.id }, config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } });
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 200, body: { decision: "allowed", result: { content: "Fixture result" } } });
-        expect(calls).toBe(1);
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "rate_limited" } } });
-        expect(calls).toBe(1);
-        return;
-      }
-      if (revocation === "agent-rate-approval") {
-        await server.db.insert(toolPolicies).values([
-          { companyId: f.companyId, name: "One admitted call", policyType: "rate_limit", selectors: { connectionId: created.body.id }, priority: 0, config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } },
-          { companyId: f.companyId, name: "Approve admitted call", policyType: "require_approval", selectors: { connectionId: created.body.id }, priority: 1 },
-        ]);
-        const session = await f.request("POST", "/tool-gateway/sessions", {}, f.jwt);
-        expect(session, JSON.stringify(session)).toMatchObject({ status: 201 });
-        const gatewayRequest = async (path: string, parameters?: unknown) => {
-          const response = await fetch(server.apiUrl + "/api" + path, { method: parameters === undefined ? "GET" : "POST", headers: { "x-paperclip-tool-gateway-token": session.body.token, "Content-Type": "application/json" }, ...(parameters === undefined ? {} : { body: JSON.stringify(parameters) }) });
-          return { status: response.status, body: await response.json() };
-        };
-        const listed = await gatewayRequest("/tool-gateway/tools");
-        expect(listed).toMatchObject({ status: 200 });
-        const tool = listed.body.find((item: { catalogEntryId: string }) => item.catalogEntryId === entry.id);
-        expect(tool, JSON.stringify(listed.body)).toBeTruthy();
-        const requested = await gatewayRequest("/tool-gateway/tools/call", { tool: tool.name, parameters: {}, idempotencyKey: "rate-approval" });
-        expect(requested, JSON.stringify(requested)).toMatchObject({ status: 409, body: { reasonCode: "approval_required" } });
-        expect(calls).toBe(0);
-        expect(await f.request("POST", `/tool-gateway/action-requests/${requested.body.actionRequestId}/approve`, { companyId: f.companyId }, f.jwt)).toMatchObject({ status: 403 });
-        const cookie = await server.humanSession(f.userId);
-        const response = await fetch(`${server.apiUrl}/api/tool-gateway/action-requests/${requested.body.actionRequestId}/approve`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
-        expect(response.status, JSON.stringify(await response.json())).toBe(200);
-        expect((await server.db.select().from(toolInvocations).where(eq(toolInvocations.id, requested.body.invocationId)))[0].status).toBe("succeeded");
-        expect(calls).toBe(1);
-        expect(await gatewayRequest("/tool-gateway/tools/call", { tool: tool.name, parameters: { anotherCall: true }, idempotencyKey: "next-rate-approval" })).toMatchObject({ status: 429, body: { reasonCode: "rate_limited" } });
-        expect(calls).toBe(1);
-        return;
-      }
-      await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Scoped test approval", policyType: "require_approval", selectors: { connectionId: created.body.id, issueId: f.issueId, ...(revocation === "other-agent-caller-ask" ? { agentId: f.agentId } : {}) }, priority: 1 });
-      const pending = await f.request("POST", path, body, f.jwt);
-      expect(pending, JSON.stringify(pending)).toMatchObject({ status: 200, body: { decision: "ask_first" } });
-      const [saved] = await server.db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.body.invocationId));
-      expect(saved).toMatchObject({ runId: f.runId, issueId: f.issueId, actorType: "agent", actorId: f.agentId, agentId: targetAgentId });
-      expect(calls).toBe(0);
-      if (revocation === "private-status") {
-        const statusPath = `${path}/${pending.body.actionRequestId}`;
-        expect(await f.request("GET", statusPath)).toMatchObject({ status: 200 });
-        const [hidden] = await server.db.insert(issues).values({ companyId: f.companyId, title: "Private test task", visibility: "private", status: "in_progress", responsibleUserId: randomUUID() }).returning();
-        await server.db.update(toolInvocations).set({ issueId: hidden.id }).where(eq(toolInvocations.id, saved.id));
-        for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", statusPath, undefined, token)).toMatchObject({ status: 403 });
-        expect(calls).toBe(0);
-        return;
-      }
-      const approvalPath = `/tool-gateway/action-requests/${pending.body.actionRequestId}/approve`;
-      expect(await f.request("POST", approvalPath, { companyId: f.companyId }, f.jwt)).toMatchObject({ status: 403 });
-      if (revocation === "authorized-policy-edit") {
-        const policiesPath = `/companies/${f.companyId}/tools/policies`;
-        const policy = await f.request("POST", policiesPath, { name: "Requested self-targeted access", policyType: "allow", priority: 0,
-          selectors: { agentId: f.agentId, connectionId: created.body.id } }, f.jwt);
-        expect(policy, JSON.stringify(policy)).toMatchObject({ status: 201 });
-        expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 200, body: { decision: "allowed" } });
-        expect(calls).toBe(1);
-        expect(await f.request("POST", approvalPath, { companyId: f.companyId }, f.jwt)).toMatchObject({ status: 403 });
-        await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
-        expect(await f.request("PATCH", `${policiesPath}/${policy.body.id}`, { enabled: false }, f.jwt)).toMatchObject({ status: 403 });
-        return;
-      }
-      await server.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
-      if (revocation === "agent") await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:use")));
-      if (revocation === "user") for (const permission of ["tools:use", "tools:manage_connections"]) await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, f.companyId), eq(principalPermissionGrants.principalId, f.userId), eq(principalPermissionGrants.permissionKey, permission)));
-      if (revocation === "cancelled") await server.db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
-      if (revocation === "other-agent-caller-revoked") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Caller access revoked", policyType: "block", selectors: { connectionId: created.body.id, agentId: f.agentId }, priority: 0 });
-      if (revocation === "project-block") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New project block", policyType: "block", selectors: { connectionId: created.body.id, projectId: f.projectId }, priority: 0 });
-      if (revocation.startsWith("other-agent-new-")) {
-        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New delegated test admission", policyType: "rate_limit",
-          selectors: { connectionId: created.body.id, ...(revocation === "other-agent-new-shared-rate" ? {} : { agentId: f.agentId }) },
-          priority: -2, config: { limit: 1, windowSeconds: 60, keyBy: revocation === "other-agent-new-shared-rate" ? ["company", "tool"] : ["agent", "tool"] } });
-        if (revocation === "other-agent-new-rate") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New test target admission", policyType: "rate_limit",
-          selectors: { connectionId: created.body.id, agentId: targetAgentId }, priority: -2,
-          config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } });
-        if (revocation === "other-agent-new-rate-target-block") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "New test target block", policyType: "block",
-          selectors: { connectionId: created.body.id, agentId: targetAgentId }, priority: -1 });
-      }
-      const cookie = await server.humanSession(f.userId);
-      const approve = () => fetch(server.apiUrl + "/api" + approvalPath, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
-      const response = await approve();
-      expect(response.status, JSON.stringify(await response.json())).toBe(revocation === "cancelled" ? 409 : 200);
-      const [settled] = await server.db.select().from(toolInvocations).where(eq(toolInvocations.id, saved.id));
-      if (revocation === "cancelled") expect(settled.status).not.toBe("succeeded");
-      else expect(settled, JSON.stringify(settled)).toMatchObject({ status: allowed ? "succeeded" : "failed" });
-      expect(calls).toBe(allowed ? 1 : 0);
-      if (allowed) { expect((await approve()).status).toBe(200); expect(calls).toBe(1); }
-      if (revocation.startsWith("other-agent-new-")) {
-        const counters = await server.db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.companyId, f.companyId));
-        expect(counters).toHaveLength(allowed ? revocation === "other-agent-new-shared-rate" ? 1 : 2 : 0);
-        expect(counters.every(counter => counter.remaining === 0)).toBe(true);
-        if (allowed) {
-          expect(settled.policyExplanation?.consumedRateAdmissions).toHaveLength(1);
-          expect(settled.policyExplanation?.delegatedCallerConsumedRateAdmissions).toHaveLength(1);
-          const [nextRun] = await server.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
-            status: "running", responsibleUserId: f.userId, contextSnapshot: { issueId: f.issueId } }).returning();
-          const nextJwt = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", nextRun.id, f.userId)!;
-          expect(await f.request("POST", path, body, nextJwt)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "rate_limited" } } });
-          expect(calls).toBe(1);
-        }
-      }
-    } finally { if (freezeRateClock) vi.useRealTimers(); remote.closeAllConnections(); await new Promise<void>((resolve, reject) => remote.close(error => error ? reject(error) : resolve())); }
-  });
-
   it("completes concurrent run-authenticated profile finishing and policy writes without lock-order failures", async () => {
     const f = await fixture();
     const connection = await f.request("POST", `/companies/${f.companyId}/tools/connections`, { name: "Concurrent management", transport: "mcp_remote", authKind: "none", transportConfig: { url: "https://1.1.1.1/mcp" } });
@@ -399,11 +216,155 @@ describe("connection management delegated policy and profile access", () => {
       expiresAt: null, requiredUserAction: { userId: f.userId, resource: { id: created.body.id } },
     } });
     // The agent links this in chat, so it is a relative app route, never the server's own origin.
+    // A custom remote MCP server has no app source, so the hand-off goes to the
+    // draft's own permissions page where the user can click "Connect as me".
     expect(started.body.authorizationUrl).toMatch(/^\/[^/]/);
     expect(started.body.requiredUserAction.setupPath).toBe(started.body.authorizationUrl);
-    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").searchParams.get("resume")).toBe(created.body.id);
+    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").pathname)
+      .toMatch(new RegExp(`^/[^/]+/apps/${created.body.id}/permissions$`));
     expect(await f.request("POST", path, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, created.body.id))).toHaveLength(0);
+  });
+
+  it("keeps an agent-started personal OAuth URL draft alive until the addressed user signs in", async () => {
+    const f = await fixture();
+    const mcpOrigin = "https://8.8.8.8";
+    const mcpUrl = `${mcpOrigin}/mcp`;
+    const issuer = `${mcpOrigin}/tenant/acme`;
+    let accessToken: string | null = null;
+    provider = async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === `${mcpOrigin}/.well-known/oauth-protected-resource/mcp`) {
+        return Response.json({ resource: mcpUrl, authorization_servers: [issuer] });
+      }
+      if (url === `${mcpOrigin}/.well-known/oauth-authorization-server/tenant/acme`) {
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          registration_endpoint: `${issuer}/register`,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+          scopes_supported: ["mcp:read"],
+        });
+      }
+      if (url === `${issuer}/register` && method === "POST") {
+        const requested = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return Response.json({
+          client_id: "fixture-dcr-client",
+          redirect_uris: requested.redirect_uris,
+          grant_types: requested.grant_types,
+          response_types: requested.response_types,
+          token_endpoint_auth_method: requested.token_endpoint_auth_method,
+          application_type: requested.application_type,
+        });
+      }
+      if (url === `${issuer}/token` && method === "POST") {
+        accessToken = `fixture-access-${randomUUID()}`;
+        return Response.json({
+          access_token: accessToken,
+          refresh_token: "fixture-refresh",
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "mcp:read",
+        });
+      }
+      if (url === mcpUrl && method === "POST") {
+        const headers = new Headers(init?.headers);
+        if (headers.get("authorization") !== `Bearer ${accessToken}`) {
+          return new Response("", {
+            status: 401,
+            headers: { "www-authenticate": `Bearer resource_metadata="${mcpOrigin}/.well-known/oauth-protected-resource/mcp"` },
+          });
+        }
+        return Response.json({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "list_items", description: "List items", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+    try {
+      const connected = await f.request("POST", `/companies/${f.companyId}/tools/apps/connect`, {
+        link: mcpUrl,
+        name: "Agent personal OAuth E2E",
+        authMode: "oauth",
+        grantKind: "user",
+      });
+      expect(connected, JSON.stringify(connected)).toMatchObject({ status: 201 });
+      const connectionId = connected.body.connectionId as string;
+      expect(connected.body.auth).toMatchObject({ kind: "oauth", issuer });
+      const permissionsPathPattern = new RegExp(`^/[^/]+/apps/${connectionId}/permissions$`);
+      expect(connected.body.auth.startUrl).toMatch(permissionsPathPattern);
+      expect(connected.body.requiredUserAction?.setupPath).toBe(connected.body.auth.startUrl);
+      expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, connectionId))).toHaveLength(0);
+
+      // The addressed human opens the handed-off link: the draft is alive (not a 404 dead link)
+      // and exposes "Connect as me" capability while awaiting first sign-in.
+      const cookie = await server.humanSession(f.userId);
+      const getConnectionRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}`, { headers: { cookie } });
+      expect(getConnectionRes.status).toBe(200);
+      expect(await getConnectionRes.json()).toMatchObject({
+        id: connectionId,
+        status: "draft",
+        credentialPolicy: "per_user",
+        createdByUserId: f.userId,
+      });
+
+      const listBeforeRes = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/connections`, { headers: { cookie } });
+      expect(listBeforeRes.status).toBe(200);
+      const listBefore = await listBeforeRes.json() as { connections: Array<{ id: string; status: string; firstSignInPending?: boolean }> };
+      expect(listBefore.connections.find(c => c.id === connectionId)).toMatchObject({ status: "draft", firstSignInPending: true });
+
+      const grantsBeforeRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}/grants`, { headers: { cookie } });
+      expect(grantsBeforeRes.status).toBe(200);
+      expect(await grantsBeforeRes.json()).toMatchObject({
+        grants: [],
+        currentUserId: f.userId,
+        capabilities: { canConnectAsCurrentUser: true },
+      });
+
+      // The human clicks "Connect as me" on the draft's permissions page and finishes OAuth.
+      const startAuthRes = await fetch(
+        `${server.apiUrl}/api/companies/${f.companyId}/tools/connections/${connectionId}/start-authorization`,
+        {
+          method: "POST",
+          headers: { cookie, "Content-Type": "application/json", origin: server.apiUrl },
+          body: JSON.stringify({ subjectUserId: f.userId, returnTo: `/apps/${connectionId}/permissions` }),
+        },
+      );
+      const startAuthBody = await startAuthRes.json();
+      expect(startAuthRes.status, JSON.stringify(startAuthBody)).toBe(200);
+      const providerAuthUrl = new URL(startAuthBody.url);
+      expect(providerAuthUrl.origin + providerAuthUrl.pathname).toBe(`${issuer}/authorize`);
+      const state = providerAuthUrl.searchParams.get("state")!;
+      expect(state).toBeTruthy();
+
+      const callbackRes = await fetch(
+        `${server.apiUrl}/api/tools/oauth/callback?${new URLSearchParams({ state, code: "fixture-auth-code", iss: issuer })}`,
+        { headers: { cookie, Accept: "text/html" }, redirect: "manual" },
+      );
+      expect(callbackRes.status).toBe(303);
+      expect(callbackRes.headers.get("location")).toMatch(new RegExp(`^/[^/]+/apps/${connectionId}/permissions\\?success=1$`));
+
+      const getAfterRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}`, { headers: { cookie } });
+      expect(getAfterRes.status).toBe(200);
+      expect(await getAfterRes.json()).toMatchObject({ id: connectionId, status: "active", enabled: true });
+
+      const listAfterRes = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/connections`, { headers: { cookie } });
+      expect(listAfterRes.status).toBe(200);
+      const listAfter = await listAfterRes.json() as { connections: Array<{ id: string; status: string; firstSignInPending?: boolean }> };
+      expect(listAfter.connections.find(c => c.id === connectionId)?.firstSignInPending).toBeUndefined();
+
+      await expect(
+        server.db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connectionId)),
+      ).resolves.toEqual([
+        expect.objectContaining({ kind: "user", subjectUserId: f.userId, status: "active" }),
+      ]);
+    } finally {
+      provider = null;
+    }
   });
 
   it("delegates and revokes an owned credential with actual agent attribution", async () => {
@@ -440,6 +401,9 @@ describe("connection management delegated policy and profile access", () => {
     expect(created, JSON.stringify(created)).toMatchObject({ status: 201 });
     const handoff = await f.request("POST", `/tools/oauth/${created.body.id}/start`, { asCurrentUser: true });
     expect(handoff, JSON.stringify(handoff)).toMatchObject({ status: 200, body: { expiresAt: null, requiredUserAction: { userId: f.userId } } });
+    const handoffUrl = new URL(handoff.body.authorizationUrl, "https://paperclip.example");
+    expect(handoffUrl.searchParams.get("resume")).toBe(created.body.id);
+    expect(handoffUrl.searchParams.get("source")).toBe("google-workspace");
     const [unselected] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, created.body.id));
     expect(unselected.config.workspaceSetup).toBeUndefined();
     const services = { gmail: "read" as const };

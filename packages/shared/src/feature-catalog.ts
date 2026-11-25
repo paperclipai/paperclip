@@ -449,6 +449,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCloudTrialInference: {
+    title: "Cloud starter inference",
+    description:
+      "Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
 };
 
 export const INSTANCE_FEATURE_KEYS = Object.keys(INSTANCE_FEATURE_CATALOG).sort() as InstanceFeatureKey[];

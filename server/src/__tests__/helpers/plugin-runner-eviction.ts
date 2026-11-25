@@ -14,19 +14,19 @@ import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } f
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
   parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity, type RunnerProcessHandle, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, canonicalNativeRuntimeContextDigest } from "@paperclipai/paperclip-runner";
-import { materializeAsset } from "./runtime-context.js";
+import { materializeAsset } from "../../services/native-runtime/runtime-context.js";
 import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
-import { describeEmbeddedPostgres, nativeRestartFixture, realProcessIt, fakeCodexAppServer, waitForCondition } from "../../__tests__/helpers/native-restart.js";
-import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork, claimWarmNativeInstructionCopy } from "./native-session-executor.js";
+import { describeEmbeddedPostgres, nativeRestartFixture, realProcessIt, fakeCodexAppServer, waitForCondition } from "./native-restart.js";
+import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork, claimWarmNativeInstructionCopy } from "../../services/native-runtime/native-session-executor.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import { environmentRuntimeService } from "../environment-runtime.js";
-import { environmentService } from "../environments.js";
-import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
-import { executeEnvironmentTask, isSettledReadyRunnerState } from "../environment-task-runtime.js";
-import type { PluginWorkerManager } from "../plugin-worker-manager.js";
-import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
-import { buildNativeCompletionContract } from "./completion-contracts.js";
-import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { environmentRuntimeService } from "../../services/environment-runtime.js";
+import { environmentService } from "../../services/environments.js";
+import { resolveEnvironmentExecutionTarget } from "../../services/environment-execution-target.js";
+import { executeEnvironmentTask, isSettledReadyRunnerState } from "../../services/environment-task-runtime.js";
+import type { PluginWorkerManager } from "../../services/plugin-worker-manager.js";
+import { reconcileNativeFinalizations } from "../../services/native-runtime/native-finalization-reconciler.js";
+import { buildNativeCompletionContract } from "../../services/native-runtime/completion-contracts.js";
+import { nativeRuntimeContextFixture } from "../../services/native-runtime/runtime-context.test-fixture.js";
 
 const { createPrivateHostControlFixture } = await import(new URL("../../../../packages/paperclip-runner/test/support/private-host-control.ts", import.meta.url).href) as {
   createPrivateHostControlFixture(): {
@@ -41,34 +41,42 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const detachedIdleTimeoutMs = 10_000;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
+const evictionModes = [
+  "cached", "detached", "reused lease", "after inspection", "bare unavailable",
+  "prepared copy", "missing stop", "missing state", "foreign state", "working state",
+] as const;
+
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
-describeEmbeddedPostgres("plugin Runner eviction through the Core execution entry", () => {
-  let currentCase: { teardown?: () => Promise<void> } | undefined;
-  afterEach(async () => {
-    const finished = currentCase;
-    currentCase = undefined;
-    await finished?.teardown?.();
-  });
-  const environment = nativeRestartFixture();
-  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
-  let oldCAs: string[] = [], oldAgent = https.globalAgent;
-  beforeAll(async () => {
-    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
-    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
-    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
-  });
-  afterAll(() => {
-    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-  });
-  const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
-    (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const))),
-    ...(["codex", "claude"] as const).map(harness => [harness, "relaunch after inspection", "retired"] as const)])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
+export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", exit: "retired" | "abrupt"): void {
+  const cases = [
+    ...evictionModes.map(mode => [harness, mode, exit] as const),
+    ...(exit === "retired" ? [[harness, "relaunch after inspection", "retired"] as const] : []),
+  ];
+  describeEmbeddedPostgres(`plugin Runner eviction through the Core execution entry (${harness}, ${exit})`, () => {
+    let currentCase: { teardown?: () => Promise<void> } | undefined;
+    afterEach(async () => {
+      const finished = currentCase;
+      currentCase = undefined;
+      await finished?.teardown?.();
+    });
+    const environment = nativeRestartFixture();
+    const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+    let oldCAs: string[] = [], oldAgent = https.globalAgent;
+    beforeAll(async () => {
+      const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+      execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+        "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+      tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+      oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+      const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+    });
+    afterAll(() => {
+      https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+    });
+    const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
+    nativeIt.for(cases)("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const thisCase: { teardown?: () => Promise<void> } = {};
     currentCase = thisCase;
@@ -426,4 +434,5 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       await pendingFollowup?.catch(() => undefined);
     }
   });
-});
+  });
+}

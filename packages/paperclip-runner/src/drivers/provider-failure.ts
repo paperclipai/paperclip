@@ -9,7 +9,7 @@ export function providerFailureMessage(message: string, environment: NodeJS.Proc
     if (secret) message = message.replaceAll(secret, "[REDACTED]");
   }
   return [...redactProviderDiagnostic(message)
-    .replace(/\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+)\b/g, "[REDACTED]")
+    .replace(/\b(?:sk-(?:ant-|proj-|or-(?:v1-)?)?[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+)\b/g, "[REDACTED]")
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")]
     .slice(0, 4000).join("").trim();
 }
@@ -27,7 +27,7 @@ export function createProviderFailure(input: {
 }): ProviderFailure | null {
   const httpStatus = typeof input.httpStatus === "number" && Number.isInteger(input.httpStatus)
     && input.httpStatus >= 400 && input.httpStatus <= 599 ? input.httpStatus : undefined;
-  const category = input.category ?? (httpStatus === 429 ? "rate_limit" : httpStatus === 401 ? "authentication"
+  const category = input.category ?? (httpStatus === 402 ? "quota_exhausted" : httpStatus === 429 ? "rate_limit" : httpStatus === 401 ? "authentication"
     : httpStatus === 403 ? "permission" : httpStatus === 503 || httpStatus === 529 ? "overloaded"
       : httpStatus === 408 || httpStatus === 504 ? "timeout" : "unknown");
   const retryAt = typeof input.retryAt === "string" && Number.isFinite(Date.parse(input.retryAt))

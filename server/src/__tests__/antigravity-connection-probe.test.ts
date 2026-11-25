@@ -3,16 +3,16 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 
-const mocks = vi.hoisted(() => ({ probe: vi.fn(), admission: vi.fn(), remoteAdmitted: vi.fn(() => false), credentials: vi.fn(), copyBack: vi.fn(), remove: vi.fn(), turn: vi.fn(), warn: vi.fn(),
+const mocks = vi.hoisted(() => ({ probe: vi.fn(), pluginProbe: vi.fn(), admission: vi.fn(), remoteAdmitted: vi.fn(() => false), credentials: vi.fn(), copyBack: vi.fn(), remove: vi.fn(), turn: vi.fn(), warn: vi.fn(),
   shell: vi.fn(), released: false }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../vendor/paperclip-runner/index.js", async importOriginal => {
   const original = await importOriginal<typeof import("../vendor/paperclip-runner/index.js")>();
-  // Pending today; the flip removes qualificationStatus and bumps the profile.
-  const { qualificationStatus: _pending, ...released } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  // Tests keep mocks.released = false for the pending-candidate suite and flip mocks.released = true for the qualified release suite.
+  const pending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", { enumerable: true,
-    get: () => mocks.released ? released : original.QUALIFIED_ACPX_PROFILES.antigravity });
+    get: () => mocks.released ? original.QUALIFIED_ACPX_PROFILES.antigravity : pending });
   return { ...original, QUALIFIED_ACPX_PROFILES: profiles, probeNativeRunnerEnvironment: mocks.probe };
 });
 vi.mock("@paperclipai/adapter-utils/execution-target", async importOriginal => ({
@@ -29,6 +29,9 @@ vi.mock("../services/native-runtime/antigravity-runner-credentials.js", () => ({
 vi.mock("../services/native-runtime/native-codex-runner.js", () => ({
   resolvePaperclipRunnerBinary: () => "/owned/runnerd",
   resolvePaperclipRunnerBinaryAsync: async () => "/owned/runnerd",
+}));
+vi.mock("../services/native-runtime/plugin-runner-probe.js", () => ({
+  probePluginRunnerEnvironment: mocks.pluginProbe,
 }));
 import { antigravityConnectionProbeFailure, testAntigravityConnection } from "../services/antigravity-connection-probe.js";
 import { NativeEnvironmentProbeCleanupError, QUALIFIED_ACPX_PROFILES, resolveAcpxRuntimeRoot } from "../vendor/paperclip-runner/index.js";
@@ -185,10 +188,15 @@ describe("Google Antigravity cloud candidate while pending", () => {
     expect(mocks.credentials).not.toHaveBeenCalled();
   });
 
-  it("refuses Google sign-in in the cloud even with a grant, and any cloud run without one", async () => {
+  it("refuses Google sign-in in the cloud even with a grant, refuses plugin Runner-task targets while pending, and refuses any cloud run without a grant", async () => {
     mocks.remoteAdmitted.mockReturnValue(true);
     expect(await testAntigravityConnection({ ...context, executionTarget: remoteTarget }, model))
       .toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_sign_in_unsupported" }] });
+    const pluginTarget = { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease-1",
+      runnerTaskProbe: { runId: "run-1", sessionId: "session-1" }, runnerTask: vi.fn() } as unknown as AdapterEnvironmentTestContext["executionTarget"];
+    expect(await testAntigravityConnection({ ...apiKeyContext, executionTarget: pluginTarget }, model))
+      .toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_unavailable" }] });
+    expect(mocks.pluginProbe).not.toHaveBeenCalled();
     mocks.remoteAdmitted.mockReturnValue(false);
     expect(await testAntigravityConnection(apiKeyContext, model))
       .toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_unavailable" }] });
@@ -214,12 +222,41 @@ describe("Google Antigravity setup admission after the release flip", () => {
     expect(mocks.probe.mock.calls[0][0].transportOptions.acpxCandidateAdmission).toBeUndefined();
   });
 
-  it("refuses Google sign-in for a cloud environment with a plain next step", async () => {
+  it("checks the cloud image's patched Antigravity runtime for Google sign-in once released without sending credentials or a prompt", async () => {
+    mocks.shell.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: manifest(entry()), stderr: "" });
     const result = await testAntigravityConnection({ ...context, executionTarget: remoteTarget }, model);
-    expect(result).toMatchObject({ status: "fail", checks: [{ code: "antigravity_remote_sign_in_unsupported",
-      message: "Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead." }] });
-    expect(mocks.shell).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "warn", checks: [{ code: "antigravity_remote_runtime_ready",
+      message: expect.stringContaining("Google sign-in") }] });
+    const [, , command, options] = mocks.shell.mock.calls[0];
+    expect(options.env).toEqual({});
+    expect(command).not.toContain("/selected/provider");
+    expect(mocks.probe).not.toHaveBeenCalled();
     expect(mocks.credentials).not.toHaveBeenCalled();
+  });
+
+  it("delegates plugin Runner-task targets to probePluginRunnerEnvironment for both Gemini API key and Google sign-in once released", async () => {
+    const pluginTarget = { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease-1",
+      runnerTaskProbe: { runId: "run-1", sessionId: "session-1" }, runnerTask: vi.fn() } as unknown as AdapterEnvironmentTestContext["executionTarget"];
+    const verified = { adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date(0).toISOString(),
+      checks: [{ code: "antigravity_metadata_verified", level: "info" as const, message: "Verified." }] };
+    mocks.pluginProbe.mockResolvedValue(verified);
+
+    const apiKeyPluginContext: AdapterEnvironmentTestContext = {
+      ...apiKeyContext,
+      config: { ...apiKeyContext.config, managedAiConnection: { identity: "key-id", sessionIdentity: "key-session" } },
+      executionTarget: pluginTarget,
+    };
+    expect(await testAntigravityConnection(apiKeyPluginContext, model)).toEqual(verified);
+    expect(mocks.pluginProbe).toHaveBeenCalledWith(apiKeyPluginContext, { identity: "key-id", accountIdentity: "key-session", home: undefined });
+
+    const signInPluginContext: AdapterEnvironmentTestContext = {
+      ...context,
+      config: { ...context.config, managedAiConnection: { identity: "google-id", sessionIdentity: "google-session" } },
+      executionTarget: pluginTarget,
+    };
+    expect(await testAntigravityConnection(signInPluginContext, model)).toEqual(verified);
+    expect(mocks.pluginProbe).toHaveBeenLastCalledWith(signInPluginContext, { identity: "google-id", accountIdentity: "google-session", home: "/selected/provider" });
+    expect(mocks.shell).not.toHaveBeenCalled();
   });
 
   it("checks the cloud image's patched Antigravity runtime for an API key without sending the key or a prompt", async () => {

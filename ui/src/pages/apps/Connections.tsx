@@ -47,7 +47,7 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
-import { connectionNameForCredentialPolicy, connectionTypeLabel } from "./connection-identity";
+import { connectionNameForCredentialPolicy, connectionTypeLabel, isConnectionAvailableToAgents } from "./connection-identity";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -132,7 +132,7 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
@@ -202,7 +202,7 @@ export function Connections() {
       const body = target.remainingConnectionCount > 0
         ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
         : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`;
-      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess }));
+      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess, signInRemoval: removed?.removal?.signInRemoval }));
       setConnectionToDelete(null);
     },
     onError: (error) =>
@@ -262,9 +262,7 @@ export function Connections() {
       const logoUrl = appDefinitionLogoUrl(resolvedGalleryEntry);
       const brandKey = appSourceSlug ?? application.name;
       const darkLogoUrl = appDefinitionDarkLogoUrl(resolvedGalleryEntry);
-      const agentAvailableConnectionCount = appConnections.filter(
-        (connection) => connection.status === "active" && connection.enabled,
-      ).length;
+      const agentAvailableConnectionCount = appConnections.filter(isConnectionAvailableToAgents).length;
       if (appConnections.length === 0) {
         return [{
           application,
@@ -298,7 +296,7 @@ export function Connections() {
           remainingAgentAvailableConnectionCount: Math.max(
             0,
             agentAvailableConnectionCount -
-              (connection.status === "active" && connection.enabled ? 1 : 0),
+              (isConnectionAvailableToAgents(connection) ? 1 : 0),
           ),
           status: statusFor(application, [connection]),
           actionCount: actionCountByConnection.get(`app:${connection.id}`) ?? 0,

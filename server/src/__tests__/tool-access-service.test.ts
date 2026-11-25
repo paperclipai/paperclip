@@ -10592,7 +10592,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let gatewayAuthorization: string | null = null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return {
           ok: true,
           status: 200,
@@ -10743,7 +10743,7 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return {
             ok: true,
             status: 200,
@@ -10896,7 +10896,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).searchParams.get("state")!;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         const userAuthorization =
           body.get("code") === "user-authorization-code";
@@ -11221,7 +11221,7 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const code = (init?.body as URLSearchParams).get("code");
           expect(["personal-code", "personal-reconnect-code"]).toContain(code);
           const reconnecting = code === "personal-reconnect-code";
@@ -11565,7 +11565,7 @@ describeEmbeddedPostgres("tool access service", () => {
     if (mode === "managed") definition.ownershipAvailability = { ...availability, platform_shared: true };
     let discoverNewTool = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      if (String(url) === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (String(url) === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       const body = JSON.parse(String(init?.body));
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
       return mcpHttpResponse({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize" ? { protocolVersion: "2025-06-18" }
@@ -11649,7 +11649,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
     vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (href === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       if (href === "https://mcp.slack.com/mcp") return mcpHttpResponse(catalogResponse([{ name: "search_messages", annotations: { readOnlyHint: true } }]));
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -11715,7 +11715,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let discoverNewTool = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (href === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       if (href === "https://mcp.slack.com/mcp") return mcpHttpResponse(catalogResponse([{ name: "search_messages", annotations: { readOnlyHint: true } }, ...(discoverNewTool ? [{ name: "new_search", annotations: { readOnlyHint: true } }] : [])]));
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -11792,7 +11792,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return mcpHttpResponse(oauthToken("share-access-token", "share-refresh-token"));
       }
       if (href === "https://mcp.slack.com/mcp") {
@@ -11931,7 +11931,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const body = init?.body as URLSearchParams;
           if (body.get("grant_type") === "refresh_token") {
             expect(body.get("refresh_token")).toBe("personal-refresh-token");
@@ -12052,7 +12052,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         if (body.get("grant_type") === "refresh_token") {
           return mcpHttpResponse({
@@ -12263,7 +12263,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let tokenScope: string | null = null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return mcpHttpResponse({
           ok: true,
           access_token: `access-${randomUUID()}`,
@@ -12398,7 +12398,7 @@ describeEmbeddedPostgres("tool access service", () => {
       let refreshScope: string | null = null;
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const body = init?.body as URLSearchParams;
           return body.get("grant_type") === "refresh_token"
             ? slackToken(refreshScope)
@@ -13051,7 +13051,7 @@ describeEmbeddedPostgres("tool access service", () => {
       });
       const startUrl = new URL(connectRes.body.auth.startUrl);
       expect(`${startUrl.origin}${startUrl.pathname}`).toBe(
-        "https://slack.com/oauth/v2/authorize",
+        "https://slack.com/oauth/v2_user/authorize",
       );
       expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
       expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -13078,7 +13078,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .spyOn(globalThis, "fetch")
         .mockImplementation(async (url, init) => {
           const href = String(url);
-          if (href === "https://slack.com/api/oauth.v2.access") {
+          if (href === "https://slack.com/api/oauth.v2.user.access") {
             const body = init?.body as URLSearchParams;
             expect(body.get("grant_type")).toBe("authorization_code");
             expect(body.get("code")).toBe("oauth-code");
@@ -13189,6 +13189,114 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(connection.config)).not.toContain("refresh-token");
     },
   );
+
+  it("uses Slack user OAuth endpoints even for legacy drafts and propagates allowlisted provider_error without reflecting error_description", async () => {
+    const origin = "https://paperclip.example";
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", origin);
+    const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board-user", [
+      "tools:manage_connections",
+    ]);
+    const app = createRouteApp(db);
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({
+        galleryKey: "slack",
+        name: "Slack user OAuth",
+        oauthClient: {
+          clientId: "slack-customer-id",
+          clientSecret: "slack-customer-secret",
+        },
+      })
+      .expect(201);
+
+    const initialStartUrl = new URL(connectRes.body.auth.startUrl);
+    expect(`${initialStartUrl.origin}${initialStartUrl.pathname}`).toBe(
+      "https://slack.com/oauth/v2_user/authorize",
+    );
+    expect(initialStartUrl.searchParams.get("scope")?.split(" ")).toContain(
+      "search:read.public",
+    );
+
+    const [existingDraft] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+    const legacyOAuth = {
+      ...((existingDraft!.config.oauth as Record<string, unknown>) ?? {}),
+      authorizationUrl: "https://slack.com/oauth/v2/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.access",
+    };
+    await db
+      .update(toolConnections)
+      .set({
+        config: { ...existingDraft!.config, oauth: legacyOAuth },
+        transportConfig: { ...existingDraft!.transportConfig, oauth: legacyOAuth },
+      })
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+
+    const retryStartRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({})
+      .expect(200);
+    const retryUrl = new URL(retryStartRes.body.authorizationUrl);
+    expect(`${retryUrl.origin}${retryUrl.pathname}`).toBe(
+      "https://slack.com/oauth/v2_user/authorize",
+    );
+    const retryState = retryUrl.searchParams.get("state")!;
+
+    const failedCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Host", "paperclip.example")
+      .set("Accept", "text/html")
+      .query({
+        state: retryState,
+        error: "invalid_scope",
+        error_description: "Invalid permissions requested (untrusted-canary)",
+      });
+
+    expect(failedCallbackRes.status).toBe(303);
+    const recoveryLocation = new URL(failedCallbackRes.headers.location, origin);
+    expect(recoveryLocation.pathname).toBe(`/${company.issuePrefix}/apps/connect`);
+    expect(recoveryLocation.searchParams.get("source")).toBe("slack");
+    expect(recoveryLocation.searchParams.get("resume")).toBe(connectRes.body.connectionId);
+    expect(recoveryLocation.searchParams.get("oauth")).toBe("denied");
+    expect(recoveryLocation.searchParams.get("code")).toBe("oauth_authorization_denied");
+    expect(recoveryLocation.searchParams.get("provider_error")).toBe("invalid_scope");
+    expect(failedCallbackRes.headers.location).not.toContain("untrusted-canary");
+    expect(failedCallbackRes.headers.location).not.toContain("error_description");
+
+    const unlistedStartRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({})
+      .expect(200);
+    const unlistedState = new URL(unlistedStartRes.body.authorizationUrl).searchParams.get("state")!;
+
+    const unlistedCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Host", "paperclip.example")
+      .set("Accept", "text/html")
+      .query({
+        state: unlistedState,
+        error: "evil_unlisted_code",
+        error_description: "unlisted-canary",
+      });
+
+    expect(unlistedCallbackRes.status).toBe(303);
+    const unlistedRecoveryLocation = new URL(unlistedCallbackRes.headers.location, origin);
+    expect(unlistedRecoveryLocation.searchParams.get("oauth")).toBe("denied");
+    expect(unlistedRecoveryLocation.searchParams.get("code")).toBe("oauth_authorization_denied");
+    expect(unlistedRecoveryLocation.searchParams.get("provider_error")).toBeNull();
+    expect(unlistedCallbackRes.headers.location).not.toContain("evil_unlisted_code");
+    expect(unlistedCallbackRes.headers.location).not.toContain("unlisted-canary");
+  });
 
   it("normalizes a direct numeric loopback origin for OAuth when no public URL is configured", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
@@ -13581,7 +13689,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("grant_type")).toBe("authorization_code");
         expect(body.get("code")).toBe("oauth-code");
@@ -14988,7 +15096,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let refreshCallCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         if (body.get("grant_type") === "authorization_code") {
           return {
@@ -15112,7 +15220,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return mcpHttpResponse(oauthToken("expired-access-token", "single-use-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
@@ -15140,7 +15248,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let refreshCallCount = 0;
     fetchMock.mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("grant_type")).toBe("refresh_token");
         expect(body.get("refresh_token")).toBe("single-use-refresh-token");
@@ -15222,7 +15330,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return mcpHttpResponse(oauthToken("expired-access-token", "submitted-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
@@ -15253,7 +15361,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     fetchMock.mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("refresh_token")).toBe("submitted-refresh-token");
         await secretService(db).rotate(refreshRef.secretId, {
@@ -15366,7 +15474,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const tokenRequests: Array<{ url: string; clientId: string | null; clientSecret: string | null }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = new URLSearchParams(String(init?.body ?? ""));
         tokenRequests.push({ url: href, clientId: body.get("client_id"), clientSecret: body.get("client_secret") });
         return { ok: true, status: 200, json: async () => ({ access_token: "deployment-access", refresh_token: "deployment-refresh", expires_in: 3600 }) } as Response;
@@ -15385,7 +15493,7 @@ describeEmbeddedPostgres("tool access service", () => {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
     });
-    expect(tokenRequests).toEqual([{ url: "https://slack.com/api/oauth.v2.access", clientId: "slack-deployment-id", clientSecret: "slack-deployment-secret" }]);
+    expect(tokenRequests).toEqual([{ url: "https://slack.com/api/oauth.v2.user.access", clientId: "slack-deployment-id", clientSecret: "slack-deployment-secret" }]);
   });
 
   it("never sends a deployment OAuth client to a machine-to-machine token endpoint of a custom server", async () => {
@@ -15450,7 +15558,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return {
             ok: true,
             json: async () => ({

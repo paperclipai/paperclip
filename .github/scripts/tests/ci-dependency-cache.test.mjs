@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { cachePlan } from "../../../scripts/ci-dependency-cache.mjs";
+import { DEPENDENCY_SCRIPT_INPUTS, cachePlan } from "../../../scripts/ci-dependency-cache.mjs";
 import { findWorkspacePostinstallScripts, replayWorkspacePostinstalls } from "../../../scripts/replay-workspace-postinstall.mjs";
 
 const entries = {
@@ -69,9 +69,41 @@ test('unmodelled workspace lifecycle scripts disable materialized reuse', () => 
     assert.equal(plan({ ...entries, 'server/package.json': JSON.stringify({ scripts: { [hook]: 'node custom.mjs' } }) }).cacheable, false);
   }
   assert.equal(plan({ ...entries, 'package.json': '{"scripts":{"postinstall":"node other.mjs"}}' }).cacheable, false);
-  for (const file of ['scripts/ensure-plugin-build-deps.mjs', 'scripts/new-install-helper.mjs', '.pnpmfile.cjs']) {
-    assert.notEqual(plan({ ...entries, [file]: 'changed' }).dependencyKey, plan().dependencyKey);
+  assert.notEqual(plan({ ...entries, '.pnpmfile.cjs': 'changed' }).dependencyKey, plan().dependencyKey);
+
+  const buildOnly = plan({ ...entries, 'scripts/ensure-plugin-build-deps.mjs': 'changed' });
+  assert.equal(buildOnly.dependencyKey, plan().dependencyKey);
+  assert.notEqual(buildOnly.buildKey, plan().buildKey);
+
+  for (const file of [
+    'scripts/general-server-shard-durations.json',
+    'scripts/ci-typecheck-lane.mjs',
+    'server/scripts/typecheck-layers.mjs',
+    'packages/paperclip-runner/scripts/run-check-static.mjs',
+  ]) {
+    assert.deepEqual(plan({ ...entries, [file]: 'changed' }), plan(), file);
   }
+});
+
+test('DEPENDENCY_SCRIPT_INPUTS covers the full local import closure of install/postinstall scripts', () => {
+  const repoRoot = path.resolve(new URL('../../..', import.meta.url).pathname);
+  const visited = new Set();
+  const queue = [...DEPENDENCY_SCRIPT_INPUTS];
+  const importPattern = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](\.[^"']+)["']/g;
+  while (queue.length > 0) {
+    const rel = queue.shift();
+    if (visited.has(rel)) continue;
+    visited.add(rel);
+    assert.ok(DEPENDENCY_SCRIPT_INPUTS.has(rel), `missing transitive install helper from DEPENDENCY_SCRIPT_INPUTS: ${rel}`);
+    const abs = path.join(repoRoot, rel);
+    const source = readFileSync(abs, 'utf8');
+    for (const match of source.matchAll(importPattern)) {
+      const target = path.relative(repoRoot, path.resolve(path.dirname(abs), match[1])).split(path.sep).join('/');
+      if (!visited.has(target)) queue.push(target);
+    }
+  }
+  const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
+  assert.equal((action.match(/pnpm install --frozen-lockfile --prefer-offline/g) ?? []).length, 2);
 });
 
 test('known Copilot hooks permit caching, track their helpers, and still run on restore', () => {

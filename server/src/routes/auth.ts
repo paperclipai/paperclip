@@ -14,6 +14,8 @@ import { resolveBrowserTracingConfig, warnOnce } from "../browser-tracing-config
 import { logger } from "../middleware/logger.js";
 import { loadBoardBootstrap } from "../services/board-bootstrap.js";
 import { resolveBrowserAnalyticsConfig } from "../services/cloud-posthog-browser.js";
+import { setResolvedCloudTrialInferenceEnabled } from "../services/cloud-posthog-cohort.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -56,7 +58,18 @@ export function authRoutes(db: Db) {
         return undefined;
       })
       : Promise.resolve(undefined);
-    const [user, boardBootstrap] = await Promise.all([loadCurrentUserProfile(db, req.actor.userId), bootstrap]);
+    const [user, boardBootstrap, experimental] = await Promise.all([
+      loadCurrentUserProfile(db, req.actor.userId),
+      bootstrap,
+      instanceSettingsService(db)
+        .getExperimental()
+        .catch(() => null),
+    ]);
+    const cloudTrialInferenceEnabled =
+      experimental !== null ? experimental.enableCloudTrialInference === true : undefined;
+    if (typeof cloudTrialInferenceEnabled === "boolean") {
+      setResolvedCloudTrialInferenceEnabled(cloudTrialInferenceEnabled);
+    }
     res.setHeader("Cache-Control", "private, no-store");
     const session = authSessionSchema.parse({
       session: {
@@ -76,7 +89,9 @@ export function authRoutes(db: Db) {
       browserTracing: resolveBrowserTracingConfig(process.env, warnBrowserTracing),
       // Hosted Paperclip Cloud with PAPERCLIP_POSTHOG_BROWSER_ENABLED=1 only;
       // null everywhere else. See `server/src/services/cloud-posthog-browser.ts`.
-      browserAnalytics: resolveBrowserAnalyticsConfig(process.env, req.headers),
+      browserAnalytics: resolveBrowserAnalyticsConfig(process.env, req.headers, {
+        ...(typeof cloudTrialInferenceEnabled === "boolean" ? { cloudTrialInferenceEnabled } : {}),
+      }),
     });
     res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });

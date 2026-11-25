@@ -2,6 +2,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -1110,6 +1114,8 @@ fn canonical_json(value: &Value) -> String {
 #[derive(Clone, Debug)]
 pub struct DurableStateStore {
     path: PathBuf,
+    #[cfg(test)]
+    saves: Arc<AtomicUsize>,
 }
 
 impl DurableStateStore {
@@ -1142,7 +1148,14 @@ impl DurableStateStore {
         verify_private_directory(state_dir)?;
         Ok(Self {
             path: state_dir.join(STATE_FILE),
+            #[cfg(test)]
+            saves: Arc::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn save_count(&self) -> usize {
+        self.saves.load(Ordering::Acquire)
     }
 
     pub fn path(&self) -> &Path {
@@ -1246,6 +1259,9 @@ impl DurableStateStore {
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
+        } else {
+            #[cfg(test)]
+            self.saves.fetch_add(1, Ordering::AcqRel);
         }
         result
     }

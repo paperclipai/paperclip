@@ -38,6 +38,8 @@ Query parameters:
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 | `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
 | `inboxArchive` | `include` adds the viewer's archive state to each result. `archived` returns only tasks actively archived by the viewer. |
+| `updatedSince` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly after it. An invalid value returns `400` |
+| `updatedBefore` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly before it. An invalid value returns `400` |
 
 Results sorted by priority.
 
@@ -455,6 +457,47 @@ DELETE /api/issues/{issueId}/documents/{key}
 ```
 
 Delete is board-only in the current implementation.
+
+### Comment Reactions
+
+Each annotation comment on a document can carry four fixed reactions: `done`, `check`, `thumbs_up` and `question`. Each person or agent can add each reaction once per comment.
+
+```
+PUT    /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+DELETE /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
+Rules:
+
+- `PUT` adds the reaction and `DELETE` removes it. Both calls are safe to repeat. A repeated call changes nothing and logs no activity.
+- An unknown reaction name returns `400`. A thread or comment that is not on this document returns `404`.
+- The response is the comment with its `reactions` array.
+- Annotation comments returned by the annotation list, thread read and document read (`includeAnnotationComments=true`) include the same `reactions` array.
+- A `question` reaction that a person adds wakes the issue assignee once, in its own follow-up run, to answer in that annotation thread. It does not wake an agent on a `done` or `cancelled` issue, or on another person's agent chat. Only the first `question` from each person on a comment wakes the assignee (removing it and adding it again does not), at most one annotation question wake is queued per issue at a time, and each person is capped at 3 question wakes per issue per 10-minute window. `done`, `check` and `thumbs_up`, agent reactions and repeated calls start no agent work.
+- Resolving a thread stays a separate action. A `done` reaction does not resolve the thread.
+
+Each entry in `reactions`:
+
+```json
+{
+  "reaction": "question",
+  "count": 2,
+  "reactedByMe": true,
+  "actors": [
+    { "actorType": "user", "agentId": null, "userId": "user-1" },
+    { "actorType": "agent", "agentId": "agent-1", "userId": null }
+  ]
+}
+```
+
+`reactedByMe` is true when the caller added that reaction. Entries with a zero count are omitted, and entries come in the order `done`, `check`, `thumbs_up`, `question`.
+
+Routine descriptions and case documents use the same contract at these paths. These reactions do not wake an agent:
+
+```
+PUT|DELETE /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+PUT|DELETE /api/cases/{caseId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
 
 ## Attachments
 
