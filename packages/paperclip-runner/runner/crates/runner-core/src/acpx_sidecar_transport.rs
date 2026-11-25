@@ -408,9 +408,27 @@ impl AcpxSidecarTransport {
             // The execution host's credential file seeds the isolated provider
             // home. Only the sidecar receives the path; it never reaches the
             // provider. Other agents have no file credential, so fail closed.
-            if !matches!(agent, "codex" | "grok") {
+            let conflicting: &[&str] = match agent {
+                "codex" => &[
+                    "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
+                    "OPENAI_API_KEY",
+                    "CODEX_API_KEY",
+                ],
+                "grok" => &["PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", "XAI_API_KEY"],
+                _ => {
+                    return Err(LocalRunnerError::invalid(
+                        "Managed credential files require the Codex or Grok ACPX profile",
+                    ))
+                }
+            };
+            // Check before the allowlist filters the environment: a dropped
+            // inline secret must still reject the file rather than vanish.
+            if conflicting
+                .iter()
+                .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+            {
                 return Err(LocalRunnerError::invalid(
-                    "Managed credential files require the Codex or Grok ACPX profile",
+                    "Managed credential file source is ambiguous",
                 ));
             }
             keys.push(ACPX_AUTH_JSON_FILE_ENV);

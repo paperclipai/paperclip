@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acpxCredentialFileSourcePath,
+  assertAcpxCredentialFileAdmissible,
   supportsAcpxCredentialFile,
   validateCodexAuthDocument,
   validateGrokAuthDocument,
@@ -20,6 +21,20 @@ describe("ACPX host credential files", () => {
     expect(supportsAcpxCredentialFile("grok")).toBe(true);
     for (const agent of ["claude", "pi", "cursor", "copilot", "kimi", "antigravity"] as const) {
       expect(supportsAcpxCredentialFile(agent)).toBe(false);
+    }
+  });
+
+  it("rejects a host credential file for other agents or with another credential source", () => {
+    const file = { PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json" };
+    expect(assertAcpxCredentialFileAdmissible({}, "claude")).toBeUndefined();
+    expect(assertAcpxCredentialFileAdmissible(file, "codex")).toBe("/host/auth.json");
+    expect(assertAcpxCredentialFileAdmissible({ ...file, XAI_API_KEY: "other-agent" }, "codex")).toBe("/host/auth.json");
+    expect(() => assertAcpxCredentialFileAdmissible(file, "claude")).toThrow("Codex or Grok ACPX profile");
+    for (const [agent, name] of [
+      ["codex", "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET"], ["codex", "OPENAI_API_KEY"], ["codex", "CODEX_API_KEY"],
+      ["grok", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"], ["grok", "XAI_API_KEY"],
+    ] as const) {
+      expect(() => assertAcpxCredentialFileAdmissible({ ...file, [name]: "value" }, agent)).toThrow("ambiguous");
     }
   });
 

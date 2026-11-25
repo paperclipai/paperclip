@@ -94,7 +94,7 @@ import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
-import { ACPX_AUTH_JSON_FILE_ENV, acpxCredentialFileSourcePath, supportsAcpxCredentialFile } from "../drivers/acpx/credential-file.js";
+import { ACPX_AUTH_JSON_FILE_ENV, assertAcpxCredentialFileAdmissible } from "../drivers/acpx/credential-file.js";
 import {
   createSanitizedAwsAgentCoreEnvironment,
   createSanitizedClaudeManagedEnvironment,
@@ -3955,10 +3955,9 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
     const credentialBinding = createAcpxCredentialBinding(
       input.options.environment, input.options.acpxAgent ?? "codex", input.identity.normalizedSessionId,
     );
-    const credentialFile = acpxCredentialFileSourcePath(input.options.environment);
-    if (credentialFile !== undefined && !supportsAcpxCredentialFile(input.options.acpxAgent ?? "codex")) {
-      throw new Error("Managed credential files require the Codex or Grok ACPX profile");
-    }
+    // Checked before the environment is filtered: an inline secret that the
+    // sidecar allowlist drops must still reject a host credential file.
+    const credentialFile = assertAcpxCredentialFileAdmissible(input.options.environment, input.options.acpxAgent ?? "codex");
     return {
       ...createSanitizedAcpxSpawnInput(
         input.options.environment,

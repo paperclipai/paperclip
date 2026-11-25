@@ -15,6 +15,35 @@ export function supportsAcpxCredentialFile(agent: QualifiedAcpxAgent): boolean {
   return ACPX_CREDENTIAL_FILE_AGENTS.includes(agent);
 }
 
+/**
+ * Credential sources that admission counts alongside a host credential file.
+ * Launch boundaries check them before filtering the environment, because a
+ * filtered-out inline secret would otherwise hide the conflict from staging.
+ */
+const CONFLICTING_CREDENTIAL_SOURCES: Readonly<Partial<Record<QualifiedAcpxAgent, readonly string[]>>> = {
+  codex: ["PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET", "OPENAI_API_KEY", "CODEX_API_KEY"],
+  grok: ["PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", "XAI_API_KEY"],
+};
+
+/**
+ * Fail closed when a host credential file is supplied for an agent without a
+ * file credential, or together with another credential source.
+ */
+export function assertAcpxCredentialFileAdmissible(
+  environment: NodeJS.ProcessEnv | undefined,
+  agent: QualifiedAcpxAgent,
+): string | undefined {
+  const file = acpxCredentialFileSourcePath(environment);
+  if (file === undefined) return undefined;
+  if (!supportsAcpxCredentialFile(agent)) {
+    throw new Error("Managed credential files require the Codex or Grok ACPX profile");
+  }
+  if ((CONFLICTING_CREDENTIAL_SOURCES[agent] ?? []).some(name => Boolean(environment?.[name]))) {
+    throw new Error("Managed credential file source is ambiguous");
+  }
+  return file;
+}
+
 /** An empty value is treated as unset, matching the inline credential variables. */
 export function acpxCredentialFileSourcePath(environment: NodeJS.ProcessEnv | undefined): string | undefined {
   const value = environment?.[ACPX_AUTH_JSON_FILE_ENV];

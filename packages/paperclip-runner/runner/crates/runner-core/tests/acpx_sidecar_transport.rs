@@ -667,9 +667,21 @@ fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials(
 #[cfg(unix)]
 fn host_credential_file_reaches_only_file_credential_sidecars() {
     const CHILD: &str = "PAPERCLIP_TEST_CREDENTIAL_FILE_CHILD";
+    const CONFLICT: &str = "PAPERCLIP_TEST_CREDENTIAL_FILE_CONFLICT";
     if std::env::var_os(CHILD).is_none() {
-        for agent in ["codex", "grok", "claude", "cursor"] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+        for (agent, conflict) in [
+            ("codex", None),
+            ("grok", None),
+            ("claude", None),
+            ("cursor", None),
+            ("codex", Some("PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET")),
+            ("codex", Some("OPENAI_API_KEY")),
+            ("codex", Some("CODEX_API_KEY")),
+            ("grok", Some("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET")),
+            ("grok", Some("XAI_API_KEY")),
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
                 .args([
                     "--exact",
                     "host_credential_file_reaches_only_file_credential_sidecars",
@@ -680,12 +692,14 @@ fn host_credential_file_reaches_only_file_credential_sidecars() {
                 .env(
                     "PAPERCLIP_ACPX_AUTH_JSON_FILE",
                     "/host/credentials/auth.json",
-                )
-                .output()
-                .unwrap();
+                );
+            if let Some(name) = conflict {
+                command.env(CONFLICT, name).env(name, "conflicting-canary");
+            }
+            let output = command.output().unwrap();
             assert!(
                 output.status.success(),
-                "agent={agent}: {} {}",
+                "agent={agent}, conflict={conflict:?}: {} {}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             );
@@ -710,6 +724,13 @@ fn host_credential_file_reaches_only_file_credential_sidecars() {
         shutdown_grace: Duration::from_millis(100),
     };
     let started = AcpxSidecarTransport::start_for_agent(&config, &agent);
+    if std::env::var_os(CONFLICT).is_some() {
+        let error = started
+            .err()
+            .expect("a second credential source fails closed");
+        assert!(error.to_string().contains("ambiguous"), "{error}");
+        return;
+    }
     if !matches!(agent.as_str(), "codex" | "grok") {
         let error = started.err().expect("other agents fail closed");
         assert!(error.to_string().contains("Codex or Grok ACPX"), "{error}");
