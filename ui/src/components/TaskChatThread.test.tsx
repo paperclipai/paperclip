@@ -589,10 +589,11 @@ it("shows activity during admission and clears it when the saved follow-up enter
   show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
   expect(container.textContent).toContain("Working");
-  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).toContain("Getting ready");
   expect(container.textContent).not.toContain("Queued");
   show(true);
   expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Getting ready");
   expect(container.textContent).not.toContain("Working");
 });
 
@@ -621,7 +622,7 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
     await act(async () => { send!.click(); });
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Working");
-    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).toContain("Getting ready");
     expect(container.textContent).not.toContain("Queued");
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
     render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
@@ -761,6 +762,7 @@ it.each((["task", "legacy"] as const).flatMap(surface => [
   expect(onAdd).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
   expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Getting ready");
   expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
@@ -793,7 +795,7 @@ it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner",
   await act(async () => acknowledge());
   expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
   expect(container.textContent).toContain("Working");
-  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).toContain("Getting ready");
   expect(container.textContent).not.toContain("Queued");
   // Choosing a recipient for the next draft does not change the sent request.
   await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
@@ -1770,23 +1772,24 @@ describe("TaskChatThread runtime transcript selection", () => {
     const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
     expect(identity?.textContent).toBe("Runner");
     expect(identity?.querySelector("svg, img")).not.toBeNull();
-    expect(activity?.textContent).toBe("Thinking");
+    expect(activity?.textContent).toBe("Getting ready");
 
     renderThread(props);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
     expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
 
+    // The server's first stage after the claim is getting_ready, so the line does not change.
     for (const startup of [
       { ...run, runtimeMode: undefined, status: "queued", startedAt: null },
-      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started" },
-      run,
+      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started", startupStage: "getting_ready" as const },
+      { ...run, startupStage: "getting_ready" as const },
     ]) {
       renderThread({ ...props, activeRun: startup });
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe("Thinking");
+      expect(activity?.textContent).toBe("Getting ready");
       expect(header?.textContent).toContain("Working");
       expect(container.textContent).not.toContain("Queued");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();

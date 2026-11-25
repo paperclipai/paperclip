@@ -6,7 +6,7 @@ import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAp
 import { ToolCallProgressRunProvider } from "./tool-call-progress";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection, RunStartupStage } from "@paperclipai/shared";
-import { runStartupStageLabel, useHeldLabel } from "./run-startup-stage";
+import { RUN_STARTUP_STAGE_LABELS, runStartupStageLabel, useHeldLabel } from "./run-startup-stage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import type {
@@ -128,6 +128,16 @@ function RunnerCurrentActivityTail({ status, waitingLabel, startupLabel }: {
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
     <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? heldStartupLabel ?? "Thinking"}</span>
   </div>;
+}
+
+/**
+ * A queued turn is getting ready from submission, which is also the first
+ * stage the server reports once it claims the run, so the line does not change
+ * at the claim. A claimed run names its current stage until the agent works.
+ */
+function runnerStartupLabel(status: string, stage: RunStartupStage | null, sessionResumed: boolean): string | null {
+  if (status === "queued") return RUN_STARTUP_STAGE_LABELS.getting_ready;
+  return status === "running" ? runStartupStageLabel(stage, sessionResumed) : null;
 }
 
 interface RunnerHeaderProps {
@@ -352,7 +362,7 @@ export function TaskChatRunnerTurn({
       ) : null}
       {!final && currentActivityItems.length === 0 && !(status === "queued" && runId && (waitingLabel || agentQueueWaitFor({ status, execution })))
         ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel}
-          startupLabel={status === "running" ? runStartupStageLabel(startupStage, startupSessionResumed) : null} /> : null}
+          startupLabel={runnerStartupLabel(status, startupStage, startupSessionResumed)} /> : null}
     </div></ToolCallProgressRunProvider></TaskChatShimmerScope>
   );
 }
