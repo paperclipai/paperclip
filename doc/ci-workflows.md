@@ -1,5 +1,11 @@
 # CI workflows
 
+This fork removes the inherited GitHub Actions workflow files. Actions remains
+enabled, but these workflows are not shipped on this branch. Application code
+and tests are unchanged. The upstream workflow-contract tests still require the
+removed files; they are retained, not reported as passing. The notes below
+describe the upstream automation for reference.
+
 How pull-request CI is routed and trusted, who owns the lockfiles, and how the typecheck and retry lanes work.
 
 ## Dependency Lockfile Policy
