@@ -35,6 +35,7 @@ type CursorCloudSession = {
   envType?: "cloud" | "pool" | "machine";
   envName?: string;
   repos: Array<{ url: string; startingRef?: string; prUrl?: string }>;
+  paperclipJwt?: boolean;
 };
 
 type CursorCloudEvent =
@@ -81,6 +82,33 @@ function trimNullable(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0" || host === "[::1]";
+}
+
+function originIfRemote(raw: unknown): string | null {
+  const value = trimNullable(raw);
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (isLoopbackHostname(url.hostname)) return null;
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRemotePaperclipApiUrl(builtInApiUrl: string | undefined): string | null {
+  return (
+    originIfRemote(process.env.PAPERCLIP_PUBLIC_URL) ??
+    originIfRemote(process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL) ??
+    originIfRemote(process.env.PAPERCLIP_API_URL) ??
+    originIfRemote(builtInApiUrl)
+  );
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -116,9 +144,10 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
-  // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
-  // token is the only source of Paperclip API identity.
+  // PAPERCLIP_API_KEY / PAPERCLIP_TOKEN are never accepted from config — the
+  // harness-minted run token is the only source of Paperclip API identity.
   delete env.PAPERCLIP_API_KEY;
+  delete env.PAPERCLIP_TOKEN;
   // Wake context travels in the prompt; a configured copy can exceed spawn limits.
   delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
 
@@ -139,20 +168,20 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
-  }
 
-  // cursor_cloud runs remotely in Cursor's cloud and is intentionally not
-  // issued a Paperclip run JWT (registry: supportsLocalAgentJwt=false).
-  // buildPaperclipEnv always sets PAPERCLIP_API_URL, defaulting to the local
-  // runtime host — which a remote worker can neither reach nor authenticate
-  // against, so any agent-initiated Paperclip API call would fail with a 401
-  // (or be unreachable) and add noise. When there is no usable key, drop the
-  // callback wiring so cloud-side Paperclip tools degrade to a clean no-op.
-  // Run results are delivered server-side via the Cursor Agent SDK (getRun /
-  // wait), not through this callback, so nothing is lost.
-  if (!trimNullable(env.PAPERCLIP_API_KEY)) {
+  // Cursor Cloud cannot reach this host's loopback PAPERCLIP_API_URL.
+  // Inject a run JWT only when a public origin exists so PATCH / recovery
+  // writes authenticate instead of 401. Resume passes the same envVars.
+  const remoteApiUrl = resolveRemotePaperclipApiUrl(env.PAPERCLIP_API_URL);
+  if (authToken && remoteApiUrl) {
+    env.PAPERCLIP_API_KEY = authToken;
+    // Cursor Cloud has historically stripped *_API_KEY from envVars.
+    // PAPERCLIP_TOKEN is the same run JWT under a name that survives.
+    env.PAPERCLIP_TOKEN = authToken;
+    env.PAPERCLIP_API_URL = remoteApiUrl;
+  } else {
+    delete env.PAPERCLIP_API_KEY;
+    delete env.PAPERCLIP_TOKEN;
     delete env.PAPERCLIP_API_URL;
     delete env.PAPERCLIP_API_BRIDGE_MODE;
   }
@@ -226,6 +255,9 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
     "Paperclip runtime note:",
     `The following PAPERCLIP_* environment variables are available in the cloud agent shell: ${keys.join(", ")}`,
     "Use them directly instead of assuming they are absent.",
+    ...(keys.includes("PAPERCLIP_TOKEN") || keys.includes("PAPERCLIP_API_KEY")
+      ? ["Call the Paperclip API with Authorization: Bearer $PAPERCLIP_TOKEN (or $PAPERCLIP_API_KEY if that is the only token present)."]
+      : []),
   ].join("\n");
 }
 
@@ -258,6 +290,7 @@ function readSession(params: Record<string, unknown> | null): CursorCloudSession
     ...(envType ? { envType: normalizeEnvType(envType) } : {}),
     ...(envName ? { envName } : {}),
     repos,
+    ...(record.paperclipJwt === true ? { paperclipJwt: true } : {}),
   };
 }
 
@@ -266,8 +299,10 @@ function sessionMatches(
   envType: "cloud" | "pool" | "machine",
   envName: string | null,
   repos: Array<{ url: string; startingRef?: string; prUrl?: string }>,
+  requirePaperclipJwt: boolean,
 ): boolean {
   if (!session) return false;
+  if (requirePaperclipJwt && session.paperclipJwt !== true) return false;
   if ((session.envType ?? "cloud") !== envType) return false;
   if ((session.envName ?? null) !== envName) return false;
   if (session.repos.length !== repos.length) return false;
@@ -398,6 +433,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(repoPullRequestUrl ? { prUrl: repoPullRequestUrl } : {}),
   }];
   const remoteEnv = buildWakeEnv(ctx, envConfig);
+  const injectedJwt = Boolean(trimNullable(remoteEnv.PAPERCLIP_API_KEY));
   const session = readSession(runtime.sessionParams) ?? (runtime.sessionId
     ? {
         cursorAgentId: runtime.sessionId,
@@ -405,7 +441,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         repos,
       }
     : null);
-  const canReuseSession = sessionMatches(session, envType, envName, repos);
+  const canReuseSession = sessionMatches(session, envType, envName, repos, injectedJwt);
   const promptTemplate = asString(config.promptTemplate, context.conversationMode === true
     ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
     : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -579,6 +615,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       envType,
       ...(envName ? { envName } : {}),
       repos,
+      ...(injectedJwt ? { paperclipJwt: true } : {}),
     };
     const isError = result.status !== "finished";
     return {
