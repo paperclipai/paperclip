@@ -30,19 +30,30 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 vi.setConfig({ testTimeout: 90_000 });
 // Vitest's waitFor advances fake time on every poll. Keep PostgreSQL leases
 // and actual child processes on wall time until an explicit idle deadline step.
+// The deadline stops further retries; it never abandons an attempt in flight.
+// An attempt awaits real work (a drain waits for a child process and its run
+// writes), and on a loaded runner one attempt can outlast the deadline. That
+// attempt's own result decides, so a slow pass is not reported as a miss.
 function waitForReal(assertion: () => unknown | Promise<unknown>, { timeout = 1000 } = {}) {
   return new Promise<void>((resolve, reject) => {
-    let settled = false, lastError: unknown;
+    let settled = false, expired = false, attempting = false, lastError: unknown;
     let retry: ReturnType<typeof realTimeout> | undefined;
-    const deadline = realTimeout(() => finish(lastError ?? new Error("Expectation did not complete before its deadline")), timeout);
+    const deadline = realTimeout(() => {
+      expired = true;
+      if (!attempting) finish(lastError ?? new Error("Expectation did not complete before its deadline"));
+    }, timeout);
     function finish(error?: unknown) {
       if (settled) return;
       settled = true; clearRealTimeout(deadline); if (retry) clearRealTimeout(retry);
       if (error) reject(error); else resolve();
     }
     async function attempt() {
-      try { await assertion(); finish(); }
-      catch (error) { lastError = error; if (!settled) retry = realTimeout(attempt, 50); }
+      attempting = true;
+      try { await assertion(); attempting = false; finish(); }
+      catch (error) {
+        attempting = false; lastError = error;
+        if (expired) finish(error); else if (!settled) retry = realTimeout(attempt, 50);
+      }
     }
     void attempt();
   });
