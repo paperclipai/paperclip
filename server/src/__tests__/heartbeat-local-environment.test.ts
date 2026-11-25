@@ -17,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -83,6 +84,16 @@ async function readPidFile(file: string, timeoutMs = 10_000) {
     if (Number.isInteger(pid) && pid > 0) return pid;
     if (Date.now() >= deadline) throw new Error(`no pid in ${file}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function waitForRecordedLineagePid(runId: string, pid: number, timeoutMs = 10_000) {
+  const file = join(resolvePaperclipInstanceRoot(), "run-lineage", `${runId}.json`);
+  const recorded = new RegExp(`\\b${pid}\\b`);
+  const deadline = Date.now() + timeoutMs;
+  while (!recorded.test(await readFile(file, "utf8").catch(() => ""))) {
+    if (Date.now() >= deadline) throw new Error(`pid ${pid} not recorded in ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -375,7 +386,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
           expect(readFileSync(`/proc/${escapedPid}/environ`, "utf8")).not.toContain("PAPERCLIP_RUN_ID");
 
           if (scenario.cancel) {
-            await new Promise((resolve) => setTimeout(resolve, 1_200));
+            await waitForRecordedLineagePid(queued!.id, escapedPid);
             await heartbeat.cancelRun(queued!.id, "Operator Stop");
           } else {
             const finished = await waitForRunToFinish(heartbeat, queued!.id);
