@@ -4,6 +4,7 @@ import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provid
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { prepareSshConversationState } from "@paperclipai/adapter-utils/ssh-conversation-state";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -40,6 +41,8 @@ import {
   parseJson,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
+  managedClaudeRoutingEnvironment,
+  materializePaperclipSkillCopy,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
@@ -110,6 +113,28 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+
+async function stageManagedUserSkills(configDir: string, skills: Awaited<ReturnType<typeof readPaperclipRuntimeSkillEntries>>): Promise<void> {
+  if (!skills.length) return;
+  const resolved = await fs.realpath(configDir);
+  const home = path.dirname(resolved);
+  const temp = await fs.realpath(os.tmpdir());
+  if (path.basename(resolved) !== "provider" || !path.basename(home).startsWith("paperclip-ai-") || path.dirname(home) !== temp) {
+    throw new Error("Refusing to stage selected skills outside a Paperclip-managed temporary Claude configuration");
+  }
+  const skillsHome = path.join(resolved, "skills");
+  const existingHome = await fs.lstat(skillsHome).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+  if (existingHome && (!existingHome.isDirectory() || existingHome.isSymbolicLink())) throw new Error("Managed Claude skills directory must be a real directory");
+  await fs.mkdir(skillsHome, { recursive: true });
+  for (const skill of skills) {
+    if (skill.runtimeName === "." || skill.runtimeName === ".." || path.basename(skill.runtimeName) !== skill.runtimeName || /[\\/]/.test(skill.runtimeName)) throw new Error("Invalid managed Claude skill name");
+    const target = path.join(skillsHome, skill.runtimeName);
+    const existing = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (existing) throw new Error(`Managed Claude skill destination already exists: ${skill.runtimeName}`);
+    const result = await materializePaperclipSkillCopy(await fs.realpath(skill.source), target);
+    if (result.skippedSymlinks.length) throw new Error(`Managed Claude skill contains unsupported symbolic links: ${skill.runtimeName}`);
+  }
+}
 
 interface ClaudeExecutionInput {
   agentIdentity?: AdapterExecutionContext["agentIdentity"];
@@ -585,6 +610,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  if (config.managedAiConnection && (!executionTargetIsRemote || adapterExecutionTargetUsesManagedHome(executionTarget))) {
+    await stageManagedUserSkills(sharedClaudeConfigDir, mountableSkillEntries);
+  }
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -671,6 +699,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   let sshSessionState: Awaited<ReturnType<typeof prepareSshConversationState>> | null = null;
+  let managedRoutingDir: string | null = null;
   try {
     if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
@@ -799,6 +828,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
     const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
     const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
+    const claudeProjectSettingsAllowed = Boolean(config.managedAiConnection) && !executionTargetIsRemote &&
+      parseObject(context.paperclipWorkspace).claudeProjectSettingsAllowed === true;
+    const claudeProjectTrustIdentity = claudeProjectSettingsAllowed
+      ? asString(parseObject(context.paperclipWorkspace).claudeProjectTrustIdentity, "")
+      : "";
+    let managedRoutingSettingsPath: string | null = null;
+    const matchingProjectTrust = (runtimeSessionParams.claudeProjectSettingsAllowed === true) === claudeProjectSettingsAllowed &&
+      (!claudeProjectSettingsAllowed || (claudeProjectTrustIdentity.length > 0 &&
+        runtimeSessionParams.claudeProjectTrustIdentity === claudeProjectTrustIdentity));
     const hasMatchingPromptBundle =
       runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
     const hasMatchingMcpServers =
@@ -817,6 +855,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runtimeSessionId.length > 0 &&
       isValidUuid &&
       hasMatchingPromptBundle &&
+      matchingProjectTrust &&
       // Each CLI invocation loads --mcp-config, including --resume invocations.
       // Refreshing tools does not invalidate the saved conversation.
       hasMatchingSessionCwd &&
@@ -879,7 +918,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attemptInstructionsFilePath: string | undefined,
     ) => {
       const args = ["--print", "--output-format", "stream-json", "--verbose"];
-      if (config.managedAiConnection) args.push("--setting-sources", "user");
+      if (config.managedAiConnection) args.push("--setting-sources", claudeProjectSettingsAllowed ? "user,project" : "user");
+      if (managedRoutingSettingsPath) args.push("--settings", managedRoutingSettingsPath);
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       args.push(...buildClaudeExecutionPermissionArgs({
         dangerouslySkipPermissions,
@@ -1201,6 +1241,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           cwd,
           promptBundleKey: promptBundle.bundleKey,
           mcpServerIdentity: runtimeMcpIdentity,
+          claudeProjectSettingsAllowed,
+          ...(claudeProjectTrustIdentity ? { claudeProjectTrustIdentity } : {}),
           ...(executionTargetIsRemote
             ? {
                 remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
@@ -1331,6 +1373,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    if (claudeProjectSettingsAllowed) {
+      managedRoutingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-routing-"));
+      managedRoutingSettingsPath = path.join(managedRoutingDir, "settings.json");
+      await fs.writeFile(managedRoutingSettingsPath, JSON.stringify({
+        apiKeyHelper: "",
+        env: managedClaudeRoutingEnvironment(effectiveEnv),
+      }), { mode: 0o600, flag: "wx" });
+      if (localProcessSandbox) {
+        localProcessSandbox.managedPaths ??= [];
+        localProcessSandbox.managedPaths.push({ path: managedRoutingDir, access: "ro" });
+      }
+    }
     const minimumCliVersion = passesConfiguredModel && claudeCommandLooksLike(command, "claude")
       ? minimumClaudeCliVersionForModel(model)
       : null;
@@ -1458,25 +1512,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toAdapterResult(initial, { fallbackSessionId: !sshSessionState || sshSessionState.canResume ? runtimeSessionId || runtime.sessionId : null });
   } finally {
     try {
-      await providerStop.collectBeforeRestore();
-    } finally {
       try {
-        if (paperclipBridge) {
-          await paperclipBridge.stop();
-        }
+        await providerStop.collectBeforeRestore();
       } finally {
         try {
-          await sshSessionState?.cleanup();
+          if (paperclipBridge) {
+            await paperclipBridge.stop();
+          }
         } finally {
-          if (restoreRemoteWorkspace) {
-            await onLog(
-              "stdout",
-              `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-            ).catch(() => undefined);
-            await restoreRemoteWorkspace();
+          try {
+            await sshSessionState?.cleanup();
+          } finally {
+            if (restoreRemoteWorkspace) {
+              await onLog(
+                "stdout",
+                `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+              ).catch(() => undefined);
+              await restoreRemoteWorkspace();
+            }
           }
         }
       }
+    } finally {
+      if (managedRoutingDir) await fs.rm(managedRoutingDir, { recursive: true, force: true });
     }
   }
 }

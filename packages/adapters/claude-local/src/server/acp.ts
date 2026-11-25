@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { fileURLToPath } from "node:url";
 import type {
   AdapterBillingType,
@@ -485,10 +487,33 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
-    const config = buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env);
-    const versionFailure = await bundledClaudeCodeVersionFailure(ctx, config, target);
+    const workspace = parseObject(ctx.context.paperclipWorkspace);
+    let verifiedCommand: string | null = null;
+    if (ctx.config.managedAiConnection && target?.kind !== "remote" && workspace.claudeProjectSettingsAllowed !== true) {
+      if (firstNonEmptyString(ctx.config.agentCommand, ctx.config.acpAgentCommand)) {
+        throw new Error("Managed Claude ACP requires the bundled provider for an untrusted workspace");
+      }
+      const resolve = createRequire(import.meta.url).resolve;
+      const entry = resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
+      const providerFile = path.join(path.dirname(entry), "acp-agent.js");
+      const [providerSource, settingsSource] = await Promise.all([
+        fs.readFile(providerFile, "utf8"),
+        fs.readFile(path.join(path.dirname(entry), "settings.js"), "utf8"),
+      ]);
+      if (!providerSource.includes("PAPERCLIP_LEGACY_CLAUDE_USER_ONLY") ||
+          !settingsSource.includes("PAPERCLIP_LEGACY_CLAUDE_USER_ONLY")) {
+        throw new Error("Managed Claude ACP cannot verify the bundled project-settings isolation");
+      }
+      verifiedCommand = `${shellQuote(process.execPath)} ${shellQuote(entry)}`;
+    }
+    const acpConfig = buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env);
+    if (verifiedCommand) acpConfig.agentCommand = verifiedCommand;
+    const versionFailure = await bundledClaudeCodeVersionFailure(ctx, acpConfig, target);
     if (versionFailure) return versionFailure;
-    const result = await currentExecutor({ ...ctx, config });
+    const result = await currentExecutor({
+      ...ctx,
+      config: acpConfig,
+    });
     return mapClaudeAcpAuthErrorCode(result);
   };
 }

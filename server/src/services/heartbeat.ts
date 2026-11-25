@@ -5,6 +5,7 @@ import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScop
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { createStalledQueuedRunCancel } from "./heartbeat/stalled-queued-run.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { claudeProjectTrustSessionIdentity, matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import { isYieldingRunStarts, refreshRunStartYieldIfStale, RUN_START_YIELD_RECHECK_MS, type RunStartHandover } from "./run-start-handover.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
@@ -3113,6 +3114,7 @@ export function heartbeatService(
       if (managedAiRuntime && aiBinding) {
         try {
           await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, {
+            adapterType: agent.adapterType,
             deferRunnerTaskCapabilityCheck: agent.adapterType === "paperclip_runner" && !runOptions.nativeRestartRecovery,
           });
         } catch (error) {
@@ -3386,6 +3388,28 @@ export function heartbeatService(
             ]
           : []),
       ];
+      let claudeProjectSettingsAllowed = false;
+      let claudeProjectTrustIdentity: string | undefined;
+      if (managedAiRuntime && agent.adapterType === "claude_local" && trustPreset.kind === "standard" &&
+          executionWorkspace.workspaceId && executionWorkspace.projectId && executionTarget?.kind !== "remote") {
+        const [source] = await db.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, executionWorkspace.workspaceId),
+          eq(projectWorkspaces.projectId, executionWorkspace.projectId),
+          eq(projectWorkspaces.companyId, agent.companyId),
+        ));
+        if (source?.cwd && executionWorkspace.cwd && path.resolve(source.cwd) === path.resolve(executionWorkspace.cwd)) {
+          const identity: ClaudeProjectTrustIdentity = {
+            companyId: source.companyId, projectId: source.projectId, workspaceId: source.id,
+            agentId: agent.id, sourceType: source.sourceType, cwd: source.cwd, repoUrl: source.repoUrl,
+            repoRef: source.repoRef, defaultRef: source.defaultRef,
+            remoteProvider: source.remoteProvider, remoteWorkspaceRef: source.remoteWorkspaceRef,
+          };
+          const grants = Array.isArray(source.claudeProjectTrust?.grants) ? source.claudeProjectTrust.grants : [];
+          claudeProjectSettingsAllowed = grants.some((grant) => grant && typeof grant === "object" &&
+            matchesClaudeProjectTrustGrant(grant as ClaudeProjectTrustIdentity, identity));
+          if (claudeProjectSettingsAllowed) claudeProjectTrustIdentity = claudeProjectTrustSessionIdentity(identity);
+        }
+      }
       context.paperclipWorkspace = {
         cwd: executionWorkspace.cwd,
         source: executionWorkspace.source,
@@ -3397,6 +3421,8 @@ export function heartbeatService(
         repoRef: executionWorkspace.repoRef,
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
+        claudeProjectSettingsAllowed,
+        ...(claudeProjectTrustIdentity ? { claudeProjectTrustIdentity } : {}),
         realization: workspaceRealization,
         agentHome: await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);
