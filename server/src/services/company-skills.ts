@@ -3339,7 +3339,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   async function list(companyId: string, query: CompanySkillListQuery = {}): Promise<CompanySkillListItem[]> {
     if (!visibility().canReadCompany(companyId)) return [];
     await ensureSkillInventoryCurrent(companyId);
-    const [dbRows, folderListing] = await Promise.all([db
+    const [dbRows, folderRows] = await Promise.all([db
       .select({
         id: companySkills.id,
         companyId: companySkills.companyId,
@@ -3378,9 +3378,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       .where(and(eq(companySkills.companyId, companyId), await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key))
       .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow))),
-      folderSvc.list(companyId, "skill"),
+      folderSvc.listMetadata(companyId, "skill"),
     ]);
-    const folderPaths = new Map(folderListing.folders.map((folder) => [folder.id, folder.path]));
+    const folderPaths = new Map(folderRows.map((folder) => [folder.id, folder.path]));
     const rows = dbRows.map((skill) => ({
       ...skill,
       folderPath: skill.folderId ? folderPaths.get(skill.folderId) ?? null : null,

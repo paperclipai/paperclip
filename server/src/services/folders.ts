@@ -157,6 +157,12 @@ export function folderService(db: Db, mutationLockHeld = false) {
       .groupBy(companySkills.folderId);
   }
 
+  async function listMetadata(companyId: string, kind: FolderKind): Promise<Folder[]> {
+    const rows = await getRows(companyId, kind);
+    const views = buildFolderViews(rows);
+    return rows.map(row => views.get(row.id)!);
+  }
+
   async function list(companyId: string, kind: FolderKind): Promise<FolderListResult> {
     const [folderRows, countRows] = await Promise.all([
       getRows(companyId, kind),
@@ -621,6 +627,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
 
   return {
     list,
+    listMetadata,
     create,
     update,
     moveFolder,
