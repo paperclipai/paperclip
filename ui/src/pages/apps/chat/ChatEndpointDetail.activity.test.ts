@@ -7,6 +7,7 @@ import {
   isResolutionEligible,
   activityResolutionActions,
   activityResolutionDescription,
+  activityGitHubContextLine,
 } from "./ChatEndpointDetail";
 
 describe("chat endpoint lifecycle health presentation", () => {
@@ -224,5 +225,42 @@ describe("chat endpoint destination controls", () => {
       true,
     );
     expect(isIndividuallyToggleableResource("github", "repository")).toBe(true);
+  });
+});
+
+describe("chat endpoint filtered GitHub delivery context", () => {
+  const base: ChatActivityItem = {
+    id: "delivery-1",
+    kind: "delivery",
+    status: "filtered",
+    summary: "message ignored",
+    createdAt: "2026-11-25T00:00:00.000Z",
+  };
+
+  it("shows the delivery id, pull request, head and reason", () => {
+    expect(activityGitHubContextLine({
+      ...base,
+      github: {
+        deliveryId: "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+        event: "synchronize",
+        repository: "paperclipai/paperclip",
+        pullNumber: 82,
+        headSha: "b".repeat(40),
+        reason: "mentions_only",
+      },
+    })).toBe(
+      "Delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 · paperclipai/paperclip#82 · head bbbbbbbbbbbb · event synchronize · reason mentions only",
+    );
+  });
+
+  it("shows the issue number for an issue delivery", () => {
+    expect(activityGitHubContextLine({
+      ...base,
+      github: { deliveryId: "d-1", event: "issue_opened", repository: "paperclipai/paperclip", issueNumber: 83, reason: "event_disabled" },
+    })).toBe("Delivery d-1 · paperclipai/paperclip issue #83 · event issue_opened · reason event disabled");
+  });
+
+  it("shows nothing for a row without GitHub context", () => {
+    expect(activityGitHubContextLine(base)).toBeNull();
   });
 });

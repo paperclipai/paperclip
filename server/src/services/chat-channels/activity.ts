@@ -2,7 +2,7 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { providerEffectPayload } from "./provider-effects.js";
 
 import { slackSlashTaskRecoveryPayload } from "./slack/task-start.js";
-import { githubRecoveryActivity } from "./github/activity.js";
+import { githubFilteredDeliveryContext, githubRecoveryActivity } from "./github/activity.js";
 
 import {
   and,
@@ -383,6 +383,7 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
             ? deduplication.duplicateCount
             : 0;
         const label = row.eventKind.replaceAll("_", " ");
+        const github = row.state === "filtered" ? githubFilteredDeliveryContext(normalized.github) : null;
         const outcome =
           row.state === "filtered"
             ? "ignored"
@@ -401,6 +402,7 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
             Boolean(row.conversationId) &&
             !ambiguousProviderEffectDeliveryIds.has(row.id),
           resolutionActions: [],
+          ...(github ? { github } : {}),
         };
       }),
       ...publications.map((row) => {

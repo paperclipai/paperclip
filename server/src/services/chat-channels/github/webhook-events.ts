@@ -23,11 +23,25 @@ type EventOptions = Pick<Parameters<typeof createGitHubMessageProvenance>[0], "g
   runtimeCallbackEndpoint: Parameters<typeof createChatMessageLifecycle>[1]["runtimeCallbackEndpoint"];
   fetchImpl: typeof globalThis.fetch;
 };
+type GitHubSkipContext = {
+  deliveryId: string; event: string; repository: string;
+  issueNumber?: number; pullNumber?: number; headSha?: string;
+};
+function githubSkipActivityContext(context: GitHubSkipContext, reason: string | undefined) {
+  return {
+    deliveryId: context.deliveryId.slice(0, 200), event: context.event.slice(0, 100), repository: context.repository.slice(0, 200),
+    ...(typeof context.pullNumber === "number" ? { pullNumber: context.pullNumber } : {}),
+    ...(typeof context.issueNumber === "number" ? { issueNumber: context.issueNumber } : {}),
+    ...(typeof context.headSha === "string" ? { headSha: context.headSha.slice(0, 64) } : {}),
+    reason: reason ?? "automatic_policy_unavailable",
+  };
+}
 export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
   const { processMessage, recordLifecycleDelivery, githubAutomaticMessages, githubIssueMessages, fetchImpl, runtimeCallbackEndpoint } = options;
   async function recordGitHubAutomaticSkip(
-    endpoint: EndpointRow, deliveryId: string, event: string, reason: string | undefined, runtimeContext: LifecycleRuntimeFence,
+    endpoint: EndpointRow, context: GitHubSkipContext, event: string, reason: string | undefined, runtimeContext: LifecycleRuntimeFence,
   ) {
+    const { deliveryId } = context;
     const details: Record<string, string> = {
       mentions_only: "This bot runs only when mentioned. No new mention was found in this event.",
       event_disabled: "Automatic runs are off for this GitHub event.",
@@ -47,7 +61,11 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
         companyId: current.companyId, endpointId: current.id,
         providerEventId, deduplicationKey: providerEventId, eventKind: "message", state: "filtered", processedAt: new Date(),
         redactedError: `GitHub ${event} ignored. ${details[reason ?? ""] ?? "Automatic runs are restricted by this bot's review policy."}`,
-        normalizedEvent: { providerEventId, kind: "message", filtering: { contentRetained: false, reason: reason ?? "automatic_policy_unavailable" } },
+        normalizedEvent: {
+          providerEventId, kind: "message",
+          filtering: { contentRetained: false, reason: reason ?? "automatic_policy_unavailable" },
+          github: githubSkipActivityContext(context, reason),
+        },
       }).onConflictDoNothing();
     });
   }
@@ -89,7 +107,7 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
       if (!event) return new Response("ignored", { status: 200 });
       const admission = await githubAutomaticAdmission(db, endpoint, event);
       if (!admission?.allowed) {
-        await recordGitHubAutomaticSkip(endpoint, event.deliveryId, "issue opened", admission?.reason, runtimeContext);
+        await recordGitHubAutomaticSkip(endpoint, event, "issue opened", admission?.reason, runtimeContext);
         return new Response("ignored", { status: 200 });
       }
       const thread = endpointRuntime.thread(`github:${event.repository}:issue:${event.issueNumber}`);
@@ -118,7 +136,7 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
       const admission = await githubAutomaticAdmission(db, endpoint, event);
       if (admission) await githubReviewCheckService(db, fetchImpl).enqueue(endpoint, event, admission.allowed, admission.reason);
       if (!admission?.allowed) {
-        await recordGitHubAutomaticSkip(endpoint, event.deliveryId, "pull request event", admission?.reason, runtimeContext);
+        await recordGitHubAutomaticSkip(endpoint, event, "pull request event", admission?.reason, runtimeContext);
         return new Response("ignored", { status: 200 });
       }
       const previousAssessment = await githubPreviousAssessment(db, endpoint, event.repositoryId, event.pullNumber);

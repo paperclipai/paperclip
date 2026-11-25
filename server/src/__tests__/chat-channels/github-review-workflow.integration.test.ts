@@ -522,6 +522,31 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       ]));
     });
 
+    it.each(["pull_request", "issues"])("keeps non-secret GitHub context on a policy-filtered %s delivery", async event => {
+      const f = await reviewBotFixture();
+      const saved = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: saved.revision, configuration: { ...saved.configuration,
+        defaults: { ...saved.configuration.defaults, invocation: "mentions_only", events: [], issueOpened: false } } }, "owner-user");
+      const deliveryId = randomUUID();
+      const user = { id: 42, login: "octocat", type: "User" };
+      const repository = { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } };
+      const payload = event === "pull_request"
+        ? { action: "synchronize", installation: { id: 2468 }, repository, sender: { id: 42, login: "octocat" },
+          pull_request: { number: 82, title: "Secret title", body: "Secret body", draft: false,
+            base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) }, user, labels: [] } }
+        : { action: "opened", installation: { id: 2468 }, repository, sender: { id: 42, login: "octocat" },
+          issue: { number: 83, title: "Secret title", body: "Secret body", user, labels: [] } };
+      expect((await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event, delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+      }))).status).toBe(200);
+      const rows = await db.select().from(chatDeliveries).where(and(eq(chatDeliveries.endpointId, f.endpoint.id), eq(chatDeliveries.state, "filtered")));
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0].normalizedEvent)).not.toContain("Secret");
+      const target = event === "pull_request" ? { pullNumber: 82, headSha: "b".repeat(40), event: "synchronize" } : { issueNumber: 83, event: "issue_opened" };
+      const activity = (await f.service.listActivity(f.endpoint.id)).find(row => row.id === rows[0].id);
+      expect(activity).toEqual(expect.objectContaining({ kind: "delivery", github: { deliveryId, repository: "paperclipai/paperclip", reason: "mentions_only", ...target } }));
+    });
+
     it("admits a GitHub request explicitly addressed to both connected bots", async () => {
       const f = await subscribedGitHubFixture();
       await addPeerGitHubBot(f);

@@ -410,7 +410,7 @@
     "packages/shared/src/types/attention.ts": "ac112c8e57d853ebdb739e459b7acb41313947ad",
     "packages/shared/src/types/board-bootstrap.ts": "8eb0e0ec4c91369d12b268b9411ed512c8d1e8b1",
     "packages/shared/src/types/budget.ts": "7b3fe924d571008d67093c051a13d2c7e67f3ebe",
-    "packages/shared/src/types/chat-channels.ts": "103eb76c5c517102e999b49b4bb726e0ea228902",
+    "packages/shared/src/types/chat-channels.ts": "1108809eb39e449a0d57279ccc9448ffa4f83c01",
     "packages/shared/src/types/chat-github.ts": "be6e7c951620ee6d107af651fba440938f973ddc",
     "packages/shared/src/types/company-portability.ts": "76ce2cd19c05d788f57cde743c83b663a584648b",
     "packages/shared/src/types/company-skill.ts": "259ee322e01e0c97532a6d5ff2e9753e3c1de460",

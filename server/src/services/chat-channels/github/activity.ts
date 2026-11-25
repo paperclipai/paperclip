@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { chatEndpoints, chatSdkState, type Db } from "@paperclipai/db";
 import { GITHUB_RECOVERY_STATE_KEY } from "./webhook-recovery-state.js";
+import type { ChatActivityGitHubContext } from "@paperclipai/shared";
 
 /** Direct callback recovery warnings do not describe Cloud relay delivery. */
 export async function githubRecoveryActivity(
@@ -44,4 +45,19 @@ export async function githubRecoveryActivity(
         ]
       : [];
   });
+}
+
+export function githubFilteredDeliveryContext(value: unknown): ChatActivityGitHubContext | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const text = (key: string) => typeof record[key] === "string" && record[key] ? record[key] as string : undefined;
+  const count = (key: string) => Number.isSafeInteger(record[key]) && (record[key] as number) > 0 ? record[key] as number : undefined;
+  const deliveryId = text("deliveryId"), event = text("event"), repository = text("repository"), reason = text("reason");
+  if (!deliveryId || !event || !repository || !reason) return null;
+  const pullNumber = count("pullNumber"), issueNumber = count("issueNumber"), headSha = text("headSha");
+  return {
+    deliveryId, event, repository,
+    ...(pullNumber ? { pullNumber } : {}), ...(issueNumber ? { issueNumber } : {}), ...(headSha ? { headSha } : {}),
+    reason,
+  };
 }
