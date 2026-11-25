@@ -142,10 +142,16 @@ describe("instanceSettingsService managed overlay", () => {
       expect((await service.get()).experimental).toMatchObject(features);
       expect((await service.getExperimental()).managedKeys).toMatchObject(
         Object.fromEntries(Object.keys(features)
-          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp" && key !== "enableAwsConnector")
+          .filter((key) =>
+            key !== "enableApps"
+            && key !== "enableMcpAggregators"
+            && key !== "enablePublicMcp"
+            && key !== "enableAwsConnector"
+            && key !== "enableGitHubReviewBots")
           .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
       );
-      for (const key of Object.keys(features).filter((key) => key !== "enablePublicMcp" && key !== "enableAwsConnector")) {
+      for (const key of Object.keys(features).filter((key) =>
+        key !== "enablePublicMcp" && key !== "enableAwsConnector" && key !== "enableGitHubReviewBots")) {
         await expect(service.updateExperimental({ [key]: false })).rejects.toMatchObject({
           status: 403,
           details: { code: "settings_operator_managed" },
@@ -388,5 +394,32 @@ describe("instanceSettingsService managed overlay", () => {
     expect(persistedSets).toHaveLength(1);
     expect(persistedSets[0]!.experimental).not.toHaveProperty("managedKeys");
     expect(Object.prototype.hasOwnProperty.call(updated.experimental, "managedKeys")).toBe(false);
+  });
+
+  it("ignores Cloud-managed values for retired enableGitHubReviewBots and allows legacy off patches", async () => {
+    const managedOff = JSON.stringify({
+      v: 1,
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+      features: { enableGitHubReviewBots: false, enableStatusCards: true },
+      plugins: { autoInstall: [] },
+    });
+    const managedOn = JSON.stringify({
+      v: 1,
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+      features: { enableGitHubReviewBots: true },
+      plugins: { autoInstall: [] },
+    });
+    const { db } = stubDb(settingsRow({ enableGitHubReviewBots: false }));
+    const offSvc = instanceSettingsService(db, { runtimeEnv: managedEnv(managedOff) });
+    const experimental = await offSvc.getExperimental();
+    expect(experimental.enableGitHubReviewBots).toBe(true);
+    expect(experimental.managedKeys?.enableGitHubReviewBots).toBeUndefined();
+
+    const onSvc = instanceSettingsService(db, { runtimeEnv: managedEnv(managedOn) });
+    const updated = await onSvc.updateExperimental({ enableGitHubReviewBots: false });
+    expect(updated.experimental.enableGitHubReviewBots).toBe(true);
+    expect(updated.experimental.managedKeys?.enableGitHubReviewBots).toBeUndefined();
   });
 });

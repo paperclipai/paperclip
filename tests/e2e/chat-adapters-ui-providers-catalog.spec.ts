@@ -151,7 +151,6 @@ test.describe("native chat adapter UI catalog and management", () => {
     }, testInfo) => {
       const mock = await installChatControlPlaneMock(page, provider, seed, {
         enableChatConnectors: provider.provider !== "github",
-        enableGitHubReviewBots: provider.provider === "github",
       });
 
       await page.goto(`/${seed.prefix}/apps`);

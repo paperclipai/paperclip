@@ -267,7 +267,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableMuse: parsed.data.enableMuse ?? false,
       enableGrokBot: parsed.data.enableGrokBot ?? false,
       enableChatConnectors: parsed.data.enableChatConnectors ?? false,
-      enableGitHubReviewBots: parsed.data.enableGitHubReviewBots ?? false,
+      // GitHub review bots graduated from Experimental; ignore historical off values.
+      enableGitHubReviewBots: true,
       enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
@@ -330,7 +331,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableMuse: false,
     enableGrokBot: false,
     enableChatConnectors: false,
-    enableGitHubReviewBots: false,
+    enableGitHubReviewBots: true,
     enableMemoryConnectors: false,
     enablePaperclipNotebook: false,
     enableGoogleWorkspaceConnector: false,
@@ -399,9 +400,15 @@ export function applyManagedExperimentalOverlay(
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
     // document during rollout, but never let retired flags disable Apps, Agent Chat, MCP aggregators,
-    // Assistant connections (MCP) or the AWS connector.
-    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators" || key === "enablePublicMcp"
-      || key === "enableAwsConnector") continue;
+    // Assistant connections (MCP), the AWS connector, or GitHub review bots.
+    if (
+      key === "enableApps"
+      || key === "enableAgentChat"
+      || key === "enableMcpAggregators"
+      || key === "enablePublicMcp"
+      || key === "enableAwsConnector"
+      || key === "enableGitHubReviewBots"
+    ) continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
@@ -645,7 +652,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
         // Retired always-on keys are ignored on read, so an old client's write must not be rejected.
-        if (key === "enablePublicMcp" || key === "enableAwsConnector") continue;
+        if (key === "enablePublicMcp" || key === "enableAwsConnector" || key === "enableGitHubReviewBots") continue;
         if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
           throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
             code: "settings_operator_managed",

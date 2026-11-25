@@ -359,7 +359,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="Chat connectors"
           description="Connect agents to Slack, Discord, Microsoft Teams, and Telegram conversations."
-          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are controlled separately."
+          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are unaffected."
           checked={enableChatConnectors}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
           disabled={toggleMutation.isPending}
@@ -519,18 +519,6 @@ export function InstanceExperimentalSettings() {
           settingKey="enableFirstTaskPlanProposal"
           managed={managedKeys.enableFirstTaskPlanProposal}
           ariaLabel="Toggle first task plan proposal experimental setting"
-        />
-
-        <ExperimentalToggleCard
-          title="GitHub review bots"
-          description="Connect agents to GitHub with their own App identity to review pull requests and respond to issues."
-          footnote="Independent of Chat connectors. Turning this off hides setup and management; existing bots keep running. GitHub tool connections stay available."
-          checked={experimentalQuery.data?.enableGitHubReviewBots === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableGitHubReviewBots: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableGitHubReviewBots"
-          managed={managedKeys.enableGitHubReviewBots}
-          ariaLabel="Toggle GitHub review bots experimental setting"
         />
 
         <ExperimentalToggleCard

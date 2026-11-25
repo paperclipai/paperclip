@@ -39,7 +39,7 @@ vi.mock("@/hooks/useCloudInstance", () => ({
   useCloudInstance: () => false,
 }));
 vi.mock("@/hooks/useChatConnectorsEnabled", () => ({
-  useChatConnectorsEnabled: () => ({ enabled: false, githubEnabled: false }),
+  useChatConnectorsEnabled: () => ({ enabled: false }),
   chatProviderVisible: () => true,
 }));
 vi.mock("@/hooks/useMemoryConnectorsEnabled", () => ({
