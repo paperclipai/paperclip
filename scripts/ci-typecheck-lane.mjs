@@ -10,7 +10,8 @@ import { LOW_MEMORY_VARIABLE, EMIT_ONLY_VARIABLE, runTsc } from "./run-tsc.mjs";
 import { selectTestPrograms } from "./typecheck-test-programs.mjs";
 import { PROJECTS, orderProjectsLpt, selectTestProjects } from "./typecheck-test-projects.mjs";
 
-export const SERIAL_BUILD_GAPS = ["@paperclipai/paperclip-runner"];
+export const SERIAL_BUILD_GAPS = [];
+const RUNNER_PACKAGE_NAME = "@paperclipai/paperclip-runner";
 export const BACKGROUND_PRIORITY = 10;
 export const DEFAULT_MAX_CONCURRENCY = 3;
 export const DEFAULT_TEST_PROGRAMS_CONCURRENCY = 3;
@@ -64,10 +65,10 @@ export function computeResourceProfile({ cpus = availableParallelism(), totalMem
       testProgramsCheckers: 1,
     };
   }
-  // 6-8+ core / >= 24 GiB (e.g. m8i.2xlarge or local dev): maximize parallelism across declarations, layers, and UI.
+  // 6-8+ core / >= 24 GiB (e.g. m6i/m7i/m8i.2xlarge or local dev): maximize parallelism across declarations, layers, and UI.
   return {
-    laneConcurrency: Math.min(6, safeCpus),
-    serverDeclCheckers: Math.min(4, Math.max(3, Math.floor(safeCpus / 2))),
+    laneConcurrency: Math.min(8, safeCpus),
+    serverDeclCheckers: Math.min(6, Math.max(4, safeCpus - 2)),
     serverLayerCheckers: 2,
     testProjectCheckers: 2,
     uiGomaxprocs: 4,
@@ -373,22 +374,15 @@ export function planLane({
     prepare.push({ name: "install test program dependencies", command: "node", args: prepareArgs });
   }
 
-  prepare.push(
-    ...selectedBuildGaps.filter((name) => SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, false)),
-    {
-      name: CLI_GUIDANCE_SAFETY,
-      command: "pnpm",
-      args: ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"],
-    },
-  );
-
   const needsRunnerVendor = [PREPARE_RUNNER_VENDOR];
   const needsDeclarations = [SERVER_DECLARATIONS];
   const tasks = [];
 
   if (runServer) {
-    // Ensure packages/paperclip-runner/dist is current once in parallel with UI / non-runner checks,
-    // then fan out server declarations and emit-only server build without racing on runner dist.
+    // Start prepare:runner-vendor immediately at t=0 of the task wave (overlapping
+    // with UI, CLI guidance safety, and release registry tests), then fan out
+    // server declarations, emit-only server build, and runner typecheck without
+    // racing on packages/paperclip-runner/dist or paperclip-eval-kernel.
     tasks.push(
       {
         name: PREPARE_RUNNER_VENDOR,
@@ -409,6 +403,12 @@ export function planLane({
     );
   }
 
+  tasks.push({
+    name: CLI_GUIDANCE_SAFETY,
+    command: "pnpm",
+    args: ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"],
+  });
+
   if (runReleaseRegistry) {
     tasks.push({ name: "release registry tests", command: "pnpm", args: ["run", "test:release-registry"] });
   }
@@ -416,6 +416,10 @@ export function planLane({
   if (selectedBuildGaps.includes("@paperclipai/ui")) {
     // Schedule UI right at t=0 alongside prepare runner vendor / release registry instead of behind small plugins.
     tasks.push(typecheckPackage("@paperclipai/ui", true));
+  }
+
+  if (selectedBuildGaps.includes(RUNNER_PACKAGE_NAME)) {
+    tasks.push(typecheckPackage(RUNNER_PACKAGE_NAME, true, runServer ? needsRunnerVendor : undefined));
   }
 
   if (programSelection.programs.length > 0 || programSelection.checkCoverage) {
@@ -452,21 +456,25 @@ export function planLane({
   }
 
   if (runServer) {
-    // Start LPT-ordered test projects (longest non-incremental project like tests/runner-e2e first)
-    // alongside incremental server test layers so they never form a late tail wave.
+    // Schedule post-declaration checks in LPT order: longest non-incremental
+    // project (`tests/runner-e2e`, ~28s), then the 4 server test layers (~17-25s),
+    // then the smaller test projects (~7-16s) so layers never starve behind tiny projects.
+    const heavyProjects = selectedProjects.filter((project) => project === "tests/runner-e2e");
+    const lighterProjects = selectedProjects.filter((project) => project !== "tests/runner-e2e");
+    const makeProjectTask = (project) => ({
+      name: `test project ${project}`,
+      command: "node",
+      args: [
+        "scripts/typecheck-test-projects.mjs",
+        "--checkers",
+        String(resources.testProjectCheckers),
+        "--reuse-declarations",
+        project,
+      ],
+      needs: needsDeclarations,
+    });
     tasks.push(
-      ...selectedProjects.map((project) => ({
-        name: `test project ${project}`,
-        command: "node",
-        args: [
-          "scripts/typecheck-test-projects.mjs",
-          "--checkers",
-          String(resources.testProjectCheckers),
-          "--reuse-declarations",
-          project,
-        ],
-        needs: needsDeclarations,
-      })),
+      ...heavyProjects.map(makeProjectTask),
       ...testLayers.map((layer) => ({
         name: `server layer ${layer}`,
         command: "node",
@@ -479,6 +487,7 @@ export function planLane({
         ],
         needs: needsDeclarations,
       })),
+      ...lighterProjects.map(makeProjectTask),
       {
         name: BUILD_SERVER_EMIT_ONLY,
         command: "pnpm",
@@ -501,7 +510,7 @@ export function planLane({
 
   tasks.push(
     ...selectedBuildGaps
-      .filter((name) => !SERIAL_BUILD_GAPS.includes(name) && name !== "@paperclipai/ui")
+      .filter((name) => !SERIAL_BUILD_GAPS.includes(name) && name !== "@paperclipai/ui" && name !== RUNNER_PACKAGE_NAME)
       .map((name) =>
         typecheckPackage(name, true, runServer && name === "paperclipai" ? needsRunnerVendor : undefined),
       ),
