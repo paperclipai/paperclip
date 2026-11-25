@@ -8,6 +8,7 @@ import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { nativeBlockerUserId } from "./native-blocker-owner.js";
+import { hasExternalChatBinding, isBlockerOwnerAssignable } from "./blocker-owner.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
@@ -1911,6 +1912,35 @@ export async function commitNativeStatusDecision(input: {
         throw error;
       }
     }
+    if (input.decision.handoffAgentId) {
+      if (
+        isConversation(issue) ||
+        issue.assigneeUserId ||
+        !originRun?.agentId ||
+        issue.assigneeAgentId !== originRun.agentId ||
+        await hasExternalChatBinding(tx as unknown as Db, input.companyId, input.issueId)
+      ) {
+        throw new NativeStatusRaceError();
+      }
+      try {
+        const [target] = await tx.select({ id: agents.id, status: agents.status }).from(agents).where(and(
+          eq(agents.id, input.decision.handoffAgentId),
+          eq(agents.companyId, input.companyId),
+        )).limit(1).for("share", { noWait: true });
+        if (
+          !target ||
+          target.status === "terminated" ||
+          !(await isBlockerOwnerAssignable(tx as unknown as Db, input.companyId, input.decision.handoffAgentId))
+        ) {
+          throw new NativeStatusRaceError();
+        }
+      } catch (error) {
+        if (error instanceof NativeStatusRaceError || record(error).code === "55P03" || record(record(error).cause).code === "55P03") {
+          throw new NativeStatusRaceError();
+        }
+        throw error;
+      }
+    }
     // Recheck under the issue lock, retaining run/proposal/document proof until
     // commit. A newer decision cannot race an earlier first-task Done assessment.
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
@@ -2439,6 +2469,11 @@ export async function commitNativeStatusDecision(input: {
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
+          // A blocker naming another agent hands it the task, so its blocker
+          // wake is delivered. Only the reporting assignee can hand it off.
+          ...(input.decision.handoffAgentId && !issue.assigneeUserId &&
+            originRun?.agentId && issue.assigneeAgentId === originRun.agentId
+            ? { assigneeAgentId: input.decision.handoffAgentId } : {}),
           actorAgentId: originRun?.agentId ?? null,
           actorUserId: null,
         },

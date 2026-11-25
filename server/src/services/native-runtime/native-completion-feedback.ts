@@ -8,6 +8,10 @@ import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./nat
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { assertAssignableAgent } from "../agent-assignability.js";
+import { agentInteractionDenial } from "../agent-interaction-policy.js";
+import { HttpError } from "../../errors.js";
+import { hasExternalChatBinding, resolveNativeBlockerOwner } from "./blocker-owner.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -171,6 +175,37 @@ export async function nativeCompletionFeedback(
     if (issue.workMode !== "standard" || issue.executionRunId !== run.id ||
         !eligibleIssueMonitorWait(issue, run.agentId)) {
       throw new Error("A monitor wait requires a persisted, eligible monitor on this task. Call set_task_monitor for the current task, confirm its schedule, then report yielded with continuation.kind monitor.");
+    }
+  }
+  if (result.reportedWorkDisposition === "blocked" && result.blocker?.owner.kind === "agent") {
+    // The saved owner must be the agent the report named, so it can be woken.
+    const owner = await resolveNativeBlockerOwner(db, { companyId: run.companyId, owner: result.blocker.owner });
+    if (owner.kind !== "agent") {
+      throw new Error(`blocker.owner names agent ${JSON.stringify(result.blocker.owner.name)}, which ${owner.kind === "unresolved" && owner.ambiguous ? "matches more than one agent" : "matches no agent"} in this company. Set blocker.owner.name to the owner's exact agent ID or full agent name, or use kind "user" for a person.`);
+    }
+    if (owner.agentId !== run.agentId) {
+      if (isConversation(issue) || await hasExternalChatBinding(db, run.companyId, issue.id)) {
+        throw new Error('This task is bound to a conversation or external chat channel, so its agent assignment cannot be handed off to another agent. Create a separate task for that agent or report a person-owned blocker with kind "user".');
+      }
+      const ownerAgent = await db.select().from(agents).where(and(
+        eq(agents.id, owner.agentId), eq(agents.companyId, run.companyId),
+      )).limit(1).then((rows) => rows[0]);
+      if (!ownerAgent || !(await evaluateAgentInvokabilityFromDb(db, ownerAgent)).invokable) {
+        throw new Error("The named blocker owner is not available in this company. Choose an available agent or name a person.");
+      }
+      try {
+        await assertAssignableAgent(db, run.companyId, owner.agentId, { kind: "work" });
+      } catch (error) {
+        if (error instanceof HttpError) {
+          throw new Error(`The named blocker owner cannot be assigned this task: ${error.message}. Choose an available agent or name a person.`);
+        }
+        throw error;
+      }
+      const denial = await agentInteractionDenial(db, { companyId: run.companyId, actorAgentId: run.agentId,
+        operation: "assign", issueId: issue.id, targetAgentId: owner.agentId, texts: [result.blocker.unblockAction] });
+      if (denial) {
+        throw new Error(`The named blocker owner cannot receive this task: agent interaction is disabled by ${denial.permission}. Choose another agent or name a person.`);
+      }
     }
   }
   const signals = normalizePrpResultSignals(result);

@@ -821,4 +821,47 @@ describe("native status authority", () => {
       expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
     }
   });
+
+  it.each(["current_track", "task_wide"] as const)("saves and wakes the agent a %s blocker names as its owner", (scope) => {
+    const action = "Review the release notes draft.";
+    expect(
+      arbitrate({
+        agentBlockerRecoverable: true,
+        assessment: assessment({
+          reportedDisposition: "blocked",
+          hasBlockingRemainingWork: true,
+          blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope, unblockAction: action },
+        }),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        handoffAgentId: "reviewer",
+        unblockDescriptor: { owner: { agentId: "reviewer" }, action },
+        // bind_blocker wakes a non-board owner; the reporting agent is not re-woken.
+        effects: [{ kind: "bind_blocker", owner: { agentId: "reviewer" }, action }],
+      }),
+    );
+  });
+
+  it.each(["current_track", "task_wide"] as const)("falls back to board without handoff when a %s named-agent blocker is assignment-locked", (scope) => {
+    const action = "Review the release notes draft.";
+    const decision = arbitrate({
+      agentBlockerRecoverable: true,
+      blockerHandoffLocked: true,
+      assessment: assessment({
+        reportedDisposition: "blocked",
+        hasBlockingRemainingWork: true,
+        blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope, unblockAction: action },
+      }),
+    });
+    expect(decision).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        unblockDescriptor: { owner: "board", action },
+        effects: [{ kind: "bind_blocker", owner: "board", action }],
+      }),
+    );
+    expect(decision.handoffAgentId).toBeUndefined();
+  });
 });

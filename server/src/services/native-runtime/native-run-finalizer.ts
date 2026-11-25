@@ -70,11 +70,13 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  ownsNativeTaskCompletion,
   supersedeHandedOffDecision,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
   gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
+import { hasExternalChatBinding, isBlockerOwnerAssignable } from "./blocker-owner.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,
@@ -1805,6 +1807,14 @@ export async function finalizeNativeRun(input: {
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
+    const namedBlockerAgentId = assessment.blocker?.ownerAgentId && assessment.blocker.ownerAgentId !== run.agentId
+      ? assessment.blocker.ownerAgentId : null;
+    const blockerHandoffLocked = namedBlockerAgentId !== null && (
+      isConversation(authoritativeIssue)
+      || !ownsNativeTaskCompletion(authoritativeIssue, run.agentId)
+      || await hasExternalChatBinding(input.db, run.companyId, authoritativeIssue.id)
+      || !(await isBlockerOwnerAssignable(input.db, run.companyId, namedBlockerAgentId))
+    );
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1826,6 +1836,7 @@ export async function finalizeNativeRun(input: {
         && isNativeEnvironmentBlocker(result),
       agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && result.reportedWorkDisposition === "blocked",
+      blockerHandoffLocked,
       hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
         && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),

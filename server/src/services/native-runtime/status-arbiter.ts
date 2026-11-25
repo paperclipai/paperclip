@@ -105,10 +105,25 @@ export interface NativeStatusDecision {
   } | null;
   effects: NativeStatusEffect[];
   blockerOwnerKind?: string;
+  /**
+   * Hand the task to this agent with the status. Set when a blocked report
+   * names another agent as unblock owner: only the assignee can be woken on
+   * a task, so the owner must hold it to act on the blocker.
+   */
+  handoffAgentId?: string;
 }
 
 function humanBlockerOwner(blocker: NativeEvidenceAssessment["blocker"]): IssueUnblockDescriptor["owner"] {
   return blocker?.ownerUserId ? { userId: blocker.ownerUserId } : "board";
+}
+
+/** The saved unblock owner: the agent the report named, the resolved human/board, or the reporting agent. */
+function blockerOwner(
+  blocker: NativeEvidenceAssessment["blocker"],
+  agentId: string,
+): IssueUnblockDescriptor["owner"] {
+  if (blocker?.ownerAgentId) return { agentId: blocker.ownerAgentId };
+  return blocker?.boardOwned ? humanBlockerOwner(blocker) : { agentId };
 }
 
 /**
@@ -199,7 +214,10 @@ export function supersedeHandedOffDecision(
     && !(effect.kind === "record_finalization_error" && effect.cause !== "workspace_finalization_failed"));
   const governed = effects.some(effect => effect.kind === "create_interaction");
   if (decision.statusAction === "preserve" || governed) {
-    return effects.length === decision.effects.length ? decision : { ...decision, effects };
+    const { handoffAgentId: _handoff, ...rest } = decision;
+    return effects.length === decision.effects.length && !decision.handoffAgentId
+      ? decision
+      : { ...rest, effects };
   }
   return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -274,6 +292,8 @@ export function arbitrateNativeStatus(input: {
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
+  /** The task cannot change agent assignee (conversation, external chat binding, non-owner run, or unassignable owner). */
+  blockerHandoffLocked?: boolean;
   /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
   hasQueuedChatRequest?: boolean;
   failureRetryCount?: number;
@@ -526,9 +546,7 @@ export function arbitrateNativeStatus(input: {
     input.hasUnresolvedIssueBlockers === true &&
     (["done", "blocked"].includes(input.assessment.reportedDisposition) || unfinishedResponseWait || input.assessment.continuation?.kind === "monitor")
   ) {
-    const owner = input.assessment.blocker?.boardOwned
-      ? humanBlockerOwner(input.assessment.blocker)
-      : { agentId: input.agentId };
+    const owner = blockerOwner(input.assessment.blocker, input.agentId);
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
@@ -650,11 +668,12 @@ export function arbitrateNativeStatus(input: {
   // an external owner, or one whose automatic continuations are spent, is still
   // bound now.
   const blocker = input.assessment.blocker;
+  const namedOtherAgent = Boolean(blocker?.ownerAgentId && blocker.ownerAgentId !== input.agentId);
   const retries = input.failureRetryCount ?? 0;
   const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
     (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
     (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&
-      blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
+      !namedOtherAgent && blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
   if (input.assessment.reportedDisposition === "blocked" && input.hasQueuedChatRequest && continuesAutomatically) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -692,6 +711,7 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker?.scope === "task_wide" &&
     !input.assessment.blocker.boardOwned &&
+    !namedOtherAgent &&
     input.agentBlockerRecoverable &&
     !input.isConversation
   ) {
@@ -719,9 +739,15 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker
   ) {
-    const owner = input.assessment.blocker.boardOwned
-      ? humanBlockerOwner(input.assessment.blocker)
-      : { agentId: input.agentId };
+    const rawOwner = blockerOwner(input.assessment.blocker, input.agentId);
+    const rawNamedAgentOwner =
+      typeof rawOwner === "object" && "agentId" in rawOwner && rawOwner.agentId !== input.agentId
+        ? rawOwner
+        : null;
+    // A conversation or external-chat-bound task cannot change assignee; fall
+    // back to board rather than binding an unwakeable agent owner.
+    const handoffOwner = rawNamedAgentOwner && !input.blockerHandoffLocked ? rawNamedAgentOwner : null;
+    const owner = rawNamedAgentOwner && input.blockerHandoffLocked ? "board" : rawOwner;
     if (input.assessment.blocker.scope === "task_wide") {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -729,6 +755,7 @@ export function arbitrateNativeStatus(input: {
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
         blockerOwnerKind: input.assessment.blocker.ownerKind,
+        ...(handoffOwner ? { handoffAgentId: handoffOwner.agentId } : {}),
         unblockDescriptor: {
           owner,
           action: input.assessment.blocker.unblockAction,
@@ -739,12 +766,26 @@ export function arbitrateNativeStatus(input: {
             owner,
             action: input.assessment.blocker.unblockAction,
           },
-          ...(input.assessment.blocker.ownerUserId ? [] : [{
-            kind: "notify_owner",
+          // A named human or other-agent owner owns the next action; do not
+          // also wake the reporting agent to repeat the blocked work.
+          ...(input.assessment.blocker.ownerUserId || rawNamedAgentOwner ? [] : [{
+            kind: "notify_owner" as const,
             agentId: input.agentId,
             reason: "task_wide_blocker_bound",
-          } as const]),
+          }]),
         ],
+      };
+    }
+    if (handoffOwner) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked",
+        toStatus: "blocked",
+        reasonCode: "current_track_blocker_waiting",
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
+        handoffAgentId: handoffOwner.agentId,
+        unblockDescriptor: { owner, action: input.assessment.blocker.unblockAction },
+        effects: [{ kind: "bind_blocker", owner, action: input.assessment.blocker.unblockAction }],
       };
     }
     return {
