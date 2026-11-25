@@ -69,7 +69,10 @@ function catalog(value: unknown, nonce: string): AntigravityModelCatalog {
  * writeback. Execution retires before ordinary results/errors. A cleanup error
  * transfers the home-retention obligation through its retired completion.
  */
-export async function discoverAntigravityModels(home: string, options: { signal?: AbortSignal } = {}): Promise<AntigravityModelCatalog> {
+export async function discoverAntigravityModels(
+  home: string,
+  options: { signal?: AbortSignal; providerPackageRoot?: string } = {},
+): Promise<AntigravityModelCatalog> {
   const deadline = new AbortController(), timer = setTimeout(() => deadline.abort(), 30_000);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
   let lease: VerifiedAcpxCommandLease | undefined, child: ChildProcessWithoutNullStreams | undefined, closed: Promise<void> | undefined;
@@ -79,7 +82,10 @@ export async function discoverAntigravityModels(home: string, options: { signal?
     signal.throwIfAborted();
     await checkAntigravityPrivateHome(home);
     signal.throwIfAborted();
-    const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec());
+    const spec = options.providerPackageRoot !== undefined
+      ? antigravityNativeDistributionSpec(process.platform, process.arch, { providerPackageRoot: options.providerPackageRoot })
+      : antigravityNativeDistributionSpec();
+    const installation = await verifyNativeAcpxInstallation(spec);
     signal.throwIfAborted();
     lease = await installation.openCommand({ signal });
     const environment = await antigravityPrivateEnvironment(home);

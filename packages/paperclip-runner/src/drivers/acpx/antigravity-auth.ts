@@ -170,7 +170,10 @@ export async function verifyAntigravityCredential(home: string, options: { signa
  * initialize/authenticate; pending provider qualification remains enforced for
  * every session and prompt by the ordinary runtime installation path.
  */
-export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLoginState {
+export function startAntigravityBrowserLogin(
+  home: string,
+  options?: { providerPackageRoot?: string },
+): AntigravityBrowserLoginState {
   const controller = new AbortController();
   activeBrowserHomes.add(home);
   let resolveStopped: () => void;
@@ -182,7 +185,10 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
     let timeout: ReturnType<typeof setTimeout> | undefined, failPending: ((error: Error) => void) | undefined;
     try {
       await checkAntigravityPrivateHome(home);
-      const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec());
+      const spec = options?.providerPackageRoot !== undefined
+        ? antigravityNativeDistributionSpec(process.platform, process.arch, { providerPackageRoot: options.providerPackageRoot })
+        : antigravityNativeDistributionSpec();
+      const installation = await verifyNativeAcpxInstallation(spec);
       lease = await installation.openCommand({ signal: controller.signal });
       const environment = await antigravityPrivateEnvironment(home);
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
