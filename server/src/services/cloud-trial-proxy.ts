@@ -15,11 +15,6 @@ import {
   type CloudTrialKeyStore,
 } from "./cloud-trial-key-store.js";
 
-// Active-run proxy tokens stay valid for the entire duration of their run
-// (revoked deterministically in `cleanup()` on run exit or immediately on
-// budget exhaustion). A 24h ceiling only prevents unbounded memory leaks if a
-// caller drops a handle without invoking `cleanup()`.
-const RUN_PROXY_TOKEN_LEAK_CEILING_MS = 24 * 60 * 60_000;
 const PROXY_REQUEST_TIMEOUT_MS = 180_000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const RUN_TOKEN_PREFIX = "pctrial_";
@@ -30,8 +25,6 @@ interface RunProxyTokenRecord {
   agentId: string;
   runId: string;
   allowedModel: string;
-  /** Safety ceiling only; refreshed on activity and revoked on run cleanup/exhaustion. */
-  safetyExpiresAtMs: number;
 }
 
 export interface PreparedCloudTrialRuntime {
@@ -59,30 +52,18 @@ function looksLikeOpenRouterLimitExhausted(status: number, bodyText: string): bo
  * revoked immediately on run exit or budget exhaustion).
  */
 export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
-  const { env, fetchImpl, now } = keyStore;
+  const { env, fetchImpl } = keyStore;
   const activeRunTokens = new Map<string, RunProxyTokenRecord>();
 
   keyStore.setOnExhausted(() => {
     activeRunTokens.clear();
   });
 
-  function pruneStaleRunTokens() {
-    const current = now();
-    for (const [token, record] of activeRunTokens) {
-      if (record.safetyExpiresAtMs <= current) {
-        activeRunTokens.delete(token);
-      }
-    }
-  }
-
-  function findAndTouchRunToken(presented: string): RunProxyTokenRecord | null {
-    pruneStaleRunTokens();
+  function findActiveRunToken(presented: string): RunProxyTokenRecord | null {
     const presentedBuf = Buffer.from(presented, "utf8");
     for (const [stored, record] of activeRunTokens) {
       const storedBuf = Buffer.from(stored, "utf8");
       if (storedBuf.length === presentedBuf.length && timingSafeEqual(storedBuf, presentedBuf)) {
-        // Keep the active run's token alive across arbitrary-length tasks and tool calls.
-        record.safetyExpiresAtMs = now() + RUN_PROXY_TOKEN_LEAK_CEILING_MS;
         return record;
       }
     }
@@ -156,7 +137,6 @@ export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
       agentId: input.agentId,
       runId: input.runId,
       allowedModel,
-      safetyExpiresAtMs: now() + RUN_PROXY_TOKEN_LEAK_CEILING_MS,
     });
 
     return {
@@ -186,7 +166,7 @@ export function createCloudTrialProxy(keyStore: CloudTrialKeyStore) {
   ): Promise<void> {
     const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
     const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : "";
-    const tokenRecord = bearer ? findAndTouchRunToken(bearer) : null;
+    const tokenRecord = bearer ? findActiveRunToken(bearer) : null;
     if (!tokenRecord) {
       const code = bearer.startsWith(RUN_TOKEN_PREFIX)
         ? "proxy_token_not_found_on_instance"

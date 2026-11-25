@@ -7,7 +7,10 @@ import {
   cloudTrialInferenceCohort,
   type CloudPostHogConfig,
 } from "../cloud-posthog-config.js";
-import { getResolvedCloudTrialInferenceEnabled } from "../cloud-posthog-cohort.js";
+import {
+  getResolvedCloudTrialInferenceEnabled,
+  onCloudTrialInferenceCohortChange,
+} from "../cloud-posthog-cohort.js";
 import {
   buildCloudDirectEvent,
   buildPostHogDirectEvent,
@@ -99,12 +102,39 @@ export function createPostHogDirectTransport(
   const now = options.now ?? (() => new Date());
   let clientPromise: Promise<PostHogNodeClient> | null = null;
   let pendingAnnouncement: { startup: WorkspaceStartup; occurredAt: string } | null = null;
+  let announcedCohort: boolean | null = null;
   let explicitCloudTrialInferenceEnabled: boolean | null = null;
 
   const effectiveCloudTrialInferenceEnabled = (): boolean =>
     explicitCloudTrialInferenceEnabled ??
     getResolvedCloudTrialInferenceEnabled() ??
     config.cloudTrialInferenceEnabled;
+
+  const syncWorkspaceGroupCohort = (enabled: boolean) => {
+    if (announcedCohort === null || announcedCohort === enabled || !clientPromise) return;
+    announcedCohort = enabled;
+    void clientPromise
+      .then((client) => {
+        client.groupIdentify({
+          groupType: POSTHOG_WORKSPACE_GROUP_TYPE,
+          groupKey: config.stackId,
+          disableGeoip: true,
+          properties: {
+            environment: config.environment,
+            cloud_trial_inference_enabled: enabled,
+            cloud_trial_inference_cohort: cloudTrialInferenceCohort(enabled),
+          },
+        });
+      })
+      .catch(() => {
+        // Best-effort analytics must never interrupt settings reads.
+      });
+  };
+
+  const unsubscribeCohortChange = onCloudTrialInferenceCohortChange((enabled) => {
+    if (explicitCloudTrialInferenceEnabled !== null) return;
+    syncWorkspaceGroupCohort(enabled);
+  });
 
   const currentConfig = (): CloudPostHogConfig => {
     const enabled = effectiveCloudTrialInferenceEnabled();
@@ -145,6 +175,7 @@ export function createPostHogDirectTransport(
     { startup, occurredAt }: { startup: WorkspaceStartup; occurredAt: string },
   ) {
     const activeConfig = currentConfig();
+    announcedCohort = activeConfig.cloudTrialInferenceEnabled;
     client.groupIdentify({
       groupType: POSTHOG_WORKSPACE_GROUP_TYPE,
       groupKey: activeConfig.stackId,
@@ -180,6 +211,7 @@ export function createPostHogDirectTransport(
 
     setCloudTrialInferenceEnabled(enabled: boolean) {
       explicitCloudTrialInferenceEnabled = enabled;
+      syncWorkspaceGroupCohort(enabled);
     },
 
     hashesPrivateRefs: false,
@@ -279,6 +311,7 @@ export function createPostHogDirectTransport(
     },
 
     async shutdown(): Promise<void> {
+      unsubscribeCohortChange();
       if (!clientPromise) return;
       const client = await clientPromise.catch(() => null);
       if (!client) return;

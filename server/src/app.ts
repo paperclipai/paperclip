@@ -761,6 +761,11 @@ export async function createApp(
   // ephemeral per-run bearer token; never requires board session cookies).
   const cloudTrialInferenceController = createCloudTrialInferenceController();
   setDefaultCloudTrialInferenceController(cloudTrialInferenceController);
+  // Warm resolved experimental settings at startup so staging overrides sync
+  // into PostHog cohort properties before the first request or event.
+  void instanceSettingsService(db)
+    .getExperimental()
+    .catch(() => {});
   app.use("/api/internal/cloud-inference", cloudInferenceInternalProxyRoutes(cloudTrialInferenceController));
 
   // Mount API routes
