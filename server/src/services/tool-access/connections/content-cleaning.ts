@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { canonicalNativeJson, nativeSha256 } from "../../native-runtime/canonical.js";
-import { RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 
 export const RESULT_TEXT_KEYS = ["summary", "result", "message", "text", "output", "content", "body"];
 
@@ -115,7 +114,7 @@ export function withoutCheckpointAnswers(profile: Record<string, unknown> | null
   return { value: next, changed: true };
 }
 
-export function checkpointProfileForRun(resultJson: unknown, profile: Record<string, unknown>): Record<string, unknown> {
-  if (!isRecord(resultJson) || typeof resultJson[RUN_CONTENT_DELETED_MARKER] !== "string") return profile;
+export function checkpointProfileForRun(contentDeletedAt: string | null | undefined, profile: Record<string, unknown>): Record<string, unknown> {
+  if (!contentDeletedAt) return profile;
   return withoutCheckpointAnswers(profile).value ?? profile;
 }

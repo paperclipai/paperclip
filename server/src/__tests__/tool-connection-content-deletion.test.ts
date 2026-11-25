@@ -574,9 +574,9 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(JSON.stringify(afterRewrite!.runnerProfileJson)).not.toContain(SECRET);
     expect(JSON.stringify(afterRewrite!.runnerProfileJson)).not.toContain("board-notes");
 
-    const written = checkpointProfileForRun(afterRewrite!.resultJson, { ...profile, sessionCheckpoint: rewritten });
+    const written = checkpointProfileForRun((afterRewrite!.resultJson as Record<string, string>).contentDeletedAt, { ...profile, sessionCheckpoint: rewritten });
     expect(JSON.stringify(written)).not.toContain(SECRET);
-    expect(checkpointProfileForRun({ summary: "live run" }, profile)).toBe(profile);
+    expect(checkpointProfileForRun(null, profile)).toBe(profile);
   });
 
   describe("Google Technical Information", () => {
