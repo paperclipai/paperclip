@@ -41,14 +41,53 @@ enum Freshness {
     },
 }
 
+/// The identity and change stamp of a host file, as one decision read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+#[cfg(unix)]
+impl HostStamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            len: metadata.len(),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+/// The current stamp of the host file, without reading its contents.
+#[cfg(unix)]
+pub(crate) fn host_stamp(path: &Path) -> Option<HostStamp> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| HostStamp::of(&metadata))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn host_stamp(_path: &Path) -> Option<HostStamp> {
+    None
+}
+
 /// Outcome of one write-back attempt.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum WriteBack {
     /// The host file now holds the refreshed credential.
     Written,
-    /// The host file is at least as fresh, holds another identity, or the
-    /// refreshed credential is not usable. Nothing was written.
-    Kept,
+    /// Nothing was written. With a stamp, the host file it carries was at
+    /// least as fresh, held another identity, or was not a usable credential;
+    /// the decision holds only while the host file keeps that stamp. Without
+    /// one, the refreshed credential itself is not usable.
+    Kept(Option<HostStamp>),
     /// The host file changed while the replacement was prepared. Retry later.
     Raced,
 }
@@ -256,13 +295,13 @@ pub(crate) fn write_back(
 ) -> io::Result<WriteBack> {
     let source_freshness = freshness(provider, source);
     if matches!(source_freshness, Freshness::Unusable | Freshness::ApiKey) {
-        return Ok(WriteBack::Kept);
+        return Ok(WriteBack::Kept(None));
     }
     let (mut current, metadata) = read_host_credential(destination)?;
     let replace = prefer_source(&source_freshness, &freshness(provider, &current), now_ms);
     current.fill(0);
     if !replace {
-        return Ok(WriteBack::Kept);
+        return Ok(WriteBack::Kept(Some(HostStamp::of(&metadata))));
     }
     replace_if_unchanged(source, destination, &metadata)
 }
@@ -307,15 +346,7 @@ fn replace_if_unchanged(
         file.write_all(source)?;
         file.sync_all()?;
         drop(file);
-        let latest = fs::symlink_metadata(destination)?;
-        if latest.dev() != metadata.dev()
-            || latest.ino() != metadata.ino()
-            || latest.len() != metadata.len()
-            || latest.mtime() != metadata.mtime()
-            || latest.mtime_nsec() != metadata.mtime_nsec()
-            || latest.ctime() != metadata.ctime()
-            || latest.ctime_nsec() != metadata.ctime_nsec()
-        {
+        if HostStamp::of(&fs::symlink_metadata(destination)?) != HostStamp::of(metadata) {
             return Ok(WriteBack::Raced);
         }
         fs::rename(&temporary, destination)?;

@@ -359,6 +359,26 @@ fn a_failed_write_back_keeps_the_session_running_and_retries() {
 }
 
 #[test]
+fn a_repaired_host_file_receives_the_refresh_it_was_kept_from() {
+    let seed = codex_at("seed", "2026-01-01T00:00:00Z");
+    let mut f = Fixture::new("codex", &seed);
+    let host = with_host_file(&mut f, true);
+    f.write("auth.json", &seed);
+    f.observer.activate().unwrap();
+    let refreshed = codex_at("refreshed", "2026-02-01T00:00:00Z");
+    f.write("auth.json", &refreshed);
+    // A host rewrite left malformed JSON: the refresh is kept back.
+    fs::write(&host, b"{\"tokens\":").unwrap();
+    fs::set_permissions(&host, fs::Permissions::from_mode(0o600)).unwrap();
+    f.observer.poll(true).unwrap();
+    assert_eq!(fs::read(&host).unwrap(), b"{\"tokens\":");
+    // The same refreshed bytes are compared again once the host file changes.
+    f.write("host/auth.json", &seed);
+    f.observer.poll(true).unwrap();
+    assert_eq!(fs::read(&host).unwrap(), bytes(&refreshed));
+}
+
+#[test]
 fn host_file_binding_seeds_the_baseline_and_needs_an_acpx_file_session() {
     assert!(parse_host_credential_file(Some("relative/auth.json".into())).is_err());
     assert_eq!(parse_host_credential_file(Some("".into())).unwrap(), None);

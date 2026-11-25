@@ -106,10 +106,10 @@ fn replacement_is_atomic_and_keeps_the_file_mode() {
     assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
     assert_eq!(fs::read(&host).unwrap(), refreshed);
     assert_eq!(directory.entries(), 1, "no temporary file remains");
-    // A second pass is a tie and leaves the file alone.
+    // A second pass is a tie and leaves the file alone, tied to that file.
     assert_eq!(
         write_back("codex", &refreshed, &host, NOW).unwrap(),
-        WriteBack::Kept
+        WriteBack::Kept(host_stamp(&host))
     );
 }
 

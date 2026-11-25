@@ -60,8 +60,9 @@ pub(crate) struct CredentialObserver {
     watcher: Option<RecommendedWatcher>,
     dirty: Arc<AtomicBool>,
     last_scan: Instant,
-    /// Digest of the last refreshed credential settled against the host file.
-    written: Option<String>,
+    /// Digest of the last refreshed credential settled against the host file,
+    /// with the host file stamp that decision depends on, if any.
+    written: Option<(String, Option<credential_write_back::HostStamp>)>,
     /// Digest whose write-back failure was already reported.
     reported: Option<String>,
 }
@@ -363,7 +364,14 @@ impl CredentialObserver {
     /// per credential, and the next scan retries.
     fn write_back(&mut self, provider: &str, bytes: &[u8], host_file: &Path) {
         let digest = format!("{:x}", Sha256::digest(bytes));
-        if self.written.as_deref() == Some(digest.as_str()) {
+        // A kept decision holds only while the host file is unchanged, so a
+        // repaired or replaced host file is compared again.
+        if self.written.as_ref().is_some_and(|(written, stamp)| {
+            *written == digest
+                && stamp.as_ref().is_none_or(|stamp| {
+                    credential_write_back::host_stamp(host_file).as_ref() == Some(stamp)
+                })
+        }) {
             return;
         }
         match credential_write_back::write_back(
@@ -372,8 +380,14 @@ impl CredentialObserver {
             host_file,
             credential_write_back::now_ms(),
         ) {
-            Ok(WriteBack::Written | WriteBack::Kept) => {
-                self.written = Some(digest);
+            Ok(WriteBack::Kept(stamp)) => {
+                self.written = Some((digest, stamp));
+                self.reported = None;
+            }
+            // The next scan reads the replaced host file and settles a tie,
+            // recording the stamp of the file actually in place.
+            Ok(WriteBack::Written) => {
+                self.written = None;
                 self.reported = None;
             }
             Ok(WriteBack::Raced) => self.dirty.store(true, Ordering::Relaxed),
