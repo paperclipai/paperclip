@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { antigravitySwarmQuotaScope } from "./antigravity-swarm.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
@@ -59,6 +60,7 @@ import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
+import { runContentDeleted } from "./tool-access/connections/run-session-reset.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
@@ -1985,6 +1987,11 @@ export function heartbeatService(
         environmentsSvc, instanceSettings,
       });
     },
+    // A recorded, unfulfilled /swarm draws on the Antigravity CLI's own quota.
+    providerQuotaScope: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      return issueId ? antigravitySwarmQuotaScope(db, { companyId: run.companyId, issueId, runId: run.id, agent, context: run.contextSnapshot }) : null;
+    },
   });
 
   async function executeRunAttempt(
@@ -2280,6 +2287,7 @@ export function heartbeatService(
         return;
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
+      if (runtime.sessionId && await runContentDeleted(db, agent.companyId, runtime.lastRunId)) runtime.sessionId = null;
       const context = parseObject(run.contextSnapshot);
       // Workspace recovery can restart the failed run's sandbox to save its
       // files while this replay prepares. Wait for that stop to settle; the

@@ -1253,6 +1253,10 @@ async function main() {
       preflight: options.antigravityJourneyPreflight, recoverFile: options.antigravityJourneyRecover });
     return;
   }
+  if (executions.some(execution => execution.task.flow === "antigravity_swarm_journey")) {
+    const { ANTIGRAVITY_SWARM_RECIPE } = await import("./antigravity-swarm-cases.js");
+    throw new Error(`The Antigravity swarm cells are attended; run them with the live recipe in ${ANTIGRAVITY_SWARM_RECIPE}.`);
+  }
   if (options.antigravityJourneyConfig || options.antigravityJourneyPreflight || options.antigravityJourneyRecover) throw new Error("Antigravity journey options require its explicit registered cell.");
   if (executions.some(execution => execution.task.flow === "github_review_journey")) {
     if (options.connectionConfig) throw new Error("Use --github-review-config for the GitHub journey.");

@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse, type Page, type Route, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type WebSocketRoute } from "@playwright/test";
 
 test.describe.configure({ timeout: 90_000 });
 test.use({ actionTimeout: 10_000 });
@@ -314,12 +314,13 @@ for (const status of [403, 404]) test(`a genuine ${status} replaces cached task 
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expectCachedTask(page, data.issue);
-    const refuse = (route: Route) => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } });
-    // A task restored from the saved cache may take its core read from the
-    // page's chat bootstrap instead of `?view=core`, so refuse both.
-    await page.route("**/api/issues/*?view=core", refuse);
-    await page.route("**/api/issues/*/chat-bootstrap", refuse);
-    await page.route("**/api/companies/*/issues/chat-bootstrap?*", refuse);
+    // The bootstrap omits inaccessible tasks. Mirror that alongside both
+    // detail endpoints so either cache revalidation path observes the denial.
+    await page.route(url => url.pathname === `/api/companies/${data.company.id}/issues/chat-bootstrap`,
+      route => route.fulfill({ json: { items: [] } }));
+    const taskPaths = new Set([`/api/issues/${data.issue.id}`, `/api/issues/${data.issue.identifier}`]);
+    await page.route(url => taskPaths.has(url.pathname),
+      route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
     await page.reload();
     await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);

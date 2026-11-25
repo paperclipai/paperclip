@@ -5,8 +5,9 @@ import { Worker } from "node:worker_threads";
  * release refused. Saves that recovery exhausted under an older version are
  * retried once under the new one (workspace-recovery-capture-policy).
  * 2: absolute or escaping symlinks are dropped and recorded instead of refusing the save.
+ * 3: named pipes are excluded and recorded like sockets.
  */
-export const REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION = 2;
+export const REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION = 3;
 
 /**
  * A portable, streaming workspace archive. This function is intentionally
@@ -468,7 +469,7 @@ export async function workspaceArchive(input: {
             if (!tracked) { excludedPaths.add(next); continue; }
           }
         }
-        if (stat.isSocket()) {
+        if (stat.isSocket() || stat.isFIFO()) {
           // Runtime IPC endpoints have no portable file contents. Record the
           // exclusion without removing the endpoint or dropping adjacent work.
           excludedPaths.add(next); continue;

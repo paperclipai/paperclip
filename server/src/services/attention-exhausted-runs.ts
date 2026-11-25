@@ -1,5 +1,7 @@
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
-import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+
+import { providerWorkResumed, usageLimitFailure } from "./attention-provider-limits.js";
 
 export function listAttentionExhaustedRuns(db: Db, companyId: string) {
   // Recovery can revisit an exhausted run. Deduplicate its historical events
@@ -31,6 +33,17 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       status: heartbeatRuns.status,
       error: heartbeatRuns.error,
       errorCode: heartbeatRuns.errorCode,
+      providerLimited: sql<boolean>`${usageLimitFailure} is true`,
+      providerResumed: sql<boolean>`case when ${usageLimitFailure} then ${providerWorkResumed} else false end`,
+      providerRetryAt: sql<string | null>`${heartbeatRuns.resultJson}#>>'{providerFailure,retryAt}'`,
+      account: sql<string | null>`coalesce(nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,subscriptionId}', ''),
+        nullif(${heartbeatRuns.contextSnapshot}#>>'{aiConnection,connectionId}', ''))`,
+      settledProviderHold: sql<boolean>`${heartbeatRuns.errorCode} = 'native_provider_usage_limit' and exists(
+        select 1 from ${issueRecoveryActions} hold where hold.company_id = ${heartbeatRuns.companyId}
+          and hold.source_issue_id = coalesce(${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId})
+          and hold.evidence->>'runId' = ${heartbeatRuns.id}::text and hold.cause = 'native_provider_usage_limit'
+          and hold.status in ('resolved','cancelled'))`,
+      boundTaskId: sql<string | null>`coalesce(${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId})`,
       // Preserve JSON types and issueId/taskId fallback semantics without
       // transferring prompts, transcripts, or the rest of the run context.
       contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(

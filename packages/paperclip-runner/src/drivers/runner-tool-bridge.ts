@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { re2PortableSchema } from "./re2-schema-patterns.js";
 import { appendSemanticToolReceipt, semanticCanonicalJson as canonicalJson, semanticInputSha256, type SemanticToolReceipt } from "./semantic-tool-receipt.js";
 import {
   createServer,
@@ -67,6 +68,9 @@ export interface RunnerToolBridgeOptions {
   scopeToken?: () => string | null;
   /** Receives one JSON diagnostic per call accepted after input coercion. */
   onDiagnostic?: (message: string) => void;
+  /** Regex dialect of the client reading tools/list. "re2" serves RE2-portable
+   * patterns (Antigravity CLI); calls are still validated with the originals. */
+  schemaPatternDialect?: "ecma" | "re2";
 }
 
 export interface RunnerToolBridge {
@@ -167,12 +171,15 @@ export async function startRunnerToolBridge(
     }
   }
   const admittedTools = [...visibleTools, ...privateTools];
+  const servedTools = options.schemaPatternDialect === "re2"
+    ? visibleTools.map(tool => ({ ...tool, inputSchema: re2PortableSchema(tool.inputSchema) as Record<string, unknown> }))
+    : visibleTools;
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
     secret,
     preserveToolNames: options.preserveToolNames === true,
-    visibleTools,
+    visibleTools: servedTools,
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
     rejections: new RepeatedToolInputRejectionGuard(),

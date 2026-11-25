@@ -214,7 +214,7 @@ email setup, and identity confirmation were removed; verify those UI flows via
 [chat adapters E2E](../../tests/e2e/chat-adapters-ui-providers.spec.ts) and manual
 checks). Provider-specific live setup is not implied.
 
-[Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+[Telegram draft and progress integration](../../server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts)
 also covers bounded Telegram subscription recovery at startup and after committed
 configuration changes, saved retry deadlines, rollback, and parking pending
 repair while an endpoint or connection is inactive. The provider responses are

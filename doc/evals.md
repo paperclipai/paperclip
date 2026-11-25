@@ -46,7 +46,9 @@ pending-permission Stop and provider-loss oracles. Separate
 check one exact-model receipt per model ID. Chat and instruction evals can run
 under Antigravity with `--profile runner-acpx-antigravity`. Registration is not a
 live pass; pending cells need a company-bound candidate grant that the harness
-stages itself.
+stages itself. The explicit-only [Antigravity swarm suite](../tests/runner-e2e/SUITES.md#google-antigravity-swarm)
+lists five attended native `/swarm` cells; they run through a live recipe, not
+an automated executor.
 
 The public directory calls full-product testing **E2E tests**. Suites describe
 what is tested; deployment targets describe which app instance was tested.

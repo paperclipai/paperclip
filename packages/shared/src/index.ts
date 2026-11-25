@@ -201,6 +201,8 @@ export type {
   AttentionTaskIndex,
   AttentionFeedView,
   AttentionItem,
+  AttentionProviderLimit,
+  AttentionRunHistoryEntry,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
@@ -1652,6 +1654,7 @@ export type {
   ToolConnectionStoredContentCounts,
   ToolConnectionContentDeletion,
   ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionReason,
   ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -2175,6 +2178,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,
@@ -3150,4 +3154,4 @@ export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
-export { parseLeadingUserCommand, type LeadingUserCommand } from "./leading-user-command.js";
+export { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";

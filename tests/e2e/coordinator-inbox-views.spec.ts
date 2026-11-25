@@ -92,7 +92,7 @@ for (const mobile of [false, true]) test(`Mine retains Inbox behavior inside Tas
       await page.keyboard.press("u");
       await expect(unreadRow).toBeVisible();
       await page.getByRole("link", { name: "Inbox", exact: true }).click();
-      const inbox = page.getByRole("region", { name: "Needs You", exact: true });
+      const inbox = page.getByRole("region", { name: "Inbox", exact: true });
       await expect(inbox.getByRole("toolbar", { name: "Decisions controls" })).toBeVisible();
       await expect(inbox.getByRole("button", { name: "Filter decisions by assignee, Assigned to you", exact: true })).toBeVisible();
       await page.setViewportSize({ width: 1024, height: 720 });

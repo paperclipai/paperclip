@@ -643,6 +643,7 @@ interface IssueChatThreadProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    nativeCommand?: "swarm",
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
@@ -6226,12 +6227,14 @@ export function IssueChatThread({
     onRefresh: onRefreshLatestComments,
   });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
-        await (runSettings
+        await (nativeCommand
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand)
+          : runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
       } catch (error) {

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AttentionCloseMode, AttentionItem, AttentionPersonalView, AttentionReceipt } from "@paperclipai/shared";
+import type { AttentionCloseMode, AttentionItem, AttentionFeedView, AttentionReceipt } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { attentionApi } from "@/api/attention";
 import { inboxDismissalsApi } from "@/api/inboxDismissals";
@@ -24,7 +24,7 @@ interface AttentionViewFeedOptions {
  */
 export function useAttentionViewFeed(
   companyId: string | null | undefined,
-  view: AttentionPersonalView,
+  view: AttentionFeedView,
   options: AttentionViewFeedOptions = {},
 ) {
   const { userId } = useCoordinatorWorkspaceEnabled();
