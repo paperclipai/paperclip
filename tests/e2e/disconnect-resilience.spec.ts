@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse, type Page, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type Route, type WebSocketRoute } from "@playwright/test";
 
 test.describe.configure({ timeout: 90_000 });
 test.use({ actionTimeout: 10_000 });
@@ -308,26 +308,25 @@ test("a legacy Inbox reload retains its saved task rows during a 20-second outag
   }
 });
 
-// page.route does not see a request that a controlling service worker sends,
-// and whether the worker controls the page by the reload depends on timing.
-test.describe("genuine refusals", () => {
-  test.use({ serviceWorkers: "block" });
-
-  for (const status of [403, 404]) test(`a genuine ${status} replaces cached task content with readable copy`, async ({ page, request }) => {
-    const data = await fixture(request);
-    try {
-      await page.goto(data.route);
-      await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
-      await expectCachedTask(page, data.issue);
-      await page.route("**/api/issues/*?view=core", route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
-      await page.reload();
-      await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
-      await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
-      await expect(page.locator("[data-connection-status]")).toHaveCount(0);
-    } finally {
-      await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
-    }
-  });
+for (const status of [403, 404]) test(`a genuine ${status} replaces cached task content with readable copy`, async ({ page, request }) => {
+  const data = await fixture(request);
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expectCachedTask(page, data.issue);
+    const refuse = (route: Route) => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } });
+    // A task restored from the saved cache may take its core read from the
+    // page's chat bootstrap instead of `?view=core`, so refuse both.
+    await page.route("**/api/issues/*?view=core", refuse);
+    await page.route("**/api/issues/*/chat-bootstrap", refuse);
+    await page.route("**/api/companies/*/issues/chat-bootstrap?*", refuse);
+    await page.reload();
+    await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
+    await expect(page.locator("[data-connection-status]")).toHaveCount(0);
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
 });
 
 test("signing out clears saved query data before a later outage reload", async ({ page, request }) => {
