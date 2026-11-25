@@ -1126,9 +1126,11 @@ describe("agent live run routes", () => {
       adapterType: "paperclip_runner",
       status: "active",
     });
-    mockHeartbeatService.wakeup.mockResolvedValueOnce(null);
-    const { db } = createLiveRunsDbStub([{ reason: receiptReason }]);
-    const res = await requestApp(await createApp(db), url => request(url)
+    mockHeartbeatService.wakeup.mockImplementationOnce(async (_id: string, opts?: { onSkip?: (reason: string) => void }) => {
+      opts?.onSkip?.(receiptReason);
+      return null;
+    });
+    const res = await requestApp(await createApp(), url => request(url)
       .post(`/api/agents/${routeAgentId}/wakeup`)
       .send({ source: "on_demand", triggerDetail: "manual" }));
     expect(res.status, JSON.stringify(res.body)).toBe(202);

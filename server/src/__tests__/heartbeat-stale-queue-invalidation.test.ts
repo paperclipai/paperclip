@@ -573,16 +573,21 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })
       .where(eq(agents.id, agentId));
 
+    let observedSkipReason: string | null = null;
     const run = await heartbeat.wakeup(agentId, {
       source: "on_demand",
       triggerDetail: "manual",
       manualUserWake: true,
       payload,
+      onSkip: (skipReason) => {
+        observedSkipReason = skipReason;
+      },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
     });
 
     expect(run).toBeNull();
+    expect(observedSkipReason).toBe("heartbeat.task_required");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
 
     const [wakeup] = await db

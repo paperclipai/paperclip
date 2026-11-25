@@ -3083,6 +3083,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // A temporary refusal must leave the handoff retryable, without burning
       // its one durable receipt ID on a skipped wake.
       if (caseRequest) return { created: false };
+      opts.onSkip?.(skipReason);
       if (executionWaitRequestId) {
         const waitSaved = await writeDeferredExecutionWait(db, { companyId: agent.companyId, requestId: executionWaitRequestId }, {
           reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
@@ -3266,7 +3267,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const genericTimerWake = source === "timer" && !hasTaskScope && !wakeCommentId;
     // Old or direct timer producers cannot create a doomed taskless Runner
     // run. Explicit session restoration above can supply a real task scope.
-    if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
+    if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) {
+      opts.onSkip?.("heartbeat.task_required");
+      return null;
+    }
     if (!hasTaskScope && !supportsUnscopedHeartbeat(agent)) {
       await writeSkippedHeartbeatRequest("heartbeat.task_required", {
         reason:

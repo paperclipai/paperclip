@@ -74,7 +74,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agents as agentsTable, agentWakeupRequests, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { sha256Digest } from "../services/feedback-redaction.js";
 import {
@@ -1761,38 +1761,20 @@ export function agentRoutes(
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
+    skipReason?: string | null,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
     if (!issueId) {
-      const hasTaskField = Boolean(
-        (typeof payload?.taskId === "string" && payload.taskId.trim()) ||
-        (typeof payload?.taskKey === "string" && payload.taskKey.trim()),
-      );
-      if (!hasTaskField && !supportsUnscopedHeartbeat(agent)) {
-        const latestSkipped = await db
-          .select({ reason: agentWakeupRequests.reason })
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, agent.companyId),
-              eq(agentWakeupRequests.agentId, agent.id),
-              eq(agentWakeupRequests.status, "skipped"),
-            ),
-          )
-          .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-        if (latestSkipped?.reason === "heartbeat.task_required") {
-          return {
-            status: "skipped" as const,
-            reason: "task_required",
-            message: "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
-            issueId: null,
-            executionRunId: null,
-            executionAgentId: null,
-            executionAgentName: null,
-          };
-        }
+      if (skipReason === "heartbeat.task_required" && !supportsUnscopedHeartbeat(agent)) {
+        return {
+          status: "skipped" as const,
+          reason: "task_required",
+          message: "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+          issueId: null,
+          executionRunId: null,
+          executionAgentId: null,
+          executionAgentName: null,
+        };
       }
       return {
         status: "skipped" as const,
@@ -6320,7 +6302,11 @@ export function agentRoutes(
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
-    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, payload: Record<string, unknown> | null) => unknown | Promise<unknown>;
+    skippedResponse: (
+      agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+      payload: Record<string, unknown> | null,
+      skipReason: string | null,
+    ) => unknown | Promise<unknown>;
   };
   const handleWakeupRoute = async (
     req: Request,
@@ -6515,9 +6501,13 @@ export function agentRoutes(
         ),
       );
     }
+    let wakeSkipReason: string | null = null;
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
+      onSkip: (skipReason) => {
+        wakeSkipReason = skipReason;
+      },
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
@@ -6551,7 +6541,7 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      res.status(202).json(await opts.skippedResponse(agent, wakePayload, wakeSkipReason));
       return;
     }
 
@@ -6591,7 +6581,7 @@ export function agentRoutes(
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     await handleWakeupRoute(req, res, {
       source: req.body.source,
-      skippedResponse: (agent, payload) => buildSkippedWakeupResponse(agent, payload),
+      skippedResponse: (agent, payload, skipReason) => buildSkippedWakeupResponse(agent, payload, skipReason),
     });
   });
 
