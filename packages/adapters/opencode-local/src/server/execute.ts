@@ -63,7 +63,7 @@ import {
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
-import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
+import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes, writeManagedOpenCodeMcpConfig } from "./runtime-config.js";
 import { usesOpenCodeV2 } from "./version.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
@@ -228,12 +228,27 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { paperclipManagedMcp, ...context } = ctx.context;
+  const managedMcp = parseObject(paperclipManagedMcp);
+  const managedMcpOnly = managedMcp.managedMcpOnly === true;
+  const managedApiBaseUrl = asString(managedMcp.apiBaseUrl, "").trim();
+  const managedGateways = managedMcpOnly && Array.isArray(managedMcp.gateways)
+    ? managedMcp.gateways.flatMap((raw) => {
+      const gateway = parseObject(raw);
+      const name = asString(gateway.name, "").trim();
+      const endpointPath = asString(gateway.endpointPath, "").trim();
+      const bearerToken = asString(gateway.bearerToken, "").trim();
+      return name && endpointPath && bearerToken ? [{ name, endpointPath, bearerToken }] : [];
+    }) : [];
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  if (executionTargetIsRemote && managedMcpOnly) {
+    throw new Error("Managed MCP handoff is not supported for remote OpenCode execution");
+  }
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -332,8 +347,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  if (managedGateways.length > 0) {
+    try {
+      const apiUrl = new URL(managedApiBaseUrl);
+      if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password) throw new Error();
+    } catch {
+      throw new Error("Managed MCP requires a valid effective PAPERCLIP_API_URL");
+    }
+  }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
-    env, config,
+    env, config, managedMcpOnly,
     sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
   });
   const localRuntimeConfigHome =
@@ -521,6 +544,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec,
         signal: ctx.signal,
       });
+      if (managedMcpOnly) {
+        preparedRuntimeConfig.env.OPENCODE_CONFIG = "";
+        preparedRuntimeConfig.env.OPENCODE_CONFIG_DIR = "";
+        await writeManagedOpenCodeMcpConfig({
+          configHome: localRuntimeConfigHome,
+          apiBaseUrl: managedApiBaseUrl,
+          gateways: managedGateways,
+          v2: opencodeV2,
+        });
+        if (preparedRuntimeConfig.env.OPENCODE_CONFIG_CONTENT) {
+          const inline = parseObject(JSON.parse(preparedRuntimeConfig.env.OPENCODE_CONFIG_CONTENT));
+          delete inline.mcp;
+          preparedRuntimeConfig.env.OPENCODE_CONFIG_CONTENT = JSON.stringify(inline);
+        }
+      }
       if (opencodeV2) {
         preparedRuntimeConfig.env.PWD = effectiveExecutionCwd;
         loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
@@ -662,7 +700,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Remote targets receive only the prepared environment, never host keys.
       const accountingEnv = executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
       const runAttempt = async (resumeSessionId: string | null) => {
-        await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+        await hydrateFreshSessionHandoff({ ...ctx, context }, { resumedSession: Boolean(resumeSessionId) });
         const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
         const prompt = joinPromptSections([
           selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),

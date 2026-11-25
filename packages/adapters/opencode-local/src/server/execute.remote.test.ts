@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -129,6 +129,129 @@ describe("opencode remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it.each([true, false])("delivers local managed MCP in the native version format (v2=%s)", async (v2) => {
+    vi.stubEnv("PAPERCLIP_API_URL", undefined);
+    vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-managed-mcp-"));
+    cleanupDirs.push(workspace);
+    const configHome = path.join(workspace, "config");
+    await mkdir(path.join(configHome, "opencode"), { recursive: true });
+    await writeFile(path.join(configHome, "opencode", "opencode.json"),
+      JSON.stringify({ provider: { selected: { options: { baseURL: "https://provider.example" } } }, mcp: { foreign: { type: "local" } } }));
+    versionCheck.mockResolvedValue(v2);
+    let observed: any;
+    let configPath = "";
+    const logs: unknown[] = [];
+    const metadata: unknown[] = [];
+    runChildProcess.mockImplementationOnce(async (_runId, _command, _args, options) => {
+      const env = (options as any).env;
+      configPath = path.join(env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+      observed = JSON.parse(await readFile(configPath, "utf8"));
+      expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+      expect((options as any).stdin).not.toContain("fixture-managed-token");
+      expect(env.OPENCODE_CONFIG).toBe("");
+      expect(env.OPENCODE_CONFIG_DIR).toBe("");
+      expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).mcp).toBeUndefined();
+      return { stdout: "", stderr: "", exitCode: 0, signal: null, timedOut: false, pid: 123, startedAt: new Date().toISOString() };
+    });
+    await execute({
+      runId: "managed-mcp", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "selected/model",
+        managedAiConnection: { provider: "openai" },
+        promptTemplate: "{{context.paperclipManagedMcp.gateways}}",
+        env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_API_URL: "https://ignored.example/api", OPENCODE_ALLOW_ALL_MODELS: "1",
+          OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { foreign: { type: "local" } }, provider: { extra: {} } }) } },
+      context: { paperclipManagedMcp: { managedMcpOnly: true, apiBaseUrl: "https://paperclip.example/api", gateways: [
+        { name: "Assigned!", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-managed-token" },
+        { name: "assigned", endpointPath: "/mcp/gateways/gw_other", bearerToken: "fixture-other-token" },
+      ] } },
+      onLog: async (...args) => { logs.push(args); }, onMeta: async (data) => { metadata.push(data); },
+    });
+    const server = { type: "remote", url: "https://paperclip.example/mcp/gateways/gw_test", oauth: false, headers: { Authorization: "Bearer fixture-managed-token" } };
+    const servers = { assigned: server, "paperclip-assigned-2": { ...server,
+      url: "https://paperclip.example/mcp/gateways/gw_other", headers: { Authorization: "Bearer fixture-other-token" } } };
+    expect(observed.mcp).toEqual(v2 ? { servers } : servers);
+    expect(observed.provider.selected.options.baseURL).toBe("https://provider.example");
+    expect(JSON.parse(await readFile(path.join(configHome, "opencode", "opencode.json"), "utf8")).mcp.foreign).toBeDefined();
+    expect(JSON.stringify([logs, metadata])).not.toContain("fixture-managed-token");
+    expect(JSON.stringify([logs, metadata])).not.toContain("fixture-other-token");
+    await expect(stat(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(path.join(configHome, "opencode", "opencode.json"), "utf8")).mcp.foreign).toBeDefined();
+  });
+
+  it.each([
+    ["opencode.jsonc", true], ["opencode.jsonc", false], ["config.json", true], ["config.json", false],
+  ])("rejects alternate %s before launching (gateway=%s)", async (filename, withGateway) => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-managed-jsonc-"));
+    cleanupDirs.push(workspace);
+    const home = path.join(workspace, "config");
+    const dir = path.join(home, "opencode");
+    await mkdir(dir, { recursive: true });
+    const original = '{"mcp":{"foreign":{"type":"local","command":["foreign"]}}}';
+    await writeFile(path.join(dir, filename), original);
+    const logs: unknown[] = [];
+    await expect(execute({
+      runId: "jsonc", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "selected/model", env: { XDG_CONFIG_HOME: home, OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: { paperclipManagedMcp: { managedMcpOnly: true, apiBaseUrl: "https://paperclip.example", gateways: withGateway ? [
+        { name: "assigned", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-secret-jsonc" },
+      ] : [] } }, onLog: async (...args) => { logs.push(args); }, onMeta: async (data) => { logs.push(data); },
+    })).rejects.toThrow(filename);
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(await readFile(path.join(dir, filename), "utf8")).toBe(original);
+    expect(JSON.stringify(logs).includes("fixture-secret-jsonc")).toBe(false);
+  });
+
+  it.each([true, false])("writes an empty managed MCP selection and preserves the provider (v2=%s)", async (v2) => {
+    vi.stubEnv("PAPERCLIP_API_URL", undefined);
+    vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-managed-empty-"));
+    cleanupDirs.push(workspace);
+    const home = path.join(workspace, "config");
+    await mkdir(path.join(home, "opencode"), { recursive: true });
+    await writeFile(path.join(home, "opencode", "opencode.json"), JSON.stringify({
+      provider: { selected: {} }, mcp: { foreign: { type: "local" } },
+    }));
+    versionCheck.mockResolvedValue(v2);
+    let observed: any;
+    runChildProcess.mockImplementationOnce(async (_runId, _command, _args, options) => {
+      observed = JSON.parse(await readFile(path.join((options as any).env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+      expect(JSON.parse((options as any).env.OPENCODE_CONFIG_CONTENT).mcp).toBeUndefined();
+      return { stdout: "", stderr: "", exitCode: 0, signal: null, timedOut: false, pid: 123, startedAt: new Date().toISOString() };
+    });
+    await execute({
+      runId: "empty", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "selected/model", env: {
+        XDG_CONFIG_HOME: home, OPENCODE_ALLOW_ALL_MODELS: "1",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { foreign: { type: "local" } } }),
+      } },
+      context: { paperclipManagedMcp: { managedMcpOnly: true, gateways: [] } }, onLog: async () => {},
+    });
+    expect(observed.mcp).toEqual(v2 ? { servers: {} } : {});
+    expect(observed.provider.selected).toBeDefined();
+  });
+
+  it("rejects missing effective API origin before delivering a token", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", undefined);
+    vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-managed-origin-"));
+    cleanupDirs.push(workspace);
+    const logs: unknown[] = [];
+    await expect(execute({
+      runId: "origin", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "selected/model", env: { OPENCODE_ALLOW_ALL_MODELS: "1", PAPERCLIP_API_URL: "https://forged.example" } },
+      context: { paperclipManagedMcp: { managedMcpOnly: true, gateways: [
+        { name: "assigned", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-origin-token" },
+      ] } }, onLog: async (...args) => { logs.push(args); }, onMeta: async (data) => { logs.push(data); },
+    })).rejects.toThrow("PAPERCLIP_API_URL");
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(JSON.stringify(logs).includes("fixture-origin-token")).toBe(false);
   });
 
   it("uses the realized remote workspace for OpenCode 2 version detection and execution", async () => {

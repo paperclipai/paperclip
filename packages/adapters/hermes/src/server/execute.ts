@@ -346,6 +346,19 @@ export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+  const { paperclipManagedMcp, ...safeContext } = ctx.context ?? {};
+  const managedMcp = paperclipManagedMcp && typeof paperclipManagedMcp === "object"
+    ? paperclipManagedMcp as Record<string, unknown> : {};
+  const managedMcpOnly = managedMcp.managedMcpOnly === true;
+  const managedApiBaseUrl = cfgString(managedMcp.apiBaseUrl)?.trim() ?? "";
+  const gateways = managedMcpOnly && Array.isArray(managedMcp.gateways)
+    ? managedMcp.gateways.flatMap((raw: unknown) => {
+      const gateway = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const name = cfgString(gateway.name)?.trim();
+      const endpointPath = cfgString(gateway.endpointPath)?.trim();
+      const bearerToken = cfgString(gateway.bearerToken)?.trim();
+      return name && endpointPath && bearerToken ? [{ name, endpointPath, bearerToken }] : [];
+    }) : [];
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
@@ -450,7 +463,7 @@ export async function execute(
   }
 
   const sessionId = persistSession ? prevSessionId : undefined;
-  const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
+  const prompt = buildPrompt({ ...ctx, context: safeContext }, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
@@ -582,14 +595,56 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  let restoreMcp: (() => Promise<void>) | undefined;
+  if (managedMcpOnly) {
+    if (!config.managedAiConnection || !env.HERMES_HOME) throw new Error("Managed MCP requires an isolated Hermes home");
+    if (gateways.length > 0) {
+      try {
+        const apiUrl = new URL(managedApiBaseUrl);
+        if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password) throw new Error();
+      } catch {
+        throw new Error("Managed MCP requires a valid effective PAPERCLIP_API_URL");
+      }
+    }
+    const configPath = path.join(env.HERMES_HOME, "config.yaml");
+    const existing = await fs.readFile(configPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (existing && (/^\s*mcp_servers\s*:/m.test(existing) || existing.trimStart().startsWith("{"))) {
+      throw new Error("Cannot safely add managed MCP to this Hermes configuration");
+    }
+    const usedNames = new Set<string>();
+    const servers = Object.fromEntries(gateways.map(({ name, endpointPath, bearerToken }, index) => {
+      if (!/^\/mcp\/gateways\/[a-zA-Z0-9_-]+$/.test(endpointPath)) throw new Error("Invalid managed MCP gateway path");
+      const baseName = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || `gateway-${index + 1}`;
+      let managedName = baseName;
+      let suffix = 2;
+      while (usedNames.has(managedName)) managedName = `paperclip-${baseName}-${suffix++}`;
+      usedNames.add(managedName);
+      return [managedName, { url: new URL(endpointPath, managedApiBaseUrl).toString(),
+        headers: { Authorization: `Bearer ${bearerToken}` } }];
+    }));
+    restoreMcp = async () => {
+      if (existing === null) await fs.rm(configPath, { force: true });
+      else await fs.writeFile(configPath, existing, { mode: 0o600 });
+    };
+    try {
+      if (existing !== null) await fs.chmod(configPath, 0o600);
+      await fs.writeFile(configPath, `${existing ?? ""}\nmcp_servers: ${JSON.stringify(servers)}\n`, { mode: 0o600 });
+    } catch (error) {
+      await restoreMcp();
+      throw error;
+    }
+  }
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd, env, timeoutSec, graceSec, onLog: wrappedOnLog, onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    await restoreMcp?.();
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");

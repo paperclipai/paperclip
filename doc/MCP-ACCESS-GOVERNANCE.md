@@ -61,6 +61,15 @@ Plain prose version of the same graph:
 
 If you remember one thing: **profile says *can this agent see the tool*; policy says *is this exact call allowed right now***.
 
+OpenCode and Hermes require `managedMcpOnly: true` in the adapter configuration
+to receive eligible managed gateways through native MCP configuration with
+run-scoped tokens. OpenCode handoff is local only. Hermes requires an isolated
+managed AI home and rejects an existing MCP block rather than importing it.
+Codex retains its existing default; `managedMcpOnly: false` opts it out.
+An empty eligible gateway set still disables unmanaged MCP servers. OpenCode
+rejects alternate `opencode.jsonc` and `config.json` configurations for this
+handoff. A nonempty handoff requires the server's configured `PAPERCLIP_API_URL`.
+
 ## Canonical integration model
 
 This runbook covers the MCP gateway slice of the broader Apps v2 integration

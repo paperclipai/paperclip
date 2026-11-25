@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { HERMES_CLI } from "../shared/constants.js";
 import { execute, resolveHermesCommand } from "./execute.js";
@@ -17,6 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
   await rm(testHome, { recursive: true, force: true });
@@ -30,6 +31,107 @@ async function writeExecutable(filePath: string, contents: string) {
 test("resolveHermesCommand prefers hermesCommand over command", () => {
   expect(resolveHermesCommand({ hermesCommand: "hermes_maximus", command: "hermes_backup" }))
     .toBe("hermes_maximus");
+});
+
+test("delivers managed MCP through the isolated Hermes home and removes its token", async () => {
+  vi.stubEnv("PAPERCLIP_API_URL", undefined);
+  vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+  const home = path.join(testHome, "managed");
+  await mkdir(home);
+  const configPath = path.join(home, "config.yaml");
+  const original = 'model:\n  provider: "custom"\n  base_url: "https://provider.example"\n';
+  await writeFile(configPath, original, { mode: 0o644 });
+  const cli = path.join(testHome, "hermes");
+  const snapshot = path.join(testHome, "snapshot");
+  const argvPath = path.join(testHome, "argv");
+  await writeExecutable(cli, `#!/bin/sh\ncat "$HERMES_HOME/config.yaml" > ${JSON.stringify(snapshot)}\nprintf '%s\\n' "$@" > ${JSON.stringify(argvPath)}\nprintf 'done\\n'\n`);
+  const logs: unknown[] = [];
+  const meta: unknown[] = [];
+  const result = await execute({
+    runId: "managed-mcp", agent: { id: "agent", companyId: "company", name: "Hermes" },
+    config: { command: cli, provider: "auto", managedAiConnection: { provider: "openai" },
+      promptTemplate: "{{context.paperclipManagedMcp.gateways}}",
+      env: { HERMES_HOME: home, PAPERCLIP_API_URL: "https://ignored.example/api" } },
+    runtime: {}, context: { paperclipManagedMcp: { managedMcpOnly: true, apiBaseUrl: "https://paperclip.example/api",
+      gateways: [
+        { name: "Assigned!", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-managed-token" },
+        { name: "assigned", endpointPath: "/mcp/gateways/gw_other", bearerToken: "fixture-other-token" },
+      ] } },
+    onLog: async (...args: unknown[]) => { logs.push(args); }, onMeta: async (data: unknown) => { meta.push(data); },
+  } as any);
+  expect(result.exitCode).toBe(0);
+  const captured = await readFile(snapshot, "utf8");
+  expect(captured).toContain(original);
+  expect(captured).toContain("https://paperclip.example/mcp/gateways/gw_test");
+  expect(captured).toContain("Bearer fixture-managed-token");
+  expect(captured).toContain('"paperclip-assigned-2"');
+  expect(captured).toContain("Bearer fixture-other-token");
+  expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+  expect(await readFile(configPath, "utf8")).toBe(original);
+  expect(await readFile(argvPath, "utf8")).not.toContain("fixture-managed-token");
+  expect(JSON.stringify([logs, meta, result])).not.toContain("fixture-managed-token");
+  expect(JSON.stringify([logs, meta, result])).not.toContain("fixture-other-token");
+});
+
+test("refuses managed MCP without an isolated home or with existing MCP configuration", async () => {
+  const home = path.join(testHome, "managed");
+  await mkdir(home);
+  const configPath = path.join(home, "config.yaml");
+  const existing = 'model:\n  provider: "custom"\nmcp_servers:\n  foreign:\n    url: "https://foreign.example"\n';
+  await writeFile(configPath, existing);
+  const base = {
+    runId: "managed-mcp", agent: { id: "agent", companyId: "company", name: "Hermes" },
+    config: { command: "unused", provider: "auto", env: { HERMES_HOME: home } },
+    runtime: {}, context: { paperclipManagedMcp: { managedMcpOnly: true, apiBaseUrl: "https://paperclip.example",
+      gateways: [{ name: "assigned", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-managed-token" }] } },
+    onLog: async () => {},
+  };
+  await expect(execute(base as any)).rejects.toThrow("isolated Hermes home");
+  await expect(execute({ ...base, config: { ...base.config, managedAiConnection: {} } } as any))
+    .rejects.toThrow("Cannot safely add managed MCP");
+  expect(await readFile(configPath, "utf8")).toBe(existing);
+});
+
+test("empty managed selection refuses foreign MCP and writes an empty selection otherwise", async () => {
+  vi.stubEnv("PAPERCLIP_API_URL", undefined);
+  vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+  const home = path.join(testHome, "managed");
+  await mkdir(home);
+  const configPath = path.join(home, "config.yaml");
+  const foreign = 'mcp_servers:\n  foreign:\n    url: "https://foreign.example"\n';
+  await writeFile(configPath, foreign);
+  const cli = path.join(testHome, "hermes");
+  const snapshot = path.join(testHome, "snapshot");
+  await writeExecutable(cli, `#!/bin/sh\ncat "$HERMES_HOME/config.yaml" > ${JSON.stringify(snapshot)}\n`);
+  const input = {
+    runId: "empty", agent: { id: "agent", companyId: "company", name: "Hermes" },
+    config: { command: cli, provider: "auto", managedAiConnection: {}, env: { HERMES_HOME: home } },
+    runtime: {}, context: { paperclipManagedMcp: { managedMcpOnly: true, gateways: [] } }, onLog: async () => {},
+  };
+  await expect(execute(input as any)).rejects.toThrow("Cannot safely add managed MCP");
+  expect(await readFile(configPath, "utf8")).toBe(foreign);
+  const provider = 'model:\n  provider: "custom"\n';
+  await writeFile(configPath, provider);
+  await execute(input as any);
+  expect(await readFile(snapshot, "utf8")).toContain("mcp_servers: {}");
+  expect(await readFile(configPath, "utf8")).toBe(provider);
+});
+
+test("rejects a missing effective API origin before delivering a Hermes token", async () => {
+  vi.stubEnv("PAPERCLIP_API_URL", undefined);
+  vi.stubEnv("PAPERCLIP_BASE_URL", undefined);
+  const home = path.join(testHome, "managed");
+  await mkdir(home);
+  const logs: unknown[] = [];
+  await expect(execute({
+    runId: "origin", agent: { id: "agent", companyId: "company", name: "Hermes" },
+    config: { command: "unused", provider: "auto", managedAiConnection: {}, env: { HERMES_HOME: home, PAPERCLIP_API_URL: "https://forged.example" } },
+    runtime: {}, context: { paperclipManagedMcp: { managedMcpOnly: true, gateways: [
+      { name: "assigned", endpointPath: "/mcp/gateways/gw_test", bearerToken: "fixture-origin-token" },
+    ] } }, onLog: async (...args: unknown[]) => { logs.push(args); },
+  } as any)).rejects.toThrow("PAPERCLIP_API_URL");
+  expect(JSON.stringify(logs).includes("fixture-origin-token")).toBe(false);
+  await expect(stat(path.join(home, "config.yaml"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("resolveHermesCommand falls back to command before default hermes binary", () => {

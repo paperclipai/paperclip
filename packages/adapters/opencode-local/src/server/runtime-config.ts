@@ -108,10 +108,23 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   sandboxToolOomPreference?: boolean;
+  managedMcpOnly?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
+  if (input.managedMcpOnly) {
+    for (const filename of ["opencode.jsonc", "config.json"]) {
+      const exists = await fs.lstat(path.join(sourceConfigDir, filename)).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      if (exists) throw new Error(`Managed MCP cannot use an alternate ${filename} configuration`);
+    }
+  }
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
@@ -215,7 +228,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  await fs.rm(runtimeConfigPath, { force: true });
+  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { mode: 0o600 });
   if (input.sandboxToolOomPreference) {
     try {
       await installSandboxToolMemoryPreference(runtimeConfigDir);
@@ -237,6 +251,30 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
   };
+}
+
+export async function writeManagedOpenCodeMcpConfig(input: {
+  configHome: string;
+  apiBaseUrl: string;
+  gateways: Array<{ name: string; endpointPath: string; bearerToken: string }>;
+  v2: boolean;
+}): Promise<void> {
+  const configPath = path.join(input.configHome, "opencode", "opencode.json");
+  const config = await readJsonObject(configPath);
+  const usedNames = new Set<string>();
+  const servers = Object.fromEntries(input.gateways.map(({ name, endpointPath, bearerToken }, index) => {
+    if (!/^\/mcp\/gateways\/[a-zA-Z0-9_-]+$/.test(endpointPath)) throw new Error("Invalid managed MCP gateway path");
+    const baseName = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || `gateway-${index + 1}`;
+    let managedName = baseName;
+    let suffix = 2;
+    while (usedNames.has(managedName)) managedName = `paperclip-${baseName}-${suffix++}`;
+    usedNames.add(managedName);
+    return [managedName, { type: "remote", url: new URL(endpointPath, input.apiBaseUrl).toString(),
+      oauth: false, headers: { Authorization: `Bearer ${bearerToken}` } }];
+  }));
+  config.mcp = input.v2 ? { servers } : servers;
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(configPath, 0o600);
 }
 
 /** Managed credentials must never leave host-only homes in a remote process. */
