@@ -22,11 +22,10 @@ describe("configured Cloud harness choices", () => {
     expect(changed.isCloudRunnerProviderAllowed("copilot")).toBe(false);
   });
 
-  it("keeps qualification gates when the deployment allows a candidate", () => {
+  it("allows qualified Antigravity when the deployment policy enables it, without a candidate grant", () => {
     const policy = createCloudHarnessPolicy(["antigravity_runtime"]);
-    const options = { cloud: true, harnessPolicy: policy, nativeRunnerEnabled: true, runnerProvider: "antigravity" };
-    expect(isNewAgentAdapterAllowed("paperclip_runner", options)).toBe(false);
-    expect(isNewAgentAdapterAllowed("paperclip_runner", { ...options, candidateHarnesses: [{ agent: "antigravity", model: "candidate-model" }] })).toBe(true);
+    const options = { cloud: true, harnessPolicy: policy, nativeRunnerEnabled: false, runnerProvider: "antigravity" };
+    expect(isNewAgentAdapterAllowed("paperclip_runner", options)).toBe(true);
   });
 
   it.each(["claude_local", "codex_local", "grok_local", "opencode_local", "copilot_runtime"])("offers %s", type => {

@@ -6262,17 +6262,16 @@ mod tests {
             config.validate().map_err(|error| error.to_string())?;
             Ok::<_, String>(config)
         };
-        // Pending: an ordinary launch is refused until an operator grant.
-        let pending = launch(profile).unwrap_err();
-        assert!(pending.contains("qualification is pending"), "{pending}");
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
         let mut granted = profile.clone();
         granted.candidate_admission = Some(antigravity_grant("run-1"));
         let mut candidate_config = config.clone();
         candidate_config.acpx_launch_profile = Some(granted.clone());
-        candidate_config.validate().unwrap();
-        launch(&granted).unwrap();
 
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         // Released: the ordinary launch needs no grant ...
         let ordinary = launch(profile).unwrap();
         assert!(ordinary.candidate_admission.is_none());
@@ -6288,7 +6287,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn released_antigravity_without_grant_restores_suspends_and_attaches_a_prior_activation() {
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         let (directory, config, value, sentinel) =
             ordinary_antigravity_fixture("antigravity-released-cold", "run-2");
         let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
@@ -6322,7 +6320,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn released_antigravity_without_grant_rotates_a_live_runner_authority() {
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         let (directory, config, value, sentinel) =
             ordinary_antigravity_fixture("antigravity-released-warm", "run-1");
         let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
