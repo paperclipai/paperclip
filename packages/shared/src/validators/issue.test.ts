@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
   issueDocumentBatchQuerySchema,
@@ -448,6 +449,15 @@ describe("issue validators", () => {
         outcome: "escalated",
       }).success,
     ).toBe(false);
+  });
+
+  it("lets only a /swarm request through with an empty body, so the route refuses it in its own words", () => {
+    expect(addIssueSwarmCommentSchema.parse({ body: "", nativeCommand: "swarm" })).toMatchObject({ body: "", nativeCommand: "swarm" });
+    expect(addIssueSwarmCommentSchema.safeParse({ body: "", nativeCommand: undefined }).success).toBe(false);
+    // An empty ordinary comment is refused exactly as before.
+    expect(addIssueCommentSchema.safeParse({ body: "" }).error?.issues).toEqual([{ origin: "string", code: "too_small", minimum: 1,
+      inclusive: true, path: ["body"], message: "Too small: expected string to have >=1 characters" }]);
+    expect(addIssueCommentSchema.safeParse({ body: "", nativeCommand: "swarm" }).success).toBe(false);
   });
 
   it("normalizes escaped line breaks in issue comment bodies", () => {

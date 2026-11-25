@@ -1343,6 +1343,7 @@ describe("issue comment reopen routes", () => {
   });
 
   it.each([
+    ["an empty request", "", /no request/],
     ["no request", "  ", /no request/],
     ["a request that is too long", "x".repeat(16_001), /too long/],
   ])("refuses a /swarm with %s at submit and posts nothing", async (_name, body, message) => {
@@ -1355,6 +1356,17 @@ describe("issue comment reopen routes", () => {
     expect(res.body).toMatchObject({ error: expect.stringMatching(message), code: "antigravity_swarm_unavailable" });
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockSwarm.record).not.toHaveBeenCalled();
+  });
+
+  it("still rejects an empty ordinary comment with the validation error it always had", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "" });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: "Validation error",
+      details: [expect.objectContaining({ code: "too_small", minimum: 1, path: ["body"] })] });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("returns the original receipt for an accepted /swarm resent after the setting was turned off, starting nothing twice", async () => {

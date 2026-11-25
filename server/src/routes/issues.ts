@@ -109,6 +109,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -19351,7 +19352,8 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/comments",
-    validate(addIssueCommentSchema),
+    // A /swarm request without a request text gets the route's documented refusal, not a validation error.
+    (req, res, next) => validate(req.body?.nativeCommand === ANTIGRAVITY_SWARM_COMMAND ? addIssueSwarmCommentSchema : addIssueCommentSchema)(req, res, next),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(

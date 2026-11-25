@@ -1224,6 +1224,17 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+/**
+ * A comment request that carries `nativeCommand: "swarm"`. Its body is the swarm's
+ * request, and an empty one passes validation so the route answers every request
+ * without one with the same documented refusal (422 `antigravity_swarm_unavailable`).
+ * Ordinary comments keep `addIssueCommentSchema` and its non-empty body.
+ */
+export const addIssueSwarmCommentSchema = addIssueCommentSchema.extend({
+  body: multilineTextSchema.pipe(z.string()),
+  nativeCommand: z.literal("swarm"),
+});
+
 export const issueThreadInteractionStatusSchema = z.enum(
   ISSUE_THREAD_INTERACTION_STATUSES,
 );
