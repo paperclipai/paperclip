@@ -578,6 +578,8 @@ A journey failure from a hosted API call keeps its fixed code, such as
 `api_status_500` or `api_request_failed`; other errors stay
 `journey_operation_failed`.
 
-`ConnectionApi` repeats a read up to three times after a dropped connection or a
-408, 429, 502, 503 or 504 response. It never repeats a write. A single transport
-failure among the many reads of a long journey therefore does not fail it.
+`ConnectionApi` repeats a JSON read up to three times after a dropped connection
+or a 408, 429, 502, 503 or 504 response, inside the caller's original timeout. It
+honors a `Retry-After` of up to five seconds. It never repeats a write or a binary
+download (`bytes`). The observed reader opts out, so its own retry loop records
+every transient failure in `observation-read-failures.json`.
