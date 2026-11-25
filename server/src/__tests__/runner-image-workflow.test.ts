@@ -282,6 +282,14 @@ describe("Runner image workflow", () => {
     }
   });
 
+  it("routes only canonical master amd64 pushes to the larger GitHub-hosted runner", () => {
+    const runsOn = /^ {4}runs-on: (.+)$/m.exec(jobs.build)?.[1] ?? "";
+    expect(runsOn).toBe(
+      `\${{ matrix.arch == 'amd64' && ${canonical} && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || matrix.runner }}`,
+    );
+    expect(jobs.build).not.toMatch(/runs-on\/fleet=/);
+  });
+
   it("is registered with the merge-review notifier under its own name", () => {
     const name = /^name: (.+)$/m.exec(workflow)![1];
     const listed = /workflow_run:\n {4}workflows:\n((?: {6}- .+\n)+)/.exec(mergeReview)![1].split("\n").filter(Boolean).map((line) => line.trim().slice(2));
