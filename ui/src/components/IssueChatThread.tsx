@@ -9,7 +9,6 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { TaskChatRunnerTurn } from "./task-chat/TaskChatRunnerTurn";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
-import type { ComposerSendDelivery } from "@/lib/pending-send";
 import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
 import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
@@ -645,7 +644,6 @@ interface IssueChatThreadProps {
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
     nativeCommand?: "swarm",
-    delivery?: ComposerSendDelivery,
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;

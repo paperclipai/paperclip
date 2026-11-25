@@ -31,7 +31,6 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
 import { ApiError } from "@/api/api-error";
-import { showsSendFailureToast } from "@/lib/pending-send";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -650,25 +649,6 @@ it("marks a message the server recorded as a /swarm request, and no other", () =
   const markers = [...container.querySelectorAll('[data-testid="task-chat-swarm-marker"]')];
   expect(markers.map(marker => marker.textContent)).toEqual(["Swarm"]);
   expect(markers[0]!.closest("[data-conversation-message]")?.textContent).toContain("Create u1.txt and u2.txt");
-});
-
-it.each(["task", "legacy"] as const)("lets the page toast a refused $surface send only when that composer did not explain it inline", async (surface) => {
-  const message = "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
-  const refusal = new ApiError(message, 422, { error: message });
-  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(async () => { throw refusal; });
-  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
-  render(<Component comments={[]} issueId="issue" issueAssigneeAgentId="agent" issueStatus="todo" onAdd={onAdd}
-    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
-  await act(async () => { editorCallbacks.change("do something"); });
-  const send = surface === "task"
-    ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
-    : [...container.querySelectorAll("button")].find(button => button.textContent === "Send");
-  await act(async () => { send!.click(); });
-  expect(onAdd).toHaveBeenCalledTimes(1);
-  const delivery = onAdd.mock.calls[0]![7];
-  const inline = container.querySelector('[data-testid="task-chat-goal-error"]')?.textContent === message;
-  expect(inline).toBe(surface === "task");
-  expect(showsSendFailureToast(refusal, delivery)).toBe(!inline);
 });
 
 it("explains a refused send under the composer until dismissed, and clears the optimistic Working row", async () => {

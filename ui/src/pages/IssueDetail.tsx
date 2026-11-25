@@ -77,7 +77,7 @@ import {
 } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
-import { showsSendFailureToast, type ComposerSendDelivery } from "../lib/pending-send";
+import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 import { SubtaskCancellationError, TaskCancellationDismissedError, useTaskCancellation } from "../hooks/useTaskCancellation";
 import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
@@ -5151,7 +5151,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const addComment = useAccountBoundMutation({
     mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings, nativeCommand }: {
       body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings; nativeCommand?: "swarm";
-      delivery?: ComposerSendDelivery;
     }, { assertCurrentAccount }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
       const writableIssueId = await resolveWritableIssueId();
@@ -5308,7 +5307,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
       }
     },
-    onError: (err, variables, context) => {
+    onError: (err, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter(
@@ -5324,7 +5323,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       // A comment that is not known to be saved stays in the composer and
       // resends with the same request ID; its notice replaces this toast.
-      if (!showsSendFailureToast(err, variables.delivery)) return;
+      if (classifySendFailure(err) === "pending") return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
     },
@@ -5581,7 +5580,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds?: string[];
       clientRequestId?: string;
       runSettings?: ComposerRunSettings;
-      delivery?: ComposerSendDelivery;
     }, { assertCurrentAccount }) => {
       const freshIssue = runSettings && !reassignment
         ? await issuesApi.getCore(issueId!, { cache: "no-store", fresh: true })
@@ -5740,7 +5738,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
       }
     },
-    onError: (err, variables, context) => {
+    onError: (err, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter(
@@ -5756,7 +5754,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       // A comment that is not known to be saved stays in the composer and
       // resends with the same request ID; its notice replaces this toast.
-      if (!showsSendFailureToast(err, variables.delivery)) return;
+      if (classifySendFailure(err) === "pending") return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
     },
@@ -7051,11 +7049,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       clientRequestId?: string,
       runSettings?: ComposerRunSettings,
       nativeCommand?: "swarm",
-      delivery?: ComposerSendDelivery,
     ) => {
       // A swarm request always uses the comments endpoint, which checks it.
       if (nativeCommand) {
-        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand, delivery });
+        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand });
         return;
       }
       if (!issue?.conversationAgentId && (reassignment || runSettings)) {
@@ -7066,11 +7063,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           attachmentIds,
           clientRequestId,
           runSettings,
-          delivery,
         });
         return;
       }
-      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings, delivery });
+      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
     },
     [addComment, addCommentAndReassign, issue?.conversationAgentId],
   );

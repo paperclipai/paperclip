@@ -31,8 +31,8 @@ import {
   type ComposerDraftSubmission,
   type ComposerSendRequest,
 } from "@/lib/composer-draft";
-import { classifySendFailure, isInlineSendRefusal, type ComposerSendDelivery, type SendOutcome } from "@/lib/pending-send";
-import { describeError } from "@/api/errors";
+import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { describeError, errorStatus } from "@/api/errors";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
 import { useRequestOwnerBinding } from "@/hooks/useRequestOwnerBinding";
@@ -109,8 +109,6 @@ export interface TaskChatComposerTakeover {
   hideSkip?: boolean;
 }
 
-const INLINE_REFUSAL_DELIVERY: ComposerSendDelivery = { explainsRefusalInline: true };
-
 interface TaskChatComposerProps {
   onAdd?: (
     body: string,
@@ -121,7 +119,6 @@ interface TaskChatComposerProps {
     runSettings?: ComposerRunSettings,
     /** A native command the user started with a leading `/name`; only "swarm" exists. */
     nativeCommand?: "swarm",
-    delivery?: ComposerSendDelivery,
   ) => Promise<void> | void;
   /** New tasks share the editor and controls, but retain their draft until creation succeeds. */
   creation?: {
@@ -1124,11 +1121,11 @@ export function TaskChatComposer({
       }
       sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
       if (swarmCommand) {
-        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, undefined, "swarm", INLINE_REFUSAL_DELIVERY);
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, undefined, "swarm");
       } else if (runSettings) {
-        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings, undefined, INLINE_REFUSAL_DELIVERY);
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
-        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, undefined, undefined, INLINE_REFUSAL_DELIVERY);
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
       }
       // Navigation does not invalidate the server receipt. Settle the captured
       // task before checking whether this composer is still on screen.
@@ -1165,7 +1162,10 @@ export function TaskChatComposer({
       // A refusal (for example /swarm while the task is in Plan mode) stays
       // under the restored text until dismissed or the next send; a toast alone
       // disappears before it can be read.
-      if (isInlineSendRefusal(error)) setActionError(describeError(error).body);
+      const status = errorStatus(error);
+      if (status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected") {
+        setActionError(describeError(error).body);
+      }
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
       const restoredBody = nextDraft
@@ -1224,9 +1224,9 @@ export function TaskChatComposer({
       submission.attemptId,
     ] as const;
     try {
-      if (request.nativeCommand === "swarm") await onAdd(...args, undefined, "swarm", INLINE_REFUSAL_DELIVERY);
-      else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings, undefined, INLINE_REFUSAL_DELIVERY);
-      else await onAdd(...args, undefined, undefined, INLINE_REFUSAL_DELIVERY);
+      if (request.nativeCommand === "swarm") await onAdd(...args, undefined, "swarm");
+      else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      else await onAdd(...args);
     } catch (error) {
       if (!isCurrentAccount()) return "pending";
       const failure = classifySendFailure(error);
