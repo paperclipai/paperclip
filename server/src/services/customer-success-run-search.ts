@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import {
   MAX_INSPECTION_SEARCH_RUNS,
   MAX_INSPECTION_SEARCH_SAMPLE_RUNS,
+  withoutSqlStatementText,
   type InspectionQuery,
   type InspectionRunSearchPatternHit,
   type InspectionRunSearchResult,
@@ -459,7 +460,8 @@ export async function searchCustomerSuccessRuns(
       const matchedByRun = new Map<string, Map<number, string | undefined>>();
       for (const run of runs) {
         const hits = new Map<number, string | undefined>();
-        const runFields = [run.error, run.errorCode, run.stderrExcerpt, run.stdoutExcerpt]
+        const sanitizedError = typeof run.error === "string" ? withoutSqlStatementText(run.error) : null;
+        const runFields = [sanitizedError, run.errorCode, run.stderrExcerpt, run.stdoutExcerpt]
           .filter((v): v is string => typeof v === "string" && v.length > 0)
           .join("\n");
         if (runFields) {

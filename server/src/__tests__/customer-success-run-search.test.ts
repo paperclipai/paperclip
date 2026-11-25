@@ -1,4 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "@paperclipai/db";
 import { readCustomerSuccessResource } from "../services/customer-success-inspection.js";
 import { searchCustomerSuccessRuns } from "../services/customer-success-run-search.js";
@@ -10,15 +13,22 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 describe("customer-success runs.search", () => {
   let db: schema.Db;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let directory: string;
   const storage = {} as unknown as StorageService;
 
   beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "cs-run-search-test-"));
+    vi.stubEnv("PAPERCLIP_HOME", directory);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(directory, "master.key"));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
     database = await startEmbeddedPostgresTestDatabase("customer-success-run-search-");
     db = schema.createDb(database.connectionString);
   });
 
   afterAll(async () => {
     await database?.cleanup();
+    vi.unstubAllEnvs();
+    if (directory) await rm(directory, { recursive: true, force: true });
   });
 
   it("catches hidden platform errors inside succeeded runs, reports co-occurrence, and redacts excerpts", async () => {
@@ -493,5 +503,31 @@ describe("customer-success runs.search", () => {
     expect(withoutExcerpts.patterns[0]!.matchedRuns).toBe(1);
     expect(withExcerpts.patterns[0]!.matchedRuns).toBe(1);
     expect(withExcerpts.patterns[0]!.sampleRuns[0]!.excerpt).toContain("real output match on event 6");
+
+    // 5) Historical Drizzle SQL statements and bound params in heartbeat_runs.error
+    // are stripped via withoutSqlStatementText before searching or excerpting.
+    const [sqlErrRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId: co.id,
+        agentId: agent.id,
+        status: "failed",
+        runtimeMode: "native",
+        driverKind: "codex",
+        error: "Failed query: select * from secrets where value = $1\nparams: unregistered-sql-param-secret",
+        createdAt: new Date(Date.now() + 180_000),
+      })
+      .returning();
+    const sqlSearch = await searchCustomerSuccessRuns(db, {
+      operation: "runs.search",
+      companyId: co.id,
+      patterns: ["unregistered-sql-param-secret", "Database query failed"],
+      limit: 1,
+      includeExcerpts: true,
+    });
+    expect(sqlSearch.patterns[0]!.matchedRuns).toBe(0);
+    expect(sqlSearch.patterns[1]!.matchedRuns).toBe(1);
+    expect(sqlSearch.patterns[1]!.sampleRuns[0]!.runId).toBe(sqlErrRun.id);
+    expect(sqlSearch.patterns[1]!.sampleRuns[0]!.excerpt).not.toContain("unregistered-sql-param-secret");
   });
 });
