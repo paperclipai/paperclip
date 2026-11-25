@@ -40,7 +40,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
 
   it("defaults to Coordinator without creating a row", async () => {
     const userId = randomUUID();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, timeZone: null, updatedAt: null });
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, recentItemsLimit: 20, timeZone: null, updatedAt: null });
     expect(await db.select().from(userWorkspacePreferences).where(eq(userWorkspacePreferences.userId, userId))).toHaveLength(0);
   });
 
@@ -53,6 +53,18 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(false);
     await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: true }).expect(200);
     expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(true);
+  });
+
+  it("persists a zero Recents limit across companies and preserves other preferences", async () => {
+    const first = await company(), second = await company(), userId = randomUUID(), otherUser = randomUUID();
+    await request(app(actor(first, userId))).put(url(first)).send({ recentItemsLimit: 0 }).expect(200);
+    const saved = await request(app(actor(second, userId))).get("/api/workspace-preferences/me").expect(200);
+    expect(saved.body).toMatchObject({ userId, recentItemsLimit: 0 });
+    await request(app(actor(second, userId))).put(url(second)).send({ timeZone: "Europe/Amsterdam", coordinatorWorkspaceEnabled: false }).expect(200);
+    expect(await workspacePreferenceService(db).get(userId)).toMatchObject({ recentItemsLimit: 0, timeZone: "Europe/Amsterdam", coordinatorWorkspaceEnabled: false });
+    expect((await workspacePreferenceService(db).get(otherUser)).recentItemsLimit).toBe(20);
+    await request(app(actor(first, userId))).put(url(first)).send({ recentItemsLimit: 5 }).expect(200);
+    expect(await workspacePreferenceService(db).get(userId)).toMatchObject({ recentItemsLimit: 5, timeZone: "Europe/Amsterdam", coordinatorWorkspaceEnabled: false });
   });
 
   it("lets a viewer opt in and out across companies without changing another person's choice", async () => {
@@ -109,6 +121,6 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
   it("rolls the preference back when the audit cannot be persisted", async () => {
     const userId = randomUUID();
     await expect(workspacePreferenceService(db).set(randomUUID(), userId, { coordinatorWorkspaceEnabled: true })).rejects.toThrow();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, timeZone: null, updatedAt: null });
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, recentItemsLimit: 20, timeZone: null, updatedAt: null });
   });
 });

@@ -6,6 +6,8 @@ import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCou
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
+import { QueryErrorState } from "./QueryView";
+import { useRecentItemsLimit } from "@/hooks/useRecentItemsLimit";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { projectPinKey, usePinnedNavigation } from "@/hooks/usePinnedNavigation";
@@ -148,11 +150,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const { entries: recentTasks, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
+  const recentPreference = useRecentItemsLimit(userId);
+  const recentLimit = recentPreference.limit;
+  const { entries: recentTasks, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds, limit: recentLimit });
   const { isMobile, setSidebarOpen } = useSidebar();
   // Warm opens only while the Recents list is on screen.
   const location = useLocation();
-  useRecentTaskOpenWarmup({ companyId, userId, tasks: session.isSuccess ? recentTasks : NO_RECENT_TASKS, navigationKey: location.pathname });
   const { openNewIssue } = useDialogActions();
   const attentionCount = useCoordinatorAttentionCount(companyId);
   const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });
@@ -163,12 +166,14 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const scope = `${companyId}:${userId}`;
   const [projectVisits, setProjectVisits] = useState<{ scope: string; entries: Record<string, number> }>({ scope, entries: {} });
   useEffect(() => {
+    if (recentLimit === 0) return;
     const ref = location.pathname.match(/\/projects\/([^/]+)/)?.[1];
     const project = projects?.find(item => item.id === ref || projectRouteRef(item) === ref);
     if (!project) return;
     setProjectVisits(previous => ({ scope, entries: { ...(previous.scope === scope ? previous.entries : {}), [project.id]: Date.now() } }));
-  }, [location.pathname, projects, scope]);
+  }, [location.pathname, projects, scope, recentLimit]);
   const recents = useMemo(() => {
+    if (recentLimit === 0) return [];
     const roster = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
     const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
     const chatRows = (chats.data ?? []).flatMap(chat => {
@@ -177,8 +182,11 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     });
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
-    return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time);
-  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope]);
+    return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time).slice(0, recentLimit);
+  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope, recentLimit]);
+  const warmTasks = useMemo(() => recentsOpen && session.isSuccess
+    ? recents.flatMap(item => item.kind === "task" ? [item.task] : []) : NO_RECENT_TASKS, [recents, recentsOpen, session.isSuccess]);
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: warmTasks, navigationKey: location.pathname });
   const newTaskButton = <Button type="button" variant="ghost" className="design-sidebar-new-task rounded-lg" aria-label="New task" onClick={() => openNewIssue()}>
     <SquarePen aria-hidden />
     <span className="truncate">New task</span>
@@ -218,6 +226,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </Flyout>
       </div>
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
+      {session.isSuccess && recentPreference.error && !recentPreference.loaded && <QueryErrorState size="inline" className="px-4 py-2" error={recentPreference.error} action="load Recents" onRetry={() => void recentPreference.retry()} retrying={recentPreference.isFetching} />}
       {session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"

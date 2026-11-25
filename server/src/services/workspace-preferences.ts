@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { userWorkspacePreferences, type Db } from "@paperclipai/db";
-import type { UpdateWorkspacePreference, WorkspacePreference } from "@paperclipai/shared";
+import { DEFAULT_RECENT_ITEMS_LIMIT, type UpdateWorkspacePreference, type WorkspacePreference } from "@paperclipai/shared";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 
@@ -11,6 +11,7 @@ export function workspacePreferenceService(db: Db) {
     });
     return {
       userId,
+      recentItemsLimit: row?.recentItemsLimit ?? DEFAULT_RECENT_ITEMS_LIMIT,
       coordinatorWorkspaceEnabled: !(row?.classicWorkspaceEnabled ?? false),
       timeZone: row?.timeZone ?? null,
       updatedAt: row?.updatedAt.toISOString() ?? null,
@@ -21,6 +22,7 @@ export function workspacePreferenceService(db: Db) {
     /** Updates only the fields the caller supplied. */
     async set(companyId: string, userId: string, update: UpdateWorkspacePreference): Promise<WorkspacePreference> {
       const changes = {
+        ...(update.recentItemsLimit === undefined ? {} : { recentItemsLimit: update.recentItemsLimit }),
         ...(update.coordinatorWorkspaceEnabled === undefined ? {} : {
           coordinatorWorkspaceEnabled: update.coordinatorWorkspaceEnabled,
           classicWorkspaceEnabled: !update.coordinatorWorkspaceEnabled,

@@ -4,6 +4,8 @@ import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { QueryErrorState } from "./QueryView";
+import { useRecentItemsLimit } from "@/hooks/useRecentItemsLimit";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { useAccountIdentity } from "@/api/companies-query";
@@ -101,7 +103,9 @@ function RecentTasksList({
   userId: string | null;
   liveIssueIds: ReadonlySet<string>;
 }) {
-  const { entries, storageKey } = useRecentTasks({ companyId, userId });
+  const recentPreference = useRecentItemsLimit(userId);
+  const limit = recentPreference.limit;
+  const { entries, storageKey } = useRecentTasks({ companyId, userId, limit });
   const { pathname } = useLocation();
   const queryClient = useQueryClient();
   const toastActions = useOptionalToastActions();
@@ -111,6 +115,7 @@ function RecentTasksList({
   const restartRetryStorageKey = restartWakeRetryStorageKey(companyId, userId);
   useRecentTaskOpenWarmup({ companyId, userId, tasks: entries, navigationKey: pathname });
 
+  if (recentPreference.error && !recentPreference.loaded) return <QueryErrorState size="inline" className="px-4 py-2" error={recentPreference.error} action="load Recents" onRetry={() => void recentPreference.retry()} retrying={recentPreference.isFetching} />;
   if (entries.length === 0) return null;
 
   const refreshIssueQueries = async (issueId: string) => {

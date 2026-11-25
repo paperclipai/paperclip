@@ -25,14 +25,23 @@ describe("workspace preference authorization", () => {
     mocks.get.mockImplementation(async userId => ({ userId, coordinatorWorkspaceEnabled: false, timeZone: null, updatedAt: null }));
     mocks.set.mockImplementation(async (_companyId, userId, update) => ({ userId, coordinatorWorkspaceEnabled: update.coordinatorWorkspaceEnabled ?? true, timeZone: update.timeZone ?? null, updatedAt: null }));
   });
+  it("saves a personal Recents limit including zero", async () => {
+    for (const recentItemsLimit of [0, 5, 100]) {
+      await request(app()).put(url).send({ recentItemsLimit }).expect(200);
+      expect(mocks.set).toHaveBeenLastCalledWith(companyId, "alice", expect.objectContaining({ recentItemsLimit }));
+    }
+    for (const recentItemsLimit of [-1, 101, 1.5, "20"]) {
+      await request(app()).put(url).send({ recentItemsLimit }).expect(400);
+    }
+  });
   it("reads only the caller and allows a non-admin viewer to save their own choice", async () => {
     const response = await request(app()).get("/api/workspace-preferences/me").expect(200);
     expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(mocks.get).toHaveBeenCalledWith("alice");
     await request(app()).put(url).send({ coordinatorWorkspaceEnabled: true }).expect(200);
-    expect(mocks.set).toHaveBeenCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: true, timeZone: undefined });
-    await request(app()).put(url).send({ timeZone: "America/Chicago" }).expect(200);
-    expect(mocks.set).toHaveBeenLastCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: undefined, timeZone: "America/Chicago" });
+    expect(mocks.set).toHaveBeenCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: true, timeZone: undefined, recentItemsLimit: undefined });
+    await request(app()).put(url).send({ timeZone: "America/Chicago", recentItemsLimit: undefined }).expect(200);
+    expect(mocks.set).toHaveBeenLastCalledWith(companyId, "alice", { coordinatorWorkspaceEnabled: undefined, timeZone: "America/Chicago", recentItemsLimit: undefined });
   });
   it.each([
     { type: "none", source: "none" },
@@ -60,7 +69,7 @@ describe("workspace preference authorization", () => {
   it("accepts the existing local implicit principal", async () => {
     await request(app({ type: "board", source: "local_implicit", userId: "local-board", isInstanceAdmin: true }))
       .put(url).send({ coordinatorWorkspaceEnabled: false }).expect(200);
-    expect(mocks.set).toHaveBeenCalledWith(companyId, "local-board", { coordinatorWorkspaceEnabled: false, timeZone: undefined });
+    expect(mocks.set).toHaveBeenCalledWith(companyId, "local-board", { coordinatorWorkspaceEnabled: false, timeZone: undefined, recentItemsLimit: undefined });
   });
   it("reports a failed save rather than claiming the shell changed", async () => {
     mocks.set.mockRejectedValue(new Error("Database unavailable"));

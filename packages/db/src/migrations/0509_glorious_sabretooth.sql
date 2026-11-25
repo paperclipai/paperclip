@@ -1,0 +1,1 @@
+ALTER TABLE "user_workspace_preferences" ADD COLUMN IF NOT EXISTS "recent_items_limit" integer DEFAULT 20 NOT NULL;

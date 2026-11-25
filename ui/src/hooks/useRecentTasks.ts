@@ -21,6 +21,7 @@ type RecentTasksUpdatedDetail = {
 };
 
 const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
+const NO_RECENT_ENTRIES: RecentTaskEntry[] = [];
 const NO_PINNED_TASK_IDS: readonly string[] = [];
 const NO_PINNED_TASKS: readonly IssueSummary[] = [];
 /** Summary chunks in flight at once for a history longer than one request. */
@@ -30,10 +31,12 @@ export function useRecentTasks({
   companyId,
   userId,
   pinnedTaskIds = NO_PINNED_TASK_IDS,
+  limit = Infinity,
 }: {
   companyId: string | null | undefined;
   userId: string | null | undefined;
   pinnedTaskIds?: readonly string[];
+  limit?: number;
 }) {
   const storageKey = useMemo(
     () => companyId ? getRecentTasksStorageKey(companyId, userId) : null,
@@ -42,21 +45,21 @@ export function useRecentTasks({
   const queryClient = useQueryClient();
   const [snapshot, setSnapshot] = useState(() => ({
     storageKey,
-    entries: storageKey && companyId ? readRecentTasks(storageKey, companyId) : [],
+    entries: limit > 0 && storageKey && companyId ? readRecentTasks(storageKey, companyId) : NO_RECENT_ENTRIES,
   }));
   // A scope change must not request the previous account's IDs for one render.
-  const entries = useMemo(() => snapshot.storageKey === storageKey
+  const entries = useMemo(() => limit === 0 ? NO_RECENT_ENTRIES : snapshot.storageKey === storageKey
     ? snapshot.entries
-    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [], [snapshot, storageKey, companyId]);
+    : limit > 0 && storageKey && companyId ? readRecentTasks(storageKey, companyId) : NO_RECENT_ENTRIES, [snapshot, storageKey, companyId, limit]);
   const setEntries = (next: RecentTaskEntry[]) => setSnapshot({ storageKey, entries: next });
 
   useEffect(() => {
-    if (storageKey && companyId) migrateRecentTasks(storageKey, companyId);
-    setEntries(storageKey && companyId ? readRecentTasks(storageKey, companyId) : []);
-  }, [companyId, storageKey]);
+    if (limit > 0 && storageKey && companyId) migrateRecentTasks(storageKey, companyId);
+    setEntries(limit > 0 && storageKey && companyId ? readRecentTasks(storageKey, companyId) : NO_RECENT_ENTRIES);
+  }, [companyId, storageKey, limit]);
 
   useEffect(() => {
-    if (!storageKey || !companyId) return;
+    if (!storageKey || !companyId || limit === 0) return;
 
     const sync = () => setEntries(readRecentTasks(storageKey, companyId));
     const onStorage = (event: StorageEvent) => {
@@ -73,9 +76,9 @@ export function useRecentTasks({
       window.removeEventListener("storage", onStorage);
       window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, onRecentTasksUpdated);
     };
-  }, [companyId, storageKey]);
+  }, [companyId, storageKey, limit]);
 
-  const recentIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
+  const recentIds = useMemo(() => entries.slice(0, limit).map((entry) => entry.id).sort(), [entries, limit]);
   const queryIds = useMemo(() => pinnedTaskIds.length ? [...new Set([...recentIds, ...pinnedTaskIds])].sort() : recentIds, [recentIds, pinnedTaskIds]);
   const scope = JSON.stringify([storageKey, recentIds, queryIds]);
   const summaryKey = queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, queryIds);
@@ -138,11 +141,11 @@ export function useRecentTasks({
   }), [confirmed, denied, pinnedTaskIds]);
   // A visit is only a candidate. Neither imported provenance nor a persisted
   // browser snapshot proves personal participation for the current account.
-  const refreshedEntries = useMemo(() => entries.flatMap((entry) => {
+  const refreshedEntries = useMemo(() => entries.slice(0, limit).flatMap((entry) => {
     const issue = confirmed.get(entry.id);
     if (issue?.isParticipantForMe !== true || issue.isArchivedForMe) return [];
     return [{ ...mergeRecentTaskSnapshot(entry, issue), isUnreadForMe: issue.isUnreadForMe }];
-  }), [entries, confirmed]);
+  }), [entries, confirmed, limit]);
   const processed = useRef<{ visit: typeof batchVisit; revision: number } | null>(null);
 
   useEffect(() => {
