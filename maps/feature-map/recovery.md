@@ -288,7 +288,7 @@ the task becomes done or cancelled. Verify one unchanged action ID, attempt
 count, and timestamps; task completion must not authorize copyback. Clear only
 the exact receipt after operator stop verification, then confirm stale action
 cleanup. The [route regressions](../../server/src/__tests__/issue-recovery-actions.test.ts)
-and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 cover this sequence without a live operator recovery claim.
 
 An intentionally Done onboarding parent can still need its validated
@@ -408,7 +408,7 @@ files, successful lease cleanup, and one bounded continuation. Reload before
 checking the successor. Repeat with controller loss: the expired fence must
 retain the exact source and require repair, never claim restored files or start
 a second executor. The database-backed
-[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 checks finalizer joining, release order, durable retry uniqueness, and reload.
 The [settlement regressions](../../server/src/services/heartbeat/recovery.test.ts)
 cover other-controller fencing and owner loss. Provider boundaries are controlled

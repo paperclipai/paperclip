@@ -164,10 +164,28 @@
       "measuredMs": 223420
     },
     {
-      "path": "server/src/__tests__/heartbeat-process-recovery.test.ts",
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts",
       "category": "recovery-idle-maintenance-soak",
-      "reason": "Heavy serialized heartbeat process-crash recovery soak (285 cases, 344s); core heartbeat/recovery.test.ts stays on PRs",
-      "measuredMs": 344017
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 1/4, 116 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 88511
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-2.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 2/4, 103 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 102168
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-3.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 3/4, 87 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 72141
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-4.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 4/4, 160 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 81197
     },
     {
       "path": "server/src/__tests__/heartbeat-retry-scheduling.test.ts",
