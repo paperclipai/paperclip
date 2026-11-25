@@ -93,6 +93,44 @@ describe("claude_local failure classification precedence", () => {
     expect(result.errorCode).toBe("max_turns_exhausted");
   });
 
+  it("keeps max_turns_exhausted when stdout mentions Unauthorized in tool output", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error_max_turns" },
+        'assert response.json() == {"error": "Unauthorized"}',
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("still reports claude_auth_required when the CLI result asks to log in", async () => {
+    mockExecutionResult(
+      buildProcResult({
+        is_error: true,
+        subtype: "success",
+        result: "Not logged in · Please run /login",
+      }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  it("still reports claude_auth_required when only stderr asks to log in", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ is_error: true, subtype: "error_during_execution" }),
+      stderr: "Not logged in · Please run /login",
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
   it("still reports model_not_found when the provider returns it", async () => {
     mockExecutionResult(
       buildProcResult({ is_error: true, subtype: "error", result: "API Error: 404 model not found" }),

@@ -134,6 +134,56 @@ describe("detectClaudeLoginRequired", () => {
     expect(isClaudeTransientUpstreamError(input)).toBe(true);
   });
 
+  it("does not classify a failed run whose tool output in stdout says Unauthorized", () => {
+    const parsed = {
+      is_error: true,
+      subtype: "error_max_turns",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"user","message":{"content":[{"type":"tool_result","content":"assert resp.json() == {\\"error\\": \\"Unauthorized\\"}"}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("classifies a login prompt in the parsed result as login required", () => {
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      result: "Not logged in · Please run /login",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies a login prompt on stderr as login required when a result was parsed", () => {
+    const parsed = {
+      is_error: true,
+      subtype: "error_during_execution",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout: "",
+        stderr: "Not logged in · Please run /login",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies a login prompt in raw stdout as login required when no result was parsed", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Not logged in · Please run /login",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
   it("does not treat a bare token phrase in raw stdout with no parsed result as login required", () => {
     // Untrusted stdout alone must not satisfy a token-failure marker. Only the
     // parsed terminal result fields of a failed run can trip the token markers.
