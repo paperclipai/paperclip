@@ -2590,7 +2590,7 @@ registry.registerPath({
   summary: "Create a chat endpoint",
   description:
     "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
-    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "Experimental chat providers need Chat connectors turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental; AgentMail and GitHub are always available. "
     + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),

@@ -25,8 +25,10 @@ describe("instance experimental settings validators", () => {
     }
     expect(patchInstanceExperimentalSettingsSchema.safeParse({ enablePaperclipNotebook: "true" }).success).toBe(false);
   });
-  it("defaults GitHub review bots off independently of chat and accepts explicit changes", () => {
-    expect(instanceExperimentalSettingsSchema.parse({ enableChatConnectors: true }).enableGitHubReviewBots).toBe(false);
+  it("defaults the retired GitHub review bots compatibility key on and accepts explicit patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableGitHubReviewBots).toBe(true);
+    expect(instanceExperimentalSettingsSchema.parse({ enableChatConnectors: false }).enableGitHubReviewBots).toBe(true);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableGitHubReviewBots: false })).toEqual({ enableGitHubReviewBots: false });
     expect(patchInstanceExperimentalSettingsSchema.parse({ enableGitHubReviewBots: true })).toEqual({ enableGitHubReviewBots: true });
   });
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {

@@ -9,7 +9,7 @@ You can run a review bot on any agent, harness, or model supported by Paperclipâ
 
 ## 1. Quickstart
 
-Enable **GitHub review bots** in instance **Experimental** settings before starting setup (this default-off setting is independent of **Chat connectors**, and hiding either feature does not pause existing provider delivery). Setup requires zero GitHub Actions YAML in your repository.
+GitHub Code Review Bot is available in **Connectors** by default with no experimental setting required. Setup requires zero GitHub Actions YAML in your repository.
 
 ### Step 1: Choose an agent
 

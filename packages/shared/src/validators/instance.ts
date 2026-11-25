@@ -60,7 +60,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableGrokBot: z.boolean().default(false),
   enableMuse: z.boolean().default(false),
   enableChatConnectors: z.boolean().default(false),
-  enableGitHubReviewBots: z.boolean().default(false),
+  // Deprecated compatibility key. GitHub review bots graduated from
+  // Experimental and are always enabled; older stored rows, managed configs
+  // and clients may still send it.
+  enableGitHubReviewBots: z.boolean().default(true),
   // Compatibility only: old stored and managed values must still parse.
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),

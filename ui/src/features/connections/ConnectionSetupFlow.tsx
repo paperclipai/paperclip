@@ -695,7 +695,7 @@ function StandardConnectionSetupFlow({
   }, [host, routeNavigate]);
   const routeParams = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
-  const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const connectorAvailability = useConnectorAvailability();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -1205,11 +1205,11 @@ function StandardConnectionSetupFlow({
   const visibleGalleryApps = useMemo(
     () => (galleryQuery.data?.apps ?? []).filter((app) => (memoryConnectorsEnabled || !isMemoryConnectorId(app.slug))
       && connectorAvailability.enabled(app)).filter((app) =>
-      chatProviderVisible(app.slug, chatConnectorsEnabled, githubEnabled) ||
+      chatProviderVisible(app.slug, chatConnectorsEnabled) ||
       !app.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(app),
     ),
-    [galleryQuery.data, chatConnectorsEnabled, githubEnabled, memoryConnectorsEnabled, connectorAvailability.enabled],
+    [galleryQuery.data, chatConnectorsEnabled, memoryConnectorsEnabled, connectorAvailability.enabled],
   );
   const cloudInstance = useCloudInstance();
   const bundledRequestedDefinition = requestedAppKey

@@ -13,10 +13,9 @@ required GitHub checks, read
 
 The canonical step-by-step operator setup guide lives in
 [GitHub Review Bots](../../docs/guides/board-operator/github-review-bots.md).
-Enable **GitHub review bots** in instance **Experimental** settings (this
-default-off setting is independent of **Chat connectors**; hiding either feature
-does not pause existing provider delivery), then follow the Quickstart there to
-choose an agent, create and install the dedicated GitHub App, and verify your
+Open the **GitHub Code Review Bot** connector from **Connectors** (no
+experimental setting is required), then follow the Quickstart there to choose
+an agent, create and install the dedicated GitHub App, and verify your
 identity. The sections below record internal connector semantics and
 implementation invariants.
 
