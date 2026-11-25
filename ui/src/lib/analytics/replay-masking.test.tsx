@@ -23,6 +23,7 @@ import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
 import { IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
 import * as CompanyContext from "@/context/CompanyContext";
+import * as MarkdownPlainText from "@/lib/markdown-plain-text";
 import { buildPostHogInitOptions } from "./product-analytics";
 import {
   ANALYTICS_MASK_CLASS,
@@ -62,6 +63,20 @@ function recordedTextOf(html: string, text: string): string {
     if (node.data.includes(text)) return recordedText(node);
   }
   throw new Error(`text not rendered: ${text}`);
+}
+
+function renderTaskPreview(description: string): string {
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      <IssueQuicklookCard
+        issue={{
+          id: "task-1", companyId: "co-1", title: "Review access", status: "todo",
+          priority: "medium", updatedAt: new Date(0), description,
+        }}
+        linkTo="/ACME/issues/ACME-1"
+      />
+    </MemoryRouter>,
+  );
 }
 
 /**
@@ -624,22 +639,37 @@ describe("session replay text masking", () => {
     } as ReturnType<typeof CompanyContext.useOptionalCompany>);
     document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
     try {
-      const html = renderToStaticMarkup(
-        <MemoryRouter>
-          <IssueQuicklookCard
-            issue={{
-              id: "task-1", companyId: "co-1", title: "Review access", status: "todo",
-              priority: "medium", updatedAt: new Date(0), description: `Use **${token}** for the review.`,
-            }}
-            linkTo="/ACME/issues/ACME-1"
-          />
-        </MemoryRouter>,
-      );
+      const html = renderTaskPreview(`Use **${token}** for the review.`);
       expect(recordedTextOf(html, value)).toBe(`Use ${stars(token)} for the review.`);
       expect(document.querySelector('[data-slot="task-preview-description"]')?.textContent)
         .toBe(`Use ${token} for the review.`);
     } finally {
       company.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it.each(["`", "*", "_", "["])("bounds %s runs before converting a task preview", (marker) => {
+    const convert = MarkdownPlainText.markdownToPlainText;
+    const conversion = vi.spyOn(MarkdownPlainText, "markdownToPlainText").mockImplementation((markdown) => {
+      expect(markdown.length).toBeLessThanOrEqual(2_048);
+      return convert(markdown);
+    });
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const html = renderTaskPreview(`Use ${marker.repeat(128_000)}x`);
+      const recorded = recordedTextOf(html, "Use");
+      const rendered = document.querySelector('[data-slot="task-preview-description"]')?.textContent ?? "";
+      expect(conversion).toHaveBeenCalledTimes(1);
+      expect(rendered.length).toBeLessThanOrEqual(180);
+      expect(rendered).toContain("Use");
+      expect(recorded).toBe(stars(rendered));
+    } finally {
+      company.mockRestore();
+      conversion.mockRestore();
       document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
     }
   });

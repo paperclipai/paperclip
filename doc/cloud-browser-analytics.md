@@ -342,7 +342,11 @@ and attribute values are always masked.
     A task preview loads a task by id and can show another company's task:
     `IssueQuicklookCard` uses the work content marker only when the task's
     `companyId` is the selected company (`workContentClassForCompany`), and
-    masks any other.
+    masks any other. Task previews convert at most 2,048 source characters to
+    plain text, then limit the summary to 180 characters. When the source cap
+    applies, the preview always masks: a cut source can contain incomplete
+    credential text. Opening the full task still uses the normal work-content
+    rule.
   - A missing or disabled deployment opt-in, loading, a failed latest fetch
     (even with an older answer cached), a list that waits on a refresh, no
     company and replay off all keep work content masked. The check keeps its

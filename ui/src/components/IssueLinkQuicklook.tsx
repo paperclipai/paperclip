@@ -16,7 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
 import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
-import { workContentClassForCompany } from "@/lib/analytics/privacy";
+import { ANALYTICS_MASK_CLASS, workContentClassForCompany } from "@/lib/analytics/privacy";
 import { useOptionalCompany } from "@/context/CompanyContext";
 import { markdownToPlainText } from "@/lib/markdown-plain-text";
 
@@ -111,12 +111,16 @@ export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
   originId?: string | null;
 };
 
+const SUMMARY_SOURCE_LIMIT = 2_048;
+
 function summarizeIssueDescription(description: string | null | undefined) {
   if (!description) return null;
-  const summary = markdownToPlainText(description);
+  const summary = markdownToPlainText(description.slice(0, SUMMARY_SOURCE_LIMIT));
 
   if (!summary) return null;
-  return summary.length > 180 ? `${summary.slice(0, 177).trimEnd()}...` : summary;
+  return description.length > SUMMARY_SOURCE_LIMIT || summary.length > 180
+    ? `${summary.slice(0, 177).trimEnd()}...`
+    : summary;
 }
 
 /** "·" between facts in the quicklook's meta and status lines. */
@@ -216,7 +220,9 @@ export function IssueQuicklookCard({
           // A preview loads a task by id, so it can show another company's task
           // than the selected one. Only the selected company's own task is work
           // content in session replay; any other always masks.
-          workContentClassForCompany(issue.companyId, selectedCompanyId),
+          (issue.description?.length ?? 0) > SUMMARY_SOURCE_LIMIT
+            ? ANALYTICS_MASK_CLASS
+            : workContentClassForCompany(issue.companyId, selectedCompanyId),
         )}>
           {description}
         </p>
