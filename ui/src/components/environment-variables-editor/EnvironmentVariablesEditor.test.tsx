@@ -1001,6 +1001,42 @@ describe("EnvironmentVariablesEditor", () => {
     });
   });
 
+  it("disables reusing inactive (disabled or archived) secrets on name collision and explains why", async () => {
+    for (const status of ["disabled", "archived"] as const) {
+      const inactive = makeSecret(`s-gh-${status}`, { name: "gh_token", key: "gh_token", status, latestVersion: 2 });
+      const onChange = vi.fn();
+      const onRotateSecret = vi.fn(async () => inactive);
+
+      render(
+        <EnvironmentVariablesEditor
+          value={{ GH_TOKEN: { type: "plain", value: ["ghp", "0123456789abcdef0123456789abcdef"].join("_") } }}
+          secrets={[inactive]}
+          onChange={onChange}
+          onCreateSecret={async () => inactive}
+          onRotateSecret={onRotateSecret}
+        />,
+      );
+      const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+      storeButton.click();
+      await flush();
+
+      const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Use existing secret"),
+      );
+      const saveNewVersionBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Save as new version"),
+      );
+      expect(useExistingBtn?.disabled, `Use existing secret must be disabled for ${status}`).toBe(true);
+      expect(saveNewVersionBtn, `Save as new version must not render for ${status}`).toBeUndefined();
+      expect(document.body.textContent).toContain(`it is ${status}`);
+      expect(document.body.textContent?.toLowerCase()).toContain("re-enable");
+
+      // Unmount before next iteration.
+      root?.unmount();
+      root = null;
+    }
+  });
+
   it("warns immediately, masks input, and blocks save when a secret token is pasted into Variable name", async () => {
     const onChange = vi.fn();
     const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");

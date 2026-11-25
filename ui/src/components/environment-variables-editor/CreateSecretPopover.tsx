@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import type { CompanySecret } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -53,19 +53,32 @@ export function SecretPopoverForm({
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
 
+  const existingSecretByLowerName = useMemo(() => {
+    const map = new Map<string, CompanySecret>();
+    for (const secret of existingSecrets ?? []) {
+      const key = secret.name.toLowerCase();
+      if (!map.has(key)) map.set(key, secret);
+    }
+    return map;
+  }, [existingSecrets]);
+
+  const existingSecretNameSet = useMemo(
+    () => new Set((existingSecretNames ?? []).map((existing) => existing.toLowerCase())),
+    [existingSecretNames],
+  );
+
   const trimmedName = name.trim();
   const normalizedName = trimmedName.toLowerCase();
-  const matchingSecret =
-    normalizedName.length > 0
-      ? (existingSecrets?.find((existing) => existing.name.toLowerCase() === normalizedName) ?? null)
-      : null;
+  const matchingSecret = normalizedName.length > 0 ? (existingSecretByLowerName.get(normalizedName) ?? null) : null;
+  const existingIsActive = matchingSecret?.status === "active";
   const hasCollisionActions = Boolean(matchingSecret && (onSelectExisting || onRotateExisting));
+  const canUseExisting = Boolean(matchingSecret && onSelectExisting && existingIsActive);
   const canRotateExisting = Boolean(
     matchingSecret &&
       onRotateExisting &&
       value.length > 0 &&
       matchingSecret.managedMode !== "external_reference" &&
-      matchingSecret.status === "active",
+      existingIsActive,
   );
 
   const nameError = (() => {
@@ -74,7 +87,7 @@ export function SecretPopoverForm({
     if (matchingSecret) {
       return hasCollisionActions ? null : "A secret with this name already exists";
     }
-    if (existingSecretNames?.some((existing) => existing.toLowerCase() === normalizedName)) {
+    if (existingSecretNameSet.has(normalizedName)) {
       return "A secret with this name already exists";
     }
     return null;
@@ -96,7 +109,7 @@ export function SecretPopoverForm({
   }
 
   async function handleUseExisting() {
-    if (!matchingSecret || !onSelectExisting || submitting) return;
+    if (!matchingSecret || !canUseExisting || !onSelectExisting || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -158,10 +171,20 @@ export function SecretPopoverForm({
 
       {hasCollisionActions && matchingSecret ? (
         <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
-          <p className="text-(length:--text-micro) text-foreground">
-            <span className="font-mono font-medium">{matchingSecret.name}</span> already exists (v
-            {matchingSecret.latestVersion}). Reuse it, save this value as a new version, or choose a different name.
-          </p>
+          {existingIsActive ? (
+            <p className="text-(length:--text-micro) text-foreground">
+              <span className="font-mono font-medium">{matchingSecret.name}</span> already exists (v
+              {matchingSecret.latestVersion}).{" "}
+              {canRotateExisting
+                ? "Reuse it, save this value as a new version, or choose a different name."
+                : "Reuse it or choose a different name."}
+            </p>
+          ) : (
+            <p className="text-(length:--text-micro) text-foreground">
+              <span className="font-mono font-medium">{matchingSecret.name}</span> already exists, but it is{" "}
+              {matchingSecret.status}. Re-enable it in Secrets before reusing it, or choose a different name.
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {onSelectExisting ? (
               <Button
@@ -169,7 +192,7 @@ export function SecretPopoverForm({
                 variant="outline"
                 size="sm"
                 onClick={() => void handleUseExisting()}
-                disabled={submitting}
+                disabled={submitting || !existingIsActive}
               >
                 Use existing secret
               </Button>

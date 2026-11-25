@@ -247,6 +247,20 @@ describe("redactSensitive", () => {
     expect(serialized).not.toContain(openaiKey);
     expect(serialized).toContain("NODE_ENV");
   });
+
+  it("handles thousands of distinct credential-shaped object keys in linear time without leaking them", () => {
+    const env: Record<string, unknown> = { "[REDACTED]": "existing", "[REDACTED]_2": "existing2" };
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = "secret";
+    }
+    const startedAt = performance.now();
+    const out = redactSensitive({ env }) as { env: Record<string, unknown> };
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(out.env)).toHaveLength(4_002);
+    expect(JSON.stringify(out)).not.toContain(prefix);
+  });
 });
 
 describe("stripSecretBearingUrlParts", () => {

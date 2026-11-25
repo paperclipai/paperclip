@@ -93,7 +93,15 @@ import {
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { AgentSecretAccessEditor, type BindAsEnvVarRequest } from "./AgentSecretAccessEditor";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
@@ -607,27 +615,70 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const bindSecretAsEnvVar = useCallback((binding: { envKey: string; secretId: string; version: SecretVersionSelector }) => {
+  const [pendingEnvBindConflict, setPendingEnvBindConflict] = useState<{
+    binding: BindAsEnvVarRequest;
+    availableEnvKey: string;
+    existingKind: "plain" | "secret_ref" | "user_secret_ref";
+  } | null>(null);
+
+  const commitSecretEnvBinding = useCallback((
+    envKey: string,
+    secretId: string,
+    version: SecretVersionSelector,
+    baseEnvOverride?: Record<string, EnvBinding> | null,
+  ) => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
     setOverlay((prev) => {
-      const existingEnv = (flushedEnv ?? prev.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
+      const existingEnv = (baseEnvOverride ?? prev.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
       return {
         ...prev,
         adapterConfig: {
           ...prev.adapterConfig,
           env: {
             ...existingEnv,
-            [binding.envKey]: {
+            [envKey]: {
               type: "secret_ref",
-              secretId: binding.secretId,
-              version: binding.version,
+              secretId,
+              version,
             },
           },
         },
       };
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bindSecretAsEnvVar = useCallback((binding: BindAsEnvVarRequest) => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const currentEnv = (flushedEnv ?? overlay.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
+    const existing = Object.prototype.hasOwnProperty.call(currentEnv, binding.envKey)
+      ? currentEnv[binding.envKey]
+      : undefined;
+    const alreadySameSecret =
+      typeof existing === "object" &&
+      existing !== null &&
+      existing.type === "secret_ref" &&
+      existing.secretId === binding.secretId;
+    if (existing !== undefined && !alreadySameSecret && !binding.replaceExisting) {
+      let suffix = 2;
+      while (Object.prototype.hasOwnProperty.call(currentEnv, `${binding.envKey}_${suffix}`)) {
+        suffix += 1;
+      }
+      const existingKind =
+        typeof existing === "object" && existing !== null && existing.type === "secret_ref"
+          ? "secret_ref"
+          : typeof existing === "object" && existing !== null && existing.type === "user_secret_ref"
+            ? "user_secret_ref"
+            : "plain";
+      setPendingEnvBindConflict({
+        binding,
+        availableEnvKey: `${binding.envKey}_${suffix}`,
+        existingKind,
+      });
+      return;
+    }
+    commitSecretEnvBinding(binding.envKey, binding.secretId, binding.version, flushedEnv);
+  }, [isCreate, overlay.adapterConfig.env, !isCreate ? props.agent : undefined, commitSecretEnvBinding]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
@@ -671,6 +722,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
+  const effectiveSecretsAdapterConfig = useMemo(
+    () => ({ ...config, ...overlay.adapterConfig }),
+    [config, overlay.adapterConfig],
+  );
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeOverlay = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
   const currentAiConnection = (runtimeOverlay ?? runtimeConfig).aiConnection;
@@ -1684,7 +1739,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
-              config={{ ...config, ...overlay.adapterConfig }}
+              config={effectiveSecretsAdapterConfig}
               secrets={availableSecrets}
               onChange={applyAccessGrants}
               onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
@@ -1695,6 +1750,65 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onRejectProposal={proposalReview.requestReject}
             />
             {proposalReview.dialogs}
+            <Dialog
+              open={pendingEnvBindConflict !== null}
+              onOpenChange={(open) => {
+                if (!open) setPendingEnvBindConflict(null);
+              }}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Environment variable already exists</DialogTitle>
+                  <DialogDescription>
+                    <code className="font-mono">{pendingEnvBindConflict?.binding.envKey}</code> is already set as{" "}
+                    {pendingEnvBindConflict?.existingKind === "secret_ref"
+                      ? "another company secret"
+                      : pendingEnvBindConflict?.existingKind === "user_secret_ref"
+                        ? "a user secret"
+                        : "a plain value"}
+                    . Choose <code className="font-mono">{pendingEnvBindConflict?.availableEnvKey}</code> to keep the
+                    existing variable, or confirm replacing it.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="sm:justify-between">
+                  <Button type="button" variant="ghost" onClick={() => setPendingEnvBindConflict(null)}>
+                    Cancel
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.availableEnvKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Bind as {pendingEnvBindConflict?.availableEnvKey}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.binding.envKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Replace {pendingEnvBindConflict?.binding.envKey}
+                    </Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
       </div>

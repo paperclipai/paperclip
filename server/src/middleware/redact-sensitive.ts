@@ -167,13 +167,21 @@ function isCredentialShapedKey(key: string): boolean {
   return false;
 }
 
-function nextRedactedKey(target: Record<string, unknown>): string {
-  if (!Object.prototype.hasOwnProperty.call(target, REDACTED)) return REDACTED;
-  let suffix = 2;
-  while (Object.prototype.hasOwnProperty.call(target, `${REDACTED}_${suffix}`)) {
-    suffix += 1;
-  }
-  return `${REDACTED}_${suffix}`;
+function createRedactedKeyAllocator(existingKeys: ReadonlySet<string>): () => string {
+  let usedBase = false;
+  let nextSuffix = 2;
+  return () => {
+    if (!usedBase) {
+      usedBase = true;
+      if (!existingKeys.has(REDACTED)) return REDACTED;
+    }
+    while (existingKeys.has(`${REDACTED}_${nextSuffix}`)) {
+      nextSuffix += 1;
+    }
+    const allocated = `${REDACTED}_${nextSuffix}`;
+    nextSuffix += 1;
+    return allocated;
+  };
 }
 
 export function redactSensitive(value: unknown, depth = 0): unknown {
@@ -183,10 +191,15 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
     if (depth + 1 > MAX_DEPTH) return undefined;
     return value.map((entry) => redactSensitive(entry, depth + 1));
   }
+  const entries = Object.entries(value as Record<string, unknown>);
+  let allocateRedactedKey: (() => string) | null = null;
   const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, entry] of entries) {
     if (isCredentialShapedKey(key)) {
-      out[nextRedactedKey(out)] = REDACTED;
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedKeyAllocator(new Set(entries.map(([k]) => k)));
+      }
+      out[allocateRedactedKey()] = REDACTED;
       continue;
     }
     if (isSensitiveKey(key)) {

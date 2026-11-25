@@ -152,6 +152,13 @@ export function normalizeAccessMapKey(map: Record<string, EnvSecretRefBinding>):
 /* Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
+export interface BindAsEnvVarRequest {
+  envKey: string;
+  secretId: string;
+  version: SecretVersionSelector;
+  replaceExisting?: boolean;
+}
+
 export interface AgentSecretAccessEditorProps {
   /** Effective adapter config (env + top-level `access.*`), reflecting unsaved edits. */
   config: Record<string, unknown>;
@@ -166,7 +173,7 @@ export interface AgentSecretAccessEditorProps {
   /** Rotate an existing company secret when a name collision occurs during creation. */
   onRotateSecret?: (secretId: string, value: string) => Promise<CompanySecret>;
   /** Quick action to also expose an API-only secret binding as an environment variable. */
-  onBindAsEnvVar?: (binding: { envKey: string; secretId: string; version: SecretVersionSelector }) => void;
+  onBindAsEnvVar?: (binding: BindAsEnvVarRequest) => void;
   disabled?: boolean;
   /** Pending binding proposals targeting this agent (PAP-14731). */
   proposals?: readonly SecretProposalView[];
@@ -216,12 +223,31 @@ export function AgentSecretAccessEditor({
   const envBindings = useMemo(() => parseEnvSecretRefs(config), [config]);
   const apiBindings = useMemo(() => parseAccessGrants(config), [config]);
   const summaries = useMemo(() => summarizeAgentBindings(envBindings, apiBindings), [envBindings, apiBindings]);
+  const secretById = useMemo(() => {
+    const map = new Map<string, CompanySecret>();
+    for (const secret of secrets) map.set(secret.id, secret);
+    return map;
+  }, [secrets]);
+  const apiBindingBySecretId = useMemo(() => {
+    const map = new Map<string, AgentSecretRefEntry>();
+    for (const entry of apiBindings) {
+      if (!map.has(entry.secretId)) map.set(entry.secretId, entry);
+    }
+    return map;
+  }, [apiBindings]);
+  const occupiedEnvKeys = useMemo(() => new Set(Object.keys(asRecord(config?.env) ?? {})), [config]);
 
   const incomingMap = useMemo(() => rowsToAccessMap(entriesToRows(apiBindings)), [apiBindings]);
   const incomingKey = useMemo(() => normalizeAccessMapKey(incomingMap), [incomingMap]);
 
   const [rows, setRows] = useState<AccessRow[]>(() => entriesToRows(apiBindings));
   const [createRequest, setCreateRequest] = useState<{ rowId: string; name: string } | null>(null);
+  const [pendingEnvConflict, setPendingEnvConflict] = useState<{
+    secretId: string;
+    envKey: string;
+    availableEnvKey: string;
+    version: SecretVersionSelector;
+  } | null>(null);
   const pickerAnchorRefs = useRef(new Map<string, HTMLDivElement>());
   const lastEmittedKeyRef = useRef(incomingKey);
   const lastIncomingKeyRef = useRef(incomingKey);
@@ -237,7 +263,15 @@ export function AgentSecretAccessEditor({
   }, [incomingKey, apiBindings]);
 
   const secretName = (secretId: string): string =>
-    secrets.find((secret) => secret.id === secretId)?.name ?? `${secretId.slice(0, 8)}…`;
+    secretById.get(secretId)?.name ?? `${secretId.slice(0, 8)}…`;
+
+  function nextAvailableEnvKey(baseKey: string): string {
+    let suffix = 2;
+    while (occupiedEnvKeys.has(`${baseKey}_${suffix}`)) {
+      suffix += 1;
+    }
+    return `${baseKey}_${suffix}`;
+  }
 
   function emit(nextRows: AccessRow[]) {
     setRows(nextRows);
@@ -276,41 +310,108 @@ export function AgentSecretAccessEditor({
         <div className="space-y-1.5">
           {summaries.map((summary) => {
             const isApiOnly = summary.apiAliases.length > 0 && summary.envKeys.length === 0;
+            const validAliases = summary.apiAliases.filter(
+              (alias) => SECRET_ALIAS_RE.test(alias) && !looksLikeCredentialToken(alias),
+            );
             const suggestedEnvKey =
-              summary.apiAliases.find((alias) => SECRET_ALIAS_RE.test(alias) && !looksLikeCredentialToken(alias)) ||
+              validAliases.find((alias) => !occupiedEnvKeys.has(alias)) ||
+              validAliases[0] ||
               envKeyFromSecretName(secretName(summary.secretId));
-            const matchingApiBinding = apiBindings.find((entry) => entry.secretId === summary.secretId);
+            const matchingApiBinding = apiBindingBySecretId.get(summary.secretId);
+            const envKeyOccupied = Boolean(suggestedEnvKey && occupiedEnvKeys.has(suggestedEnvKey));
+            const conflictForRow =
+              pendingEnvConflict?.secretId === summary.secretId ? pendingEnvConflict : null;
             return (
               <div
                 key={summary.secretId}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs"
+                className="space-y-1.5 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs"
               >
-                <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="font-medium">{secretName(summary.secretId)}</span>
-                {summary.envKeys.length > 0 ? <DeliveryBadge mode="env" /> : null}
-                {summary.apiAliases.length > 0 ? <DeliveryBadge mode="api" /> : null}
-                <span className="min-w-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
-                  {[
-                    ...summary.envKeys.map((key) => `${ENV_CONFIG_PATH_PREFIX}${key}`),
-                    ...summary.apiAliases.map((alias) => `${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`),
-                  ].join(" · ")}
-                </span>
-                {isApiOnly && onBindAsEnvVar && !disabled && suggestedEnvKey ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onBindAsEnvVar({
-                        envKey: suggestedEnvKey,
-                        secretId: summary.secretId,
-                        version: matchingApiBinding?.version ?? "latest",
-                      })
-                    }
-                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) font-medium text-foreground transition-colors hover:bg-accent"
-                    title={`Bind as $${suggestedEnvKey} under Environment variables`}
-                  >
-                    <Variable className="size-3" />
-                    Also bind as env var
-                  </button>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-medium">{secretName(summary.secretId)}</span>
+                  {summary.envKeys.length > 0 ? <DeliveryBadge mode="env" /> : null}
+                  {summary.apiAliases.length > 0 ? <DeliveryBadge mode="api" /> : null}
+                  <span className="min-w-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
+                    {[
+                      ...summary.envKeys.map((key) => `${ENV_CONFIG_PATH_PREFIX}${key}`),
+                      ...summary.apiAliases.map((alias) => `${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`),
+                    ].join(" · ")}
+                  </span>
+                  {isApiOnly && onBindAsEnvVar && !disabled && suggestedEnvKey ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const version = matchingApiBinding?.version ?? "latest";
+                        if (envKeyOccupied) {
+                          setPendingEnvConflict({
+                            secretId: summary.secretId,
+                            envKey: suggestedEnvKey,
+                            availableEnvKey: nextAvailableEnvKey(suggestedEnvKey),
+                            version,
+                          });
+                          return;
+                        }
+                        onBindAsEnvVar({
+                          envKey: suggestedEnvKey,
+                          secretId: summary.secretId,
+                          version,
+                        });
+                      }}
+                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) font-medium text-foreground transition-colors hover:bg-accent"
+                      title={
+                        envKeyOccupied
+                          ? `$${suggestedEnvKey} already exists — click to choose a new name or confirm replacement`
+                          : `Bind as $${suggestedEnvKey} under Environment variables`
+                      }
+                    >
+                      <Variable className="size-3" />
+                      Also bind as env var
+                    </button>
+                  ) : null}
+                </div>
+                {conflictForRow && onBindAsEnvVar ? (
+                  <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-(length:--text-micro)">
+                    <span className="text-foreground">
+                      <code className="font-mono">${conflictForRow.envKey}</code> already exists under Environment
+                      variables.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBindAsEnvVar({
+                          envKey: conflictForRow.availableEnvKey,
+                          secretId: conflictForRow.secretId,
+                          version: conflictForRow.version,
+                        });
+                        setPendingEnvConflict(null);
+                      }}
+                      className="inline-flex items-center rounded-md border border-border bg-muted/40 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent"
+                    >
+                      Bind as {conflictForRow.availableEnvKey}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBindAsEnvVar({
+                          envKey: conflictForRow.envKey,
+                          secretId: conflictForRow.secretId,
+                          version: conflictForRow.version,
+                          replaceExisting: true,
+                        });
+                        setPendingEnvConflict(null);
+                      }}
+                      className="inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 font-medium text-destructive transition-colors hover:bg-destructive/15"
+                    >
+                      Replace {conflictForRow.envKey}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingEnvConflict(null)}
+                      className="ml-auto inline-flex items-center rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 ) : null}
               </div>
             );
@@ -380,7 +481,7 @@ export function AgentSecretAccessEditor({
               const aliasLooksLikeSecret = looksLikeCredentialToken(trimmedAlias);
               const aliasInvalid = Boolean(trimmedAlias) && !aliasLooksLikeSecret && !SECRET_ALIAS_RE.test(trimmedAlias);
               const aliasDuplicate = Boolean(trimmedAlias) && (aliasCounts.get(trimmedAlias) ?? 0) > 1;
-              const selectedSecret = secrets.find((secret) => secret.id === row.secretId) ?? null;
+              const selectedSecret = secretById.get(row.secretId) ?? null;
               return (
                 <div key={row.id} className="space-y-1">
                   <div className="grid grid-cols-(--gtc-65) items-start gap-1.5">

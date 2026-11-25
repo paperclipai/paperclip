@@ -1018,4 +1018,21 @@ describe("secret-shaped env var names and tokens", () => {
     expect(out).not.toContain(ghpToken);
     expect(out).not.toContain(openaiKey);
   });
+
+  it("redacts thousands of distinct credential-shaped keys in linear time", () => {
+    const env: Record<string, unknown> = {};
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = { type: "plain", value: "v" };
+    }
+    const startedAt = performance.now();
+    const redactedAdapter = redactAgentAdapterConfig({ env });
+    const sanitized = sanitizeRecord(env);
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(redactedAdapter.env as Record<string, unknown>)).toHaveLength(4_000);
+    expect(Object.keys(sanitized)).toHaveLength(4_000);
+    expect(JSON.stringify(redactedAdapter)).not.toContain(prefix);
+    expect(JSON.stringify(sanitized)).not.toContain(prefix);
+  });
 });

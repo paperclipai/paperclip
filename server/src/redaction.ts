@@ -924,22 +924,41 @@ function isCredentialShapedObjectKey(key: string): boolean {
   return false;
 }
 
-function nextRedactedObjectKey(target: Record<string, unknown>, base: string): string {
-  if (!Object.prototype.hasOwnProperty.call(target, base)) return base;
-  let suffix = 2;
-  while (Object.prototype.hasOwnProperty.call(target, `${base}_${suffix}`)) {
-    suffix += 1;
-  }
-  return `${base}_${suffix}`;
+function createRedactedObjectKeyAllocator(
+  base: string,
+  existingKeys: ReadonlySet<string>,
+): () => string {
+  let usedBase = false;
+  let nextSuffix = 2;
+  return () => {
+    if (!usedBase) {
+      usedBase = true;
+      if (!existingKeys.has(base)) return base;
+    }
+    while (existingKeys.has(`${base}_${nextSuffix}`)) {
+      nextSuffix += 1;
+    }
+    const allocated = `${base}_${nextSuffix}`;
+    nextSuffix += 1;
+    return allocated;
+  };
 }
 
 export function sanitizeRecord(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
+  const entries = Object.entries(record);
+  let allocateRedactedKey: (() => string) | null = null;
   const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
+  for (const [key, value] of entries) {
     if (isCredentialShapedObjectKey(key)) {
-      const safeKey = nextRedactedObjectKey(redacted, REDACTED_EVENT_VALUE);
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedObjectKeyAllocator(
+          REDACTED_EVENT_VALUE,
+          new Set(entries.map(([k]) => k)),
+        );
+      }
+      const safeKey = allocateRedactedKey();
       if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
         redacted[safeKey] = sanitizeValue(value);
       } else if (isPlainBinding(value)) {
@@ -1048,11 +1067,20 @@ export function redactAgentAdapterConfig(
   // `env`; keeping it out of `sanitizeRecord` means a future change there
   // cannot alter entries this function has already redacted.
   const { env, ...rest } = adapterConfig;
+  const envEntries = Object.entries(env);
+  let allocateRedactedKey: (() => string) | null = null;
   const redactedEnv: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(env)) {
-    const safeKey = isCredentialShapedObjectKey(key)
-      ? nextRedactedObjectKey(redactedEnv, REDACTED_EVENT_VALUE)
-      : key;
+  for (const [key, value] of envEntries) {
+    let safeKey = key;
+    if (isCredentialShapedObjectKey(key)) {
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedObjectKeyAllocator(
+          REDACTED_EVENT_VALUE,
+          new Set(envEntries.map(([k]) => k)),
+        );
+      }
+      safeKey = allocateRedactedKey();
+    }
     redactedEnv[safeKey] = redactAgentEnvBinding(value);
   }
 
