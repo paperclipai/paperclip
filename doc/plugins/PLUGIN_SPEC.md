@@ -993,6 +993,15 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `webhooks.receive`
 - `local.folders`
 - `http.outbound`
+- `http.private-network` — allows the plugin's `http.fetch` to target
+  loopback/private-network addresses (RFC 1918, loopback, link-local). Intended
+  for plugins that must talk to a local service, e.g. the local privileged
+  bridge. The allowance is derived **only** from the plugin's installed
+  manifest — it cannot be enabled through plugin-supplied request data — and it
+  lifts only the private-IP filter: the http/https protocol whitelist, DNS
+  resolution pinning (anti-rebinding), fetch timeout, and response-size cap all
+  still apply. Every fetch that actually lands on a private/reserved address
+  under this allowance is audit-logged.
 - `secrets.read-ref`
 - `environment.drivers.register`
 
