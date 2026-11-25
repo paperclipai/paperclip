@@ -41,34 +41,42 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const detachedIdleTimeoutMs = 10_000;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
+const evictionModes = [
+  "cached", "detached", "reused lease", "after inspection", "bare unavailable",
+  "prepared copy", "missing stop", "missing state", "foreign state", "working state",
+] as const;
+
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
-describeEmbeddedPostgres("plugin Runner eviction through the Core execution entry", () => {
-  let currentCase: { teardown?: () => Promise<void> } | undefined;
-  afterEach(async () => {
-    const finished = currentCase;
-    currentCase = undefined;
-    await finished?.teardown?.();
-  });
-  const environment = nativeRestartFixture();
-  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
-  let oldCAs: string[] = [], oldAgent = https.globalAgent;
-  beforeAll(async () => {
-    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
-    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
-    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
-  });
-  afterAll(() => {
-    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-  });
-  const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
-    (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const))),
-    ...(["codex", "claude"] as const).map(harness => [harness, "relaunch after inspection", "retired"] as const)])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
+export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", exit: "retired" | "abrupt"): void {
+  const cases = [
+    ...evictionModes.map(mode => [harness, mode, exit] as const),
+    ...(exit === "retired" ? [[harness, "relaunch after inspection", "retired"] as const] : []),
+  ];
+  describeEmbeddedPostgres(`plugin Runner eviction through the Core execution entry (${harness}, ${exit})`, () => {
+    let currentCase: { teardown?: () => Promise<void> } | undefined;
+    afterEach(async () => {
+      const finished = currentCase;
+      currentCase = undefined;
+      await finished?.teardown?.();
+    });
+    const environment = nativeRestartFixture();
+    const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+    let oldCAs: string[] = [], oldAgent = https.globalAgent;
+    beforeAll(async () => {
+      const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+      execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+        "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+      tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+      oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+      const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+    });
+    afterAll(() => {
+      https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+    });
+    const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
+    nativeIt.for(cases)("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const thisCase: { teardown?: () => Promise<void> } = {};
     currentCase = thisCase;
@@ -426,4 +434,5 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       await pendingFollowup?.catch(() => undefined);
     }
   });
-});
+  });
+}
