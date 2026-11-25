@@ -257,5 +257,8 @@ describe("Runner image smoke matrix", () => {
     const copies = [...smoke.matchAll(/^COPY --from=runner-artifacts (.+)$/gm)].map((match) => match[1]);
     expect(new Set(copies)).toEqual(new Set(["/paperclip-runnerd /usr/local/bin/paperclip-runnerd"]));
     expect(smoke).not.toMatch(/^FROM runner-artifacts/m);
+    // The workflow stages only /paperclip-runnerd into the smoke build context.
+    expect(workflow).toContain('cp -p "$RUNNER_TEMP/runner-image/slim/paperclip-runnerd" "$smoke_context/paperclip-runnerd"');
+    expect(workflow).toContain('--build-context "runner-artifacts=$smoke_context"');
   });
 });
