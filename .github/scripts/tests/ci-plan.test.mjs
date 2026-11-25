@@ -49,7 +49,7 @@ test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of
   const full = plan(["package.json"], { forceReason: "Full suite requested by label" });
   const awsJobs = Object.values(full.jobs).reduce((sum, lane) => sum + lane.total, 0);
   const hostedJobs = Object.values(full.jobs).reduce((sum, lane) => sum + (lane.hosted_total ?? lane.total), 0);
-  assert.equal(awsJobs, 66);
+  assert.equal(awsJobs, 72);
   assert.equal(hostedJobs, 33);
   assert.ok(Buffer.byteLength(JSON.stringify(full)) < 32_768, "dual-profile plan stays compact for GITHUB_OUTPUT/env");
 
@@ -93,7 +93,7 @@ test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of
   assert.deepEqual(uiPr.jobs.general_tests.hosted_matrix.include, [
     { group: "general-workspaces-a", group_label: "workspaces-a (1/1)", shard_index: 0, shard_count: 1, task: "ci:workspaces-a" },
   ]);
-  assert.equal(uiPr.jobs.e2e_shards.selected, 12);
+  assert.equal(uiPr.jobs.e2e_shards.selected, 16);
   assert.equal(uiPr.jobs.e2e_shards.hosted_selected, 4);
 
   const futureEntries = Array.from({ length: 10 }, (_, shard_index) => ({
@@ -104,8 +104,8 @@ test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of
   assert.equal(futureCompact[4].shard_label, "5/5");
 
   const summary = planSummary(full);
-  assert.match(summary, /27\/27 \(hosted: 12\/12\)/);
-  assert.match(summary, /12\/12 \(hosted: 4\/4\)/);
+  assert.match(summary, /28\/28 \(hosted: 12\/12\)/);
+  assert.match(summary, /16\/16 \(hosted: 4\/4\)/);
 });
 
 test("a UI component retains browser and build coverage without unrelated server/Rust jobs", () => {
@@ -213,7 +213,7 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
   assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);
   assert.equal(lanes.verify_runner_e2e_support.length, 4, "Runner support suite should be 4-way sharded");
-  assert.equal(lanes.e2e_shards.length, 12, "E2E should be 12-way sharded");
+  assert.equal(lanes.e2e_shards.length, 16, "E2E should be 16-way sharded");
   const typecheck = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
   assert.match(typecheck, /fetch-depth: 2/);
   assert.match(typecheck, /CI_PLAN: \$\{\{ needs\.gate\.outputs\.plan \}\}/);
@@ -282,7 +282,7 @@ test("repository-wide guidance guards run uncached for every scanned UI file typ
     "server/src/__tests__/cli-invocation-safety.test.ts",
     "pnpm run test:release-registry",
   ]) assert.ok(fallback.includes(command), command);
-  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).prepare.find((task) => task.name === "CLI guidance safety");
+  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).tasks.find((task) => task.name === "CLI guidance safety");
   assert.deepEqual(guidance.args, ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"]);
   assert.ok(!job.includes("uses: ./.github/actions/run-ci-task"));
 });
@@ -553,7 +553,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 27 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 28 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }

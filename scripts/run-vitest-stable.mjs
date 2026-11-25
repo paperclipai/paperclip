@@ -64,6 +64,7 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/express5-auth-wildcard.test.ts",
   "server/src/__tests__/health-dev-server-token.test.ts",
   "server/src/__tests__/health.test.ts",
+  "server/src/__tests__/heartbeat-dependency-native-wakes.test.ts",
   "server/src/__tests__/heartbeat-dependency-scheduling.test.ts",
   "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts",
   "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts",
@@ -115,6 +116,7 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/plugin-runner-probe.test.ts",
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
   "server/src/services/native-runtime/native-ingress-bootstrap-retry.integration.test.ts",
+  "server/src/services/native-runtime/native-ingress-bootstrap-retry-opencode.integration.test.ts",
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
@@ -159,6 +161,19 @@ const activeNightlyOnlySuites = nightlyExclusionActive ? allNightlyOnlySuites : 
 
 function activeNativeRunnerSuites() {
   return nativeRunnerSuites.filter((file) => !activeNightlyOnlySuites.has(file));
+}
+
+function selectNativeRunnerSuites(shardIndex = null, shardCount = null) {
+  const suites = activeNativeRunnerSuites();
+  if (shardCount === null || shardCount <= 1) {
+    return suites;
+  }
+  return selectGeneralServerShard(
+    suites,
+    shardIndex,
+    shardCount,
+    generalServerShardDurations,
+  );
 }
 
 function resolveWorkers(lane) {
@@ -378,7 +393,7 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName].includes(group)
+      ([...generalServerGroups, generalChatGroupName, generalServerNativeRunnerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName].includes(group)
         || Boolean(process.env.PAPERCLIP_CI_TEST_SELECTION)
           && generalWorkspacesCGroupName === group));
   if (!shardAllowed && shardIndex !== null) {
@@ -551,7 +566,7 @@ function hasScheduledSuitesForRun(opts, sel) {
     return selectChatSuites(opts.shardIndex, opts.shardCount).length > 0;
   }
   if (opts.mode === generalModeName && opts.group === generalServerNativeRunnerGroupName) {
-    return activeNativeRunnerSuites().length > 0;
+    return selectNativeRunnerSuites(opts.shardIndex, opts.shardCount).length > 0;
   }
   if (opts.mode === generalModeName && generalServerGroups.includes(opts.group)) {
     const excluded = new Set(excludedServerSuites(opts.group));
@@ -584,11 +599,16 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     return;
   }
   if (groupName === generalServerNativeRunnerGroupName) {
-    const suites = activeNativeRunnerSuites();
+    const allNativeSuites = activeNativeRunnerSuites();
+    const suites = selectNativeRunnerSuites(shardIndex, shardCount);
+    const shardSuffix = shardCount !== null && shardCount > 1 ? ` shard ${shardIndex + 1}/${shardCount}` : "";
     if (suites.length === 0) {
-      console.log("\n[test:run] native runner vertical-slice suite: 0 suites after nightly filtering; skipping");
+      console.log(`\n[test:run] native runner vertical-slice suite${shardSuffix}: 0 suites; skipping`);
       return;
     }
+    console.log(
+      `\n[test:run] general-server-native-runner${shardSuffix} running ${suites.length} of ${allNativeSuites.length} suites`,
+    );
     await runVitest(
       ["--project", "@paperclipai/server",
         // Each file owns its database, home, and processes. Keep cases serial,
@@ -596,7 +616,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
         ...(hasSharedTestDatabase ? serializedServerVitestArgs
           : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${resolveWorkers("general")}`]),
         ...suites],
-      "native runner vertical-slice suite",
+      `native runner vertical-slice suite${shardSuffix}`,
     );
     return;
   }
@@ -872,7 +892,7 @@ if (options.dryRun) {
           isolateDefaultChat
             ? generalServerTestFiles.filter((file) => !chatSuiteSet.has(file))
             : options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
-            ? activeNativeRunnerSuites()
+            ? selectNativeRunnerSuites(options.shardIndex, options.shardCount)
             : options.mode === generalModeName &&
                 generalServerGroups.includes(options.group) &&
                 options.shardCount !== null
