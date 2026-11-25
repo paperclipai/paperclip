@@ -419,30 +419,26 @@ for (const [name, vars, github, expected = "ubuntu-latest"] of notifierPlacement
   });
 }
 
-const reviewJob = readFileSync(new URL("../../workflows/commitperclip-review.yml", import.meta.url), "utf8")
-  .split(/^jobs:\n/m)[1];
-const reviewEvent = (pullRequest = {}, sender = ownerRun) => ({
-  event_name: "pull_request_target",
-  event: { pull_request: { user: ownerRun, head: { repo: ownRepository }, ...pullRequest }, sender },
+test("Dependency Review retains base-context enforcement without bot credentials or write permissions", () => {
+  const dependencyReview = readFileSync(new URL("../../workflows/dependency-review.yml", import.meta.url), "utf8");
+  const review = dependencyReview.match(/      - name: Dependency Review\n[\s\S]*?(?=\n      - name:|$)/)?.[0];
+  assert.ok(review);
+  assert.match(dependencyReview, /^ {2}pull_request_target:\n {4}types: \[opened, synchronize, reopened\]$/m);
+  assert.match(dependencyReview, /^ {10}ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}$/m);
+  assert.match(dependencyReview, /^ {10}persist-credentials: false$/m);
+  assert.match(review, /uses: actions\/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294/);
+  assert.match(review, /base-ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(review, /head-ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.doesNotMatch(dependencyReview, /if:|continue-on-error:|secrets\.|COMMITPERCLIP_KEY|get-bot-token/);
+  assert.doesNotMatch(dependencyReview, /^ {2}pull_request:|^ {2}(?:actions|checks|contents|pull-requests): write$/m);
 });
-const reviewPlacementCases = [
-  ["CODEOWNER PR", shortJobVars, reviewEvent(), reservedFleet],
-  ["not yet enabled", {}, reviewEvent()],
-  ["AWS CI disabled", { ...shortJobVars, AWS_CI_ENABLED: "false" }, reviewEvent()],
-  ["missing admission members", { ...shortJobVars, AWS_CI_ROUTING_USER_IDS: "" }, reviewEvent()],
-  ["community author", shortJobVars, reviewEvent({ user: { id: 999 } })],
-  ["community sender on an owner PR", shortJobVars, reviewEvent({}, { id: 999 })],
-  ["owner PR from a fork", shortJobVars, reviewEvent({ head: { repo: { id: 999 } } })],
-  ["deleted fork", shortJobVars, reviewEvent({ head: { repo: {} } })],
-  ["other event", shortJobVars, { ...reviewEvent(), event_name: "pull_request" }],
-  ["different repository ID", shortJobVars, { ...reviewEvent(), repository_id: "999" }],
-];
 
-for (const [name, vars, github, expected = "ubuntu-latest"] of reviewPlacementCases) {
-  test(`commitperclip review placement: ${name}`, () => {
-    assert.equal(routingPlacement(vars, github, reviewJob), expected);
-  });
-}
+test("the removed commitperclip workflow has no completion trigger", () => {
+  assert.equal(existsSync(new URL("../../workflows/commitperclip-review.yml", import.meta.url)), false);
+  const notifier = readFileSync(new URL("../../workflows/pr-merge-review.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(notifier, /commitperclip PR Review/);
+  assert.match(notifier, /^ {6}- Dependency Review$/m);
+});
 
 test("GitHub-hosted PR runs queue at most four jobs per matrix", () => {
   const trusted = readFileSync(new URL("../../workflows/pr-trusted.yml", import.meta.url), "utf8");

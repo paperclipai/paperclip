@@ -7,7 +7,7 @@ on:
       - Runner Windows
       - Sentry SDK contract
       - Runner image
-      - commitperclip PR Review
+      - Dependency Review
       - Storybook Visual
       - Storybook Deploy
       - CI work benchmark
