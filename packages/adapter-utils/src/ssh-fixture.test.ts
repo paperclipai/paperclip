@@ -338,6 +338,7 @@ describe("ssh env-lab fixture", () => {
         knownHostsPath: path.join(rootDir, "known_hosts"),
         sshdConfigPath: path.join(rootDir, "sshd_config"),
         sshdLogPath: path.join(rootDir, "sshd.log"),
+        homeDir: path.join(rootDir, "home"),
       };
 
       const forgedVariants = [

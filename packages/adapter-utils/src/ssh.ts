@@ -142,6 +142,7 @@ export interface SshEnvLabFixtureState {
   knownHostsPath: string;
   sshdConfigPath: string;
   sshdLogPath: string;
+  homeDir: string;
 }
 
 interface LocalGitWorkspaceSnapshot {
@@ -1863,6 +1864,7 @@ const SSH_ENV_LAB_FIXTURE_PATH_FIELDS = [
   "knownHostsPath",
   "sshdConfigPath",
   "sshdLogPath",
+  "homeDir",
 ] as const satisfies readonly (keyof SshEnvLabFixtureState)[];
 
 // True when candidate is an absolute path equal to rootDir or nested under
@@ -2049,8 +2051,10 @@ export async function startSshEnvLabFixture(input: {
   const sshdConfigPath = path.join(rootDir, "sshd_config");
   const sshdLogPath = path.join(rootDir, "sshd.log");
   const sshdPidPath = path.join(rootDir, "sshd.pid");
+  const homeDir = path.join(rootDir, "home");
 
   await fs.mkdir(workspaceDir, { recursive: true });
+  await fs.mkdir(homeDir, { recursive: true });
   await execFileText("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", clientPrivateKeyPath], {
     timeout: 15_000,
   });
@@ -2068,6 +2072,11 @@ export async function startSshEnvLabFixture(input: {
     { mode: 0o600 },
   );
   await fs.writeFile(
+    path.join(homeDir, ".profile"),
+    `export HOME=${homeDir}\n`,
+    { mode: 0o644 },
+  );
+  await fs.writeFile(
     sshdConfigPath,
     [
       `Port ${port}`,
@@ -2083,6 +2092,14 @@ export async function startSshEnvLabFixture(input: {
       "UsePAM no",
       "StrictModes no",
       `AllowUsers ${username}`,
+      // Pin the SSH session's HOME to the fixture-owned home directory.
+      // OpenSSH `SetEnv NAME=value` in sshd_config sets the variable
+      // server-side before the user's shell starts, regardless of whether
+      // the client sends it. This keeps the AI-connection preflight probe's
+      // upward walk from workspaceDir bounded inside rootDir instead of
+      // reaching the developer's real $HOME (where ~/.codex/config.toml or
+      // ~/.claude/settings.json would trigger a false conflict).
+      `SetEnv HOME=${homeDir}`,
       "LogLevel VERBOSE",
       "PrintMotd no",
       "UseDNS no",
@@ -2117,6 +2134,7 @@ export async function startSshEnvLabFixture(input: {
     knownHostsPath,
     sshdConfigPath,
     sshdLogPath,
+    homeDir,
   };
 
   if (!state.pid) {
