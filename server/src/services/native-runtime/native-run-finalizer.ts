@@ -76,6 +76,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,
@@ -1820,6 +1821,21 @@ export async function finalizeNativeRun(input: {
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
+    const namedBlockerAgentId = assessment.blocker?.ownerAgentId && assessment.blocker.ownerAgentId !== run.agentId
+      ? assessment.blocker.ownerAgentId : null;
+    const blockerHandoffLocked = namedBlockerAgentId !== null && !(await evaluateBlockerAgentHandoff(input.db, {
+      companyId: run.companyId,
+      issue: authoritativeIssue,
+      runId: run.id,
+      actorAgentId: run.agentId,
+      responsibleUserId: run.responsibleUserId,
+      driverKind: run.driverKind,
+      contextSnapshot: run.contextSnapshot,
+      runnerProfileJson: run.runnerProfileJson,
+      targetAgentId: namedBlockerAgentId,
+      unblockAction: assessment.blocker!.unblockAction,
+      requireTaskOwner: true,
+    })).allowed;
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1841,6 +1857,7 @@ export async function finalizeNativeRun(input: {
         && isNativeEnvironmentBlocker(result),
       agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && result.reportedWorkDisposition === "blocked",
+      blockerHandoffLocked,
       hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
         && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),
