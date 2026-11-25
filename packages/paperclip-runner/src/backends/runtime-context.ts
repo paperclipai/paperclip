@@ -2,6 +2,7 @@ import { explicitTaskSkillNames } from "../contracts/runtime-context.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { CODEX_SKILLLESS_BASE_INSTRUCTIONS } from "../contracts/codex.js";
+import { antigravitySwarmHandInInstructions, isAntigravitySwarmRoute } from "../drivers/acpx/antigravity-swarm-route.js";
 import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V8, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, type NativeExecutionInput } from "../contracts/native-execution.js";
 import {
   type NativeRuntimeContextSnapshot,
@@ -9,8 +10,29 @@ import {
   composeNativeSystemInstructions,
 } from "../contracts/runtime-context.js";
 
+export function nativeRunAttachReservedBytes(input: NativeExecutionInput): number {
+  const criterionIds = input.completionContract.contract.criteria.map((criterion) => criterion.id);
+  const runtimeContextBytes = Buffer.byteLength(JSON.stringify("runtimeContext" in input ? input.runtimeContext : null), "utf8")
+    + Buffer.byteLength(JSON.stringify(criterionIds), "utf8");
+  try {
+    return runtimeContextBytes + Buffer.byteLength(JSON.stringify(nativeSystemInstructions(input)), "utf8");
+  } catch {
+    return runtimeContextBytes;
+  }
+}
+
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
+  // A /swarm turn's helpers act under Antigravity's auto mode, so its system
+  // prompt holds only Paperclip-authored text: the fixed execution prompt and
+  // the run's server-written hand-in values (the route adds its fixed swarm
+  // rules). The agent's instruction bundle and connection instructions are left
+  // out: an agent can edit its own instructions in an earlier ordinary run, and
+  // Paperclip keeps no user-approved copy to trust instead.
+  if (input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)) {
+    return [input.runtimeContext.prompt.text, antigravitySwarmHandInInstructions(input.completionContract.contract)]
+      .filter(Boolean).join("\n\n");
+  }
   const configuredRoot = resolve(
     input.runtimeContext.instructions.bundle.rootPath,
   );

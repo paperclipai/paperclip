@@ -257,6 +257,11 @@ the local result. See "Removing a managed Google connection" in
 
 ### Configure each originating Paperclip instance
 
+These steps apply to Paperclip Cloud workspaces. Paperclip's own Google
+sign-in is not available on a self-hosted Paperclip; a self-hosted instance
+connects Gmail with its own Google OAuth client. See
+[Self-hosted instances: use your own Google client](GOOGLE-WORKSPACE.md#self-hosted-instances-use-your-own-google-client).
+
 Generate the two long-lived instance keys once. PEM-encoded PKCS#8 keys work
 directly with Paperclip:
 
@@ -286,17 +291,22 @@ HTTP is accepted only for a loopback Paperclip Cloud URL; staging and production
 must use HTTPS.
 
 Cloud-hosted stacks receive these values automatically through the existing
-per-stack secret-reference delivery path. Self-hosted instances normally use
-the Apps enrollment action instead of running the OpenSSL commands manually;
-it generates the keys and writes them to the ignored instance secret directory
-with owner-only permissions.
+per-stack secret-reference delivery path. A self-hosted instance does not use
+these keys for Google. Its Apps enrollment action still serves other
+Paperclip-managed providers, such as GitHub and Asana: it generates the keys
+and writes them to the ignored instance secret directory with owner-only
+permissions.
 
 `PAPERCLIP_ID_CONNECTOR_*` values are not aliases for this protocol. Paperclip
 ID used different endpoints, signing metadata, envelope purposes, and Google
 client credentials. An instance with only those legacy values fails with
-`CONNECTOR_MIGRATION_REQUIRED`. Enroll it with Paperclip Cloud and reconnect
-each legacy Google grant. Cloud-hosted fleets must deliver the new enrollment
-keys before they deploy a binary that enables the Cloud connector.
+`CONNECTOR_MIGRATION_REQUIRED`. On Paperclip Cloud, deliver the new enrollment
+keys and reconnect each legacy Google grant. On a self-hosted instance, reconnect
+Gmail with your own Google OAuth client. A Google grant that a self-hosted
+instance already holds through Paperclip keeps refreshing until the Paperclip
+Cloud sunset date; after that date, Paperclip asks the user to reconnect with
+their own Google OAuth client. Cloud-hosted fleets must deliver the new
+enrollment keys before they deploy a binary that enables the Cloud connector.
 
 ## Paperclip access defaults
 

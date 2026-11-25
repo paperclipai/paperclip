@@ -1,3 +1,14 @@
+import { readProviderFailure } from "@paperclipai/shared";
+
+/** An exhausted account with no reported reset needs an account/billing repair. */
+export function isProviderQuotaActionRequired(run: { resultJson?: unknown } | null | undefined, observedAt = new Date()): boolean {
+  const result = run?.resultJson;
+  const failure = readProviderFailure(result && typeof result === "object" && !Array.isArray(result)
+    ? (result as Record<string, unknown>).providerFailure : undefined);
+  return failure?.category === "quota_exhausted" && !failure.retryAt
+    && !parseProviderQuotaClockReset(failure.message, observedAt);
+}
+
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const MONTH_NAMES = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
 const MAX_DATED_RESET_AHEAD_MS = 45 * 24 * 60 * 60_000;

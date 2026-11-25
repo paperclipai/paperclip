@@ -201,6 +201,8 @@ export type {
   AttentionTaskIndex,
   AttentionFeedView,
   AttentionItem,
+  AttentionProviderLimit,
+  AttentionRunHistoryEntry,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
@@ -364,6 +366,7 @@ export {
 } from "./connection-setup-state.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./google-workspace-connectors.js";
+export * from "./google-sign-in-deployment.js";
 export * from "./github-connectors.js";
 export * from "./asana-connectors.js";
 export {
@@ -1651,6 +1654,7 @@ export type {
   ToolConnectionStoredContentCounts,
   ToolConnectionContentDeletion,
   ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionReason,
   ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -2174,6 +2178,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,
@@ -3074,7 +3079,28 @@ export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPre
 export * from "./agent-avatar-upload.js";
 
 export type { DotBinding, DotInvitation, DotConnection, DotPairing } from "./dot-invitations.js";
-export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerCreationLifecycle, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
+export {
+  ANTIGRAVITY_API_KEY_DEFAULT_MODEL,
+  ANTIGRAVITY_PAID_PLAN_NOTE,
+  ANTIGRAVITY_RUNTIME_CATALOG_VERSION,
+  ANTIGRAVITY_THINKING_LEVELS,
+  antigravityApiKeyModels,
+  antigravityFamilyModelIds,
+  antigravityModelChoice,
+  antigravityModelNeedsPaidGeminiApiPlan,
+  antigravityModelRefusalMessage,
+  antigravityServerThinkingLevel,
+  antigravityThinkingLevelLabel,
+  formatAntigravityModelId,
+  parseAntigravityModelId,
+  type AntigravityAuthRoute,
+  type AntigravityModelChoice,
+  type AntigravityModelLevel,
+  type AntigravityModelVariant,
+  type AntigravityThinkingLevel,
+} from "./antigravity-models.js";
+export { ANTIGRAVITY_GENERATED_MODEL_CATALOG } from "./antigravity-models.generated.js";
+export { agentHarnessName, agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerCreationLifecycle, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, supportsLinuxLibc, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
 export { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "./runner-configuration-warnings.js";
 export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE, GROK_BOT_AGENT_TOOL_GUIDANCE } from "./external-agent-guidance.js";
 
@@ -3127,3 +3153,5 @@ export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
+export * from "./agent-setup-progress.js";
+export { parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";

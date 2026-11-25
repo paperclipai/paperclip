@@ -34,6 +34,7 @@ export const ALLOWED_SPAN_ATTRIBUTES: ReadonlySet<string> = new Set([
 ]);
 
 export const ALLOWED_RESOURCE_ATTRIBUTES: ReadonlySet<string> = new Set([
+  "paperclip.instance.host",
   "service.name",
   "service.version",
   "deployment.environment.name",

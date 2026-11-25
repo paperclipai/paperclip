@@ -1,6 +1,7 @@
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { isSandboxDiskFullFailure } from "../../vendor/paperclip-runner/index.js";
 import { isSandboxDiskFullText } from "./remote-runner-disk-reserve.js";
+import { NATIVE_RUN_PAYLOAD_TOO_LARGE } from "./native-run-payload-too-large.js";
 
 export const NATIVE_SANDBOX_DISK_FULL = "sandbox_disk_full" as const;
 
@@ -10,6 +11,7 @@ export const NATIVE_SANDBOX_DISK_FULL_ACTION =
   + "for example by deleting build output, caches or dependencies it no longer needs, then press Retry.";
 
 const CODES_THAT_KEEP_THEIR_MEANING: ReadonlySet<string> = new Set([
+  NATIVE_RUN_PAYLOAD_TOO_LARGE,
   "native_permission_declined",
   "native_provider_approval_required",
   "native_provider_usage_limit",

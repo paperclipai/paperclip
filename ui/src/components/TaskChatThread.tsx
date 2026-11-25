@@ -162,9 +162,18 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
+
+/** Mirrors task-interruption-presentation.ts: a swarm-route failure needs the person when Antigravity says so. */
+function swarmFailureNeedsAction(resultJson: Record<string, unknown> | null | undefined): boolean {
+  const failure = resultJson?.providerFailure;
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) return false;
+  const { provider, retryability } = failure as Record<string, unknown>;
+  return provider === "antigravity" && retryability === "requires_action";
+}
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -174,17 +183,6 @@ function toMs(value: Date | string | null | undefined): number {
 
 function normalizedMessageText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
-}
-
-function safeResourceHref(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith("/") || value.startsWith("#")) return value;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function formatResourceBytes(value: number): string {
@@ -1441,7 +1439,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ]
             .filter(Boolean)
             .join(" · "),
-          href: safeResourceHref(href),
+          href: safeNavigableUrl(href),
           timestamp: new Date(workProduct.createdAt).toISOString(),
           workProduct,
         },
@@ -1463,7 +1461,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           resourceKind: "attachment",
           title: attachment.originalFilename ?? "Agent attachment",
           subtitle: `${attachment.contentType} · ${formatResourceBytes(attachment.byteSize)}`,
-          href: safeResourceHref(attachment.openPath ?? attachment.contentPath),
+          href: safeNavigableUrl(attachment.openPath ?? attachment.contentPath),
           timestamp: new Date(attachment.createdAt).toISOString(),
           attachment,
         },
@@ -1823,6 +1821,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Runtime missing"
             : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
+            : code === "antigravity_swarm_unavailable" && source.status === "failed"
+            ? swarmFailureNeedsAction(meta?.resultJson) ? "Swarm did not start" : "Swarm did not finish"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
@@ -1852,6 +1852,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ? `${props.interruption?.observedRunId === source.id && props.interruption.rejectedModel
                     ? `The provider rejected the model "${props.interruption.rejectedModel}".`
                     : meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                : code === "antigravity_swarm_unavailable" && source.status === "failed"
+                  // The swarm route's own plain sentence; never the code.
+                  ? meta?.error?.trim() || "Swarm did not start, and nothing was changed. Send /swarm again to try once more."
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
@@ -1882,7 +1885,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption,
+            // A /swarm the route refused for something the person must change (another model,
+            // a planning run) has no Retry; one that ran and failed (no result, helpers timed
+            // out) keeps it. The same rule as the server's task interruption state.
+            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption &&
+              !(code === "antigravity_swarm_unavailable" && swarmFailureNeedsAction(meta?.resultJson)),
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,

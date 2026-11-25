@@ -1,4 +1,6 @@
 import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
+import { resolveAntigravitySwarmRun } from "../antigravity-swarm.js";
+import { antigravityForcesSameSessionRecovery } from "../native-runtime/antigravity-release.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
@@ -835,6 +837,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       const workspaceMigration = persistedExecutionWorkspace?.metadata?.nativeWorkspaceMigration
         ? await readNativeWorkspaceMigration(db, { companyId: agent.companyId, id: nativeExecutionWorkspaceId }) : null;
+      // A trusted /swarm runs Google Antigravity's native swarm on the CLI route.
+      const antigravitySwarm = agent.adapterType === "paperclip_runner"
+        && await resolveAntigravitySwarmRun(db, {
+          companyId: agent.companyId, issueId: issueRef.id, runId: run.id, agent,
+          context, remote: executionTarget?.kind === "remote", planning: executionMode === "plan", workMode: issueRef.workMode ?? null,
+        });
       const buildExecution = ({ normalizedSessionId, resumedSession }: { normalizedSessionId: string; resumedSession: boolean }) =>
             buildNativeExecutionInput({
               agentKeyId: agentIdentity?.keyId,
@@ -918,6 +926,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                     }
                   : null,
               ...nativeProvider,
+              // The swarm's only instruction: the verified request, in its own field (never task.prompt).
+              ...(antigravitySwarm ? { antigravitySwarmRequest: antigravitySwarm.request } : {}),
               lifecyclePolicy: effectiveLifecyclePolicy,
               interactionResponses,
               completionContract: {
@@ -951,8 +961,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
     }
-    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
-      && nativeExecution.provider.agent === "antigravity") {
+    if (nativeResumeCheckpoint && antigravityForcesSameSessionRecovery(nativeExecution.provider)) {
       nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
     }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({

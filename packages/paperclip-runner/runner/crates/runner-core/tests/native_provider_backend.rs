@@ -178,7 +178,13 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
     config
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
     let profiles: Value =
@@ -186,11 +192,18 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     let distributions: Value =
         serde_json::from_str(include_str!("../../../../antigravity-distributions.json")).unwrap();
     let profile = &profiles["profiles"]["antigravity"];
+    let (platform, architecture) = if cfg!(target_os = "macos") {
+        ("darwin", "arm64")
+    } else if cfg!(target_arch = "x86_64") {
+        ("linux", "x64")
+    } else {
+        ("linux", "arm64")
+    };
     let admission = AcpxCandidateAdmission::parse_json(&json!({
         "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
         "agent":"antigravity", "model":"explicit-test-model", "profileDigest":profile["commandDigest"],
-        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
-        "platform":"darwin", "architecture":"arm64", "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"].as_str().unwrap()),
+        "platform":platform, "architecture":architecture, "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
         "runId":"run-1", "normalizedSessionId":"session-1"
     }).to_string()).unwrap();
     let mut config = acpx_config(directory, "turns-reserved-result-terminal");
@@ -214,7 +227,13 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
     let directory = temporary_directory("candidate-provider-authority");
     let (config, mut payload) = candidate_fixture(&directory);
@@ -262,7 +281,13 @@ fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption() {
     let directory = temporary_directory("candidate-cold-session");
     let (config, payload) = candidate_fixture(&directory);

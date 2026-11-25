@@ -32,6 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { applyNativeAcceptedOutcome, nativeEffectiveTerminal, readNativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
@@ -113,6 +114,7 @@ import {
 } from "../heartbeat-run-summary.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { settledResponsePublicationSql } from "./native-response-publication-receipt.js";
+import { ensureNativePlanReviewCard } from "./native-plan-review-card.js";
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import {
   authorizeCommittedChatResponse,
@@ -1159,7 +1161,7 @@ async function recoverCommittedNativeChatResponseInScope(
         .for("share");
       const envelope = record(accepted?.resultJson);
       const result = record(envelope.result);
-      const terminal = record(envelope.terminal);
+      const terminal = nativeEffectiveTerminal(envelope, record(envelope.terminal));
       if (
         !accepted ||
         !decision ||
@@ -1208,8 +1210,12 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
-      const ordinaryTaskReply = (!conversation || currentConversation) &&
-        !isExternalChatPresentationContext(run.contextSnapshot) &&
+      // A task woken by an external chat message (for example a GitHub review
+      // comment) gets the same final reply as on the live completion path,
+      // which a post-result failure such as copy-back can skip.
+      const externalChatContext = isExternalChatPresentationContext(run.contextSnapshot);
+      const externalChatTaskReply = !conversation && externalChatContext;
+      const ordinaryTaskReply = (!conversation || (currentConversation && !externalChatContext)) &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
@@ -1221,9 +1227,10 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.turnTerminalState === "completed" &&
         (ordinaryTaskReply || blockedTaskReply);
       const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
-      const externalChatReply = blockedTaskReply &&
+      const externalChatBlockedReply = blockedTaskReply &&
         isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
-      if (taskReplyEligible && replyAuthorization && (blockedTaskReply || replyAuthorization === "internal_agent_write")) {
+      if (taskReplyEligible && replyAuthorization &&
+          (blockedTaskReply || externalChatTaskReply || replyAuthorization === "internal_agent_write")) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
             eq(heartbeatRunEvents.companyId, input.companyId),
@@ -1257,7 +1264,8 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(issueComments.issueId, input.issueId),
             eq(issueComments.createdByRunId, run.id),
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
-        const resolved = resolveHeartbeatRunResponse({
+        const existingComment = findHeartbeatRunCompletionComment(comments, run.resultJson);
+        const responseInput = {
           resultJson: { ...record(run.resultJson), nativeResult: result },
           nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
@@ -1265,9 +1273,20 @@ async function recoverCommittedNativeChatResponseInScope(
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
-          existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
+          existingComment,
           finalAgentMessage,
-          preferFinalResponseOverExistingComment: externalChatReply,
+        };
+        // An external-chat reply presents its final answer, as on the live
+        // path, over an earlier run comment such as a progress note. A saved
+        // copy of the text that answer resolves to, including a deleted one, is
+        // reused instead, so recovery never posts the same reply twice.
+        const preferredText = externalChatTaskReply || externalChatBlockedReply
+          ? resolveHeartbeatRunResponse({ ...responseInput, existingComment: null, preferFinalResponseOverExistingComment: true }).text
+          : null;
+        const resolved = resolveHeartbeatRunResponse({
+          ...responseInput,
+          preferFinalResponseOverExistingComment: Boolean(preferredText) &&
+            existingComment?.body.trim() !== preferredText?.trim(),
         });
         if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
           // The reply is already on the task (for example, the live path wrote
@@ -1571,10 +1590,11 @@ export async function finalizeNativeRun(input: {
   const envelope = record(resultRow.resultJson);
   const result = record(envelope.result);
   const terminal = record(envelope.terminal);
-  const terminalState = terminal.runTerminalState;
-  if (!["succeeded", "failed", "cancelled"].includes(String(terminalState))) {
+  if (!["succeeded", "failed", "cancelled"].includes(String(terminal.runTerminalState))) {
     throw new Error("native_finalization_invalid");
   }
+  const acceptedOutcome = readNativeAcceptedOutcome(envelope);
+  const terminalState = applyNativeAcceptedOutcome(acceptedOutcome, terminal).runTerminalState;
 
   await input.db
     .update(nativeRunFinalizations)
@@ -1675,6 +1695,23 @@ export async function finalizeNativeRun(input: {
       ? await findSupersededExternalReviewRequests(input.db, {
         companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
       }) : [];
+    // A Plan-mode run that settles with a plan revision nobody was asked to
+    // review gets its review card here, whichever harness ran it and whether
+    // or not the agent remembered to open it. The card is the review gate below.
+    const planReview = terminalState === "succeeded" && input.workspaceFinalizeStatus === "succeeded" &&
+      authoritativeIssue.workMode === "planning" && result.reportedWorkDisposition !== "done" &&
+      !isNativePlanWaitResult(result) &&
+      !readNativeReviewAssignmentContext(run.contextSnapshot)
+      ? await ensureNativePlanReviewCard(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }).catch((error: unknown) => {
+          // The run already succeeded; a card that could not be opened must
+          // not fail its settlement. The task settles in its response wait and
+          // the stranded-task pass opens the card (idempotently) later.
+          logger.warn({ runId: run.id, issueId: authoritativeIssue.id, error }, "Plan review card could not be opened at settle; recovery will retry");
+          return null;
+        })
+      : null;
     const governanceGate = await pendingNativeGovernance({
       db: input.db,
       companyId: run.companyId,
@@ -1735,9 +1772,9 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
-      input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
-    );
+    const { providerFailure, turnFailure, providerExplanation } = acceptedOutcome
+      ? { providerFailure: null, turnFailure: null, providerExplanation: null }
+      : await readPersistedNativeFailureEvidence(input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState);
     const ownsProviderFailureDecision =
       (!authoritativeIssue.executionRunId || authoritativeIssue.executionRunId === run.id) &&
       (reviewContext ? nativeReview?.interaction.status === "pending"
@@ -1776,6 +1813,7 @@ export async function finalizeNativeRun(input: {
       monitorWaitSuperseded: supersededMonitorWait !== null,
       monitorWaitAuthorized: authoritativeIssue.workMode === "standard" && authoritativeIssue.executionRunId === run.id && monitorWaitAt !== null,
       planWaitAuthorized: planWait !== null,
+      planNotProduced: planReview?.kind === "no_plan" || planReview?.kind === "reviewed",
       hasPendingChildCompletion,
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,

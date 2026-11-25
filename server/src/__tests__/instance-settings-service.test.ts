@@ -167,6 +167,7 @@ describe("instance settings service", () => {
       enableOwnerInstanceAdmin: false,
       enableSandboxDuplexBridge: false,
       enableMcpTasks: false,
+      enableAntigravitySwarm: false,
       enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,

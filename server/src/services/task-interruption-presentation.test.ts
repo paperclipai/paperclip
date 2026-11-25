@@ -367,6 +367,35 @@ it("preserves a provider explanation on a failed task without changing retry aut
     .not.toHaveProperty("providerFailure");
 });
 
+it("shows a refused /swarm's plain reason without a Retry that would meet the same refusal", () => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "startup",
+    category: "model_unavailable", retryability: "requires_action",
+    message: "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again." };
+  const refused = { ...run, errorCode: "antigravity_swarm_unavailable", error: providerFailure.message, resultJson: { providerFailure } };
+  expect(projectTaskInterruption(issue, { run: refused, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: false, providerFailure });
+  // A swarm verification failure that may not repeat keeps its Retry.
+  const mismatch = { ...providerFailure, category: "unknown", retryability: "unknown", message: "Swarm stopped before it started: the provider did not confirm auto mode. Nothing was changed." };
+  expect(projectTaskInterruption(issue, { run: { ...refused, resultJson: { providerFailure: mismatch } }, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: true });
+});
+
+it("asks for billing action for an exhausted provider quota without inventing a retry time", () => {
+  const failed = { ...run, errorCode: "native_provider_usage_limit", resultJson: { providerFailure: {
+    schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+    category: "quota_exhausted", providerCode: "insufficient_quota", message: "Check your plan and billing details.",
+    retryability: "requires_action",
+  } } };
+  const input = { run: failed, agent, paused: false, approval: false };
+  expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "waiting_for_user", responsibility: "user",
+    userAction: "provider_billing", nextRetryAt: null });
+  expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+  expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  expect(projectTaskInterruption(issue, { ...input, run: { ...failed, resultJson: { providerFailure: {
+    ...failed.resultJson.providerFailure, retryAt: new Date(Date.now() + 60_000).toISOString(),
+  } } } })).not.toMatchObject({ userAction: "provider_billing" });
+});
+
 describe("task project-access interruption", () => {
   it("explains a project denial without offering a futile retry", () => {
     expect(projectTaskInterruption(issue, { run, agent, paused: false, approval: false })).toMatchObject({

@@ -1,3 +1,4 @@
+import { antigravityActivityAdapter } from "./antigravity-activity.js";
 import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { cursorActivityAdapter } from "./cursor-activity.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
@@ -23,11 +24,13 @@ export interface AcpxActivityAdapter {
   toolExecutionId?(nativeId: string): string;
   inputToolIdentity?(input: AcpxExtensionInput): string | undefined;
   createToolEvidence?(binding: AcpxToolEvidenceBinding): AcpxToolEvidence;
+  /** A post-turn diagnostic notice read from the provider's status: a usage or settings receipt bound to this request. */
   usageNotice?(before: unknown, after: unknown, requestId: string, turnId: string): CanonicalProviderEvent | null;
 }
 
 const adapters: Readonly<Record<string, AcpxActivityAdapter | undefined>> = {
   cursor: cursorActivityAdapter,
+  antigravity: antigravityActivityAdapter,
   copilot: Object.freeze({ createToolEvidence: createCopilotToolEvidence }),
 };
 const noActivity: AcpxActivityAdapter = Object.freeze({});

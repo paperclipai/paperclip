@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,12 +21,25 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
 interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean;
-  closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
+  laggingAgentReads?: number; reopenedLaggingAgentReads?: number; reopenedStale?: "task-run" | "both-runs" | "task-status" | "document" | "locks" | "native-phase" | "run-facts"; reopenedStaleReads?: number; closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
 async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
   const blocker = { ...f.created.blocker }, dependent = { ...f.created.dependent };
   const actions: string[] = [], owned: any[] = [], writes: unknown[] = [], reads: string[] = [];
+  const projection = new AsyncLocalStorage<"task" | "agent">();
+  const agentReads = { finished: 0, reopened: 0 };
+  const detailReads: Array<{ projection: string; stage: string; status: string }> = [];
+  let reopened = false;
+  const staleReads: Record<string, number> = {};
+  const stale = (key: string) => reopened && (staleReads[key] = (staleReads[key] ?? 0) + 1) <= (options.reopenedStaleReads ?? 0);
+  // Carry the list's projection through both summary normalization and detail mapping.
+  // The concurrent detail requests use the same URL; call order must not identify them.
+  const projectedRows = (rows: any[], source: "task" | "agent"): any[] => {
+    Object.defineProperty(rows, "map", { value: (callback: (...args: any[]) => any) =>
+      projectedRows(Array.prototype.map.call(rows, (...args: any[]) => projection.run(source, () => callback(...args))), source) });
+    return rows;
+  };
   let completed = false, assigned = false, panelOpen = !options.closedPanel;
   const reference = () => /review reference is ([a-f0-9]{32})/.exec(blocker.description)?.[1];
   const output = () => JSON.stringify({ reference: reference(), blockerIdentifier: s.blockerIdentifier });
@@ -89,23 +103,45 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
     },
     getByPlaceholder(name: string) { return locator(name); },
     getByTestId(name: string) { return locator(name); },
-    async goto(url: string) { actions.push(`goto:${url}`); }, async reload() { actions.push("reload"); },
+    async goto(url: string) { actions.push(`goto:${url}`); }, async reload() { actions.push("reload"); if (completed) reopened = true; },
   };
   const api: any = { origin: "https://qa.example.test", async get(route: string) {
     reads.push(route);
     if (route === `/api/issues/${s.blockerId}`) return structuredClone(blocker);
-    if (route === `/api/issues/${s.dependentId}`) return structuredClone(dependent);
+    if (route === `/api/issues/${s.dependentId}`) {
+      const task = structuredClone(dependent);
+      if (options.reopenedStale === "task-status" && stale("task-status")) task.status = "in_progress";
+      if (options.reopenedStale === "locks" && stale("locks")) task.executionRunId = "run";
+      return task;
+    }
     if (route === `/api/issues/${s.blockerId}/runs`) return [];
-    if (route === `/api/issues/${s.dependentId}/runs`) return runs().map(r => ({ runId: r.id }));
-    if (route.includes("/heartbeat-runs?")) return [...runs(), ...structuredClone(priorRuns)];
-    if (route === "/api/heartbeat-runs/run") return runs()[0];
+    if (route === `/api/issues/${s.dependentId}/runs`) return projectedRows(runs().map(r => ({ runId: r.id })), "task");
+    if (route.includes("/heartbeat-runs?")) return projectedRows([...runs(), ...structuredClone(priorRuns)], "agent");
+    if (route === "/api/heartbeat-runs/run") {
+      const run = runs()[0], source = projection.getStore(), stage = reopened ? "reopened" : "finished";
+      if (!source) throw new Error("run_detail_projection_missing");
+      if (source === "agent") {
+        agentReads[stage]++;
+        const lag = reopened ? options.reopenedLaggingAgentReads : options.laggingAgentReads;
+        if (agentReads[stage] <= (lag ?? 0)) run.status = "running";
+      }
+      if ((options.reopenedStale === "both-runs" || options.reopenedStale === "task-run" && source === "task")
+        && stale(source)) run.status = "running";
+      if (options.reopenedStale === "native-phase" && stale(source)) run.nativePhase = "running";
+      if (options.reopenedStale === "run-facts" && stale(source)) run.startedAt = "2019-12-31T23:59:00Z";
+      detailReads.push({ projection: source, stage, status: run.status });
+      return run;
+    }
     if (route === `/api/issues/${s.blockerId}/activity`) return completed ? structuredClone(f.reopened.activity) : [];
     if (route === `/api/issues/${s.dependentId}/activity`) return activity(options.ownedActivity ?? 0, s.dependentId);
     if (route === `/api/companies/${s.companyId}/activity?agentId=${s.agentId}&limit=500`) {
       return options.missingActivity ? undefined : activity(options.agentActivity ?? 0, "prior-task", s.agentId);
     }
     if (route === `/api/companies/${s.companyId}/activity?limit=500`) return activity(options.unrelatedActivity ?? 0, "unrelated-task").slice(0, 500);
-    if (route === `/api/issues/${s.dependentId}/documents`) return completed ? [taskDocument()] : [];
+    if (route === `/api/issues/${s.dependentId}/documents`) {
+      if (options.reopenedStale === "document" && stale("document")) return [];
+      return completed ? [taskDocument()] : [];
+    }
     if (route.endsWith("/documents/dependency-proof")) return taskDocument();
     if (route.endsWith("/revisions/revision")) return revision();
     throw new Error(`unexpected_read:${route}`);
@@ -115,7 +151,7 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
     capabilities: ["company", "board-user", "task-write", "agent"], agent: { id: s.agentId, name: "Fixture agent", provider: s.provider, model: s.model, runtimeMode: "native" } } as JourneyContext;
   const session = { own: vi.fn(async resource => { owned.push(resource); }) } as unknown as TargetSession;
   const evidence = { checks: [] } as unknown as JourneyEvidence;
-  return { directory, context, session, evidence, actions, owned, writes, reads };
+  return { directory, context, session, evidence, actions, owned, writes, reads, detailReads, staleReads };
 }
 afterEach(() => { vi.useRealTimers(); controls.create.mockReset(); });
 describe("dependency browser flow orchestration", () => {
@@ -206,6 +242,7 @@ describe("dependency browser flow orchestration", () => {
   });
   it.each([
     ["empty history", {}],
+    ["agent detail still running after task detail completed", { laggingAgentReads: 2 }],
     ["completed earlier campaign runs", { priorRuns: 3 }],
     ["more than 100 earlier campaign runs", { priorRuns: 150 }],
     ["more than 500 unrelated company events", { unrelatedActivity: 800 }],
@@ -218,6 +255,10 @@ describe("dependency browser flow orchestration", () => {
         { deadlineAt: Date.now() + 60_000, directory: f.directory });
       await vi.advanceTimersByTimeAsync(11_000); await operation;
       expect(f.evidence.checks).toHaveLength(8); expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+      if ("laggingAgentReads" in options) {
+        expect(f.detailReads.filter(read => read.projection === "agent" && read.status === "running")).toHaveLength(options.laggingAgentReads);
+        expect(f.detailReads.filter(read => read.projection === "task").every(read => read.status === "succeeded")).toBe(true);
+      }
       expect(f.writes).toEqual([]);
       expect(f.actions.indexOf("click:Blocked")).toBeLessThan(f.actions.indexOf("click:agent-choice"));
       expect(f.actions.indexOf("click:agent-choice")).toBeLessThan(f.actions.indexOf("click:Done"));
@@ -233,6 +274,65 @@ describe("dependency browser flow orchestration", () => {
       expect(f.reads.some(route => route.startsWith("/api/heartbeat-runs/prior-"))).toBe(false);
       expect(f.reads).toContain("/api/issues/blocker/activity"); expect(f.reads).toContain("/api/issues/dependent/activity");
       expect(f.reads).not.toContain("/api/companies/company/activity?limit=500");
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each([2, Infinity])("waits for reopened-only agent lag (%s reads) within the original deadline", async lag => {
+    const f = await fixture(false, { reopenedLaggingAgentReads: lag });
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+    const startedAt = Date.now();
+    try {
+      const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: startedAt + 13_000, directory: f.directory });
+      const outcome = lag === Infinity
+        ? expect(operation).rejects.toMatchObject({ code: "dependency_reopen_deadline" })
+        : expect(operation).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(13_000); await outcome;
+      const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
+      expect(saved.finished.dependentRuns[0].status).toBe("succeeded");
+      expect(saved.finished.agentRuns[0].status).toBe("succeeded");
+      expect(f.detailReads.filter(read => read.projection === "task").every(read => read.status === "succeeded")).toBe(true);
+      expect(f.detailReads.filter(read => read.projection === "agent" && read.stage === "reopened" && read.status === "running")).toHaveLength(lag === Infinity ? 3 : lag);
+      expect(saved.reopened.agentRuns[0].status).toBe(lag === Infinity ? "running" : "succeeded");
+      expect(f.evidence.checks).toHaveLength(lag === Infinity ? 0 : 8);
+      expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+      expect(f.writes).toEqual([]);
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each((["task-run", "both-runs", "task-status", "document", "locks", "native-phase", "run-facts"] as const)
+    .flatMap(stale => [2, Infinity].map(lag => ({ stale, lag }))))(
+    "waits for reopened $stale staleness ($lag reads) within the original deadline", async ({ stale, lag }) => {
+      const f = await fixture(false, { reopenedStale: stale, reopenedStaleReads: lag });
+      vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+      try {
+        const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+          { deadlineAt: Date.now() + 13_000, directory: f.directory });
+        const outcome = lag === Infinity
+          ? expect(operation).rejects.toMatchObject({ code: "dependency_reopen_deadline" })
+          : expect(operation).resolves.toBeUndefined();
+        await vi.advanceTimersByTimeAsync(13_000); await outcome;
+        const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
+        expect(saved.finished.dependentRuns[0].status).toBe("succeeded");
+        expect(saved.finished.agentRuns[0].status).toBe("succeeded");
+        expect(Object.values(f.staleReads)).not.toHaveLength(0);
+        expect(Object.values(f.staleReads).every(count => count === 3)).toBe(true);
+        expect(f.evidence.checks).toHaveLength(lag === Infinity ? 0 : 8);
+        expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+        expect(saved.stage).toBe(lag === Infinity ? "reopen_result" : "complete");
+        expect(f.writes).toEqual([]);
+      } finally { await rm(f.directory, { recursive: true, force: true }); }
+    });
+  it("keeps a permanently conflicting agent projection failed at the original deadline", async () => {
+    const f = await fixture(false, { laggingAgentReads: Infinity });
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+    try {
+      const operation = expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 13_000, directory: f.directory })).rejects.toMatchObject({ code: "dependency_resume_deadline" });
+      await vi.advanceTimersByTimeAsync(13_000); await operation;
+      const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
+      expect(saved.finished.dependentRuns[0].status).toBe("succeeded");
+      expect(saved.finished.agentRuns[0].status).toBe("running");
+      expect(f.evidence.checks).toEqual([]);
+      expect(f.writes).toEqual([]);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
   it.each(["properties", "toggle"] as const)("opens a closed properties pane through its %s control before linking", async closedPanel => {

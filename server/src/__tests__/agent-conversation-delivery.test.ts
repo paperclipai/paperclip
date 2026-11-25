@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatCompletionDeliveries, chatTaskHandoffs, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { deliverConversationComments, heldConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
+import { chatCompletionDeliveryService } from "../services/chat-completion-delivery.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueService } from "../services/issues.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -158,6 +160,45 @@ const support = await getEmbeddedPostgresTestSupport();
     const wake = enqueue();
     expect(await deliverConversationComments(db, f.chat, wake)).toBe("deferred");
     expect(wake).not.toHaveBeenCalled();
+  });
+
+  it.each(["reset", "reopen"])("cancels a completion turn that a %s superseded before it started", async (kind) => {
+    const { companyId, agentId, chat } = await fixture("idle");
+    await db.update(issues).set({ status: "in_progress", responsibleUserId: chat.conversationUserId })
+      .where(eq(issues.id, chat.id));
+    const [task] = await db.insert(issues).values({ companyId, title: "Completed handoff", status: "done", statusVersion: 2 }).returning();
+    await db.insert(chatTaskHandoffs).values({ companyId, taskId: task.id, conversationId: chat.id, agentId, sessionGeneration: 0 });
+    const deliveryId = randomUUID();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "chat_task_completed", status: "queued", requestedByActorType: "system",
+      requestedByActorId: "chat_completion_delivery", idempotencyKey: `chat-completion:${deliveryId}:0` }).returning();
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
+      invocationSource: "automation", triggerDetail: "system", wakeupRequestId: wake.id,
+      contextSnapshot: { issueId: chat.id, taskId: chat.id, wakeReason: "chat_task_completed",
+        chatCompletionDeliveryIds: [deliveryId], conversationSessionGeneration: 0 } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: queued.id }).where(eq(agentWakeupRequests.id, wake.id));
+    await db.insert(chatCompletionDeliveries).values({ id: deliveryId, companyId, taskId: task.id,
+      statusVersion: task.statusVersion, status: "queued", targetRunId: queued.id, nextAttemptAt: new Date(0) });
+
+    if (kind === "reset") {
+      await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, chat.id));
+    } else {
+      await issueService(db).update(task.id, { status: "todo" });
+    }
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id))).toMatchObject([{ status: "cancelled",
+      errorCode: "chat_completion_superseded", resultJson: { cancellation: { source: "control_plane", expected: true } } }]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id))).toMatchObject([{ status: "cancelled" }]);
+    expect(await db.select().from(agents).where(eq(agents.id, agentId))).toMatchObject([{ status: "idle", errorReason: null }]);
+    expect(await db.select().from(issues).where(eq(issues.id, chat.id))).toMatchObject([{ status: "in_progress", executionRunId: null }]);
+    const wakeup = vi.fn(async () => null);
+    await chatCompletionDeliveryService(db, { wakeup }).deliver(deliveryId);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, deliveryId)))
+      .toMatchObject([{ status: "superseded" }]);
   });
 
   it("keeps unrelated admission errors visible and comments pending", async () => {

@@ -391,6 +391,8 @@ export function setupLiveEventsWebSocketServer(
       if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
       if (event.type === "agent.runtime_state.updated") return { ...event, payload: { agentId: payload.agentId } };
       if (event.type === "external_object.updated") return { ...event, payload: { externalObjectId: payload.externalObjectId } };
+      // Only the id: reading the checklist itself goes through the board-only API.
+      if (event.type === "agent_setup_progress.updated") return { ...event, payload: { progressId: payload.progressId } };
       if (event.type.startsWith("plugin.")) return event;
       return null;
     }

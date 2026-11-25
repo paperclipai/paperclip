@@ -6,7 +6,7 @@ import { hostedGate, hostedQueueWait, hostedR1, releaseOutages, subtaskRecord } 
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity } from "./hosted-release.js";
 import { runRow, type HostedRunRow } from "./hosted-readers.js";
-import type { DetectedRelease } from "./hosted-release.js";
+import type { DetectedRelease, HealthSample } from "./hosted-release.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
 import type { SwapMetrics } from "./release-swap-grade.js";
 import { roundsFor, stagingMixBudgetMs, SUBTASK_ROUNDS } from "./staging-mix.js";
@@ -200,6 +200,39 @@ describe("hosted grade with the run's task records", () => {
     const graded = await grade([issue("i1"), stray], [runOf("r1", "i1", 0, 10), runOf("r2", "x1", 1, 1 + late)], [record()], 0);
     expect(graded.markdown).not.toContain("FAIL R1");
   });
+
+  it("stops the health probe, settles the frozen samples, and detects releases from them before grading", async () => {
+    const order: string[] = [];
+    const failure = { url: "/api/health", method: "GET", aborted: false, answer: null, cause: { name: "Error", message: "reset", code: "ECONNRESET" }, connection: null,
+      clock: { timeoutMs: 10_000, elapsedMs: 40, monotonicMs: 40, timerLagMs: null, clockJumpMs: 0, loopDelayMaxMs: 20, gapBeforeMs: null, intervalMs: 2_000 },
+      control: null, retry: null, controlReachedThisRun: true, class: "unclassified" as const, reason: "diagnosis pending", state: "pending" as const };
+    const answer = (at: number, processStartedAt: string) => ({ at, ok: true, status: 200, ms: 40, processStartedAt, commit: "c" });
+    const samples = [answer(T0, "old"), answer(T0 + 2_000, "old"), { at: T0 + 4_000, ok: false, status: null, ms: 40, processStartedAt: null, commit: null, failure },
+      answer(T0 + 6_000, "new")];
+    const stale = await gradeHealth(samples, order, async () => {
+      order.push("settle");
+      Object.assign(failure, { control: { url: "c", ok: false, status: null, ms: 40, error: { name: "TypeError", message: "fetch failed" }, remoteAddress: null },
+        class: "client", reason: "control failed too", state: "settled" });
+      return 0;
+    });
+    expect(order.slice(0, 2)).toEqual(["stop", "settle"]);
+    expect(stale.markdown).toContain("- pass health probes: 1 of 4 failed (0 server-side, 0 unclassified, 1 client-side, informational)");
+    expect(stale.markdown).toContain("- pass swap shape: no stop-then-start release");
+    Object.assign(failure, { class: "unclassified", reason: "diagnosis pending", state: "pending" });
+    const pending = await gradeHealth(samples, [], async () => 1);
+    expect(pending.pass).toBe(false);
+    expect(pending.markdown).toContain("FAIL swap shape: stop-then-start at release 1");
+    expect(pending.markdown).toContain("diagnosis did not finish before the grade");
+  });
+
+  const gradeHealth = async (samples: HealthSample[], order: string[], settle: () => Promise<number>) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-gate-"));
+    dirs.push(dir);
+    return gradeHosted({ api: apiFor([issue("i1")], [runOf("r1", "i1", 0, 10)]), companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]),
+      healthSamples: () => samples, stopHealthProbe: async () => { order.push("stop"); }, settleDiagnostics: settle, apiContinuity: () => continuity([]),
+      stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false,
+      record: () => {}, pollMs: 5, tasks: () => [record()], wantedReleases: 0 });
+  };
 
   it("fails the gate and records why when the agent list cannot be read", async () => {
     agentList = null;
