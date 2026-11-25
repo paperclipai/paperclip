@@ -652,8 +652,11 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
       const session = await gateway.createSession({ companyId: fixture.company.id, agentId: agent!.id, runId: run!.id });
       return (await gateway.listToolsForSession(session.token)).filter((tool) => tool.connectionId === fixture.connectionId).length;
     };
+    let toolName = "";
     try {
       expect(await offered()).toBe(1);
+      const firstSession = await gateway.createSession({ companyId: fixture.company.id, agentId: agent!.id, runId: run!.id });
+      toolName = (await gateway.listToolsForSession(firstSession.token)).find((tool) => tool.connectionId === fixture.connectionId)!.name;
       fixture.connector.refresh.mockRejectedValueOnce(
         new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_REAUTHORIZATION_REQUIRED"),
       );
@@ -665,6 +668,9 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
       expect(ended).toMatchObject({ status: "active", enabled: true, healthStatus: "error", lastError: "oauth_reauthorization_required" });
       expect(ended!.healthMessage).toBe("Access to this app ended. Reconnect to continue.");
       expect(await offered()).toBe(0);
+      const session = await gateway.createSession({ companyId: fixture.company.id, agentId: agent!.id, runId: run!.id });
+      const execution = await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: {} }).catch((error: unknown) => error);
+      expect(execution).not.toMatchObject({ reasonCode: "tool_not_found" });
 
       const started = await fixture.service.startOAuth(fixture.company.id, fixture.connectionId, {
         redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,

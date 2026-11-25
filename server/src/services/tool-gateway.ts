@@ -1897,6 +1897,10 @@ export function createToolGatewayService(
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
         eq(toolConnections.credentialPolicy, "per_user"),
         eq(toolConnections.transport, "plugin"),
+        sql`(exists (select 1 from ${connectionGrants} where ${connectionGrants.companyId} = ${companyId}
+            and ${connectionGrants.connectionId} = ${toolConnections.id} and ${connectionGrants.status} = 'needs_reauthorization')
+          and not exists (select 1 from ${connectionGrants} where ${connectionGrants.companyId} = ${companyId}
+            and ${connectionGrants.connectionId} = ${toolConnections.id} and ${connectionGrants.status} = 'active'))`,
       ),
       eq(toolApplications.companyId, companyId),
       inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api", "paperclip_plugin"]),
