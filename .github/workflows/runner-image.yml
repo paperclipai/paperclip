@@ -212,9 +212,6 @@ jobs:
 
   # Multi-arch by native runner, not QEMU, as in docker.yml. GitHub-hosted
   # runners: the protected release fleets admit only docker.yml on master.
-  # Canonical master amd64 pushes use the larger GitHub-hosted runner
-  # (cloud-release-32) to avoid 4-core CPU bottlenecks in archive compression
-  # and OCI export; PRs, forks, schedules, and arm64 stay on standard runners.
   #
   # These legs cannot write to the registry on any event, and they
   # write no registry build cache. The install runs dependency lifecycle
@@ -238,7 +235,7 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.arch == 'amd64' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -732,7 +729,7 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.arch == 'amd64' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
