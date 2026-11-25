@@ -497,7 +497,10 @@ the person chose to disconnect that identity.
   `agent_runtime_state.session_id`) and the session ids on every run of that
   harness session (`session_id_before`, `session_id_after`, the result's
   `sessionId`), so neither the next run nor "resume from this run" reopens a
-  conversation that holds old Google results.
+  conversation that holds old Google results. The run's result gets a
+  `contentDeletedAt` mark; run completion checks it after saving session
+  pointers and clears them again, so a run that settles while the deletion
+  runs cannot bring its session back.
 - A refresh failure counts only if the refresh still holds the grant's
   refresh lease; a late answer after a new sign-in deletes nothing.
 - New in the job for every app: tool error text (`tool_invocations` and

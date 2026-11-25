@@ -27,13 +27,18 @@ export async function forgetRunSessions(
       sameSession ? or(eq(agentTaskSessions.lastRunId, runId), sameSession) : eq(agentTaskSessions.lastRunId, runId),
     ))
     .returning({ id: agentTaskSessions.id });
-  if (sessionIds.length === 0) return removed.length > 0;
-  const ids = sql`array[${sql.join(sessionIds.map((id) => sql`${id}`), sql`, `)}]::text[]`;
   const reset = await tx
     .update(agentRuntimeState)
     .set({ sessionId: null, updatedAt: new Date() })
-    .where(and(eq(agentRuntimeState.companyId, companyId), eq(agentRuntimeState.agentId, run.agentId), inArray(agentRuntimeState.sessionId, sessionIds)))
+    .where(and(
+      eq(agentRuntimeState.companyId, companyId),
+      eq(agentRuntimeState.agentId, run.agentId),
+      sql`${agentRuntimeState.sessionId} is not null`,
+      sessionIds.length > 0 ? or(eq(agentRuntimeState.lastRunId, runId), inArray(agentRuntimeState.sessionId, sessionIds)) : eq(agentRuntimeState.lastRunId, runId),
+    ))
     .returning({ agentId: agentRuntimeState.agentId });
+  if (sessionIds.length === 0) return removed.length > 0 || reset.length > 0;
+  const ids = sql`array[${sql.join(sessionIds.map((id) => sql`${id}`), sql`, `)}]::text[]`;
   const resumable = await tx
     .update(heartbeatRuns)
     .set({
@@ -50,4 +55,16 @@ export async function forgetRunSessions(
     ))
     .returning({ id: heartbeatRuns.id });
   return removed.length > 0 || reset.length > 0 || resumable.length > 0;
+}
+
+export const RUN_CONTENT_DELETED_MARKER = "contentDeletedAt";
+
+export async function forgetSessionsOfDeletedRun(db: Db, run: { id: string; companyId: string }) {
+  const [row] = await db
+    .select({ agentId: heartbeatRuns.agentId, sessionIdBefore: heartbeatRuns.sessionIdBefore, sessionIdAfter: heartbeatRuns.sessionIdAfter,
+      resultJson: heartbeatRuns.resultJson, deletedAt: sql<string | null>`${heartbeatRuns.resultJson}->>${RUN_CONTENT_DELETED_MARKER}` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+  if (!row?.deletedAt) return false;
+  return db.transaction(async (tx) => forgetRunSessions(tx as unknown as Db, run.companyId, run.id, row));
 }
