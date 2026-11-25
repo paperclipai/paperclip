@@ -78,7 +78,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest, withAntigravitySwarmMarkers } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -17452,7 +17452,8 @@ export function issueRoutes(
       limit,
     });
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comments),
+      await runRedactions.redactForIssue(issue.companyId, issue.id,
+        await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, comments)),
     );
   });
 
@@ -18981,8 +18982,9 @@ export function issueRoutes(
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [comment]);
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comment),
+      await runRedactions.redactForIssue(issue.companyId, issue.id, marked),
     );
   });
 
@@ -20442,7 +20444,11 @@ export function issueRoutes(
 
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-      res.status(201).json(comment);
+      // The swarm marker comes from the request record committed with the comment.
+      const [response] = swarmRequested
+        ? await withAntigravitySwarmMarkers(db, currentIssue.companyId, currentIssue.id, [comment])
+        : [comment];
+      res.status(201).json(response);
     },
   );
 

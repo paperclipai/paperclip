@@ -139,6 +139,8 @@ export interface TaskChatMessageItem {
   channel?: "progress" | "final" | "unknown";
   /** Transport attribution for an inbound human comment. */
   sourceChannel?: IssueCommentMetadata["sourceChannel"];
+  /** Server-derived: this human message asked the assignee's native command (`/swarm`). */
+  nativeCommand?: "swarm";
   timestamp?: string;
   /** Show a streaming cursor and suppress collapse while true. */
   streaming?: boolean;

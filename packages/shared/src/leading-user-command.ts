@@ -40,3 +40,22 @@ export function parseLeadingUserCommand<Name extends string>(
  * front; the Paperclip Runner enforces the same bound on its own.
  */
 export const SWARM_REQUEST_MAX_CHARS = 16_000;
+
+/** A Google Antigravity agent: the only kind of agent that runs a /swarm. */
+export function isAntigravityAgent(agent: { adapterType: string; adapterConfig: unknown } | null | undefined): boolean {
+  const config = agent?.adapterConfig !== null && typeof agent?.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+    ? agent.adapterConfig as Record<string, unknown> : {};
+  return agent?.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "antigravity";
+}
+
+/**
+ * Whether `/swarm` reaches this assignee as a swarm: a Google Antigravity agent
+ * with the instance's experimental Antigravity swarm setting on. The composer
+ * uses it for its hint; the server checks the same rule (and more) on send.
+ */
+export function antigravitySwarmAvailable(
+  agent: { adapterType: string; adapterConfig: unknown } | null | undefined,
+  experimental: { enableAntigravitySwarm?: boolean } | null | undefined,
+): boolean {
+  return experimental?.enableAntigravitySwarm === true && isAntigravityAgent(agent);
+}

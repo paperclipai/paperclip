@@ -1158,6 +1158,12 @@ export interface IssueComment {
   deletedByRunId?: string | null;
   sourceTrust?: SourceTrustMetadata | null;
   followUpRequested?: boolean;
+  /**
+   * Server-derived and read-only: the user's message asked the assignee's
+   * native command (Google Antigravity's `/swarm`), as recorded by the server
+   * when it accepted the request. Never taken from comment text or metadata.
+   */
+  nativeCommand?: "swarm";
   createdAt: Date;
   updatedAt: Date;
 }

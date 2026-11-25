@@ -30,6 +30,7 @@ import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
+import { ApiError } from "@/api/api-error";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -637,6 +638,35 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("marks a message the server recorded as a /swarm request, and no other", () => {
+  const comment = (id: string, body: string, nativeCommand?: "swarm") => ({ id, companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body, presentation: null, metadata: null, ...(nativeCommand ? { nativeCommand } : {}),
+    createdAt: new Date("2026-11-25T05:51:00Z"), updatedAt: new Date("2026-11-25T05:51:00Z") });
+  render(<TaskChatThread comments={[comment("swarm", "Create u1.txt and u2.txt", "swarm"), comment("plain", "/swarm pasted as text")]}
+    issueId="issue" issueStatus="done" onAdd={async () => {}} />);
+  const markers = [...container.querySelectorAll('[data-testid="task-chat-swarm-marker"]')];
+  expect(markers.map(marker => marker.textContent)).toEqual(["Swarm"]);
+  expect(markers[0]!.closest("[data-conversation-message]")?.textContent).toContain("Create u1.txt and u2.txt");
+});
+
+it("explains a refused send under the composer until dismissed, and clears the optimistic Working row", async () => {
+  let refuse!: (error: unknown) => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>((_, reject) => { refuse = reject; }));
+  const message = "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
+  render(<TaskChatThread comments={[]} issueId="issue" issueAssigneeAgentId="agent" currentAssigneeValue="agent:agent" issueStatus="todo" onAdd={onAdd}
+    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+  await act(async () => { editorCallbacks.change("do something"); });
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click(); });
+  // Sends stay instant: the Working row appears before the server answers.
+  expect(container.textContent).toContain("Working");
+  await act(async () => { refuse(new ApiError(message, 422, { error: message })); });
+  expect(container.textContent).not.toContain("Working");
+  const error = () => container.querySelector('[data-testid="task-chat-goal-error"]');
+  expect(error()?.textContent).toBe(message);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-error-dismiss"]')!.click(); });
+  expect(error()).toBeNull();
 });
 
 it.each((["task", "legacy"] as const).flatMap(surface =>

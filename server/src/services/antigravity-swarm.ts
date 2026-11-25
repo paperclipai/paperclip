@@ -131,6 +131,26 @@ async function pendingSwarmCommentId(db: Db, companyId: string, issueId: string)
   return latest && !latest.deletedAt ? latest.id : null;
 }
 
+/**
+ * Read-only `nativeCommand: "swarm"` on the comments that are recorded /swarm
+ * requests: the server's own activity record for that user and comment, never
+ * the comment's client-writable metadata or its text.
+ */
+export async function withAntigravitySwarmMarkers<T extends { id: string; authorUserId: string | null; authorAgentId: string | null }>(
+  db: Db, companyId: string, issueId: string, comments: readonly T[],
+): Promise<Array<T & { nativeCommand?: typeof ANTIGRAVITY_SWARM_COMMAND }>> {
+  const candidates = comments.filter(comment => comment.authorUserId && !comment.authorAgentId).map(comment => comment.id);
+  if (candidates.length === 0) return [...comments];
+  const commentId = sql<string>`${activityLog.details}->>'commentId'`;
+  const recorded = await db.select({ commentId, actorId: activityLog.actorId }).from(activityLog)
+    .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId),
+      eq(activityLog.action, ANTIGRAVITY_SWARM_REQUESTED_ACTION), eq(activityLog.actorType, "user"), inArray(commentId, candidates)));
+  if (recorded.length === 0) return [...comments];
+  const requests = new Set(recorded.map(row => `${row.commentId}\0${row.actorId}`));
+  return comments.map(comment => comment.authorUserId && !comment.authorAgentId && requests.has(`${comment.id}\0${comment.authorUserId}`)
+    ? { ...comment, nativeCommand: ANTIGRAVITY_SWARM_COMMAND } : comment);
+}
+
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {
   await logActivity(db, {
     companyId: input.companyId, actorType: "user", actorId: input.userId, issueId: input.issueId,

@@ -2024,6 +2024,24 @@ describe("TaskChatComposer", () => {
       expect(onAdd).toHaveBeenCalledWith("two helpers write a.txt and b.txt", undefined, undefined, undefined, expect.any(String), undefined, "swarm");
     });
 
+    it.each([
+      ["an Antigravity assignee with swarm on", "antigravity", true, true],
+      ["swarm turned off", "antigravity", false, false],
+      ["another kind of agent", "claude", true, false],
+    ] as const)("hints that /swarm starts a swarm only for %s", (_case, acpxAgent, enabled, hinted) => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableAntigravitySwarm: enabled });
+      const agent = { id: "agent-1", name: "Gemma", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent } } as unknown as Agent;
+      render(<QueryClientProvider client={client}>
+        <TaskChatComposer onAdd={vi.fn()} workMode="standard" currentAssigneeValue="agent:agent-1" modelAgents={new Map([["agent-1", agent]])} />
+      </QueryClientProvider>);
+      const hint = () => container.querySelector('[data-testid="task-chat-swarm-hint"]');
+      typeText("write a.txt");
+      expect(hint()).toBeNull();
+      typeText("/swarm write a.txt");
+      expect(Boolean(hint())).toBe(hinted);
+    });
+
     it("asks for a request instead of sending a bare /swarm", async () => {
       const onAdd = vi.fn().mockResolvedValue(undefined);
       renderComposer({ onAdd, workMode: "standard", onWorkModeChange: vi.fn() });
