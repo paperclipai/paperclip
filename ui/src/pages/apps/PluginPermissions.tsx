@@ -146,6 +146,7 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
     companyId,
     connectionId,
     connection,
+    catalog: catalogQuery.data?.catalog ?? [],
     onError: (error) => setSaveError(describeError(error).body),
   });
 

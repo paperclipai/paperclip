@@ -9,8 +9,9 @@ import type { ExternalObservation } from "./external-support.js";
 function pageFixture(missing?: string, connectorsInFlyout = false) {
   const actions: string[] = [];
   const page = {
-    getByRole: (role: string, options?: { name?: string }) => {
-      const name = options?.name ?? "";
+    getByRole: (role: string, options?: { name?: string | RegExp }) => {
+      // The Add menu's custom-server item is matched by pattern; record its source.
+      const name = typeof options?.name === "string" ? options.name : options?.name?.source ?? "";
       const locator = {
         filter: () => locator,
         first: () => locator,
@@ -40,13 +41,13 @@ function pageFixture(missing?: string, connectorsInFlyout = false) {
   return { page, actions };
 }
 describe("finite held external diagnostics and visible entry correction", () => {
-  it("uses visible catalog controls including the expanded custom server option", async () => {
+  it("uses visible catalog controls including the Add menu custom server option", async () => {
     const { page, actions } = pageFixture();
     await enterGenericMcpThroughCatalog(page, "RUN");
     expect(actions).toEqual([
       "Plugins",
-      "Connect",
-      "Connect your own MCP server",
+      "Add",
+      "MCP server URL",
       "actual /RUN/apps/byo",
     ]);
   });
@@ -56,16 +57,16 @@ describe("finite held external diagnostics and visible entry correction", () => 
     expect(actions).toEqual([
       "More workspace pages",
       "Plugins",
-      "Connect",
-      "Connect your own MCP server",
+      "Add",
+      "MCP server URL",
       "actual /RUN/apps/byo",
     ]);
   });
   it("does not rescue a missing catalog entry with direct navigation", async () => {
     for (const name of [
       "Plugins",
-      "Connect",
-      "Connect your own MCP server",
+      "Add",
+      "MCP server URL",
     ]) {
       const { page, actions } = pageFixture(name);
       await expect(enterGenericMcpThroughCatalog(page, "RUN")).rejects.toThrow(
