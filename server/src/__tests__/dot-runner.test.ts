@@ -431,7 +431,13 @@ describe("durable Dot Runner integration", () => {
         eq(issueRecoveryActions.sourceIssueId, expiredIssue.id),
         eq(issueRecoveryActions.status, "active"),
       ));
-      expect(expiredAction).toMatchObject({ kind: "configuration_validation", cause: "configuration_incomplete", ownerType: "board" });
+      expect(expiredAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("paperclip.dot.mailbox_updated"),
+      });
+      expect(expiredAction?.nextAction).not.toContain("secret");
       const expiredComments = await db.select().from(issueComments).where(eq(issueComments.issueId, expiredIssue.id));
       expect(expiredComments.some(c => c.body.includes("event subscription expired") || c.body.includes("paperclip.dot.mailbox_updated"))).toBe(true);
 
@@ -441,7 +447,99 @@ describe("durable Dot Runner integration", () => {
       expect(expiredCheck).toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
       expect(sweepWake).not.toHaveBeenCalled();
 
-      // Case 2: unpaired / revoked Dot
+      // Case 2: paired Dot with invalid agent configuration (e.g. unmetered provider not acknowledged)
+      const [pairedAgentRow] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, f.agent.id));
+      const originalAdapterConfig = pairedAgentRow!.adapterConfig;
+      await db.update(agents).set({ adapterConfig: { ...originalAdapterConfig, allowUnmeteredProvider: false } }).where(eq(agents.id, f.agent.id));
+      const invalidConfigIssue = await issueService(db).create(f.company.id, {
+        title: "Invalid Dot config task",
+        status: "todo",
+        assigneeAgentId: f.agent.id,
+        responsibleUserId: f.userId,
+        trustExplicitResponsibleUserId: true,
+      });
+      const invalidConfigWake = await hb.wakeup(f.agent.id, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: invalidConfigIssue.id },
+        contextSnapshot: { issueId: invalidConfigIssue.id, taskId: invalidConfigIssue.id },
+      });
+      expect(invalidConfigWake?.id).toBeTruthy();
+      const invalidConfigRun = await waitForSettledRun(invalidConfigWake!.id, invalidConfigIssue.id, f.agent.id);
+      expect(invalidConfigRun).toMatchObject({
+        status: "failed",
+        errorCode: "configuration_incomplete",
+        resultJson: expect.objectContaining({
+          configurationIncomplete: expect.objectContaining({ reason: "dot_config_invalid" }),
+        }),
+      });
+      const [invalidConfigAction] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, f.company.id),
+        eq(issueRecoveryActions.sourceIssueId, invalidConfigIssue.id),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+      expect(invalidConfigAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("configuration"),
+      });
+      expect(invalidConfigAction?.nextAction).not.toContain("Pair the Dot");
+      expect(invalidConfigAction?.nextAction).not.toContain("secret");
+      expect(await sweep.checkIssue({ companyId: f.company.id, issueId: invalidConfigIssue.id }))
+        .toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      await db.update(agents).set({ adapterConfig: originalAdapterConfig }).where(eq(agents.id, f.agent.id));
+
+      // Case 3: OpenAI Dot disabled in experimental settings
+      await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: false });
+      try {
+        const disabledIssue = await issueService(db).create(f.company.id, {
+          title: "Disabled Dot task",
+          status: "todo",
+          assigneeAgentId: f.agent.id,
+          responsibleUserId: f.userId,
+          trustExplicitResponsibleUserId: true,
+        });
+        const disabledWake = await hb.wakeup(f.agent.id, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId: disabledIssue.id },
+          contextSnapshot: { issueId: disabledIssue.id, taskId: disabledIssue.id },
+        });
+        expect(disabledWake?.id).toBeTruthy();
+        const disabledRun = await waitForSettledRun(disabledWake!.id, disabledIssue.id, f.agent.id);
+        expect(disabledRun).toMatchObject({
+          status: "failed",
+          errorCode: "configuration_incomplete",
+          resultJson: expect.objectContaining({
+            configurationIncomplete: expect.objectContaining({
+              reason: "dot_disabled",
+              actionUrl: "/instance/settings/experimental",
+            }),
+          }),
+        });
+        const [disabledAction] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, f.company.id),
+          eq(issueRecoveryActions.sourceIssueId, disabledIssue.id),
+          eq(issueRecoveryActions.status, "active"),
+        ));
+        expect(disabledAction).toMatchObject({
+          kind: "configuration_validation",
+          cause: "configuration_incomplete",
+          ownerType: "board",
+          nextAction: expect.stringContaining("Enable OpenAI Dot"),
+        });
+        expect(disabledAction?.nextAction).not.toContain("Pair the Dot");
+        expect(disabledAction?.nextAction).not.toContain("secret");
+        expect(await sweep.checkIssue({ companyId: f.company.id, issueId: disabledIssue.id }))
+          .toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: true });
+      }
+
+      // Case 4: unpaired / revoked Dot
       await f.broker.revoke(f.company.id, f.agent.id, f.userId);
       const unpairedIssue = await issueService(db).create(f.company.id, {
         title: "Unpaired Dot task",
@@ -468,11 +566,23 @@ describe("durable Dot Runner integration", () => {
       });
       const [blockedUnpairedIssue] = await db.select().from(issues).where(eq(issues.id, unpairedIssue.id));
       expect(blockedUnpairedIssue?.status).toBe("blocked");
+      const [unpairedAction] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, f.company.id),
+        eq(issueRecoveryActions.sourceIssueId, unpairedIssue.id),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+      expect(unpairedAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("Pair the Dot"),
+      });
+      expect(unpairedAction?.nextAction).not.toContain("secret");
       const unpairedCheck = await sweep.checkIssue({ companyId: f.company.id, issueId: unpairedIssue.id });
       expect(unpairedCheck).toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
       expect(sweepWake).not.toHaveBeenCalled();
 
-      // Case 3: legacy pre-fix adapter_failed runs still classify as configuration_incomplete
+      // Case 5: legacy pre-fix adapter_failed runs still classify as configuration_incomplete
       expect(classifyAdapterFailureForRecovery({
         errorCode: "adapter_failed",
         error: "Dot must be paired with a verified event subscription and a completed event test.",

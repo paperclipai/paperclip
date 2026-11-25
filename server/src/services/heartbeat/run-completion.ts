@@ -18,6 +18,8 @@ import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-acce
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { NativeRuntimeEligibilityError } from "../native-runtime/runtime-mode.js";
+import { isDotBindingUnavailableReason } from "../dot-runner-broker.js";
+import { McpOAuthError } from "../public-mcp/oauth.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
@@ -337,28 +339,49 @@ function isConfigurationIncompleteFailure(
   return error instanceof ConfigurationIncompleteFailure;
 }
 
-const DOT_CONFIGURATION_INCOMPLETE_CODES = new Set([
-  "paperclip_runner_dot_config_invalid",
-  "paperclip_runner_dot_disabled",
-]);
+type DotConfigurationIncompleteReason =
+  | "dot_subscription_expired"
+  | "dot_pairing_required"
+  | "dot_disabled"
+  | "dot_config_invalid";
+
+function classifyDotConfigInvalidReason(adapterConfig?: unknown): "dot_pairing_required" | "dot_config_invalid" {
+  const config = parseObject(adapterConfig);
+  const bindingId = readNonEmptyString(config.dotBindingId);
+  const lifecycleMode = readNonEmptyString(config.lifecycleMode);
+  const model = readNonEmptyString(config.model);
+  if (!bindingId && config.allowUnmeteredProvider === true && (!lifecycleMode || lifecycleMode === "per_turn") && !model) {
+    return "dot_pairing_required";
+  }
+  return "dot_config_invalid";
+}
 
 function dotConfigIncompleteFailure(
   error: unknown,
   run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "agentId">,
+  adapterConfig?: unknown,
 ): ConfigurationIncompleteFailure | null {
-  const isDotConfigError =
-    (error instanceof PaperclipRunnerProviderProfileError || error instanceof NativeRuntimeEligibilityError) &&
-    DOT_CONFIGURATION_INCOMPLETE_CODES.has(error.code);
-  if (!isDotConfigError) {
-    return null;
+  let reason: DotConfigurationIncompleteReason | null = null;
+  if (error instanceof McpOAuthError && isDotBindingUnavailableReason(error.reason)) {
+    reason = error.reason;
+  } else if (error instanceof PaperclipRunnerProviderProfileError || error instanceof NativeRuntimeEligibilityError) {
+    if (error.code === "paperclip_runner_dot_disabled") {
+      reason = "dot_disabled";
+    } else if (error.code === "paperclip_runner_dot_config_invalid") {
+      reason = adapterConfig === undefined ? "dot_config_invalid" : classifyDotConfigInvalidReason(adapterConfig);
+    }
   }
-  return new ConfigurationIncompleteFailure(error.message, {
+  if (!reason) return null;
+  const actionUrl = reason === "dot_disabled"
+    ? "/instance/settings/experimental"
+    : `/agents/${run.agentId}/configuration`;
+  return new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Dot configuration is incomplete.", {
     configurationIncomplete: {
-      reason: "dot_pairing_required",
+      reason,
       companyId: run.companyId,
       agentId: run.agentId,
-      actionUrl: `/agents/${run.agentId}/configuration`,
-      fingerprint: `dot_pairing_required:${run.agentId}`,
+      actionUrl,
+      fingerprint: `${reason}:${run.agentId}`,
     },
   });
 }
@@ -1321,7 +1344,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       err,
     )
       ? err
-      : dotConfigIncompleteFailure(err, run);
+      : dotConfigIncompleteFailure(err, run, agent.adapterConfig);
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
@@ -1658,13 +1681,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // A missing secret/env binding is a known pre-dispatch configuration gap,
     // not an opaque setup crash. Surface it with its own errorCode so the
     // recovery path routes it to a human owner instead of looping retries.
+    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
     const workspaceValidationSetupFailure = isWorkspaceValidationFailure(
       outerErr,
     )
       ? outerErr
       : null;
     const configurationIncompleteSetupFailure =
-      isConfigurationIncompleteFailure(outerErr) ? outerErr : dotConfigIncompleteFailure(outerErr, run);
+      isConfigurationIncompleteFailure(outerErr)
+        ? outerErr
+        : dotConfigIncompleteFailure(outerErr, run, setupFailureAgent?.adapterConfig);
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
       outerErr,
     )
@@ -1761,7 +1787,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
-    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
     // The structured failure payload drives the recovery notice and next
     // action, so it is persisted even when the agent lookup failed and the
     // agent-scoped stop metadata cannot be merged in.

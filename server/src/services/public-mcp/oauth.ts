@@ -628,7 +628,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           permissions: binding.providerKind === "grok_bot" ? "Work as this agent: find and create permitted tasks, claim admitted work sessions, report progress, ask questions, save documents and deliverables, and submit completion for normal review. Execution requires a current task-bound session. No board account or other-company access. Grok plugins are account-wide; linking this Bot does not isolate credentials from other Bots on your Grok account. Grok retains its own connected apps. Usage and spending are not reported." : "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Reading assigned task attachment contents sends those contents to OpenAI and requires the agent’s separate attachment setting. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
           accessDuration: request.scopes.includes("offline_access")
             ? "Ongoing until revoked. This connection does not expire from inactivity."
-            : "15 minutes. This client did not ask for ongoing access, so Paperclip cannot renew it. Reconnect it from the Dot setup prompt.",
+            : `${accessLifetime / minute} minutes. This client did not ask for ongoing access, so Paperclip cannot renew it. Reconnect it from the Dot setup prompt.`,
           pairingExpiresAt: binding.pairingExpiresAt!.toISOString() };
       });
     },

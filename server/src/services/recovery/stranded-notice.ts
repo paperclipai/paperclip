@@ -159,6 +159,13 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
  * names the specific gap for the reasons this notice knows, and falls back to
  * the secret/env-binding wording (the original and most common reason).
  */
+export const DOT_CONFIGURATION_INCOMPLETE_REASONS = new Set([
+  "dot_subscription_expired",
+  "dot_pairing_required",
+  "dot_disabled",
+  "dot_config_invalid",
+]);
+
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
@@ -249,6 +256,22 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       title: "Dot connection needs pairing",
       body: "Paperclip stopped before starting the run because this Dot is not paired with a verified event subscription and completed event test. Automatic retries cannot repair a missing connection.",
       nextAction: "Pair the Dot and complete the event test in the agent's connection settings, then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_disabled") {
+    return {
+      title: "OpenAI Dot is disabled",
+      body: "Paperclip stopped before starting the run because OpenAI Dot is disabled in experimental settings. Automatic retries cannot enable it.",
+      nextAction: "Enable OpenAI Dot in Instance settings → Experimental, then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_config_invalid") {
+    return {
+      title: "Dot configuration needs attention",
+      body: "Paperclip stopped before starting the run because this Dot agent's configuration is invalid (it requires per-turn lifecycle, externally billed provider acknowledgement, no custom model, and a paired binding).",
+      nextAction: "Update this Dot agent's configuration in its settings, then press Retry.",
       tone: "danger",
     };
   }

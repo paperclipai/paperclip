@@ -29,9 +29,9 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "..
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const fail = (message: string) => new McpOAuthError("access_denied", message, 409);
-export type DotBindingUnavailableReason = "dot_subscription_expired" | "dot_pairing_required";
+export type DotBindingUnavailableReason = "dot_subscription_expired" | "dot_pairing_required" | "dot_disabled";
 export function isDotBindingUnavailableReason(reason: unknown): reason is DotBindingUnavailableReason {
-  return reason === "dot_subscription_expired" || reason === "dot_pairing_required";
+  return reason === "dot_subscription_expired" || reason === "dot_pairing_required" || reason === "dot_disabled";
 }
 const failUnavailable = (reason: DotBindingUnavailableReason, message: string) =>
   new McpOAuthError("access_denied", message, 409, reason);
@@ -209,12 +209,12 @@ function createBroker(db: Db) {
     async snapshot(companyId: string, agentId: string, bindingId: string): Promise<DotBindingSnapshot> {
       const state = await this.bindingForAgent(companyId, agentId);
       if (!state) {
-        if (!await enabled("openai_dot")) throw failUnavailable("dot_pairing_required", "External provider is disabled for new work.");
+        if (!await enabled("openai_dot")) throw failUnavailable("dot_disabled", "External provider is disabled for new work.");
         throw failUnavailable("dot_pairing_required", "Dot must be paired with a verified event subscription and a completed event test.");
       }
       if (!await enabled(state.providerKind)) {
         throw state.providerKind === "openai_dot"
-          ? failUnavailable("dot_pairing_required", "External provider is disabled for new work.")
+          ? failUnavailable("dot_disabled", "External provider is disabled for new work.")
           : fail("External provider is disabled for new work.");
       }
       if (state.id === bindingId && state.subscriptionExpired) {

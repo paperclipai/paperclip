@@ -177,9 +177,11 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  DOT_CONFIGURATION_INCOMPLETE_REASONS,
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
   PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
   sandboxProviderPluginRemedy,
+  buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -2825,6 +2827,14 @@ export function recoveryService(
                               ?.pluginStatus,
                           ) ?? "error",
                         )}, then press Retry.`
+                      : DOT_CONFIGURATION_INCOMPLETE_REASONS.has(
+                          readNonEmptyString(
+                            readConfigurationIncompletePayload(input.latestRun)?.reason,
+                          ) ?? "",
+                        )
+                      ? buildConfigurationIncompleteRecoveryNoticeSeed(
+                          readConfigurationIncompletePayload(input.latestRun),
+                        ).nextAction!
                       : "A secret this agent needs is not set. Add it in the agent's settings, then press Retry."
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "The reviewer did not finish the review. Choose a reviewer, or press Retry to ask the same reviewer again."
