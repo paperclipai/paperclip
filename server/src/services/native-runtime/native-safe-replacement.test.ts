@@ -357,6 +357,13 @@ const support = externalDatabaseUrl
       { scenario: "different API receipt", blocked: "uncertain_provider_action" },
       { scenario: "undispatched API mutation", blocked: null },
       { scenario: "failed task document read", blocked: null },
+      { scenario: "failed task history read", blocked: null },
+      { scenario: "failed cross-task read", blocked: null },
+      { scenario: "failed cross-task comment with unknown outcome", blocked: "uncertain_provider_action" },
+      { scenario: "cross-task comment rejected by the bridge schema", blocked: null },
+      { scenario: "failed cross-task comment with a completed receipt", blocked: null },
+      { scenario: "failed cross-task comment with a pending mutation receipt", blocked: "uncertain_control_plane_action" },
+      { scenario: "failed cross-task comment with a mismatched mutation receipt", blocked: "uncertain_provider_action" },
       { scenario: "failed chat attachment list", blocked: null },
       { scenario: "call_api rejected by the bridge schema", blocked: null },
       { scenario: "call_api failed with a generic error", blocked: "uncertain_provider_action" },
@@ -436,13 +443,17 @@ const support = externalDatabaseUrl
         }).where(eq(heartbeatRuns.id, source.runId));
         const download = scenario.includes("artifact download");
         const name = download ? "download_artifact" : scenario.includes("chat attachment") ? "list_chat_attachments"
+          : scenario.includes("task history") ? "get_task_history"
+          : scenario.includes("cross-task read") ? "get_task"
+          : scenario.includes("cross-task comment") ? "comment_on_task"
           : scenario.startsWith("call_api") ? "call_api" : "list_task_documents";
         const namespace = scenario.includes("external namespace") ? "external" : "paperclip";
         for (const [offset, status] of (["running", "failed"] as const).entries()) {
           const eventType = status === "running" ? "tool.execution.started" : "tool.execution.completed";
           const sourceInstanceId = status === "failed" && scenario.includes("different source") ? randomUUID() : runnerInstanceId;
           const sourceSeq = offset + 1;
-          const failure = download || scenario.includes("generic error") ? "Paperclip semantic operation failed"
+          const failure = download || scenario.includes("generic error") || (name === "comment_on_task" && !scenario.includes("bridge schema"))
+            ? "Paperclip semantic operation failed"
             : name === "list_chat_attachments" ? "Paperclip semantic operation failed: paperclip_runner_chat_attachment_binding_denied"
             : name === "call_api" ? "Invalid tool input: missing required field: operationId. This call included only: method, path."
             : "Invalid tool input: missing required field: taskId. This call included only: issueId.";
@@ -460,6 +471,14 @@ const support = externalDatabaseUrl
           await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson,
             apiToolReceipts: { [key]: { state: "pending", operationId: "create_issue_attachment", digest: "a".repeat(64) } },
           } }).where(eq(heartbeatRuns.id, source.runId));
+        }
+        if (name === "comment_on_task" && scenario.includes("receipt")) {
+          const key = createHash("sha256").update(`tool-use:${callId}`).digest("hex");
+          const state = scenario.includes("pending") ? "pending" : "completed";
+          const operationId = scenario.includes("mismatched") ? "PUT /api/issues/{id}/documents/{key}" : "POST /api/issues/{id}/comments";
+          await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
+            [key]: { state, operationId, digest: "a".repeat(64), ...(state === "completed" ? { result: { ok: true, status: 201 } } : {}) },
+          } } }).where(eq(heartbeatRuns.id, source.runId));
         }
         if (download) {
           const identity = { artifactId: randomUUID(), destination: "fixture.txt", byteSize: 1, sha256: "b".repeat(64) };

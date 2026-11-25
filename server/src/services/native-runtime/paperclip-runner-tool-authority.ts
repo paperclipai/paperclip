@@ -186,6 +186,9 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
   READ_TOOL_RESULT, "connections_search",
 ]);
+export function isRecoverableRunnerRead(tool: string): boolean {
+  return RECOVERABLE_READ_OPERATIONS.has(tool);
+}
 // Writes whose effect and idempotency receipt commit in one transaction, with
 // no outside effect before commit, and whose effect is compare-and-swap on the
 // state it read. Recovery may run them again: the receipt proves whether the
@@ -330,6 +333,14 @@ const TASK_API_PATHS: Readonly<Record<string, readonly [string, string]>> = {
   read_task_document: ["GET", "/api/issues/{id}/documents/{key}"],
   write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"],
 };
+
+/** These tools dispatch mutations exclusively through the run's API receipt
+ * journal. A fixed endpoint can also validate the receipt's operation. */
+export function runnerToolMutationJournal(tool: string): { operationId: string | null } | null {
+  if (tool === "call_api") return { operationId: null };
+  const endpoint = Object.hasOwn(TASK_API_PATHS, tool) ? TASK_API_PATHS[tool] : undefined;
+  return endpoint && !readOnlyApiMethod(endpoint[0]) ? { operationId: endpoint.join(" ") } : null;
+}
 
 export function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
   const [method, path] = TASK_API_PATHS[tool]!;

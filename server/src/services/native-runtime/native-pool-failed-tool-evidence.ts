@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { activityLog, type heartbeatRunEvents, type heartbeatRuns, type Db } from "@paperclipai/db";
 import { nativeSha256 } from "./canonical.js";
-import { LIST_CHAT_ATTACHMENTS_TOOL_NAME } from "./chat-attachment-tool-definitions.js";
+import { isUndispatchedRunnerApiReceipt } from "../recovery-effect-receipts.js";
+import { DOWNLOAD_ARTIFACT } from "./artifact-transfer.js";
+import { runnerToolMutationJournal, isRecoverableRunnerRead } from "./paperclip-runner-tool-authority.js";
 
 type SourceRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runnerInstanceId" | "nativeSessionId">;
 type ToolEvent = Pick<typeof heartbeatRunEvents.$inferSelect, "agentId" | "seq" | "eventType" | "payload" |
@@ -12,12 +15,12 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 /** Claude's admitted runner reserves the paperclip MCP namespace. Prove both
- * events came from the same owned session, and match a specific built-in. */
-export function failedClaudePaperclipTool(
+ * events came from the same owned session before using the tool contract. */
+function failedClaudePaperclipTool(
   run: SourceRun,
   started: ToolEvent,
   completed: ToolEvent,
-): "list_task_documents" | typeof LIST_CHAT_ATTACHMENTS_TOOL_NAME | "download_artifact" | "call_api" | null {
+) {
   const admittedEvent = (row: ToolEvent) => {
     const event = record(record(row.payload).prpEvent);
     if (!run.runnerInstanceId || !run.nativeSessionId || row.agentId !== run.agentId || row.protocolSchemaVersion !== 1 ||
@@ -40,13 +43,41 @@ export function failedClaudePaperclipTool(
   if (a.schema !== "paperclip.tool.execution.v1" || b.schema !== a.schema ||
       a.transport !== "mcp" || b.transport !== a.transport || a.namespace !== "paperclip" || b.namespace !== a.namespace ||
       a.status !== "running" || b.status !== "failed" ||
-      typeof a.executionId !== "string" || !a.executionId || a.executionId !== b.executionId || a.name !== b.name) return null;
-  if (a.name === "list_task_documents" || a.name === LIST_CHAT_ATTACHMENTS_TOOL_NAME || a.name === "download_artifact") return a.name;
-  // The bridge returns this root required-field error before calling the
-  // handler. Require the complete diagnostic and check the durable mutation
-  // receipts separately before accepting this older, display-only evidence.
-  return a.name === "call_api" && b.outputTruncated === false && typeof b.output === "string" &&
-    b.output.startsWith("Invalid tool input: missing required field: operationId.") ? a.name : null;
+      typeof a.executionId !== "string" || !a.executionId || a.executionId !== b.executionId ||
+      typeof a.name !== "string" || a.name !== b.name) return null;
+  return { name: a.name, callId: a.executionId, completion: b };
+}
+
+/** A failed first-party MCP call can be discarded only if the owning tool
+ * contract rules out a mutation or its effect journal settles the attempt. */
+export function failedPaperclipToolEffectSettled(
+  run: SourceRun,
+  started: ToolEvent,
+  completed: ToolEvent,
+  input: { apiReceipts: Record<string, unknown>; artifactInstallsSettled: boolean },
+): boolean {
+  const call = failedClaudePaperclipTool(run, started, completed);
+  if (!call) return false;
+  if (isRecoverableRunnerRead(call.name)) return true;
+  if (call.name === DOWNLOAD_ARTIFACT) return input.artifactInstallsSettled;
+
+  const journal = runnerToolMutationJournal(call.name);
+  if (!journal) return false;
+  const receipt = input.apiReceipts[createHash("sha256").update(`tool-use:${call.callId}`).digest("hex")];
+  if (receipt !== undefined) {
+    const result = record(receipt);
+    return (journal.operationId === null || result.operationId === journal.operationId) &&
+      (isUndispatchedRunnerApiReceipt(receipt) || (result.state === "completed" &&
+        typeof result.digest === "string" && /^[a-f0-9]{64}$/.test(result.digest) &&
+        typeof result.operationId === "string" && record(result.result).ok === true));
+  }
+
+  // Historic ACP bridge events record schema rejection in the display result.
+  // Only use it when this tool's mutation path requires a durable reservation
+  // before dispatch. A generic failed tool result supplies no such proof.
+  return call.completion.outputTruncated === false &&
+    typeof call.completion.output === "string" &&
+    call.completion.output.startsWith("Invalid tool input: ");
 }
 
 /** The artifact authority awaits a durable start before invoking the installer

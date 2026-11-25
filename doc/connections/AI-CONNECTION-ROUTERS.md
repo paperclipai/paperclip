@@ -62,7 +62,11 @@ When a conversation fails because of quota, authentication, or confirmed runner
 failure, Paperclip can select the next available account after the previous
 execution and local workspace cleanup have settled. The task pin and successor
 run commit together. Stop is serialized with successor creation. Ordinary task
-errors do not trigger a provider change. If all eligible accounts are cooling
+errors do not trigger a provider change. During recovery from a Claude quota
+failure, Paperclip classifies failed first-party calls using the runner's tool
+catalog and durable effect records. A failed read can be retried on the backup.
+Completed API mutations are carried forward by their receipts, and unresolved
+mutation outcomes hold the handoff for reconciliation. If all eligible accounts are cooling
 down, the successor waits for the earliest reset instead of probing them repeatedly.
 
 An automatic continuation must prove that the prior execution is stopped and
