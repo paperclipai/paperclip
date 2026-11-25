@@ -79,9 +79,6 @@ describe("CoordinatorSidebar plugin and flag-gated entries", () => {
 
   it("insets plugin sidebar rows once, like native rows", async () => {
     await renderSidebar();
-    // Plugin sidebar pages render their own SidebarNavItem-style link (`mx-2 px-2`), so the
-    // slot wrapper must not add the row inset again. Launchers render a full-width button with
-    // its own padding, so their wrapper supplies only the outer margin.
     const slotItem = navigation().querySelector('[data-testid="plugin-slot-outlet"][data-slot-types="sidebar"] [data-testid="plugin-slot-item"]')!;
     expect(slotItem.classList.contains("design-sidebar-item")).toBe(false);
     expect(slotItem.classList.contains("design-sidebar-plugin-item")).toBe(true);
